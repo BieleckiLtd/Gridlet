@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "gridlet-visualtest",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "samples/Gridlet.VisualTest"],
+      "port": 5088
+    }
+  ]
+}

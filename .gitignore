@@ -1,0 +1,28 @@
+## .NET / Visual Studio
+bin/
+obj/
+artifacts/
+TestResults/
+*.user
+*.suo
+.vs/
+_UpgradeReport_Files/
+*.binlog
+
+## JetBrains Rider
+.idea/
+
+## VS Code
+.vscode/
+
+## OS
+Thumbs.db
+.DS_Store
+
+## NuGet
+*.nupkg
+*.snupkg
+packages/
+
+## Local secrets
+appsettings.*.local.json

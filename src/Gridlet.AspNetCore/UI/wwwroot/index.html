@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gridlet</title>
+  <base href="%GRIDLET_BASE%/" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='1' width='6' height='6' rx='1.5' fill='%234f8cff'/%3E%3Crect x='9' y='1' width='6' height='6' rx='1.5' fill='%23566274'/%3E%3Crect x='1' y='9' width='6' height='6' rx='1.5' fill='%23566274'/%3E%3Crect x='9' y='9' width='6' height='6' rx='1.5' fill='%234f8cff'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="assets/app.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="brand"><span class="brand-mark">▦</span>Gridlet</div>
+      <label class="picker">Connection
+        <select id="connection-select"></select>
+      </label>
+      <label class="picker">Database
+        <select id="database-select"></select>
+      </label>
+      <button id="refresh-btn" class="ghost" title="Reload objects">⟳</button>
+      <div class="spacer"></div>
+      <button id="new-query-btn" class="primary">New query</button>
+      <span id="version" class="muted"></span>
+    </header>
+    <div id="main">
+      <aside id="sidebar">
+        <input id="search" type="search" placeholder="Filter objects…" autocomplete="off" />
+        <div id="tree" class="tree"></div>
+      </aside>
+      <section id="content">
+        <div id="tabbar"></div>
+        <div id="panels"></div>
+        <div id="empty-state">
+          <div class="empty-inner">
+            <div class="empty-mark">▦</div>
+            <p>Select a table, view, procedure, or function from the sidebar —<br />or open a new query tab.</p>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+  <div id="toast" hidden></div>
+  <script src="assets/app.js"></script>
+</body>
+</html>
