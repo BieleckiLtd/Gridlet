@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/Gridlet.VisualTest/Gridlet.VisualTest.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Gridlet.AspNetCore/Gridlet.AspNetCore.csproj" />
+    <Project Path="src/Gridlet.Core/Gridlet.Core.csproj" />
+    <Project Path="src/Gridlet.SqlServer/Gridlet.SqlServer.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Gridlet.Tests/Gridlet.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Gridlet.AspNetCore\Gridlet.AspNetCore.csproj" />
+    <ProjectReference Include="..\..\src\Gridlet.SqlServer\Gridlet.SqlServer.csproj" />
+  </ItemGroup>
+
+</Project>
