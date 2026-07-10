@@ -15,6 +15,9 @@ public sealed class GridletOptions
     /// <summary>Authentication/authorization behaviour of the Gridlet endpoints.</summary>
     public GridletSecurityOptions Security { get; set; } = new();
 
+    /// <summary>Persistence for saved queries and published endpoints.</summary>
+    public GridletStorageOptions Storage { get; set; } = new();
+
     /// <summary>Adds a named connection.</summary>
     public GridletOptions AddConnection(
         string name,

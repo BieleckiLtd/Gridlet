@@ -1,4 +1,7 @@
 using Gridlet;
+using Gridlet.Abstractions;
+using Gridlet.AspNetCore.Storage;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 // ReSharper disable once CheckNamespace — conventional namespace for DI extensions.
 namespace Microsoft.Extensions.DependencyInjection;
@@ -13,5 +16,15 @@ public static class GridletServiceCollectionExtensions
     public static GridletBuilder AddGridlet(
         this IServiceCollection services,
         Action<GridletOptions>? configure = null)
-        => services.AddGridletCore(configure);
+    {
+        var builder = services.AddGridletCore(configure);
+
+        // Default file-backed store for saved queries and published endpoints; both interfaces
+        // share one instance so they share one state file.
+        services.TryAddSingleton<GridletFileStore>();
+        services.TryAddSingleton<ISavedQueryStore>(sp => sp.GetRequiredService<GridletFileStore>());
+        services.TryAddSingleton<IPublishedEndpointStore>(sp => sp.GetRequiredService<GridletFileStore>());
+
+        return builder;
+    }
 }

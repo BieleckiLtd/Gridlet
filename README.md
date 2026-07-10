@@ -75,8 +75,24 @@ dotnet run --project samples/Gridlet.VisualTest
 - **SQL editor** — can be disabled per connection (`AllowSqlExecution = false`). Statement-level
   write protection is intentionally delegated to the SQL login's own permissions: point Gridlet at
   a login that has exactly the rights its users should have.
-- **Audit** — query executions flow through `IGridletAuditSink` (default: structured logging);
-  replace the sink to persist audit events.
+- **Feature gates** — row editing (`AllowWrites`) and the table designer (`AllowDdl`) can each be
+  switched off per connection; the UI hides the controls and the endpoints return 403.
+- **Designer safety** — designer data types are validated against a whitelist, every identifier is
+  bracket-quoted, and row values always travel as SQL parameters.
+- **Audit** — queries, row writes, schema changes, and published-API invocations flow through
+  `IGridletAuditSink` (default: structured logging); replace the sink to persist audit events.
+
+## API publishing
+
+Any query can be published as an HTTP endpoint from the query editor (`Publish…`), or via
+`POST {mount}/api/published`. Published endpoints:
+
+- live at `{mount}/pub/{route}` (GET with query-string parameters, or POST with a JSON body),
+- bind `@parameters` in the SQL to request values (missing optional parameters become `NULL`),
+- inherit Gridlet's authorization and can additionally require a named policy,
+- are stored (together with saved queries) in a JSON file — `options.Storage.FilePath`,
+  default `gridlet-store.json` under the content root; swap `ISavedQueryStore` /
+  `IPublishedEndpointStore` to persist elsewhere.
 
 ## V1 scope status
 
@@ -88,12 +104,15 @@ dotnet run --project samples/Gridlet.VisualTest
 - [x] Ad-hoc query editor with multiple result sets, messages, timing
 - [x] Safety limits, query timeouts, audit logging
 - [x] Configurable mount path, host auth reuse
-- [ ] Create tables visually; add/edit/remove columns
-- [ ] Edit table rows where permitted
+- [x] Create tables visually; add/edit/remove columns (drop table/column included)
+- [x] Edit table rows where permitted (insert/update/delete with NULL support)
+- [x] Saved queries
+- [x] Export results and table data (CSV/JSON)
+- [x] Publish queries/operations as protected API endpoints
+- [x] Resizable grid columns (data grids and query results)
 - [ ] Create/edit views and stored procedures from the UI
-- [ ] Saved queries
-- [ ] Export results (CSV/JSON)
-- [ ] Publish queries/operations as protected API endpoints
+- [ ] Index/foreign-key designer
+- [ ] Server-side full-table export (current export covers the loaded rows)
 
 ## Development
 
