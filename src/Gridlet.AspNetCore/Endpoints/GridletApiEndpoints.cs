@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using Gridlet.Abstractions;
 using Gridlet.AspNetCore.Contracts;
 using Gridlet.Auditing;
@@ -8,16 +9,20 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
+using static Gridlet.AspNetCore.GridletEndpointHelpers;
 
 namespace Gridlet.AspNetCore;
 
 /// <summary>The JSON API consumed by the embedded UI (and usable directly).</summary>
-internal static class GridletApiEndpoints
+internal static partial class GridletApiEndpoints
 {
     private static readonly string Version =
         typeof(GridletApiEndpoints).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion.Split('+')[0] ?? "dev";
+
+    [GeneratedRegex(@"^[a-zA-Z0-9][a-zA-Z0-9\-_/]*$")]
+    private static partial Regex RoutePattern();
 
     public static void Map(RouteGroupBuilder api)
     {
@@ -28,12 +33,36 @@ internal static class GridletApiEndpoints
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/structure", GetObjectStructure);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/definition", GetObjectDefinition);
         api.MapPost("/connections/{connection}/databases/{database}/query", ExecuteQuery);
+
+        // Row editing (POST for update/delete so the JSON body binds on every server).
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/rows", InsertRow);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/rows/update", UpdateRow);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/rows/delete", DeleteRow);
+
+        // Table designer.
+        api.MapPost("/connections/{connection}/databases/{database}/tables", CreateTable);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns", AddColumn);
+        api.MapPut("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns/{column}", AlterColumn);
+        api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns/{column}", DropColumn);
+        api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}", DropTable);
+
+        // Saved queries.
+        api.MapGet("/queries", GetSavedQueries);
+        api.MapPost("/queries", SaveQuery);
+        api.MapDelete("/queries/{id}", DeleteSavedQuery);
+
+        // Published endpoint administration (invocation lives in GridletPublishedEndpoints).
+        api.MapGet("/published", GetPublishedEndpoints);
+        api.MapPost("/published", SavePublishedEndpoint);
+        api.MapDelete("/published/{id}", DeletePublishedEndpoint);
     }
+
+    // ---- meta & schema ----
 
     private static IResult GetMeta(IOptionsMonitor<GridletOptions> options)
     {
         var connections = options.CurrentValue.Connections
-            .Select(c => new GridletConnectionSummary(c.Name, c.ProviderName, c.AllowSqlExecution))
+            .Select(c => new GridletConnectionSummary(c.Name, c.ProviderName, c.AllowSqlExecution, c.AllowWrites, c.AllowDdl))
             .ToArray();
         return Results.Ok(new GridletMetaResponse(Version, connections));
     }
@@ -121,6 +150,8 @@ internal static class GridletApiEndpoints
             return Results.Ok(new ObjectDefinitionResponse(definition));
         });
 
+    // ---- ad-hoc queries ----
+
     private static Task<IResult> ExecuteQuery(
         string connection,
         string database,
@@ -135,17 +166,11 @@ internal static class GridletApiEndpoints
             var resolved = resolver.Resolve(connection, database);
             if (!resolved.Context.Connection.AllowSqlExecution)
             {
-                return Results.Json(
-                    new GridletErrorResponse($"SQL execution is disabled for connection '{resolved.Context.ConnectionName}'."),
-                    statusCode: StatusCodes.Status403Forbidden);
+                return Forbidden($"SQL execution is disabled for connection '{resolved.Context.ConnectionName}'.");
             }
 
             var limits = options.CurrentValue.Limits;
             var sql = body.Sql ?? "";
-            var user = httpContext.User.Identity?.IsAuthenticated == true
-                ? httpContext.User.Identity.Name
-                : null;
-
             var stopwatch = Stopwatch.StartNew();
             try
             {
@@ -153,66 +178,232 @@ internal static class GridletApiEndpoints
                     resolved.Context,
                     sql,
                     new QueryRequestOptions(limits.MaxQueryResultRows, limits.CommandTimeoutSeconds),
+                    parameters: null,
                     cancellationToken);
 
-                await WriteAuditAsync(succeeded: true, error: null);
+                await AuditAsync(audit, httpContext, "query.execute", connection, database, null, sql,
+                    succeeded: true, stopwatch.ElapsedMilliseconds, error: null);
                 return Results.Ok(result);
             }
             catch (Exception ex)
             {
-                await WriteAuditAsync(succeeded: false, error: ex.Message);
+                await AuditAsync(audit, httpContext, "query.execute", connection, database, null, sql,
+                    succeeded: false, stopwatch.ElapsedMilliseconds, ex.Message);
                 throw;
             }
-
-            async ValueTask WriteAuditAsync(bool succeeded, string? error)
-                => await audit.WriteAsync(
-                    new GridletAuditEvent(
-                        Timestamp: DateTimeOffset.UtcNow,
-                        UserName: user,
-                        Action: "query.execute",
-                        ConnectionName: resolved.Context.ConnectionName,
-                        Database: database,
-                        ObjectName: null,
-                        Sql: sql,
-                        Succeeded: succeeded,
-                        DurationMs: stopwatch.ElapsedMilliseconds,
-                        Error: error),
-                    CancellationToken.None);
         });
+
+    // ---- row editing ----
+
+    private static Task<IResult> InsertRow(
+        string connection, string database, string schema, string name,
+        RowWriteRequest body, IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => WriteRow(connection, database, schema, name, "row.insert", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Writes.InsertRowAsync(
+                resolved.Context, schema, name, RequireMap(body.Values, "values"), ct),
+            cancellationToken);
+
+    private static Task<IResult> UpdateRow(
+        string connection, string database, string schema, string name,
+        RowWriteRequest body, IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => WriteRow(connection, database, schema, name, "row.update", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Writes.UpdateRowAsync(
+                resolved.Context, schema, name, RequireMap(body.Key, "key"), RequireMap(body.Values, "values"), ct),
+            cancellationToken);
+
+    private static Task<IResult> DeleteRow(
+        string connection, string database, string schema, string name,
+        RowWriteRequest body, IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => WriteRow(connection, database, schema, name, "row.delete", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Writes.DeleteRowAsync(
+                resolved.Context, schema, name, RequireMap(body.Key, "key"), ct),
+            cancellationToken);
+
+    private static Task<IResult> WriteRow(
+        string connection, string database, string schema, string name, string action,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit, HttpContext httpContext,
+        Func<ResolvedConnection, CancellationToken, Task<int>> write,
+        CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            if (!resolved.Context.Connection.AllowWrites)
+            {
+                return Forbidden($"Row editing is disabled for connection '{resolved.Context.ConnectionName}'.");
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var rows = await write(resolved, cancellationToken);
+                await AuditAsync(audit, httpContext, action, connection, database, $"{schema}.{name}", null,
+                    succeeded: true, stopwatch.ElapsedMilliseconds, error: null);
+                return Results.Ok(new RowWriteResponse(rows));
+            }
+            catch (Exception ex)
+            {
+                await AuditAsync(audit, httpContext, action, connection, database, $"{schema}.{name}", null,
+                    succeeded: false, stopwatch.ElapsedMilliseconds, ex.Message);
+                throw;
+            }
+        });
+
+    private static IReadOnlyDictionary<string, object?> RequireMap(
+        Dictionary<string, System.Text.Json.JsonElement>? map, string what)
+        => map is { Count: > 0 }
+            ? ToClrMap(map)
+            : throw new GridletValidationException($"The request must include non-empty '{what}'.");
+
+    // ---- table designer ----
+
+    private static Task<IResult> CreateTable(
+        string connection, string database, TableDesign body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{body.Schema}.{body.Name}", "ddl.createTable", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.CreateTableAsync(resolved.Context, body, ct),
+            cancellationToken);
+
+    private static Task<IResult> AddColumn(
+        string connection, string database, string schema, string name, ColumnDesign body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}", "ddl.addColumn", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.AddColumnAsync(resolved.Context, schema, name, body, ct),
+            cancellationToken);
+
+    private static Task<IResult> AlterColumn(
+        string connection, string database, string schema, string name, string column, ColumnDesign body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}.{column}", "ddl.alterColumn", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.AlterColumnAsync(resolved.Context, schema, name, column, body, ct),
+            cancellationToken);
+
+    private static Task<IResult> DropColumn(
+        string connection, string database, string schema, string name, string column,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}.{column}", "ddl.dropColumn", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.DropColumnAsync(resolved.Context, schema, name, column, ct),
+            cancellationToken);
+
+    private static Task<IResult> DropTable(
+        string connection, string database, string schema, string name,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}", "ddl.dropTable", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.DropTableAsync(resolved.Context, schema, name, ct),
+            cancellationToken);
+
+    private static Task<IResult> Ddl(
+        string connection, string database, string objectName, string action,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit, HttpContext httpContext,
+        Func<ResolvedConnection, CancellationToken, Task> execute,
+        CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            if (!resolved.Context.Connection.AllowDdl)
+            {
+                return Forbidden($"Schema changes are disabled for connection '{resolved.Context.ConnectionName}'.");
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                await execute(resolved, cancellationToken);
+                await AuditAsync(audit, httpContext, action, connection, database, objectName, null,
+                    succeeded: true, stopwatch.ElapsedMilliseconds, error: null);
+                return Results.Ok(new { success = true });
+            }
+            catch (Exception ex)
+            {
+                await AuditAsync(audit, httpContext, action, connection, database, objectName, null,
+                    succeeded: false, stopwatch.ElapsedMilliseconds, ex.Message);
+                throw;
+            }
+        });
+
+    // ---- saved queries ----
+
+    private static Task<IResult> GetSavedQueries(ISavedQueryStore store, CancellationToken cancellationToken)
+        => Execute(async () => Results.Ok(await store.GetAllAsync(cancellationToken)));
+
+    private static Task<IResult> SaveQuery(
+        SavedQuerySaveRequest body, ISavedQueryStore store, CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            if (string.IsNullOrWhiteSpace(body.Name) ||
+                string.IsNullOrWhiteSpace(body.Sql) ||
+                string.IsNullOrWhiteSpace(body.ConnectionName))
+            {
+                throw new GridletValidationException("A saved query needs a name, a connection, and SQL text.");
+            }
+
+            var saved = await store.SaveAsync(
+                new SavedQuery(
+                    string.IsNullOrWhiteSpace(body.Id) ? Guid.NewGuid().ToString("n") : body.Id,
+                    body.Name.Trim(), body.ConnectionName, body.Database, body.Sql, DateTimeOffset.UtcNow),
+                cancellationToken);
+            return Results.Ok(saved);
+        });
+
+    private static Task<IResult> DeleteSavedQuery(string id, ISavedQueryStore store, CancellationToken cancellationToken)
+        => Execute(async () => await store.DeleteAsync(id, cancellationToken)
+            ? Results.Ok(new { deleted = true })
+            : Results.NotFound(new GridletErrorResponse($"No saved query with id '{id}'.")));
+
+    // ---- published endpoints (admin) ----
+
+    private static Task<IResult> GetPublishedEndpoints(IPublishedEndpointStore store, CancellationToken cancellationToken)
+        => Execute(async () => Results.Ok(await store.GetAllAsync(cancellationToken)));
+
+    private static Task<IResult> SavePublishedEndpoint(
+        PublishRequest body, IPublishedEndpointStore store, IGridletConnectionResolver resolver,
+        CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var method = body.Method?.ToUpperInvariant();
+            if (method is not ("GET" or "POST"))
+            {
+                throw new GridletValidationException("Method must be GET or POST.");
+            }
+
+            var route = (body.Route ?? "").Trim('/', ' ');
+            if (route.Length == 0 || !RoutePattern().IsMatch(route))
+            {
+                throw new GridletValidationException(
+                    "Route must contain only letters, digits, '-', '_' and '/' segments (e.g. sales/top-customers).");
+            }
+
+            if (string.IsNullOrWhiteSpace(body.Name) || string.IsNullOrWhiteSpace(body.Sql))
+            {
+                throw new GridletValidationException("A published endpoint needs a name and SQL text.");
+            }
+
+            resolver.Resolve(body.ConnectionName, body.Database); // throws for unknown connections
+
+            var saved = await store.SaveAsync(
+                new PublishedEndpoint(
+                    string.IsNullOrWhiteSpace(body.Id) ? Guid.NewGuid().ToString("n") : body.Id,
+                    body.Name.Trim(), method, route, body.ConnectionName, body.Database, body.Sql,
+                    body.Parameters ?? [],
+                    string.IsNullOrWhiteSpace(body.AuthorizationPolicy) ? null : body.AuthorizationPolicy.Trim(),
+                    body.Enabled, DateTimeOffset.UtcNow),
+                cancellationToken);
+            return Results.Ok(saved);
+        });
+
+    private static Task<IResult> DeletePublishedEndpoint(
+        string id, IPublishedEndpointStore store, CancellationToken cancellationToken)
+        => Execute(async () => await store.DeleteAsync(id, cancellationToken)
+            ? Results.Ok(new { deleted = true })
+            : Results.NotFound(new GridletErrorResponse($"No published endpoint with id '{id}'.")));
 
     private static DbObjectDto ToDto(DbObjectInfo info)
         => new(info.Schema, info.Name, info.Type.ToString());
-
-    /// <summary>Maps Gridlet exceptions onto HTTP status codes with a consistent error body.</summary>
-    private static async Task<IResult> Execute(Func<Task<IResult>> action)
-    {
-        try
-        {
-            return await action();
-        }
-        catch (GridletUnknownConnectionException ex)
-        {
-            return Results.NotFound(new GridletErrorResponse(ex.Message));
-        }
-        catch (GridletObjectNotFoundException ex)
-        {
-            return Results.NotFound(new GridletErrorResponse(ex.Message));
-        }
-        catch (GridletValidationException ex)
-        {
-            return Results.BadRequest(new GridletErrorResponse(ex.Message));
-        }
-        catch (GridletQueryException ex)
-        {
-            return Results.BadRequest(new GridletErrorResponse(ex.Message));
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // Gridlet is an operator tool: surfacing the underlying message (e.g. login failed,
-            // server unreachable) is intentional and more useful than a generic 500.
-            return Results.Json(
-                new GridletErrorResponse(ex.Message),
-                statusCode: StatusCodes.Status500InternalServerError);
-        }
-    }
 }

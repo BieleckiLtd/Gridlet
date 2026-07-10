@@ -11,6 +11,7 @@ public sealed class SqlServerQueryRunner : IQueryRunner
         GridletConnectionContext context,
         string sql,
         QueryRequestOptions options,
+        IReadOnlyDictionary<string, object?>? parameters = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(sql))
@@ -33,6 +34,13 @@ public sealed class SqlServerQueryRunner : IQueryRunner
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
         command.CommandTimeout = options.CommandTimeoutSeconds;
+        if (parameters is not null)
+        {
+            foreach (var (name, value) in parameters)
+            {
+                command.Parameters.AddWithValue(name.StartsWith('@') ? name : "@" + name, value ?? DBNull.Value);
+            }
+        }
 
         var resultSets = new List<QueryResultSet>();
         int recordsAffected;

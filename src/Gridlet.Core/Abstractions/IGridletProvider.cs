@@ -18,4 +18,10 @@ public interface IGridletProvider
 
     /// <summary>Executes ad-hoc SQL authored by the user.</summary>
     IQueryRunner Query { get; }
+
+    /// <summary>Row-level writes (INSERT/UPDATE/DELETE).</summary>
+    ITableWriteService Writes { get; }
+
+    /// <summary>Schema changes driven by the table designer.</summary>
+    ITableDdlService Ddl { get; }
 }

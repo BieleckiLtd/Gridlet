@@ -40,6 +40,7 @@ public static class GridletEndpointRouteBuilderExtensions
 
         GridletUiEndpoints.Map(group, pattern);
         GridletApiEndpoints.Map(group.MapGroup("/api"));
+        GridletPublishedEndpoints.Map(group);
 
         return group;
     }

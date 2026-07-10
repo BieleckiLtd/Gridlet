@@ -12,4 +12,8 @@ public sealed class SqlServerGridletProvider : IGridletProvider
     public ITableDataService Data { get; } = new SqlServerTableDataService();
 
     public IQueryRunner Query { get; } = new SqlServerQueryRunner();
+
+    public ITableWriteService Writes { get; } = new SqlServerTableWriteService();
+
+    public ITableDdlService Ddl { get; } = new SqlServerTableDdlService();
 }

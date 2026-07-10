@@ -18,4 +18,10 @@ public sealed class GridletConnectionOptions
     /// grant the connection's login only the rights users should have.
     /// </summary>
     public bool AllowSqlExecution { get; set; } = true;
+
+    /// <summary>Whether Gridlet's row editing (insert/update/delete rows) is enabled for this connection.</summary>
+    public bool AllowWrites { get; set; } = true;
+
+    /// <summary>Whether Gridlet's table designer (create/alter/drop tables and columns) is enabled for this connection.</summary>
+    public bool AllowDdl { get; set; } = true;
 }

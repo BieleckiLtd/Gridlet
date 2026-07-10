@@ -19,7 +19,13 @@ internal static class GridletTestHost
         builder.WebHost.UseTestServer();
         builder.Logging.ClearProviders();
 
-        builder.Services.AddGridlet(configure);
+        builder.Services.AddGridlet(options =>
+        {
+            // Isolate each test host's state file so parallel tests never share or clobber state.
+            options.Storage.FilePath = Path.Combine(
+                Path.GetTempPath(), $"gridlet-tests-{Guid.NewGuid():n}.json");
+            configure(options);
+        });
         builder.Services.AddSingleton<IGridletProvider, FakeGridletProvider>();
         configureServices?.Invoke(builder.Services);
 
