@@ -1,4 +1,8 @@
-# Gridlet
+<p align="center">
+  <img src="https://raw.githubusercontent.com/BieleckiLtd/Gridlet/main/assets/gridlet-icon.png" width="160" height="160" alt="Gridlet logo" />
+</p>
+
+<h1 align="center">Gridlet</h1>
 
 Gridlet is an embeddable ASP.NET Core NuGet package that adds a configurable, web-based SQL Server
 management interface to an existing application — browse schema, view and page through data, inspect
