@@ -5,13 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Gridlet</title>
   <base href="%GRIDLET_BASE%/" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='1' width='6' height='6' rx='1.5' fill='%234f8cff'/%3E%3Crect x='9' y='1' width='6' height='6' rx='1.5' fill='%23566274'/%3E%3Crect x='1' y='9' width='6' height='6' rx='1.5' fill='%23566274'/%3E%3Crect x='9' y='9' width='6' height='6' rx='1.5' fill='%234f8cff'/%3E%3C/svg%3E" />
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
+  <link rel="apple-touch-icon" href="assets/icon.png" />
   <link rel="stylesheet" href="assets/app.css" />
 </head>
 <body>
   <div id="app">
     <header id="topbar">
-      <div class="brand"><span class="brand-mark">▦</span>Gridlet</div>
+      <div class="brand"><img class="brand-mark" src="assets/icon.png" alt="" />Gridlet</div>
       <label class="picker">Connection
         <select id="connection-select"></select>
       </label>
@@ -35,7 +36,7 @@
         <div id="panels"></div>
         <div id="empty-state">
           <div class="empty-inner">
-            <div class="empty-mark">▦</div>
+            <img class="empty-mark" src="assets/icon.png" alt="Gridlet" />
             <p>Select a database object from the sidebar —<br />or open an ad-hoc SQL workspace.</p>
           </div>
         </div>
