@@ -13,7 +13,7 @@
 
   <!-- Shared NuGet package metadata for packable projects. -->
   <PropertyGroup>
-    <Version>1.0.1</Version>
+    <Version>1.1.0</Version>
     <Authors>BieleckiLtd</Authors>
     <Product>Gridlet</Product>
     <RepositoryUrl>https://github.com/BieleckiLtd/Gridlet</RepositoryUrl>
