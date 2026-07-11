@@ -15,6 +15,11 @@ public interface ISchemaReader
         GridletConnectionContext context,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Lists database schemas, including empty schemas.</summary>
+    Task<IReadOnlyList<SchemaInfo>> GetSchemasAsync(
+        GridletConnectionContext context,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Returns columns, indexes, and foreign keys for a table or view.</summary>
     Task<TableDefinition> GetTableDefinitionAsync(
         GridletConnectionContext context,

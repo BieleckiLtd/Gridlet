@@ -6,9 +6,53 @@ namespace Gridlet.SqlServer;
 
 public sealed class SqlServerTableDdlService : ITableDdlService
 {
-    public Task CreateTableAsync(
+    public Task CreateSchemaAsync(
+        GridletConnectionContext context, SchemaDesign design, CancellationToken cancellationToken = default)
+        => ExecuteAsync(context, SqlServerDdlBuilder.BuildCreateSchema(design), cancellationToken);
+
+    public Task AlterSchemaOwnerAsync(
+        GridletConnectionContext context, string schema, string owner, CancellationToken cancellationToken = default)
+        => ExecuteAsync(context, SqlServerDdlBuilder.BuildAlterSchemaOwner(schema, owner), cancellationToken);
+
+    public Task DropSchemaAsync(
+        GridletConnectionContext context, string schema, CancellationToken cancellationToken = default)
+        => ExecuteAsync(context, SqlServerDdlBuilder.BuildDropSchema(schema), cancellationToken);
+
+    public async Task CreateTableAsync(
         GridletConnectionContext context, TableDesign design, CancellationToken cancellationToken = default)
-        => ExecuteAsync(context, SqlServerDdlBuilder.BuildCreateTable(design), cancellationToken);
+    {
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            await using (var createSchema = connection.CreateCommand())
+            {
+                createSchema.Transaction = (SqlTransaction)transaction;
+                createSchema.CommandText = SqlServerDdlBuilder.BuildCreateSchemaIfMissing(design.Schema);
+                createSchema.Parameters.AddWithValue("@schema", design.Schema);
+                await createSchema.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var createTable = connection.CreateCommand())
+            {
+                createTable.Transaction = (SqlTransaction)transaction;
+                createTable.CommandText = SqlServerDdlBuilder.BuildCreateTable(design);
+                await createTable.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (SqlException ex)
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw new GridletQueryException(
+                ex.Number == 2760
+                    ? $"Schema '{design.Schema}' could not be created. Grant the configured SQL principal CREATE SCHEMA (or ALTER ANY SCHEMA) permission, then try again. SQL Server: {ex.Message}"
+                    : ex.Message,
+                ex);
+        }
+    }
 
     public Task AddColumnAsync(
         GridletConnectionContext context, string schema, string table, ColumnDesign column,
@@ -56,6 +100,11 @@ public sealed class SqlServerTableDdlService : ITableDdlService
     public Task DropTableAsync(
         GridletConnectionContext context, string schema, string table, CancellationToken cancellationToken = default)
         => ExecuteAsync(context, SqlServerDdlBuilder.BuildDropTable(schema, table), cancellationToken);
+
+    public Task DropObjectAsync(
+        GridletConnectionContext context, string schema, string name, DbObjectType type,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(context, SqlServerDdlBuilder.BuildDropObject(schema, name, type), cancellationToken);
 
     private static async Task ExecuteAsync(
         GridletConnectionContext context, string sql, CancellationToken cancellationToken)

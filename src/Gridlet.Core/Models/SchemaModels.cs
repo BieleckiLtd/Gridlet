@@ -16,6 +16,9 @@ public enum DbObjectType
 /// <summary>A schema-qualified database object.</summary>
 public sealed record DbObjectInfo(string Schema, string Name, DbObjectType Type);
 
+/// <summary>A database schema and its owning principal.</summary>
+public sealed record SchemaInfo(string Name, string Owner);
+
 /// <summary>A column of a table or view.</summary>
 public sealed record ColumnInfo(
     string Name,

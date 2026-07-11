@@ -15,3 +15,14 @@ public sealed record QueryResult(
     int RecordsAffected,
     IReadOnlyList<string> Messages,
     long DurationMs);
+
+/// <summary>A progressive event emitted while an interactive query is executing.</summary>
+public sealed record QueryStreamEvent(
+    string Type,
+    int? ResultSetIndex = null,
+    IReadOnlyList<ResultColumn>? Columns = null,
+    IReadOnlyList<object?[]>? Rows = null,
+    bool? Truncated = null,
+    string? Message = null,
+    int? RecordsAffected = null,
+    long? DurationMs = null);

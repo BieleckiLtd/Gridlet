@@ -5,6 +5,15 @@ var builder = WebApplication.CreateBuilder(args);
 var connectionString = builder.Configuration.GetConnectionString("SqlServer")
     ?? throw new InvalidOperationException("ConnectionStrings:SqlServer is not configured.");
 
+const string oddSecondPolicy = "OddSecond";
+
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy(oddSecondPolicy, policy =>
+    {
+        // Deliberately time-dependent for the demo: allow requests during odd UTC seconds.
+        policy.RequireAssertion(_ => DateTimeOffset.UtcNow.Second % 2 == 1);
+    });
+
 builder.Services
     .AddGridlet(options =>
     {

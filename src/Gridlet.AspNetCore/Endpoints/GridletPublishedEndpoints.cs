@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using Gridlet.Abstractions;
 using Gridlet.AspNetCore.Contracts;
@@ -112,12 +113,12 @@ internal static class GridletPublishedEndpoints
 
             if (body is not null && body.TryGetValue(parameter.Name, out var element))
             {
-                value = ToClrValue(element);
+                value = ConvertParameter(parameter, ToClrValue(element));
                 supplied = true;
             }
             else if (httpContext.Request.Query.TryGetValue(parameter.Name, out var queryValue))
             {
-                value = queryValue.ToString();
+                value = ConvertParameter(parameter, queryValue.ToString());
                 supplied = true;
             }
 
@@ -130,6 +131,38 @@ internal static class GridletPublishedEndpoints
         }
 
         return arguments;
+    }
+
+    private static object? ConvertParameter(PublishedParameter parameter, object? value)
+    {
+        if (value is null || parameter.Type.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            return value;
+        }
+
+        var text = Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
+        try
+        {
+            return parameter.Type.ToLowerInvariant() switch
+            {
+                "string" => text,
+                "integer" => long.Parse(text, NumberStyles.Integer, CultureInfo.InvariantCulture),
+                "number" => decimal.Parse(text, NumberStyles.Number, CultureInfo.InvariantCulture),
+                "boolean" => bool.Parse(text),
+                _ => throw new GridletValidationException(
+                    $"Parameter '{parameter.Name}' has an unsupported type '{parameter.Type}'."),
+            };
+        }
+        catch (FormatException)
+        {
+            throw new GridletValidationException(
+                $"Parameter '{parameter.Name}' must be a valid {parameter.Type} value.");
+        }
+        catch (OverflowException)
+        {
+            throw new GridletValidationException(
+                $"Parameter '{parameter.Name}' is outside the supported {parameter.Type} range.");
+        }
     }
 
     /// <summary>Shapes the first result set as an API-friendly array of objects.</summary>

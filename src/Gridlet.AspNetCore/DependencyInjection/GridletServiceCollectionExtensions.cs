@@ -13,6 +13,12 @@ public static class GridletServiceCollectionExtensions
     /// <c>services.AddGridlet(o =&gt; o.AddConnection("Default", cs)).AddSqlServer();</c>
     /// then map the UI and API with <c>app.MapGridlet()</c>.
     /// </summary>
+    /// <param name="services">The host application's service collection.</param>
+    /// <param name="configure">
+    /// Optional callback that defines the connection allow-list, security, limits, and storage.
+    /// Configuration is validated when <c>MapGridlet</c> resolves it at startup.
+    /// </param>
+    /// <returns>A builder used to chain provider registrations such as <c>AddSqlServer()</c>.</returns>
     public static GridletBuilder AddGridlet(
         this IServiceCollection services,
         Action<GridletOptions>? configure = null)

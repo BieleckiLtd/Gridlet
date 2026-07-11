@@ -15,6 +15,8 @@ public sealed class FakeGridletProvider :
     /// <summary>Parameters passed to the most recent query execution.</summary>
     public IReadOnlyDictionary<string, object?>? LastQueryParameters { get; private set; }
 
+    public QueryRequestOptions? LastQueryOptions { get; private set; }
+
     public string ProviderName => Name;
 
     public ISchemaReader Schema => this;
@@ -43,6 +45,14 @@ public sealed class FakeGridletProvider :
         [
             new DbObjectInfo("dbo", "Customers", DbObjectType.Table),
             new DbObjectInfo("dbo", "vw_Orders", DbObjectType.View),
+        ]);
+
+    public Task<IReadOnlyList<SchemaInfo>> GetSchemasAsync(
+        GridletConnectionContext context, CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<SchemaInfo>>(
+        [
+            new SchemaInfo("dbo", "dbo"),
+            new SchemaInfo("empty_schema", "app_user"),
         ]);
 
     public Task<TableDefinition> GetTableDefinitionAsync(
@@ -77,6 +87,7 @@ public sealed class FakeGridletProvider :
         CancellationToken cancellationToken = default)
     {
         LastQueryParameters = parameters;
+        LastQueryOptions = options;
         return sql == "boom"
             ? throw new GridletQueryException("kaboom")
             : Task.FromResult(new QueryResult(
@@ -115,6 +126,27 @@ public sealed class FakeGridletProvider :
 
     // ---- ddl ----
 
+    public Task CreateSchemaAsync(
+        GridletConnectionContext context, SchemaDesign design, CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"createSchema {design.Name} owner={design.Owner}");
+        return Task.CompletedTask;
+    }
+
+    public Task AlterSchemaOwnerAsync(
+        GridletConnectionContext context, string schema, string owner, CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"alterSchemaOwner {schema} owner={owner}");
+        return Task.CompletedTask;
+    }
+
+    public Task DropSchemaAsync(
+        GridletConnectionContext context, string schema, CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"dropSchema {schema}");
+        return Task.CompletedTask;
+    }
+
     public Task CreateTableAsync(
         GridletConnectionContext context, TableDesign design, CancellationToken cancellationToken = default)
     {
@@ -150,6 +182,14 @@ public sealed class FakeGridletProvider :
         GridletConnectionContext context, string schema, string table, CancellationToken cancellationToken = default)
     {
         Calls.Add($"dropTable {schema}.{table}");
+        return Task.CompletedTask;
+    }
+
+    public Task DropObjectAsync(
+        GridletConnectionContext context, string schema, string name, DbObjectType type,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"dropObject {type} {schema}.{name}");
         return Task.CompletedTask;
     }
 }

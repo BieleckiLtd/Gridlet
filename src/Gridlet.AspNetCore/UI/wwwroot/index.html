@@ -21,7 +21,7 @@
       <button id="refresh-btn" class="ghost" title="Reload objects">⟳</button>
       <div class="spacer"></div>
       <button id="apis-btn" class="ghost" title="Published API endpoints">APIs</button>
-      <button id="new-query-btn" class="primary">New query</button>
+      <button id="new-query-btn" class="primary" title="Open an ad-hoc SQL workspace">Query</button>
       <span id="version" class="muted"></span>
     </header>
     <div id="main">
@@ -29,19 +29,20 @@
         <input id="search" type="search" placeholder="Filter objects…" autocomplete="off" />
         <div id="tree" class="tree"></div>
       </aside>
+      <div id="sidebar-grip" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>
       <section id="content">
         <div id="tabbar"></div>
         <div id="panels"></div>
         <div id="empty-state">
           <div class="empty-inner">
             <div class="empty-mark">▦</div>
-            <p>Select a table, view, procedure, or function from the sidebar —<br />or open a new query tab.</p>
+            <p>Select a database object from the sidebar —<br />or open an ad-hoc SQL workspace.</p>
           </div>
         </div>
       </section>
     </div>
   </div>
-  <div id="toast" hidden></div>
+  <div id="toast-stack" aria-live="polite" aria-atomic="false"></div>
   <script src="assets/app.js"></script>
 </body>
 </html>

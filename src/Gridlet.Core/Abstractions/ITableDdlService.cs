@@ -5,6 +5,22 @@ namespace Gridlet.Abstractions;
 /// <summary>Schema changes (CREATE/ALTER/DROP) driven by the table designer.</summary>
 public interface ITableDdlService
 {
+    Task CreateSchemaAsync(
+        GridletConnectionContext context,
+        SchemaDesign design,
+        CancellationToken cancellationToken = default);
+
+    Task AlterSchemaOwnerAsync(
+        GridletConnectionContext context,
+        string schema,
+        string owner,
+        CancellationToken cancellationToken = default);
+
+    Task DropSchemaAsync(
+        GridletConnectionContext context,
+        string schema,
+        CancellationToken cancellationToken = default);
+
     Task CreateTableAsync(
         GridletConnectionContext context,
         TableDesign design,
@@ -41,5 +57,12 @@ public interface ITableDdlService
         GridletConnectionContext context,
         string schema,
         string table,
+        CancellationToken cancellationToken = default);
+
+    Task DropObjectAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        DbObjectType type,
         CancellationToken cancellationToken = default);
 }

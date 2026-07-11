@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <TargetFrameworks>net10.0</TargetFrameworks>
     <IsPackable>true</IsPackable>
     <Description>Core abstractions and domain model for Gridlet, an embeddable web-based database management interface for ASP.NET Core. Database providers (e.g. Gridlet.SqlServer) implement the abstractions in this package.</Description>
   </PropertyGroup>

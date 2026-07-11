@@ -29,3 +29,4 @@ appsettings.*.local.json
 
 ## Gridlet runtime state (saved queries / published endpoints of the visual test host)
 samples/**/gridlet-store.json
+!samples/Gridlet.VisualTest/gridlet-store.json

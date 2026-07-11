@@ -6,7 +6,11 @@ namespace Gridlet;
 /// </summary>
 public sealed class GridletOptions
 {
-    /// <summary>Explicitly configured connections Gridlet is allowed to manage.</summary>
+    /// <summary>
+    /// Explicit allow-list of database connections shown by Gridlet. Prefer
+    /// <see cref="AddConnection"/> to populate it. Gridlet does not discover arbitrary host
+    /// connection strings.
+    /// </summary>
     public IList<GridletConnectionOptions> Connections { get; } = [];
 
     /// <summary>Safety limits applied to data browsing and query execution.</summary>
@@ -18,7 +22,14 @@ public sealed class GridletOptions
     /// <summary>Persistence for saved queries and published endpoints.</summary>
     public GridletStorageOptions Storage { get; set; } = new();
 
-    /// <summary>Adds a named connection.</summary>
+    /// <summary>
+    /// Adds a database connection to Gridlet's allow-list.
+    /// </summary>
+    /// <param name="name">Unique display/route name for the connection.</param>
+    /// <param name="connectionString">Provider-specific server-side connection string.</param>
+    /// <param name="providerName">Registered provider name; defaults to SQL Server.</param>
+    /// <param name="configure">Optional per-connection feature-gate configuration.</param>
+    /// <returns>This options instance, allowing multiple calls to be chained.</returns>
     public GridletOptions AddConnection(
         string name,
         string connectionString,
@@ -40,5 +51,6 @@ public sealed class GridletOptions
 /// <summary>Well-known provider names.</summary>
 public static class GridletProviderNames
 {
+    /// <summary>Provider name registered by the Gridlet.SqlServer package.</summary>
     public const string SqlServer = "SqlServer";
 }

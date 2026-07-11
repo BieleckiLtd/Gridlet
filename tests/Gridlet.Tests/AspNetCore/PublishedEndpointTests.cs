@@ -64,6 +64,53 @@ public class PublishedEndpointTests
     }
 
     [Fact]
+    public async Task Declared_integer_parameters_are_bound_as_numbers()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+
+        await Publish(client, new
+        {
+            name = "Paged customers",
+            method = "GET",
+            route = "customers/paged",
+            connectionName = "Main",
+            sql = "SELECT * FROM dbo.Customers ORDER BY CustomerId OFFSET ((@page - 1) * @page_size) ROWS FETCH NEXT @page_size ROWS ONLY",
+            parameters = new[]
+            {
+                new { name = "page", required = true, type = "integer" },
+                new { name = "page_size", required = true, type = "integer" },
+            },
+        });
+
+        var invoke = await client.GetAsync("/gridlet/pub/customers/paged?page=2&page_size=10");
+
+        Assert.Equal(HttpStatusCode.OK, invoke.StatusCode);
+        Assert.Equal(2L, fake.LastQueryParameters!["page"]);
+        Assert.Equal(10L, fake.LastQueryParameters["page_size"]);
+    }
+
+    [Fact]
+    public async Task Invalid_typed_parameter_returns_400()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        await Publish(client, new
+        {
+            name = "Paged customers", method = "GET", route = "typed",
+            connectionName = "Main", sql = "SELECT @page",
+            parameters = new[] { new { name = "page", required = true, type = "integer" } },
+        });
+
+        var invoke = await client.GetAsync("/gridlet/pub/typed?page=second");
+
+        Assert.Equal(HttpStatusCode.BadRequest, invoke.StatusCode);
+        Assert.Contains("integer", await invoke.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task Unknown_or_disabled_routes_return_404()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();
