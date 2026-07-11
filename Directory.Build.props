@@ -19,6 +19,13 @@
     <RepositoryUrl>https://github.com/BieleckiLtd/Gridlet</RepositoryUrl>
     <PackageProjectUrl>https://github.com/BieleckiLtd/Gridlet</PackageProjectUrl>
     <PackageTags>sql-server;database;admin;aspnetcore;management;embedded</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" />
+    <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
 </Project>
