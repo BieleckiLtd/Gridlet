@@ -67,7 +67,7 @@ public sealed class SqlServerQueryRunner : IQueryRunner
                 var truncated = false;
                 while (await reader.ReadAsync(cancellationToken))
                 {
-                    if (rows.Count >= options.MaxRowsPerResultSet)
+                    if (options.MaxRowsPerResultSet > 0 && rows.Count >= options.MaxRowsPerResultSet)
                     {
                         truncated = true;
                         break;
@@ -141,7 +141,7 @@ public sealed class SqlServerQueryRunner : IQueryRunner
             var truncated = false;
             while (await reader.ReadAsync(cancellationToken))
             {
-                if (rowCount >= options.MaxRowsPerResultSet) { truncated = true; break; }
+                if (options.MaxRowsPerResultSet > 0 && rowCount >= options.MaxRowsPerResultSet) { truncated = true; break; }
                 var row = new object?[reader.FieldCount];
                 for (var i = 0; i < reader.FieldCount; i++) row[i] = SqlServerValues.Materialize(reader.GetValue(i));
                 batch.Add(row);

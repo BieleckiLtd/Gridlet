@@ -102,11 +102,17 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             WHERE o.object_id = OBJECT_ID(@name);
 
             SELECT c.name, t.name AS type_name, c.max_length, c.precision, c.scale,
-                   c.is_nullable, c.is_identity, c.is_computed, dc.definition AS default_definition
+                   c.is_nullable, c.is_identity, c.is_computed, dc.definition AS default_definition,
+                   cc.definition AS computed_definition, cc.is_persisted,
+                   CONVERT(bigint, ic.seed_value), CONVERT(bigint, ic.increment_value)
             FROM sys.columns c
             JOIN sys.types t ON t.user_type_id = c.user_type_id
             LEFT JOIN sys.default_constraints dc
               ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
+            LEFT JOIN sys.computed_columns cc
+              ON cc.object_id = c.object_id AND cc.column_id = c.column_id
+            LEFT JOIN sys.identity_columns ic
+              ON ic.object_id = c.object_id AND ic.column_id = c.column_id
             WHERE c.object_id = OBJECT_ID(@name)
             ORDER BY c.column_id;
 
@@ -125,6 +131,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             ORDER BY i.name, ic.key_ordinal;
 
             SELECT fk.name, rs.name AS referenced_schema, rt.name AS referenced_table,
+                   fk.delete_referential_action_desc, fk.update_referential_action_desc,
                    pc.name AS column_name, rc.name AS referenced_column
             FROM sys.foreign_keys fk
             JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
@@ -169,7 +176,11 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 IsComputed: reader.GetBoolean(7),
                 IsPrimaryKey: false,
                 DefaultDefinition: reader.IsDBNull(8) ? null : reader.GetString(8),
-                Ordinal: ordinal++));
+                Ordinal: ordinal++,
+                ComputedDefinition: reader.IsDBNull(9) ? null : reader.GetString(9),
+                IsPersisted: !reader.IsDBNull(10) && reader.GetBoolean(10),
+                IdentitySeed: reader.IsDBNull(11) ? null : reader.GetInt64(11),
+                IdentityIncrement: reader.IsDBNull(12) ? null : reader.GetInt64(12)));
         }
 
         // Result set 3: primary key columns.
@@ -207,19 +218,19 @@ public sealed class SqlServerSchemaReader : ISchemaReader
 
         // Result set 5: foreign keys (one row per column pairing).
         await reader.NextResultAsync(cancellationToken);
-        var foreignKeys = new Dictionary<string, (string ReferencedSchema, string ReferencedTable, List<ForeignKeyColumnPair> Columns)>();
+        var foreignKeys = new Dictionary<string, (string ReferencedSchema, string ReferencedTable, string OnDelete, string OnUpdate, List<ForeignKeyColumnPair> Columns)>();
         var foreignKeyOrder = new List<string>();
         while (await reader.ReadAsync(cancellationToken))
         {
             var fkName = reader.GetString(0);
             if (!foreignKeys.TryGetValue(fkName, out var entry))
             {
-                entry = (reader.GetString(1), reader.GetString(2), []);
+                entry = (reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), []);
                 foreignKeys[fkName] = entry;
                 foreignKeyOrder.Add(fkName);
             }
 
-            entry.Columns.Add(new ForeignKeyColumnPair(reader.GetString(3), reader.GetString(4)));
+            entry.Columns.Add(new ForeignKeyColumnPair(reader.GetString(5), reader.GetString(6)));
         }
 
         return new TableDefinition(
@@ -229,7 +240,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 .Select(n => new IndexInfo(n, indexes[n].Kind, indexes[n].IsUnique, indexes[n].IsPrimaryKey, indexes[n].Columns))
                 .ToArray(),
             foreignKeyOrder
-                .Select(n => new ForeignKeyInfo(n, foreignKeys[n].ReferencedSchema, foreignKeys[n].ReferencedTable, foreignKeys[n].Columns))
+                .Select(n => new ForeignKeyInfo(n, foreignKeys[n].ReferencedSchema, foreignKeys[n].ReferencedTable,
+                    foreignKeys[n].Columns, foreignKeys[n].OnDelete, foreignKeys[n].OnUpdate))
                 .ToArray());
     }
 
@@ -239,7 +251,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
         string name,
         CancellationToken cancellationToken = default)
     {
-        const string sql = "SELECT OBJECT_ID(@name), OBJECT_DEFINITION(OBJECT_ID(@name));";
+        const string sql = "SELECT OBJECT_ID(@name), OBJECT_DEFINITION(OBJECT_ID(@name)), o.type FROM sys.objects o WHERE o.object_id = OBJECT_ID(@name);";
         var qualifiedName = SqlServerIdentifier.QuoteQualified(schema, name);
 
         await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
@@ -248,14 +260,25 @@ public sealed class SqlServerSchemaReader : ISchemaReader
         command.Parameters.AddWithValue("@name", qualifiedName);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        await reader.ReadAsync(cancellationToken);
-
-        if (reader.IsDBNull(0))
+        if (!await reader.ReadAsync(cancellationToken))
         {
             throw new GridletObjectNotFoundException(qualifiedName);
         }
 
-        return reader.IsDBNull(1) ? null : reader.GetString(1);
+        var objectType = MapObjectType(reader.GetString(2));
+
+        if (!reader.IsDBNull(1))
+        {
+            return reader.GetString(1);
+        }
+
+        if (objectType == DbObjectType.Table)
+        {
+            return SqlServerDdlBuilder.BuildTableDefinition(
+                await GetTableDefinitionAsync(context, schema, name, cancellationToken));
+        }
+
+        return null;
     }
 
     private static DbObjectType? MapObjectType(string type)

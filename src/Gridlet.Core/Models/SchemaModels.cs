@@ -28,7 +28,11 @@ public sealed record ColumnInfo(
     bool IsComputed,
     bool IsPrimaryKey,
     string? DefaultDefinition,
-    int Ordinal);
+    int Ordinal,
+    string? ComputedDefinition = null,
+    bool IsPersisted = false,
+    long? IdentitySeed = null,
+    long? IdentityIncrement = null);
 
 /// <summary>An index on a table, including the implicit primary-key index.</summary>
 public sealed record IndexInfo(
@@ -46,7 +50,9 @@ public sealed record ForeignKeyInfo(
     string Name,
     string ReferencedSchema,
     string ReferencedTable,
-    IReadOnlyList<ForeignKeyColumnPair> Columns);
+    IReadOnlyList<ForeignKeyColumnPair> Columns,
+    string OnDelete = "NO_ACTION",
+    string OnUpdate = "NO_ACTION");
 
 /// <summary>Full structural description of a table or view.</summary>
 public sealed record TableDefinition(

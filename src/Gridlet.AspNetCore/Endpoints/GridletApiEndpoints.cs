@@ -50,6 +50,9 @@ internal static partial class GridletApiEndpoints
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns", AddColumn);
         api.MapPut("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns/{column}", AlterColumn);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns/{column}", DropColumn);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/primary-key", AddPrimaryKey);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-keys", AddForeignKey);
+        api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/constraints/{constraint}", DropConstraint);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}", DropObject);
 
         // Saved queries.
@@ -432,6 +435,30 @@ internal static partial class GridletApiEndpoints
             (resolved, ct) => resolved.Provider.Ddl.DropColumnAsync(resolved.Context, schema, name, column, ct),
             cancellationToken);
 
+    private static Task<IResult> AddPrimaryKey(
+        string connection, string database, string schema, string name, PrimaryKeyDesign body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}.{body.Name}", "ddl.addPrimaryKey", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.AddPrimaryKeyAsync(resolved.Context, schema, name, body, ct),
+            cancellationToken);
+
+    private static Task<IResult> AddForeignKey(
+        string connection, string database, string schema, string name, ForeignKeyDesign body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}.{body.Name}", "ddl.addForeignKey", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.AddForeignKeyAsync(resolved.Context, schema, name, body, ct),
+            cancellationToken);
+
+    private static Task<IResult> DropConstraint(
+        string connection, string database, string schema, string name, string constraint,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}.{constraint}", "ddl.dropConstraint", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.DropConstraintAsync(resolved.Context, schema, name, constraint, ct),
+            cancellationToken);
+
     private static Task<IResult> DropObject(
         string connection, string database, string schema, string name, DbObjectType? type,
         IGridletConnectionResolver resolver, IGridletAuditSink audit,
@@ -510,9 +537,9 @@ internal static partial class GridletApiEndpoints
         => Execute(async () =>
         {
             var method = body.Method?.ToUpperInvariant();
-            if (method is not ("GET" or "POST"))
+            if (method is not ("GET" or "POST" or "PUT" or "PATCH" or "DELETE"))
             {
-                throw new GridletValidationException("Method must be GET or POST.");
+                throw new GridletValidationException("Method must be GET, POST, PUT, PATCH, or DELETE.");
             }
 
             var route = (body.Route ?? "").Trim('/', ' ');
@@ -525,6 +552,12 @@ internal static partial class GridletApiEndpoints
             if (string.IsNullOrWhiteSpace(body.Name) || string.IsNullOrWhiteSpace(body.Sql))
             {
                 throw new GridletValidationException("A published endpoint needs a name and SQL text.");
+            }
+
+            if (body.MaxRows is < 0)
+            {
+                throw new GridletValidationException(
+                    "MaxRows must be null (use the server default), 0 (uncapped), or a positive number.");
             }
 
             resolver.Resolve(body.ConnectionName, body.Database); // throws for unknown connections
@@ -551,7 +584,7 @@ internal static partial class GridletApiEndpoints
                     body.Name.Trim(), method, route, body.ConnectionName, body.Database, body.Sql,
                     parameters,
                     string.IsNullOrWhiteSpace(body.AuthorizationPolicy) ? null : body.AuthorizationPolicy.Trim(),
-                    body.Enabled, DateTimeOffset.UtcNow),
+                    body.Enabled, DateTimeOffset.UtcNow, body.MaxRows),
                 cancellationToken);
             return Results.Ok(saved);
         });

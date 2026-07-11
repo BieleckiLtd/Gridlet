@@ -83,6 +83,37 @@ public class SqlServerDdlBuilderTests
     }
 
     [Fact]
+    public void Builds_computed_and_custom_identity_columns()
+    {
+        Assert.Equal(
+            "ALTER TABLE [dbo].[T] ADD [Total] AS ([Quantity] * [Price]) PERSISTED;",
+            SqlServerDdlBuilder.BuildAddColumn("dbo", "T",
+                new ColumnDesign("Total", "", ComputedExpression: "[Quantity] * [Price]", IsPersisted: true)));
+        Assert.Equal(
+            "ALTER TABLE [dbo].[T] ADD [Sequence] bigint IDENTITY(100,5) NOT NULL;",
+            SqlServerDdlBuilder.BuildAddColumn("dbo", "T",
+                new ColumnDesign("Sequence", "bigint", IsNullable: false, IsIdentity: true,
+                    IdentitySeed: 100, IdentityIncrement: 5)));
+    }
+
+    [Fact]
+    public void Builds_primary_and_foreign_key_operations()
+    {
+        Assert.Equal(
+            "ALTER TABLE [sales].[Orders] ADD CONSTRAINT [PK_Orders] PRIMARY KEY CLUSTERED ([TenantId], [Id]);",
+            SqlServerDdlBuilder.BuildAddPrimaryKey("sales", "Orders",
+                new PrimaryKeyDesign("PK_Orders", ["TenantId", "Id"])));
+        Assert.Equal(
+            "ALTER TABLE [sales].[Orders] ADD CONSTRAINT [FK_Orders_Customers] FOREIGN KEY ([TenantId], [CustomerId]) REFERENCES [crm].[Customers] ([TenantId], [Id]) ON DELETE CASCADE ON UPDATE NO ACTION;",
+            SqlServerDdlBuilder.BuildAddForeignKey("sales", "Orders",
+                new ForeignKeyDesign("FK_Orders_Customers", "crm", "Customers",
+                    [new("TenantId", "TenantId"), new("CustomerId", "Id")], "CASCADE")));
+        Assert.Equal(
+            "ALTER TABLE [sales].[Orders] DROP CONSTRAINT [FK_Orders_Customers];",
+            SqlServerDdlBuilder.BuildDropConstraint("sales", "Orders", "FK_Orders_Customers"));
+    }
+
+    [Fact]
     public void Builds_safe_create_schema_if_missing()
     {
         Assert.Equal(

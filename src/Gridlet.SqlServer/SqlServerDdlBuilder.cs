@@ -59,6 +59,41 @@ public static partial class SqlServerDdlBuilder
         return $"CREATE TABLE {target} (\n    {string.Join(",\n    ", lines)}\n);";
     }
 
+    /// <summary>Builds a readable, executable CREATE snapshot for a table's Definition tab.</summary>
+    public static string BuildTableDefinition(TableDefinition definition)
+    {
+        var primaryKey = definition.Indexes.FirstOrDefault(i => i.IsPrimaryKey);
+        var columns = definition.Columns.Select(c => new ColumnDesign(
+            c.Name,
+            c.DataType,
+            c.IsNullable,
+            c.IsIdentity,
+            c.IsPrimaryKey,
+            c.DefaultDefinition,
+            c.ComputedDefinition,
+            c.IsPersisted,
+            c.IdentitySeed ?? 1,
+            c.IdentityIncrement ?? 1)).ToArray();
+        var lines = columns.Select(c => BuildColumnDefinition(c, includeDefault: true)).ToList();
+
+        if (primaryKey is not null)
+        {
+            lines.Add($"CONSTRAINT {SqlServerIdentifier.Quote(primaryKey.Name)} PRIMARY KEY " +
+                      $"{(primaryKey.Kind.Contains("CLUSTERED", StringComparison.OrdinalIgnoreCase) && !primaryKey.Kind.Contains("NONCLUSTERED", StringComparison.OrdinalIgnoreCase) ? "CLUSTERED " : "NONCLUSTERED ")}" +
+                      $"({string.Join(", ", primaryKey.Columns.Select(SqlServerIdentifier.Quote))})");
+        }
+
+        lines.AddRange(definition.ForeignKeys.Select(fk =>
+            $"CONSTRAINT {SqlServerIdentifier.Quote(fk.Name)} FOREIGN KEY " +
+            $"({string.Join(", ", fk.Columns.Select(p => SqlServerIdentifier.Quote(p.Column)))}) REFERENCES " +
+            $"{SqlServerIdentifier.QuoteQualified(fk.ReferencedSchema, fk.ReferencedTable)} " +
+            $"({string.Join(", ", fk.Columns.Select(p => SqlServerIdentifier.Quote(p.ReferencedColumn)))}) " +
+            $"ON DELETE {fk.OnDelete.Replace('_', ' ')} ON UPDATE {fk.OnUpdate.Replace('_', ' ')}"));
+
+        return $"CREATE TABLE {SqlServerIdentifier.QuoteQualified(definition.Object.Schema, definition.Object.Name)} (\n" +
+               $"    {string.Join(",\n    ", lines)}\n);";
+    }
+
     /// <summary>Creates a schema only when it is not already present.</summary>
     public static string BuildCreateSchemaIfMissing(string schema)
     {
@@ -95,6 +130,40 @@ public static partial class SqlServerDdlBuilder
     public static string BuildDropColumn(string schema, string table, string columnName)
         => $"ALTER TABLE {SqlServerIdentifier.QuoteQualified(schema, table)} DROP COLUMN {SqlServerIdentifier.Quote(columnName)};";
 
+    public static string BuildAddDefault(string schema, string table, string columnName, string expression)
+        => $"ALTER TABLE {SqlServerIdentifier.QuoteQualified(schema, table)} ADD CONSTRAINT " +
+           $"{SqlServerIdentifier.Quote($"DF_{table}_{columnName}")} DEFAULT ({RequireExpression(expression, "default")}) FOR {SqlServerIdentifier.Quote(columnName)};";
+
+    public static string BuildAddPrimaryKey(string schema, string table, PrimaryKeyDesign primaryKey)
+    {
+        if (primaryKey.Columns is not { Count: > 0 })
+        {
+            throw new GridletValidationException("A primary key needs at least one column.");
+        }
+
+        var columns = string.Join(", ", primaryKey.Columns.Select(SqlServerIdentifier.Quote));
+        return $"ALTER TABLE {SqlServerIdentifier.QuoteQualified(schema, table)} ADD CONSTRAINT " +
+               $"{SqlServerIdentifier.Quote(primaryKey.Name)} PRIMARY KEY {(primaryKey.IsClustered ? "CLUSTERED" : "NONCLUSTERED")} ({columns});";
+    }
+
+    public static string BuildAddForeignKey(string schema, string table, ForeignKeyDesign foreignKey)
+    {
+        if (foreignKey.Columns is not { Count: > 0 })
+        {
+            throw new GridletValidationException("A foreign key needs at least one column pair.");
+        }
+
+        var local = string.Join(", ", foreignKey.Columns.Select(c => SqlServerIdentifier.Quote(c.Column)));
+        var referenced = string.Join(", ", foreignKey.Columns.Select(c => SqlServerIdentifier.Quote(c.ReferencedColumn)));
+        return $"ALTER TABLE {SqlServerIdentifier.QuoteQualified(schema, table)} ADD CONSTRAINT " +
+               $"{SqlServerIdentifier.Quote(foreignKey.Name)} FOREIGN KEY ({local}) REFERENCES " +
+               $"{SqlServerIdentifier.QuoteQualified(foreignKey.ReferencedSchema, foreignKey.ReferencedTable)} ({referenced})" +
+               $" ON DELETE {NormalizeReferentialAction(foreignKey.OnDelete)} ON UPDATE {NormalizeReferentialAction(foreignKey.OnUpdate)};";
+    }
+
+    public static string BuildDropConstraint(string schema, string table, string constraintName)
+        => $"ALTER TABLE {SqlServerIdentifier.QuoteQualified(schema, table)} DROP CONSTRAINT {SqlServerIdentifier.Quote(constraintName)};";
+
     public static string BuildDropTable(string schema, string table)
         => $"DROP TABLE {SqlServerIdentifier.QuoteQualified(schema, table)};";
 
@@ -110,9 +179,20 @@ public static partial class SqlServerDdlBuilder
 
     private static string BuildColumnDefinition(ColumnDesign column, bool includeDefault)
     {
+        if (!string.IsNullOrWhiteSpace(column.ComputedExpression))
+        {
+            if (column.IsIdentity || !string.IsNullOrWhiteSpace(column.DefaultExpression) || column.IsPrimaryKey)
+            {
+                throw new GridletValidationException("A computed column cannot also be an identity, default, or primary-key column.");
+            }
+
+            return $"{SqlServerIdentifier.Quote(column.Name)} AS ({RequireExpression(column.ComputedExpression, "computed")})" +
+                   (column.IsPersisted ? " PERSISTED" : "");
+        }
+
         var definition =
             $"{SqlServerIdentifier.Quote(column.Name)} {NormalizeDataType(column.DataType)}" +
-            $"{(column.IsIdentity ? " IDENTITY(1,1)" : "")}" +
+            $"{(column.IsIdentity ? $" IDENTITY({column.IdentitySeed},{column.IdentityIncrement})" : "")}" +
             $"{(column.IsNullable && !column.IsPrimaryKey ? " NULL" : " NOT NULL")}";
 
         if (includeDefault && !string.IsNullOrWhiteSpace(column.DefaultExpression))
@@ -121,5 +201,18 @@ public static partial class SqlServerDdlBuilder
         }
 
         return definition;
+    }
+
+    private static string RequireExpression(string? expression, string kind)
+        => string.IsNullOrWhiteSpace(expression)
+            ? throw new GridletValidationException($"A {kind} expression is required.")
+            : expression.Trim();
+
+    private static string NormalizeReferentialAction(string? action)
+    {
+        var normalized = Regex.Replace(action?.Trim().ToUpperInvariant() ?? "", @"\s+", " ");
+        return normalized is "NO ACTION" or "CASCADE" or "SET NULL" or "SET DEFAULT"
+            ? normalized
+            : throw new GridletValidationException($"'{action}' is not a supported referential action.");
     }
 }

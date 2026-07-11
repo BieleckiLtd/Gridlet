@@ -10,7 +10,26 @@ public sealed record ColumnDesign(
     bool IsNullable = true,
     bool IsIdentity = false,
     bool IsPrimaryKey = false,
-    string? DefaultExpression = null);
+    string? DefaultExpression = null,
+    string? ComputedExpression = null,
+    bool IsPersisted = false,
+    long IdentitySeed = 1,
+    long IdentityIncrement = 1);
+
+/// <summary>A primary-key constraint designed in the structure editor.</summary>
+public sealed record PrimaryKeyDesign(
+    string Name,
+    IReadOnlyList<string> Columns,
+    bool IsClustered = true);
+
+/// <summary>A foreign-key constraint designed in the structure editor.</summary>
+public sealed record ForeignKeyDesign(
+    string Name,
+    string ReferencedSchema,
+    string ReferencedTable,
+    IReadOnlyList<ForeignKeyColumnPair> Columns,
+    string OnDelete = "NO ACTION",
+    string OnUpdate = "NO ACTION");
 
 /// <summary>A new table as designed in the UI.</summary>
 public sealed record TableDesign(

@@ -53,9 +53,15 @@
 
   // ---- modal infrastructure -----------------------------------------------
 
-  function modal(title, body, actions) {
+  function modal(title, body, actions, onDismiss = null) {
     const overlay = h('div', { class: 'overlay' });
-    const close = () => overlay.remove();
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      overlay.remove();
+      onDismiss?.();
+    };
     const errorSlot = h('div', { class: 'dialog-error', hidden: '' });
     const showError = (message) => { errorSlot.textContent = message; errorSlot.hidden = false; };
     overlay.append(h('div', { class: 'dialog' },
@@ -85,6 +91,74 @@
         },
       },
     ]);
+  }
+
+  function showAbout() {
+    const content = h('div', { class: 'about-content' });
+    const tabs = [
+      {
+        label: 'About',
+        render: () => h('div', {},
+          h('div', { class: 'about-heading' },
+            h('img', { src: 'assets/icon.png', alt: '' }),
+            h('div', {}, h('h2', { text: 'Gridlet' }),
+              h('p', { class: 'muted', text: `Version ${state.meta?.version || ''}` }))),
+          h('p', { text: 'An embeddable database management interface for ASP.NET Core. Browse schema, inspect and edit data, run queries, and publish protected API endpoints using your host application’s security and configuration.' }),
+          h('p', { class: 'muted' },
+            h('a', { href: 'https://github.com/BieleckiLtd/Gridlet', target: '_blank', rel: 'noopener', text: 'Gridlet' }),
+            ' is an open-source project developed by Bielecki Ltd and released under the MIT License.')),
+      },
+      {
+        label: 'Help',
+        render: () => h('div', {},
+          h('h2', { text: 'Getting started' }),
+          h('p', { text: 'Choose a connection and database in the top bar, then select an object from the sidebar. Use Query for an ad-hoc SQL workspace and APIs to manage published endpoints.' }),
+          h('ul', {},
+            h('li', {}, 'Refresh reloads database objects.'),
+            h('li', {}, 'Right-click the sidebar for available creation actions.'),
+            h('li', {}, 'Feature availability depends on the permissions configured by the host application.')),
+          h('p', {}, h('a', { href: 'https://github.com/BieleckiLtd/Gridlet#readme', target: '_blank', rel: 'noopener', text: 'Open the documentation ↗' }))),
+      },
+      {
+        label: 'Contributing',
+        render: () => h('div', {},
+          h('h2', { text: 'Contribute to Gridlet' }),
+          h('p', { text: 'Bug reports, feature ideas, documentation improvements, and code contributions are welcome on GitHub.' }),
+          h('p', {},
+            h('a', { href: 'https://github.com/BieleckiLtd/Gridlet', target: '_blank', rel: 'noopener', text: 'View the repository ↗' }),
+            ' · ',
+            h('a', { href: 'https://github.com/BieleckiLtd/Gridlet/issues', target: '_blank', rel: 'noopener', text: 'Report an issue ↗' }))),
+      },
+      {
+        label: 'Licences',
+        render: () => h('div', {},
+          h('h2', { text: 'Third-party software' }),
+          h('p', { text: 'Gridlet’s browser UI uses plain HTML, CSS, and JavaScript. The following Microsoft packages are used at runtime under the MIT License:' }),
+          h('ul', {},
+            h('li', {}, h('a', { href: 'https://github.com/dotnet/SqlClient', target: '_blank', rel: 'noopener', text: 'Microsoft.Data.SqlClient ↗' })),
+            h('li', {}, h('a', { href: 'https://github.com/dotnet/runtime', target: '_blank', rel: 'noopener', text: 'Microsoft.Extensions hosting abstractions ↗' })),
+            h('li', {}, h('a', { href: 'https://github.com/dotnet/aspnetcore', target: '_blank', rel: 'noopener', text: 'ASP.NET Core and Embedded File Provider ↗' }))),
+          h('p', { class: 'muted', text: 'Copyrights remain with their respective owners. Complete licence texts and notices are available from the linked projects.' })),
+      },
+    ];
+    const buttons = tabs.map((tab, index) => h('button', {
+      class: 'about-tab' + (index === 0 ? ' active' : ''),
+      role: 'tab',
+      'aria-selected': String(index === 0),
+      text: tab.label,
+      onclick: () => {
+        buttons.forEach((button) => {
+          const selected = button === buttons[index];
+          button.classList.toggle('active', selected);
+          button.setAttribute('aria-selected', String(selected));
+        });
+        content.replaceChildren(tab.render());
+      },
+    }));
+    content.append(tabs[0].render());
+    modal('About Gridlet', h('div', { class: 'about-dialog' },
+      h('div', { class: 'about-tabs', role: 'tablist', 'aria-label': 'About Gridlet' }, buttons),
+      content), [{ label: 'Close', primary: true, onClick: (close) => close() }]);
   }
 
   function showContextMenu(event, items) {
@@ -196,6 +270,9 @@
     createTable: () => `api/connections/${enc(state.connection)}/databases/${enc(state.database)}/tables`,
     columns: (s, n) => `${objBase(s, n)}/columns`,
     column: (s, n, col) => `${objBase(s, n)}/columns/${enc(col)}`,
+    primaryKey: (s, n) => `${objBase(s, n)}/primary-key`,
+    foreignKeys: (s, n) => `${objBase(s, n)}/foreign-keys`,
+    constraint: (s, n, constraint) => `${objBase(s, n)}/constraints/${enc(constraint)}`,
     dropObject: (s, n, type) => `${objBase(s, n)}?type=${enc(type)}`,
     queries: () => 'api/queries',
     savedQuery: (id) => `api/queries/${enc(id)}`,
@@ -329,8 +406,9 @@
       const count = Math.max(1, input.value.split('\n').length);
       lines.textContent = Array.from({ length: count }, (_, i) => i + 1).join('\n');
       const problem = checkSql(input.value);
-      diagnostic.textContent = problem ? `⚠ ${problem}` : '✓ Syntax looks valid';
-      diagnostic.className = 'sql-diagnostic ' + (problem ? 'sql-invalid' : 'sql-valid');
+      diagnostic.textContent = problem ? `⚠ ${problem}` : '';
+      diagnostic.className = 'sql-diagnostic sql-invalid';
+      diagnostic.hidden = !problem;
     };
     const hideCompletion = () => { completion.hidden = true; matches = []; };
     const complete = async (force = false) => {
@@ -391,6 +469,12 @@
 
     $('#version').textContent = 'v' + state.meta.version;
 
+    window.addEventListener('beforeunload', (event) => {
+      if (!state.tabs.some((tab) => tab.hasUnsavedDefinition || tab.isRunning)) return;
+      event.preventDefault();
+      event.returnValue = '';
+    });
+
     const connSelect = $('#connection-select');
     connSelect.replaceChildren(
       ...state.meta.connections.map((c) => h('option', { value: c.name, text: c.name })));
@@ -400,6 +484,7 @@
     $('#refresh-btn').addEventListener('click', () => loadObjects());
     $('#new-query-btn').addEventListener('click', () => openQueryTab());
     $('#apis-btn').addEventListener('click', () => openApisTab());
+    $('#about-btn').addEventListener('click', showAbout);
     $('#search').addEventListener('input', () => renderTree());
     $('#sidebar').addEventListener('contextmenu', (event) => showContextMenu(event, [
       { label: 'Query', action: () => openQueryTab() },
@@ -420,7 +505,11 @@
     }
   }
 
-  async function selectConnection(name) {
+  async function selectConnection(name, skipTabGuard = false) {
+    if (!skipTabGuard && !await closeAllTabs()) {
+      $('#connection-select').value = state.connection || '';
+      return;
+    }
     state.connection = name;
     let databases;
     try {
@@ -444,14 +533,17 @@
     }
 
     const first = user[0] || system[0];
-    if (first) await selectDatabase(first.name);
+    if (first) await selectDatabase(first.name, true);
   }
 
-  async function selectDatabase(name) {
+  async function selectDatabase(name, skipTabGuard = false) {
+    if (!skipTabGuard && !await closeAllTabs()) {
+      $('#database-select').value = state.database || '';
+      return;
+    }
     state.database = name;
     state.structures.clear();
     $('#database-select').value = name;
-    closeAllTabs();
     await loadObjects();
   }
 
@@ -702,6 +794,17 @@
 
   const sqlName = (o) => `[${o.schema.replaceAll(']', ']]')}].[${o.name.replaceAll(']', ']]')}]`;
 
+  function objectQuerySql(o) {
+    if (o.type === 'StoredProcedure') return `EXEC ${sqlName(o)};`;
+    if (o.type === 'ScalarFunction') return `SELECT ${sqlName(o)}(/* arguments */);`;
+    if (o.type === 'Table' || o.type === 'View') return `SELECT TOP (100) * FROM ${sqlName(o)};`;
+    return `SELECT * FROM ${sqlName(o)}(/* arguments */);`;
+  }
+
+  const useInQueryButton = (o) => currentConn().allowSqlExecution ? h('button', {
+    onclick: () => openQueryTab(objectQuerySql(o), `Use ${o.name}`),
+  }, 'Use in query') : null;
+
   function deleteObject(o) {
     const kind = o.type === 'StoredProcedure' ? 'procedure' : o.type.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
     confirmModal(`Delete ${kind}`, `Delete ${kind} ${displayName(o)}? This cannot be undone.`, async () => {
@@ -716,7 +819,7 @@
   function objectContextItems(o) {
     const items = [{ label: 'Open', action: () => openObjectTab(o) }];
     if (o.type === 'Table' || o.type === 'View') {
-      items.push({ label: 'Query data', action: () => openQueryTab(`SELECT TOP (100) * FROM ${sqlName(o)};`, displayName(o)) });
+      items.push({ label: 'Query data', action: () => openQueryTab(objectQuerySql(o), displayName(o)) });
     }
     if (currentConn().allowDdl) {
       items.push({ separator: true }, { label: `Delete ${o.type === 'View' ? 'view' : 'object'}…`, danger: true, action: () => deleteObject(o) });
@@ -727,29 +830,48 @@
   // ---- tabs -------------------------------------------------------------------
 
   function addTab(tab) {
-    state.tabs.push(tab);
-    setActiveTab(tab.id);
+    const activate = () => {
+      state.tabs.push(tab);
+      state.activeTabId = tab.id;
+      renderTabs();
+      return true;
+    };
+    const active = state.tabs.find((candidate) => candidate.id === state.activeTabId);
+    if (!active?.hasUnsavedDefinition && !active?.isRunning) return activate();
+    return canLeaveTab(active).then((canLeave) => canLeave ? activate() : false);
   }
 
-  function closeTab(id) {
+  async function canLeaveTab(tab) {
+    return !tab?.beforeLeave || await tab.beforeLeave();
+  }
+
+  async function closeTab(id, skipTabGuard = false) {
     const index = state.tabs.findIndex((t) => t.id === id);
-    if (index < 0) return;
+    if (index < 0) return false;
+    if (!skipTabGuard && !await canLeaveTab(state.tabs[index])) return false;
     state.tabs.splice(index, 1);
     if (state.activeTabId === id) {
       state.activeTabId = state.tabs.length ? state.tabs[Math.max(0, index - 1)].id : null;
     }
     renderTabs();
+    return true;
   }
 
-  function closeAllTabs() {
+  async function closeAllTabs() {
+    for (const tab of state.tabs) if (!await canLeaveTab(tab)) return false;
     state.tabs = [];
     state.activeTabId = null;
     renderTabs();
+    return true;
   }
 
-  function setActiveTab(id) {
+  async function setActiveTab(id) {
+    if (id === state.activeTabId) return true;
+    const active = state.tabs.find((tab) => tab.id === state.activeTabId);
+    if (!await canLeaveTab(active)) return false;
     state.activeTabId = id;
     renderTabs();
+    return true;
   }
 
   function renderTabs() {
@@ -759,7 +881,10 @@
         onclick: () => setActiveTab(tab.id),
         oncontextmenu: (event) => showContextMenu(event, [
           { label: 'Close', action: () => closeTab(tab.id) },
-          { label: 'Close other tabs', action: () => {
+          { label: 'Close other tabs', action: async () => {
+            for (const candidate of state.tabs) {
+              if (candidate.id !== tab.id && !await canLeaveTab(candidate)) return;
+            }
             state.tabs = state.tabs.filter((candidate) => candidate.id === tab.id);
             state.activeTabId = tab.id;
             renderTabs();
@@ -823,10 +948,15 @@
       buildDataObjectTab(tab, o);
     } else {
       const body = h('div', { class: 'panel-body' });
+      const actionBar = h('div', { class: 'object-actions' });
+      const definitionActions = h('div', { class: 'inline-form' });
+      actionBar.append(definitionActions);
       tab.panel.append(
-        h('div', { class: 'viewbar' }, h('button', { class: 'view-btn active', text: 'Definition' })),
-        body);
-      tab.load = () => renderObjectDefinition(body, o, tab);
+        h('div', { class: 'viewbar' },
+          h('div', { class: 'view-switcher', role: 'group', 'aria-label': 'Object view' },
+            h('button', { class: 'view-btn active', text: 'Definition', 'aria-pressed': 'true' }))),
+        body, actionBar);
+      tab.load = () => renderObjectDefinition(body, o, tab, definitionActions);
     }
 
     addTab(tab);
@@ -834,10 +964,11 @@
 
   function buildDataObjectTab(tab, o) {
     const grid = { sort: null, dir: 'asc' };
-    const views = o.type === 'View' ? ['Data', 'Structure', 'Definition'] : ['Data', 'Structure'];
+    const views = ['Data', 'Structure', 'Definition'];
     const viewBar = h('div', { class: 'viewbar' });
     const body = h('div', { class: 'panel-body' });
-    tab.panel.append(viewBar, body);
+    const actionBar = h('div', { class: 'object-actions' });
+    tab.panel.append(viewBar, body, actionBar);
     let currentView = 'Data';
     let structurePromise = null;
     let activeDataLoad = null;
@@ -845,21 +976,34 @@
     const ensureStructure = () => (structurePromise ??= api(urls.structure(o.schema, o.name)));
     const invalidateStructure = () => { structurePromise = null; };
 
-    const switchView = (view) => {
+    const switchView = async (view) => {
+      if (view !== currentView && !await canLeaveTab(tab)) return;
       if (view !== 'Data') { activeDataLoad?.abort(); activeDataLoad = null; }
+      tab.beforeLeave = null;
+      tab.hasUnsavedDefinition = false;
       currentView = view;
-      viewBar.replaceChildren(...views.map((v) =>
+      const viewSwitcher = h('div', { class: 'view-switcher', role: 'group', 'aria-label': 'Object view' },
+        views.map((v) =>
         h('button', {
           class: 'view-btn' + (v === currentView ? ' active' : ''),
           text: v,
+          'aria-pressed': String(v === currentView),
           onclick: () => switchView(v),
-        })), h('span', { class: 'spacer' }),
-        o.type === 'View' && currentConn().allowDdl ? h('button', {
+        })));
+      const deleteViewButton = o.type === 'View' && currentConn().allowDdl ? h('button', {
           class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o),
-        }) : null);
+        }) : null;
+      actionBar.replaceChildren();
+      viewBar.replaceChildren(viewSwitcher);
       if (view === 'Data') renderData();
       else if (view === 'Structure') renderStructure();
-      else renderObjectDefinition(body, o, tab);
+      else {
+        const definitionActions = h('div', { class: 'inline-form' });
+        actionBar.append(definitionActions, h('span', { class: 'spacer' }));
+        if (deleteViewButton) actionBar.append(deleteViewButton);
+        if (o.type === 'Table') renderTableDefinition(body, o, tab, definitionActions);
+        else renderObjectDefinition(body, o, tab, definitionActions);
+      }
     };
 
     const renderData = async () => {
@@ -926,19 +1070,24 @@
       const status = h('span', { class: 'muted', text: 'Loading…' });
       const cancel = h('button', { text: 'Cancel', onclick: () => controller.abort() });
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
-      const actions = h('div', { class: 'pager' },
+      actionBar.replaceChildren(...[
         structure && currentConn().allowWrites
           ? h('button', { onclick: () => openRowEditor(table, data.columns, structure, null, null, columnIndex) }, '＋ Row')
           : null,
         cancel,
+        useInQueryButton(o),
         h('span', { class: 'spacer' }),
         exportButtons(data.columns, data.rows, o.name,
           currentConn().allowSqlExecution
             ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o) }
             : null),
         h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
-        status);
-      body.replaceChildren(scroll, actions);
+        status,
+        o.type === 'View' && currentConn().allowDdl ? h('button', {
+          class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o),
+        }) : null,
+      ].filter(Boolean));
+      body.replaceChildren(scroll);
       const gridView = progressiveDataGrid(scroll, {
         columns: data.columns,
         rows: data.rows,
@@ -1140,40 +1289,106 @@
 
       const canDesign = o.type === 'Table' && currentConn().allowDdl;
 
+      actionBar.replaceChildren(...[
+        canDesign ? h('button', { onclick: () => columnsBody.append(makeColumnEditor(null)) }, '＋ Add column') : null,
+        canDesign && !s.indexes.some((x) => x.isPrimaryKey)
+          ? h('button', { onclick: () => openPrimaryKeyDialog() }, '＋ Primary key') : null,
+        canDesign ? h('button', { onclick: () => openForeignKeyDialog() }, '＋ Foreign key') : null,
+        useInQueryButton(o),
+        h('span', { class: 'spacer' }),
+        canDesign ? h('button', {
+          class: 'danger',
+          onclick: () => confirmModal('Drop table', `Drop table ${tab.title} and all of its data? This cannot be undone.`,
+            async () => {
+              await del(urls.dropObject(o.schema, o.name, o.type));
+              toast(`Table ${tab.title} dropped.`, false);
+              closeTab(tab.id);
+              loadObjects();
+            }, 'Drop table'),
+        }, 'Drop table…') : (o.type === 'View' && currentConn().allowDdl ? h('button', {
+          class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o),
+        }) : null),
+      ].filter(Boolean));
+
       const makeColumnEditor = (existing) => {
         const isNew = !existing;
         const nameInput = h('input', { type: 'text', value: existing ? existing.name : '' });
         const typeInput = h('input', {
           type: 'text', list: 'gridlet-types',
           value: existing ? existing.dataType : '',
-          disabled: existing && existing.isIdentity ? '' : null,
-          title: existing && existing.isIdentity ? 'Identity columns can only be renamed' : null,
         });
         const nullableToggle = h('input', { type: 'checkbox' });
         nullableToggle.checked = existing ? existing.isNullable : true;
-        const identityToggle = h('input', { type: 'checkbox' });
-        const defaultInput = h('input', { type: 'text', placeholder: 'e.g. 0 or SYSUTCDATETIME()' });
+        const identityToggle = h('input', {
+          type: 'checkbox',
+          disabled: existing ? '' : null,
+          title: existing ? 'SQL Server cannot add or remove IDENTITY on an existing column.' : 'Identity',
+        });
+        identityToggle.checked = !!existing?.isIdentity;
+        const identitySeed = h('input', { type: 'number', value: existing?.identitySeed ?? 1, title: 'Identity seed' });
+        const identityIncrement = h('input', { type: 'number', value: existing?.identityIncrement ?? 1, title: 'Identity increment' });
+        identitySeed.disabled = identityIncrement.disabled = !!existing;
+        const computedToggle = h('input', { type: 'checkbox', title: 'Computed column' });
+        computedToggle.checked = !!existing?.isComputed;
+        const persistedToggle = h('input', { type: 'checkbox', title: 'Persist computed values' });
+        persistedToggle.checked = !!existing?.isPersisted;
+        const computedInput = h('input', {
+          type: 'text', placeholder: 'e.g. [Quantity] * [UnitPrice]',
+          value: existing?.computedDefinition || '',
+        });
+        const defaultInput = h('input', {
+          type: 'text', placeholder: 'e.g. 0 or SYSUTCDATETIME()',
+          value: existing?.defaultDefinition || '',
+        });
+        const syncColumnKind = () => {
+          const computed = computedToggle.checked;
+          typeInput.disabled = computed;
+          nullableToggle.disabled = computed || identityToggle.checked;
+          identityToggle.disabled = !!existing || computed;
+          identitySeed.disabled = identityIncrement.disabled = !!existing || computed || !identityToggle.checked;
+          defaultInput.disabled = computed;
+          computedInput.disabled = persistedToggle.disabled = !computed;
+          if (computed) nullableToggle.checked = true;
+          if (identityToggle.checked) nullableToggle.checked = false;
+        };
+        computedToggle.addEventListener('change', syncColumnKind);
+        identityToggle.addEventListener('change', syncColumnKind);
+        syncColumnKind();
 
         const error = h('span', { class: 'inline-error' });
         const row = h('tr', { class: 'editing' },
           h('td', { text: existing && existing.isPrimaryKey ? '🔑' : '' }),
           h('td', {}, nameInput), h('td', {}, typeInput),
-          h('td', {}, nullableToggle), h('td', {}, isNew ? identityToggle : (existing.isIdentity ? 'yes' : '')),
-          h('td', { text: existing && existing.isComputed ? 'yes' : '' }),
-          h('td', {}, isNew ? defaultInput : (existing.defaultDefinition || '')),
+          h('td', {}, nullableToggle),
+          h('td', {}, h('div', { class: 'structure-field-stack' },
+            h('label', { class: 'null-toggle' }, identityToggle, 'Identity'),
+            h('div', { class: 'identity-values' }, identitySeed, identityIncrement),
+            existing ? h('span', { class: 'field-note', text: 'Fixed after creation' }) : null)),
+          h('td', {}, h('div', { class: 'structure-field-stack' },
+            h('label', { class: 'null-toggle' }, computedToggle, 'Computed'), computedInput,
+            h('label', { class: 'null-toggle' }, persistedToggle, 'Persisted'))),
+          h('td', {}, defaultInput),
           h('td', { class: 'cell-actions' },
             h('button', { class: 'mini-btn', title: 'Save', onclick: async () => {
               const design = {
                 name: nameInput.value.trim(),
-                dataType: existing && existing.isIdentity ? '' : typeInput.value.trim(),
+                dataType: computedToggle.checked ? '' : typeInput.value.trim(),
                 isNullable: nullableToggle.checked,
-                isIdentity: isNew && identityToggle.checked,
-                defaultExpression: isNew && defaultInput.value.trim() ? defaultInput.value.trim() : null,
+                isIdentity: identityToggle.checked,
+                defaultExpression: !computedToggle.checked && defaultInput.value.trim() ? defaultInput.value.trim() : null,
+                computedExpression: computedToggle.checked ? computedInput.value.trim() : null,
+                isPersisted: computedToggle.checked && persistedToggle.checked,
+                identitySeed: Number(identitySeed.value || 1),
+                identityIncrement: Number(identityIncrement.value || 1),
               };
               try {
                 if (isNew) {
                   await post(urls.columns(o.schema, o.name), design);
                 } else {
+                  const computedChanged = existing.isComputed !== computedToggle.checked ||
+                    (existing.isComputed && (existing.computedDefinition !== design.computedExpression ||
+                      existing.isPersisted !== design.isPersisted));
+                  if (computedChanged && !confirm('Changing a computed definition recreates the column. Dependencies can prevent the change. Continue?')) return;
                   await put(urls.column(o.schema, o.name, existing.name), design);
                 }
                 toast(isNew ? 'Column added.' : 'Column updated.', false);
@@ -1189,6 +1404,97 @@
         return row;
       };
 
+      const openPrimaryKeyDialog = () => {
+        const name = h('input', { type: 'text', value: `PK_${o.name}` });
+        const clustered = h('input', { type: 'checkbox' });
+        clustered.checked = true;
+        const choices = s.columns.filter((c) => !c.isComputed && !c.isNullable).map((c) => {
+          const input = h('input', { type: 'checkbox' });
+          return { column: c.name, input, label: h('label', { class: 'constraint-column' }, input, c.name) };
+        });
+        modal('Add primary key', h('div', { class: 'constraint-dialog' },
+          h('label', { class: 'field-label' }, 'Constraint name', name),
+          h('div', { class: 'field-label' }, 'Key columns (in table order)',
+            h('div', { class: 'constraint-columns' }, choices.map((x) => x.label))),
+          h('label', { class: 'null-toggle' }, clustered, 'Clustered primary key'),
+          h('p', { class: 'muted', text: 'Only NOT NULL columns are listed. Edit a nullable column first if it should become part of the key.' })), [
+          { label: 'Cancel', onClick: (close) => close() },
+          { label: 'Add primary key', primary: true, onClick: async (close, showError) => {
+            const columns = choices.filter((x) => x.input.checked).map((x) => x.column);
+            if (!name.value.trim() || !columns.length) { showError('Choose a name and at least one column.'); return; }
+            try {
+              await post(urls.primaryKey(o.schema, o.name), {
+                name: name.value.trim(), columns, isClustered: clustered.checked,
+              });
+              close(); toast('Primary key added.', false); invalidateStructure(); renderStructure();
+            } catch (err) { showError(err.message); }
+          } },
+        ]);
+      };
+
+      const openForeignKeyDialog = () => {
+        const name = h('input', { type: 'text', value: `FK_${o.name}_` });
+        const tableSelect = h('select', {}, state.objects.filter((candidate) => candidate.type === 'Table')
+          .map((candidate) => h('option', {
+            value: `${candidate.schema}\u0000${candidate.name}`,
+            text: `${candidate.schema}.${candidate.name}`,
+          })));
+        const onDelete = h('select', {}, ['NO ACTION', 'CASCADE', 'SET NULL', 'SET DEFAULT']
+          .map((value) => h('option', { value, text: value })));
+        const onUpdate = h('select', {}, ['NO ACTION', 'CASCADE', 'SET NULL', 'SET DEFAULT']
+          .map((value) => h('option', { value, text: value })));
+        const pairsHost = h('div', { class: 'constraint-pairs' });
+        const pairs = [];
+        let referencedColumns = [];
+        const addPair = () => {
+          const local = h('select', {}, s.columns.filter((c) => !c.isComputed)
+            .map((c) => h('option', { value: c.name, text: c.name })));
+          const referenced = h('select', {}, referencedColumns
+            .map((c) => h('option', { value: c.name, text: c.name })));
+          const pair = { local, referenced };
+          const row = h('div', { class: 'constraint-pair' }, local, h('span', { text: '→' }), referenced,
+            h('button', { class: 'mini-btn', title: 'Remove pair', onclick: () => {
+              pairs.splice(pairs.indexOf(pair), 1); row.remove();
+            } }, '✕'));
+          pairs.push(pair); pairsHost.append(row);
+        };
+        const loadReferencedColumns = async () => {
+          const [schema, table] = tableSelect.value.split('\u0000');
+          referencedColumns = (await api(urls.structure(schema, table))).columns;
+          pairs.splice(0); pairsHost.replaceChildren(); addPair();
+          if (!name.value.includes(table)) name.value = `FK_${o.name}_${table}`;
+        };
+        tableSelect.addEventListener('change', () => loadReferencedColumns().catch((err) => toast(err.message)));
+        const content = h('div', { class: 'constraint-dialog' },
+          h('label', { class: 'field-label' }, 'Constraint name', name),
+          h('label', { class: 'field-label' }, 'Referenced table', tableSelect),
+          h('div', { class: 'field-label' }, 'Column mappings', pairsHost,
+            h('button', { onclick: addPair }, '＋ Add mapping')),
+          h('div', { class: 'constraint-actions' },
+            h('label', { class: 'field-label' }, 'On delete', onDelete),
+            h('label', { class: 'field-label' }, 'On update', onUpdate)));
+        modal('Add foreign key', content, [
+          { label: 'Cancel', onClick: (close) => close() },
+          { label: 'Add foreign key', primary: true, onClick: async (close, showError) => {
+            const [referencedSchema, referencedTable] = tableSelect.value.split('\u0000');
+            const columns = pairs.map((pair) => ({
+              column: pair.local.value, referencedColumn: pair.referenced.value,
+            }));
+            if (!name.value.trim() || !columns.length || columns.some((pair) => !pair.column || !pair.referencedColumn)) {
+              showError('Choose a name and at least one complete column mapping.'); return;
+            }
+            try {
+              await post(urls.foreignKeys(o.schema, o.name), {
+                name: name.value.trim(), referencedSchema, referencedTable, columns,
+                onDelete: onDelete.value, onUpdate: onUpdate.value,
+              });
+              close(); toast('Foreign key added.', false); invalidateStructure(); renderStructure();
+            } catch (err) { showError(err.message); }
+          } },
+        ]);
+        loadReferencedColumns().catch((err) => toast(err.message));
+      };
+
       const columnRows = s.columns.map((c) => {
         const row = h('tr', {},
         h('td', { text: c.isPrimaryKey ? '🔑' : '' }),
@@ -1196,7 +1502,7 @@
         h('td', { class: 'mono', text: c.dataType }),
         h('td', { text: c.isNullable ? 'yes' : 'no' }),
         h('td', { text: c.isIdentity ? 'yes' : '' }),
-        h('td', { text: c.isComputed ? 'yes' : '' }),
+        h('td', { class: 'mono', text: c.computedDefinition || '' }),
         h('td', { class: 'mono muted', text: c.defaultDefinition || '' }),
         canDesign ? h('td', { class: 'cell-actions' },
           h('button', { class: 'mini-btn', title: 'Edit column inline', onclick: () => row.replaceWith(makeColumnEditor(c)) }, '✎'),
@@ -1218,19 +1524,6 @@
 
       const columnsBody = h('tbody', {}, columnRows);
       const sections = [
-        canDesign ? h('div', { class: 'struct-actions' },
-          h('button', { onclick: () => columnsBody.append(makeColumnEditor(null)) }, '＋ Add column'),
-          h('span', { class: 'spacer' }),
-          h('button', {
-            class: 'danger',
-            onclick: () => confirmModal('Drop table', `Drop table ${tab.title} and all of its data? This cannot be undone.`,
-              async () => {
-                await del(urls.dropObject(o.schema, o.name, o.type));
-                toast(`Table ${tab.title} dropped.`, false);
-                closeTab(tab.id);
-                loadObjects();
-              }, 'Drop table'),
-          }, 'Drop table…')) : null,
         h('h3', { text: 'Columns' }),
         h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
           h('thead', {}, h('tr', {}, headers.map((t) => h('th', { text: t })))),
@@ -1242,13 +1535,20 @@
           h('h3', { text: 'Indexes' }),
           h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
             h('thead', {}, h('tr', {},
-              ['Name', 'Kind', 'Unique', 'Primary key', 'Columns'].map((t) => h('th', { text: t })))),
+              ['Name', 'Kind', 'Unique', 'Primary key', 'Columns', ''].map((t) => h('th', { text: t })))),
             h('tbody', {}, s.indexes.map((x) => h('tr', {},
               h('td', { text: x.name }),
               h('td', { class: 'mono', text: x.kind }),
               h('td', { text: x.isUnique ? 'yes' : '' }),
               h('td', { text: x.isPrimaryKey ? 'yes' : '' }),
-              h('td', { class: 'mono', text: x.columns.join(', ') })))))));
+              h('td', { class: 'mono', text: x.columns.join(', ') }),
+              h('td', { class: 'cell-actions' }, canDesign && x.isPrimaryKey ? h('button', {
+                class: 'mini-btn', title: 'Drop primary key', onclick: () => confirmModal(
+                  'Drop primary key', `Drop primary key ${x.name}? Foreign keys may depend on it.`, async () => {
+                    await del(urls.constraint(o.schema, o.name, x.name));
+                    toast('Primary key dropped.', false); invalidateStructure(); renderStructure();
+                  }, 'Drop'),
+              }, '🗑') : null)))))));
       }
 
       if (s.foreignKeys.length) {
@@ -1256,14 +1556,22 @@
           h('h3', { text: 'Foreign keys' }),
           h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
             h('thead', {}, h('tr', {},
-              ['Name', 'Columns', 'References'].map((t) => h('th', { text: t })))),
+              ['Name', 'Columns', 'References', 'Delete / update', ''].map((t) => h('th', { text: t })))),
             h('tbody', {}, s.foreignKeys.map((fk) => h('tr', {},
               h('td', { text: fk.name }),
               h('td', { class: 'mono', text: fk.columns.map((p) => p.column).join(', ') }),
               h('td', {
                 class: 'mono',
                 text: `${fk.referencedSchema}.${fk.referencedTable} (${fk.columns.map((p) => p.referencedColumn).join(', ')})`,
-              })))))));
+              }),
+              h('td', { class: 'mono muted', text: `${fk.onDelete.replaceAll('_', ' ')} / ${fk.onUpdate.replaceAll('_', ' ')}` }),
+              h('td', { class: 'cell-actions' }, canDesign ? h('button', {
+                class: 'mini-btn', title: 'Drop foreign key', onclick: () => confirmModal(
+                  'Drop foreign key', `Drop foreign key ${fk.name}?`, async () => {
+                    await del(urls.constraint(o.schema, o.name, fk.name));
+                    toast('Foreign key dropped.', false); invalidateStructure(); renderStructure();
+                  }, 'Drop'),
+              }, '🗑') : null)))))));
       }
 
       body.replaceChildren(h('div', { class: 'structure' }, sections));
@@ -1272,7 +1580,72 @@
     tab.load = () => switchView('Data');
   }
 
-  async function renderObjectDefinition(body, o, tab) {
+  async function renderTableDefinition(body, o, tab, toolbar = null) {
+    body.replaceChildren(h('div', { class: 'loading', text: 'Loading…' }));
+    let response;
+    try { response = await api(urls.definition(o.schema, o.name)); }
+    catch (err) { body.replaceChildren(errorBox(err.message)); return; }
+
+    const currentDefinition = response.definition || '-- definition unavailable --';
+    const snapshot = h('pre', { class: 'code table-definition-snapshot', text: currentDefinition });
+    const canExecute = currentConn().allowDdl && currentConn().allowSqlExecution;
+    if (!canExecute) {
+      if (toolbar && currentConn().allowSqlExecution) toolbar.append(useInQueryButton(o));
+      body.replaceChildren(h('div', { class: 'definition-section' },
+        h('h3', { text: 'Current definition' }), snapshot));
+      return;
+    }
+
+    const target = sqlName(o);
+    const initialSql = `-- Write ALTER statements for ${target}.\n` +
+      `-- The current CREATE definition is shown below for reference.\n\n` +
+      `-- ALTER TABLE ${target} ADD [ColumnName] int NULL;`;
+    const editor = createSqlEditor(initialSql);
+    const error = h('div', { class: 'inline-error', hidden: '' });
+    const execute = h('button', { class: 'primary', text: 'Execute ALTER script' });
+    let appliedSql = initialSql;
+    const run = async (showError = null) => {
+      execute.disabled = true; error.hidden = true;
+      try {
+        await executeSql(editor.value);
+        appliedSql = editor.value;
+        tab.hasUnsavedDefinition = false;
+        const refreshed = await api(urls.definition(o.schema, o.name));
+        snapshot.textContent = refreshed.definition || '-- definition unavailable --';
+        toast(`${tab.title} altered.`, false);
+        return true;
+      } catch (err) {
+        error.textContent = err.message; error.hidden = false; showError?.(err.message); return false;
+      } finally { execute.disabled = false; }
+    };
+    execute.addEventListener('click', () => run());
+    editor.textarea.addEventListener('input', () => {
+      tab.hasUnsavedDefinition = editor.value !== appliedSql;
+    });
+    tab.beforeLeave = () => {
+      if (!tab.hasUnsavedDefinition) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        let decision = false;
+        modal('Unsaved ALTER script', h('p', { text: `Execute or discard the ALTER script for ${tab.title} before leaving?` }), [
+          { label: 'Stay', onClick: (close) => close() },
+          { label: 'Discard', danger: true, onClick: (close) => {
+            tab.hasUnsavedDefinition = false; decision = true; close();
+          } },
+          { label: 'Execute', primary: true, onClick: async (close, showError) => {
+            if (!await run(showError)) return; decision = true; close();
+          } },
+        ], () => resolve(decision));
+      });
+    };
+    if (toolbar) toolbar.append(useInQueryButton(o), execute);
+    body.replaceChildren(
+      h('div', { class: 'definition-section alter-definition' },
+        h('h3', { text: 'ALTER script' }), editor, error),
+      h('details', { class: 'definition-section', open: '' },
+        h('summary', { text: 'Current CREATE definition' }), snapshot));
+  }
+
+  async function renderObjectDefinition(body, o, tab, toolbar = null) {
     body.replaceChildren(h('div', { class: 'loading', text: 'Loading…' }));
     let response;
     try {
@@ -1284,42 +1657,70 @@
     const definition = response.definition || '-- definition unavailable --';
     const canExecute = currentConn().allowSqlExecution;
     const canEdit = currentConn().allowDdl && canExecute;
-    const useSql = o.type === 'StoredProcedure'
-      ? `EXEC ${sqlName(o)};`
-      : o.type === 'ScalarFunction' ? `SELECT ${sqlName(o)}(/* arguments */);`
-        : `SELECT * FROM ${sqlName(o)}(/* arguments */);`;
     if (!canEdit) {
-      body.replaceChildren(
-        canExecute ? h('div', { class: 'inline-form' }, h('span', { class: 'spacer' }),
-          h('button', { class: o.type === 'StoredProcedure' ? 'primary' : '',
-            onclick: () => openQueryTab(useSql, `${o.type === 'StoredProcedure' ? 'Run' : 'Use'} ${o.name}`) },
-          o.type === 'StoredProcedure' ? 'Run procedure' : 'Use in SQL')) : null,
-        h('pre', { class: 'code', text: definition }));
+      const useButton = canExecute ? useInQueryButton(o) : null;
+      if (toolbar && useButton) toolbar.append(useButton);
+      body.replaceChildren(...[
+        toolbar ? null : (useButton ? h('div', { class: 'inline-form' },
+          h('span', { class: 'spacer' }), useButton) : null),
+        h('pre', { class: 'code', text: definition }),
+      ].filter(Boolean));
       return;
     }
 
     const editor = createSqlEditor(definition.replace(/^\s*CREATE\s+(?:OR\s+ALTER\s+)?/i, 'ALTER '));
+    let appliedDefinition = editor.value;
     const error = h('div', { class: 'inline-error', hidden: '' });
-    const save = h('button', { class: 'primary', text: 'Apply definition' });
-    save.addEventListener('click', async () => {
+    const save = h('button', { class: 'primary', text: 'Execute' });
+    const executeDefinition = async (showError = null) => {
       save.disabled = true;
       error.hidden = true;
       try {
         await executeSql(editor.value);
+        appliedDefinition = editor.value;
+        tab.hasUnsavedDefinition = false;
         toast(`${tab ? tab.title : o.name} updated.`, false);
         await loadObjects();
+        return true;
       } catch (err) {
         error.textContent = err.message;
         error.hidden = false;
+        showError?.(err.message);
+        return false;
       } finally { save.disabled = false; }
+    };
+    save.addEventListener('click', () => executeDefinition());
+    editor.textarea.addEventListener('input', () => {
+      tab.hasUnsavedDefinition = editor.value !== appliedDefinition;
     });
+    tab.beforeLeave = () => {
+      if (!tab.hasUnsavedDefinition) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        let decision = false;
+        modal('Unsaved definition changes',
+          h('p', { text: `Execute or discard the changes to ${tab.title} before leaving?` }), [
+            { label: 'Stay', onClick: (close) => close() },
+            {
+              label: 'Discard changes', danger: true, onClick: (close) => {
+                tab.hasUnsavedDefinition = false;
+                decision = true;
+                close();
+              },
+            },
+            {
+              label: 'Execute', primary: true, onClick: async (close, showError) => {
+                if (!await executeDefinition(showError)) return;
+                decision = true;
+                close();
+              },
+            },
+          ], () => resolve(decision));
+      });
+    };
+    const useButton = useInQueryButton(o);
+    if (toolbar) toolbar.append(useButton, save);
     body.replaceChildren(h('div', { class: 'inline-editor' },
-      h('div', { class: 'inline-form' },
-        h('span', { class: 'muted', text: 'Edit the CREATE / ALTER script in place.' }),
-        h('span', { class: 'spacer' }),
-        h('button', { class: o.type === 'StoredProcedure' ? 'primary' : '',
-          onclick: () => openQueryTab(useSql, `${o.type === 'StoredProcedure' ? 'Run' : 'Use'} ${o.name}`) },
-        o.type === 'StoredProcedure' ? 'Run procedure' : 'Use in SQL'), save),
+      toolbar ? null : h('div', { class: 'inline-form' }, h('span', { class: 'spacer' }), useButton, save),
       editor, error));
   }
 
@@ -1352,19 +1753,32 @@
       const identity = h('input', { type: 'checkbox', title: 'Identity' });
       identity.checked = !!preset.identity;
       const defaultExpr = h('input', { type: 'text', placeholder: 'default (optional)' });
-      const entry = { name, type, pk, nullable, identity, defaultExpr };
+      const computed = h('input', { type: 'checkbox', title: 'Computed' });
+      const persisted = h('input', { type: 'checkbox', title: 'Persisted computed value' });
+      const computedExpr = h('input', { type: 'text', placeholder: 'computed expression' });
+      const syncKind = () => {
+        const isComputed = computed.checked;
+        type.disabled = pk.disabled = nullable.disabled = identity.disabled = defaultExpr.disabled = isComputed;
+        computedExpr.disabled = persisted.disabled = !isComputed;
+      };
+      computed.addEventListener('change', syncKind);
+      const entry = { name, type, pk, nullable, identity, defaultExpr, computed, persisted, computedExpr };
       const rowEl = h('div', { class: 'designer-row' },
         name, type,
         h('label', { class: 'null-toggle' }, pk, 'PK'),
         h('label', { class: 'null-toggle' }, nullable, 'NULL'),
         h('label', { class: 'null-toggle' }, identity, 'ID'),
         defaultExpr,
+        h('label', { class: 'null-toggle' }, computed, 'Computed'),
+        computedExpr,
+        h('label', { class: 'null-toggle' }, persisted, 'Persisted'),
         h('button', {
           class: 'mini-btn', title: 'Remove column',
           onclick: () => { rows.splice(rows.indexOf(entry), 1); rowEl.remove(); },
         }, '✕'));
       rows.push(entry);
       columnsHost.append(rowEl);
+      syncKind();
     };
 
     addColumnRow({ name: 'Id', type: 'int', pk: true, identity: true, nullable: false });
@@ -1391,7 +1805,9 @@
             isNullable: r.nullable.checked && !r.pk.checked,
             isIdentity: r.identity.checked,
             isPrimaryKey: r.pk.checked,
-            defaultExpression: r.defaultExpr.value.trim() || null,
+            defaultExpression: !r.computed.checked && r.defaultExpr.value.trim() || null,
+            computedExpression: r.computed.checked ? r.computedExpr.value.trim() : null,
+            isPersisted: r.computed.checked && r.persisted.checked,
           })),
       };
       if (!design.name) { toast('Give the table a name.'); return; }
@@ -1415,7 +1831,7 @@
         h('span', { class: 'spacer' }),
         h('button', { class: 'primary', onclick: create }, 'Create table')),
       h('div', { class: 'designer-header muted' },
-        'Columns — name, type, then primary key / nullable / identity flags and an optional default expression.'),
+        'Columns — define regular, identity, primary-key, defaulted, or computed (optionally persisted) columns.'),
       columnsHost,
       h('div', {}, h('button', { onclick: () => addColumnRow() }, '＋ Add column')));
 
@@ -1545,6 +1961,7 @@
       if (activeQuery) activeQuery.abort();
       const controller = new AbortController();
       activeQuery = controller;
+      tab.isRunning = true;
       runButton.disabled = true;
       cancelButton.disabled = false;
       results.replaceChildren();
@@ -1613,6 +2030,7 @@
         clearInterval(timer);
         if (activeQuery === controller) {
           activeQuery = null;
+          tab.isRunning = false;
           runButton.disabled = false;
           cancelButton.disabled = true;
         }
@@ -1621,6 +2039,21 @@
 
     runButton.addEventListener('click', run);
     cancelButton.addEventListener('click', () => activeQuery?.abort());
+
+    tab.beforeLeave = () => {
+      if (!tab.isRunning) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        let decision = false;
+        modal('Query still running',
+          h('p', { text: `The query on ${tab.title} is still running. Stop it before leaving — otherwise it keeps running on the server and you lose the ability to cancel it or return to its results.` }), [
+          { label: 'Stay', onClick: (close) => close() },
+          { label: 'Stop query', danger: true, onClick: (close) => {
+            activeQuery?.abort();
+            decision = true; close();
+          } },
+        ], () => resolve(decision));
+      });
+    };
     editor.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
@@ -1628,16 +2061,17 @@
       }
     });
 
-    tab.panel = h('div', { class: 'panel query-panel' },
-      h('div', { class: 'query-toolbar' },
+    const queryToolbar = h('div', { class: 'query-toolbar' },
         runButton, cancelButton,
         h('span', { class: 'toolbar-divider' }),
         savedSelect, saveButton, deleteButton,
         h('span', { class: 'spacer' }),
         h('label', { class: 'query-limit-label', title: maxRowsInput.title }, 'Row cap ', maxRowsInput),
-        status),
+        status);
+    tab.panel = h('div', { class: 'panel query-panel' },
       resizableQueryEditor(editor),
-      results);
+      results,
+      queryToolbar);
 
     addTab(tab);
     refreshSaved();
@@ -1645,6 +2079,15 @@
   }
 
   // ---- publishing -----------------------------------------------------------------
+
+  const PUBLISHED_API_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+
+  function publishedMethodSelect(value = 'GET') {
+    const select = h('select', {},
+      ...PUBLISHED_API_METHODS.map((method) => h('option', { value: method, text: method })));
+    select.value = value;
+    return select;
+  }
 
   function detectParameters(sql) {
     const names = new Set();
@@ -1670,7 +2113,7 @@
       h('h3', { text: 'Filtering' }),
       code('SELECT *\nFROM dbo.Customers\nWHERE Country = @country;'),
       h('p', {}, 'A GET client calls ', h('code', { text: '?country=Poland' }),
-        '. POST clients can send ', h('code', { text: '{ "country": "Poland" }' }), '.'),
+        '. POST, PUT, PATCH, and DELETE clients can send ', h('code', { text: '{ "country": "Poland" }' }), '.'),
       h('h3', { text: 'Pagination' }),
       code('SELECT *\nFROM dbo.Customers\nORDER BY CustomerId\nOFFSET ((@page - 1) * @page_size) ROWS\nFETCH NEXT @page_size ROWS ONLY;'),
       h('p', {}, 'Declare ', h('code', { text: 'page' }), ' and ', h('code', { text: 'page_size' }),
@@ -1691,9 +2134,7 @@
 
   function openPublishDialog(sql, suggestedName) {
     const nameInput = h('input', { type: 'text', value: suggestedName || '' });
-    const methodSelect = h('select', {},
-      h('option', { value: 'GET', text: 'GET' }),
-      h('option', { value: 'POST', text: 'POST' }));
+    const methodSelect = publishedMethodSelect();
     const routeInput = h('input', { type: 'text', placeholder: 'e.g. sales/top-customers' });
     const policyInput = h('input', { type: 'text', placeholder: 'optional policy name' });
     nameInput.addEventListener('input', () => {
@@ -1753,6 +2194,359 @@
     nameInput.focus();
   }
 
+  function highlightJson(value) {
+    const escape = (text) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    const token = /("(?:\\.|[^"\\])*")(\s*:)?|-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|\b(?:true|false|null)\b/g;
+    let result = '', last = 0;
+    for (const match of value.matchAll(token)) {
+      result += escape(value.slice(last, match.index));
+      const text = match[0];
+      let kind;
+      if (match[1]) kind = match[2] ? 'key' : 'string';
+      else if (/^-?\d/.test(text)) kind = 'number';
+      else kind = 'literal';
+      result += `<span class="json-${kind}">${escape(text)}</span>`;
+      last = match.index + text.length;
+    }
+    return result + escape(value.slice(last));
+  }
+
+  function createJsonEditor(initialValue = '') {
+    const highlight = h('pre', { class: 'api-json-highlight', 'aria-hidden': 'true' });
+    const input = h('textarea', {
+      class: 'api-json-input', spellcheck: 'false', autocomplete: 'off',
+      'aria-label': 'Request body', placeholder: '{\n  "key": "value"\n}',
+    });
+    const editor = h('div', { class: 'api-request-body' }, highlight, input);
+    const refresh = () => { highlight.innerHTML = highlightJson(input.value) + (input.value.endsWith('\n') ? ' ' : ''); };
+    input.addEventListener('input', refresh);
+    input.addEventListener('scroll', () => {
+      highlight.scrollTop = input.scrollTop;
+      highlight.scrollLeft = input.scrollLeft;
+    });
+    input.addEventListener('keydown', (event) => {
+      if (event.key !== 'Tab') return;
+      event.preventDefault();
+      input.setRangeText('  ', input.selectionStart, input.selectionEnd, 'end');
+      input.dispatchEvent(new Event('input'));
+    });
+    Object.defineProperties(editor, {
+      value: {
+        get: () => input.value,
+        set: (value) => { input.value = value; refresh(); },
+      },
+      textarea: { value: input },
+    });
+    editor.value = initialValue;
+    return editor;
+  }
+
+  function createVirtualCodeViewer() {
+    const responseCode = h('pre', { class: 'api-code-content' });
+    const lineNumbers = h('pre', { class: 'api-code-lines', 'aria-hidden': 'true' });
+    const spacer = h('div', { class: 'api-code-spacer', 'aria-hidden': 'true' });
+    // The gutter is painted after the content so it always covers content scrolled beneath it.
+    const viewport = h('div', {
+      class: 'api-code-view', role: 'region', tabindex: '0', 'aria-label': 'Response body',
+    }, spacer, responseCode, lineNumbers);
+    const lineHeight = 20;
+    const topPadding = 10;
+    const bottomPadding = 18;
+    const overscan = 24;       // extra rows rendered above/below the viewport
+    const hOverscan = 200;     // extra characters rendered left/right of the viewport
+    const charWidth = 7.8;     // approximate monospace glyph advance at this font size
+    const contentGap = 8;      // gap between the line-number gutter and the code
+    // Browsers silently clamp element/scroll size at ~33.5M px (Chromium). Keep the spacer safely
+    // under that cap on both axes and, when the true content is larger, map scrollTop/scrollLeft
+    // onto line/character indices with a scale factor so every line and column stays reachable.
+    const maxSpacer = 10000000;
+    let lines = [''];
+    let labels = ['1'];
+    let syntax = false;
+    let scheduled = false;
+    let source = '(empty response)';
+    let wrap = false;
+    let lastWidth = 0;
+    let gutterWidth = 24;
+    let contentHeight = topPadding + lineHeight + bottomPadding;
+    let spacerHeight = contentHeight;
+    let contentWidth = 320;
+    let spacerWidth = 320;
+
+    const render = () => {
+      scheduled = false;
+      const visW = viewport.clientWidth || 800;
+      const visH = viewport.clientHeight || 500;
+
+      // Vertical window: scale > 1 when true content is taller than the clamped spacer; === 1 for
+      // normal responses so positioning stays pixel-accurate. Offset by scrollTop*(1-vScale) to
+      // undo the compression and keep rendered rows aligned with the scaled scroll position.
+      const vRange = spacerHeight - visH;
+      const vScale = vRange > 0 ? (contentHeight - visH) / vRange : 1;
+      const vOffset = viewport.scrollTop * vScale;
+      const start = Math.max(0, Math.floor((vOffset - topPadding) / lineHeight) - overscan);
+      const end = Math.min(lines.length, start + Math.ceil(visH / lineHeight) + overscan * 2);
+      const ty = topPadding + start * lineHeight + viewport.scrollTop * (1 - vScale);
+
+      // Horizontal window: only no-wrap lines can exceed the viewport, so wrap mode short-circuits
+      // to charStart 0 and the full (already viewport-fitted) line. Otherwise mirror the vertical
+      // math on the x-axis and slice each visible row to the characters around the scroll position.
+      let charStart = 0;
+      let tx = gutterWidth + contentGap;
+      let sliceEnd = Infinity;
+      if (!wrap) {
+        const hRange = spacerWidth - visW;
+        const hScale = hRange > 0 ? (contentWidth - visW) / hRange : 1;
+        const hOffset = viewport.scrollLeft * hScale;
+        charStart = Math.max(0, Math.floor((hOffset - gutterWidth - contentGap) / charWidth) - hOverscan);
+        sliceEnd = charStart + Math.ceil(visW / charWidth) + hOverscan * 2;
+        tx = viewport.scrollLeft * (1 - hScale) + gutterWidth + contentGap + charStart * charWidth;
+      }
+
+      const rows = lines.slice(start, end);
+      const visibleLines = wrap ? rows : rows.map((line) => line.slice(charStart, sliceEnd));
+      responseCode.style.transform = `translate(${tx}px, ${ty}px)`;
+      // The gutter is pinned to the left edge (translateX = scrollLeft) and shares the row offset.
+      lineNumbers.style.transform = `translate(${viewport.scrollLeft}px, ${ty}px)`;
+      lineNumbers.style.width = `${gutterWidth}px`;
+      lineNumbers.textContent = labels.slice(start, end).join('\n');
+      if (syntax) responseCode.innerHTML = visibleLines.map(highlightJson).join('\n');
+      else responseCode.textContent = visibleLines.join('\n');
+    };
+
+    const scheduleRender = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(render);
+    };
+    viewport.addEventListener('scroll', scheduleRender);
+
+    // Rebuild the virtual-line model from the current source. Wrap mode chunks each line to the
+    // characters that fit the viewport so every chunk is one row with no horizontal scroll; no-wrap
+    // keeps one row per source line (no continuation markers) and relies on horizontal windowing.
+    const rebuild = () => {
+      const sourceLines = source.split('\n');
+      lastWidth = viewport.clientWidth;
+      const digits = String(sourceLines.length).length;
+      gutterWidth = Math.ceil(digits * charWidth) + 21;
+      lines = [];
+      labels = [];
+      let widest = 1;
+      if (wrap) {
+        const limit = Math.max(20, Math.floor(((lastWidth || 800) - gutterWidth - contentGap - 12) / charWidth));
+        sourceLines.forEach((line, lineIndex) => {
+          const chunks = Math.max(1, Math.ceil(line.length / limit));
+          for (let chunk = 0; chunk < chunks; chunk++) {
+            lines.push(line.slice(chunk * limit, (chunk + 1) * limit));
+            labels.push(chunk === 0 ? String(lineIndex + 1) : '·');
+          }
+        });
+      } else {
+        sourceLines.forEach((line, lineIndex) => {
+          lines.push(line);
+          labels.push(String(lineIndex + 1));
+          if (line.length > widest) widest = line.length;
+        });
+      }
+      contentHeight = topPadding + lines.length * lineHeight + bottomPadding;
+      spacerHeight = Math.min(contentHeight, maxSpacer);
+      // No-wrap: spacer spans the true content width (clamped under the browser's max element
+      // size) so the whole line is horizontally reachable. Wrap: chunks are built to fit the
+      // viewport, so the spacer needs no horizontal extent — keep it minimal so a vertical
+      // scrollbar can never push the content into a spurious horizontal scroll.
+      contentWidth = wrap
+        ? Math.max(1, lastWidth || 320)
+        : gutterWidth + contentGap + widest * charWidth + 16;
+      spacerWidth = wrap ? 1 : Math.min(Math.max(320, contentWidth), maxSpacer);
+      spacer.style.height = `${spacerHeight}px`;
+      spacer.style.width = `${spacerWidth}px`;
+      render();
+      scheduleRender();
+    };
+
+    // Wrap chunk width tracks the viewport; no-wrap only needs a re-render to rescale on resize.
+    new ResizeObserver(() => {
+      if (wrap && Math.abs(viewport.clientWidth - lastWidth) >= 4) rebuild();
+      else scheduleRender();
+    }).observe(viewport);
+
+    return {
+      element: viewport,
+      setText: (value, useJsonSyntax = false) => {
+        source = value || '(empty response)';
+        syntax = useJsonSyntax;
+        viewport.scrollTop = 0;
+        viewport.scrollLeft = 0;
+        rebuild();
+      },
+      setWrap: (on) => {
+        if (wrap === on) return;
+        wrap = on;
+        viewport.scrollTop = 0;
+        viewport.scrollLeft = 0;
+        rebuild();
+      },
+    };
+  }
+
+  function formatBytes(bytes) {
+    const units = ['B', 'kB', 'MB', 'GB'];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1000 && unit < units.length - 1) { value /= 1000; unit++; }
+    const digits = unit === 0 ? 0 : value < 10 ? 2 : value < 100 ? 1 : 0;
+    return `${value.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits })} ${units[unit]}`;
+  }
+
+  function createApiPreview() {
+    const method = h('select', { class: 'api-preview-method', 'aria-label': 'HTTP method' },
+      ...['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
+        .map((value) => h('option', { value, text: value })));
+    const address = h('input', {
+      class: 'api-preview-address', type: 'text', spellcheck: 'false',
+      'aria-label': 'Request URL', placeholder: 'https://example.com/api/resource',
+    });
+    const go = h('button', { class: 'primary api-preview-go', type: 'submit', text: 'Go' });
+    const requestBody = createJsonEditor();
+    const requestDetails = h('details', { class: 'api-request-details' },
+      h('summary', {},
+        h('span', { text: 'Request body' }),
+        h('span', { class: 'api-request-hint', text: 'JSON' })),
+      requestBody);
+    const status = h('span', { class: 'api-response-status muted', text: 'No request sent' });
+    const elapsed = h('span', { class: 'muted' });
+    const rawButton = h('button', { class: 'view-btn', type: 'button', text: 'Raw', disabled: '' });
+    const prettyButton = h('button', { class: 'view-btn active', type: 'button', text: 'Pretty', disabled: '' });
+    const wrapCheck = h('input', { class: 'api-wrap-check', type: 'checkbox', id: 'api-wrap-lines' });
+    const wrapToggle = h('label', {
+      class: 'api-wrap-toggle', for: 'api-wrap-lines', title: 'Wrap long lines to the viewport width',
+    }, wrapCheck, 'Wrap');
+    const responseView = createVirtualCodeViewer();
+    let responseText = '';
+    let prettyResponse = null;
+    let controller = null;
+
+    const renderResponse = (pretty) => {
+      const text = pretty && prettyResponse !== null ? prettyResponse : responseText;
+      const shown = text || '(empty response)';
+      responseView.setText(shown, prettyResponse !== null);
+      rawButton.classList.toggle('active', !pretty);
+      prettyButton.classList.toggle('active', pretty);
+    };
+
+    rawButton.addEventListener('click', () => renderResponse(false));
+    prettyButton.addEventListener('click', () => renderResponse(true));
+    wrapCheck.addEventListener('change', () => responseView.setWrap(wrapCheck.checked));
+
+    const setMethodBodyState = () => {
+      const acceptsBody = !['GET', 'HEAD', 'OPTIONS'].includes(method.value);
+      requestDetails.classList.toggle('body-not-sent', !acceptsBody);
+      $('.api-request-hint', requestDetails).textContent = acceptsBody ? 'JSON' : 'not sent for this method';
+    };
+    method.addEventListener('change', setMethodBodyState);
+
+    const send = async (event) => {
+      event?.preventDefault();
+      const value = address.value.trim();
+      if (!value) {
+        address.focus();
+        return;
+      }
+
+      let target;
+      try { target = new URL(value, document.baseURI); }
+      catch {
+        status.className = 'api-response-status error';
+        status.textContent = 'Invalid URL';
+        return;
+      }
+
+      controller?.abort();
+      const requestController = new AbortController();
+      controller = requestController;
+      const started = performance.now();
+      go.disabled = true;
+      go.textContent = 'Sending…';
+      status.className = 'api-response-status muted';
+      status.textContent = 'Waiting for response…';
+      elapsed.textContent = '';
+      rawButton.disabled = true;
+      prettyButton.disabled = true;
+      responseText = '';
+      prettyResponse = null;
+      responseView.setText('Waiting for response…');
+
+      try {
+        const options = { method: method.value, signal: requestController.signal, headers: { Accept: '*/*' } };
+        if (!['GET', 'HEAD', 'OPTIONS'].includes(method.value) && requestBody.value.trim()) {
+          options.body = requestBody.value;
+          options.headers['Content-Type'] = 'application/json';
+        }
+        const response = await fetch(target, options);
+        responseText = await response.text();
+        try { prettyResponse = JSON.stringify(JSON.parse(responseText), null, 2); }
+        catch { prettyResponse = null; }
+
+        const duration = Math.round(performance.now() - started);
+        status.className = `api-response-status ${response.ok ? 'success' : 'error'}`;
+        status.textContent = `${response.status} ${response.statusText}`.trim();
+        elapsed.textContent = `${duration} ms · ${formatBytes(new Blob([responseText]).size)}`;
+        rawButton.disabled = false;
+        prettyButton.disabled = prettyResponse === null;
+        renderResponse(prettyResponse !== null);
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        responseText = err.message;
+        status.className = 'api-response-status error';
+        status.textContent = 'Request failed';
+        elapsed.textContent = '';
+        rawButton.disabled = false;
+        renderResponse(false);
+      } finally {
+        if (controller === requestController) {
+          go.disabled = false;
+          go.textContent = 'Go';
+        }
+      }
+    };
+
+    const requestForm = h('form', { class: 'api-request-bar', onsubmit: send }, method, address, go);
+    const element = h('div', { class: 'api-preview' },
+      requestForm,
+      requestDetails,
+      h('section', { class: 'api-response' },
+        h('div', { class: 'api-response-toolbar' },
+          h('strong', { text: 'Response' }), status, elapsed, h('span', { class: 'spacer' }),
+          wrapToggle,
+          h('div', { class: 'view-switcher api-format-switcher' }, rawButton, prettyButton)),
+        responseView.element));
+
+    setMethodBodyState();
+    responseView.setText('Send a request to see its response.');
+    return {
+      element,
+      focus: () => address.focus(),
+      setRequest: (endpoint) => {
+        method.value = endpoint.method;
+        const baseUrl = new URL('pub/' + endpoint.route, document.baseURI).href;
+        if (endpoint.method === 'GET' && endpoint.parameters.length) {
+          address.value = baseUrl + '?' + endpoint.parameters
+            .map((parameter) => `${encodeURIComponent(parameter.name)}=`).join('&');
+          requestBody.value = '';
+          requestDetails.open = false;
+        } else {
+          address.value = baseUrl;
+          requestBody.value = endpoint.parameters.length
+            ? JSON.stringify(Object.fromEntries(endpoint.parameters.map((parameter) => [parameter.name, null])), null, 2)
+            : '';
+          requestDetails.open = endpoint.method !== 'GET';
+        }
+        setMethodBodyState();
+        address.focus();
+      },
+    };
+  }
+
   function openApisTab() {
     const existing = state.tabs.find((t) => t.key === 'published-apis');
     if (existing) {
@@ -1762,23 +2556,37 @@
     }
 
     const body = h('div', { class: 'panel-body' });
+    const preview = createApiPreview();
+    const previewBody = h('div', { class: 'panel-body api-preview-body', hidden: '' }, preview.element);
+    const endpointsButton = h('button', { class: 'view-btn active', text: 'Endpoints' });
+    const previewButton = h('button', { class: 'view-btn', text: 'Preview' });
+    const showView = (name) => {
+      const showPreview = name === 'preview';
+      body.hidden = showPreview;
+      previewBody.hidden = !showPreview;
+      endpointsButton.classList.toggle('active', !showPreview);
+      previewButton.classList.toggle('active', showPreview);
+      if (showPreview) preview.focus();
+    };
+    endpointsButton.addEventListener('click', () => showView('endpoints'));
+    previewButton.addEventListener('click', () => showView('preview'));
     const tab = {
       id: state.nextTabId++,
       key: 'published-apis',
       badge: 'A',
       title: 'Published APIs',
       panel: h('div', { class: 'panel' },
-        h('div', { class: 'viewbar' }, h('button', { class: 'view-btn active', text: 'Endpoints' })),
-        body),
+        h('div', { class: 'viewbar' },
+          h('div', { class: 'view-switcher', role: 'tablist', 'aria-label': 'Published API views' },
+            endpointsButton, previewButton)),
+        body, previewBody),
       loaded: false,
       load: () => {},
     };
 
     const editEndpoint = (endpoint) => {
       const name = h('input', { type: 'text', value: endpoint.name });
-      const method = h('select', {},
-        h('option', { value: 'GET', text: 'GET' }), h('option', { value: 'POST', text: 'POST' }));
-      method.value = endpoint.method;
+      const method = publishedMethodSelect(endpoint.method);
       const route = h('input', { type: 'text', value: endpoint.route });
       const policy = h('input', { type: 'text', value: endpoint.authorizationPolicy || '', placeholder: 'ASP.NET Core policy (optional)' });
       const enabled = h('input', { type: 'checkbox' }); enabled.checked = endpoint.enabled;
@@ -1857,6 +2665,10 @@
             h('td', { text: e.authorizationPolicy || '' }),
             h('td', { text: e.enabled ? 'yes' : 'no' }),
             h('td', { class: 'cell-actions' },
+              h('button', {
+                class: 'mini-btn', title: 'Open in preview',
+                onclick: () => { preview.setRequest(e); showView('preview'); },
+              }, '▶'),
               h('button', { class: 'mini-btn', title: 'Edit endpoint inline', onclick: () => editEndpoint(e) }, '✎'),
               h('button', {
                 class: 'mini-btn', title: 'Copy URL',

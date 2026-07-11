@@ -46,4 +46,5 @@ public sealed record PublishRequest(
     string Sql,
     List<PublishedParameter>? Parameters,
     string? AuthorizationPolicy,
-    bool Enabled = true);
+    bool Enabled = true,
+    int? MaxRows = null);
