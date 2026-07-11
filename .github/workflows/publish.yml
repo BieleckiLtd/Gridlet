@@ -1,0 +1,41 @@
+name: Publish
+
+# Publishes the three Gridlet packages to nuget.org when a version tag is pushed.
+# Uses nuget.org Trusted Publishing (OIDC) — no API key secret required.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:   # allow manual runs from the Actions tab (e.g. to re-publish)
+
+permissions:
+  id-token: write   # required for OIDC token exchange with nuget.org
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build & test
+        run: dotnet test --configuration Release
+
+      - name: Pack
+        run: dotnet pack --configuration Release --output ${{ github.workspace }}/artifacts/nupkg
+
+      - name: NuGet login (Trusted Publishing)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: BieleckiLtd
+
+      - name: Push
+        run: >
+          dotnet nuget push "artifacts/nupkg/*.nupkg"
+          --source https://api.nuget.org/v3/index.json
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --skip-duplicate
