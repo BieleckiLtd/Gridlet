@@ -25,10 +25,11 @@ internal static class GridletPublishedEndpoints
 {
     public static void Map(RouteGroupBuilder group)
     {
-        group.MapMethods("/pub/{**route}", ["GET", "POST"], Invoke).ExcludeFromDescription();
+        group.MapMethods("/pub/{**route}", ["GET", "POST", "PUT", "PATCH", "DELETE"], Invoke)
+            .ExcludeFromDescription();
     }
 
-    private static Task<IResult> Invoke(
+    private static async Task Invoke(
         string route,
         HttpContext httpContext,
         IPublishedEndpointStore store,
@@ -36,13 +37,28 @@ internal static class GridletPublishedEndpoints
         IOptionsMonitor<GridletOptions> options,
         IGridletAuditSink audit,
         CancellationToken cancellationToken)
-        => Execute(async () =>
+    {
+        var stopwatch = Stopwatch.StartNew();
+
+        PublishedEndpoint endpoint;
+        ResolvedConnection resolved;
+        Dictionary<string, object?> arguments;
+        QueryRequestOptions queryOptions;
+
+        // Preamble: routing, authorization, parameter binding and connection resolution all happen
+        // before a single byte is written, so their failures can still return a clean status code.
+        // These are not audited (they never reach the database), matching the previous behaviour.
+        try
         {
-            var endpoint = await store.FindAsync(httpContext.Request.Method, route.Trim('/'), cancellationToken);
-            if (endpoint is null || !endpoint.Enabled)
+            var found = await store.FindAsync(httpContext.Request.Method, route.Trim('/'), cancellationToken);
+            if (found is null || !found.Enabled)
             {
-                return Results.NotFound(new GridletErrorResponse($"No published endpoint at '{route}'."));
+                await WriteResultAsync(httpContext,
+                    Results.NotFound(new GridletErrorResponse($"No published endpoint at '{route}'.")));
+                return;
             }
+
+            endpoint = found;
 
             if (endpoint.AuthorizationPolicy is not null)
             {
@@ -52,37 +68,146 @@ internal static class GridletPublishedEndpoints
                 var decision = await authorization.AuthorizeAsync(httpContext.User, endpoint.AuthorizationPolicy);
                 if (!decision.Succeeded)
                 {
-                    return Forbidden($"This endpoint requires the '{endpoint.AuthorizationPolicy}' policy.");
+                    await WriteResultAsync(httpContext,
+                        Forbidden($"This endpoint requires the '{endpoint.AuthorizationPolicy}' policy."));
+                    return;
                 }
             }
 
-            var arguments = await BindParametersAsync(endpoint, httpContext, cancellationToken);
-            var resolved = resolver.Resolve(endpoint.ConnectionName, endpoint.Database);
+            arguments = await BindParametersAsync(endpoint, httpContext, cancellationToken);
+            resolved = resolver.Resolve(endpoint.ConnectionName, endpoint.Database);
+
             var limits = options.CurrentValue.Limits;
+            // Published endpoints are uncapped by default: null/omitted and 0-or-less both stream every
+            // row. Only an explicit positive MaxRows applies a cap (the endpoint has opted into it).
+            var cap = endpoint.MaxRows is > 0 ? endpoint.MaxRows.Value : 0;
+            queryOptions = new QueryRequestOptions(cap, limits.CommandTimeoutSeconds);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            await WriteResultAsync(httpContext, MapError(ex));
+            return;
+        }
 
-            var stopwatch = Stopwatch.StartNew();
-            try
+        // Stream the first result set as { rows: [...], rowCount }. Only one batch of rows is buffered
+        // at a time, so server memory stays bounded regardless of result-set size. rowCount is only
+        // known once every row has streamed, so it trails the rows array. Published endpoints are
+        // uncapped by default, so there is no truncation flag to report.
+        httpContext.Response.ContentType = "application/json; charset=utf-8";
+        string[]? columnNames = null;
+        var openedBody = false;
+        var firstRow = true;
+        long rowCount = 0;
+        var recordsAffected = -1;
+
+        try
+        {
+            await foreach (var streamEvent in resolved.Provider.Query.StreamAsync(
+                resolved.Context, endpoint.Sql, queryOptions, arguments, cancellationToken))
             {
-                var result = await resolved.Provider.Query.ExecuteAsync(
-                    resolved.Context,
-                    endpoint.Sql,
-                    new QueryRequestOptions(limits.MaxQueryResultRows, limits.CommandTimeoutSeconds),
-                    arguments,
-                    cancellationToken);
+                switch (streamEvent.Type)
+                {
+                    case "resultSet" when streamEvent.ResultSetIndex == 0 && streamEvent.Columns is not null:
+                        columnNames = ResolveColumnNames(streamEvent.Columns);
+                        await httpContext.Response.WriteAsync("{\"rows\":[", cancellationToken);
+                        openedBody = true;
+                        break;
 
-                await AuditAsync(audit, httpContext, "api.invoke", endpoint.ConnectionName, endpoint.Database,
-                    endpoint.Route, null, succeeded: true, stopwatch.ElapsedMilliseconds, error: null);
-                return Results.Ok(Shape(result));
+                    case "rows" when streamEvent.ResultSetIndex == 0 && columnNames is not null && streamEvent.Rows is not null:
+                        foreach (var row in streamEvent.Rows)
+                        {
+                            if (!firstRow)
+                            {
+                                await httpContext.Response.WriteAsync(",", cancellationToken);
+                            }
+
+                            firstRow = false;
+                            await JsonSerializer.SerializeAsync(
+                                httpContext.Response.Body, ToRecord(columnNames, row),
+                                JsonSerializerOptions.Web, cancellationToken);
+                            rowCount++;
+                        }
+
+                        await httpContext.Response.Body.FlushAsync(cancellationToken);
+                        break;
+
+                    case "completed":
+                        recordsAffected = streamEvent.RecordsAffected ?? -1;
+                        break;
+                }
             }
-            catch (Exception ex)
+
+            if (openedBody)
             {
-                await AuditAsync(audit, httpContext, "api.invoke", endpoint.ConnectionName, endpoint.Database,
-                    endpoint.Route, null, succeeded: false, stopwatch.ElapsedMilliseconds, ex.Message);
-                throw;
+                await httpContext.Response.WriteAsync(
+                    $"],\"rowCount\":{rowCount}}}", cancellationToken);
             }
-        });
+            else
+            {
+                // No result set (e.g. a non-query statement) — mirror the previous buffering shape.
+                await httpContext.Response.WriteAsJsonAsync(new { recordsAffected }, cancellationToken);
+            }
 
-    /// <summary>Binds declared parameters from the query string (GET) or JSON body (POST). Missing optional parameters become NULL.</summary>
+            await httpContext.Response.Body.FlushAsync(cancellationToken);
+            await AuditAsync(audit, httpContext, "api.invoke", endpoint.ConnectionName, endpoint.Database,
+                endpoint.Route, null, succeeded: true, stopwatch.ElapsedMilliseconds, error: null);
+        }
+        catch (OperationCanceledException) when (httpContext.RequestAborted.IsCancellationRequested)
+        {
+            // The client disconnected; cancellation reached the provider and there is nothing to send.
+        }
+        catch (Exception ex)
+        {
+            // Audit reflects the true outcome: streaming is only recorded as succeeded once every row
+            // has been written, so a mid-stream failure is audited as a failure here.
+            await AuditAsync(audit, httpContext, "api.invoke", endpoint.ConnectionName, endpoint.Database,
+                endpoint.Route, null, succeeded: false, stopwatch.ElapsedMilliseconds, ex.Message);
+
+            if (!httpContext.Response.HasStarted)
+            {
+                await WriteResultAsync(httpContext, MapError(ex));
+                return;
+            }
+
+            // The 200 status and some rows are already on the wire, so the status cannot change.
+            // Close the JSON with an "error" marker consumers can detect alongside the partial rows.
+            await TryCloseWithErrorAsync(httpContext, openedBody, rowCount, ex.Message);
+        }
+    }
+
+    /// <summary>Maps Gridlet exceptions to an error result, matching the shared endpoint helper.</summary>
+    private static IResult MapError(Exception ex)
+        => ex switch
+        {
+            GridletUnknownConnectionException or GridletObjectNotFoundException
+                => Results.NotFound(new GridletErrorResponse(ex.Message)),
+            GridletValidationException or GridletQueryException
+                => Results.BadRequest(new GridletErrorResponse(ex.Message)),
+            _ => Results.Json(new GridletErrorResponse(ex.Message), statusCode: StatusCodes.Status500InternalServerError),
+        };
+
+    private static Task WriteResultAsync(HttpContext httpContext, IResult result)
+        => result.ExecuteAsync(httpContext);
+
+    /// <summary>Best-effort close of an already-streaming response with an in-body error marker.</summary>
+    private static async Task TryCloseWithErrorAsync(HttpContext httpContext, bool openedBody, long rowCount, string message)
+    {
+        try
+        {
+            var encoded = JsonSerializer.Serialize(message, JsonSerializerOptions.Web);
+            var tail = openedBody
+                ? $"],\"rowCount\":{rowCount},\"error\":{encoded}}}"
+                : $"{{\"error\":{encoded}}}";
+            await httpContext.Response.WriteAsync(tail, CancellationToken.None);
+            await httpContext.Response.Body.FlushAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
+        {
+            // The client disconnected between the failure and this write.
+        }
+    }
+
+    /// <summary>Binds declared parameters from the query string (GET) or JSON body (write methods). Missing optional parameters become NULL.</summary>
     private static async Task<Dictionary<string, object?>> BindParametersAsync(
         PublishedEndpoint endpoint, HttpContext httpContext, CancellationToken cancellationToken)
     {
@@ -93,8 +218,8 @@ internal static class GridletPublishedEndpoints
         }
 
         Dictionary<string, JsonElement>? body = null;
-        if (HttpMethods.IsPost(httpContext.Request.Method) &&
-            (httpContext.Request.ContentLength ?? 0) > 0)
+        if (!HttpMethods.IsGet(httpContext.Request.Method) &&
+            (httpContext.Request.ContentLength is > 0 || !string.IsNullOrWhiteSpace(httpContext.Request.ContentType)))
         {
             try
             {
@@ -165,20 +290,14 @@ internal static class GridletPublishedEndpoints
         }
     }
 
-    /// <summary>Shapes the first result set as an API-friendly array of objects.</summary>
-    private static object Shape(QueryResult result)
+    /// <summary>Produces unique, non-empty JSON property names for a result set's columns.</summary>
+    private static string[] ResolveColumnNames(IReadOnlyList<ResultColumn> columns)
     {
-        var set = result.ResultSets.FirstOrDefault();
-        if (set is null)
-        {
-            return new { recordsAffected = result.RecordsAffected };
-        }
-
-        var names = new string[set.Columns.Count];
+        var names = new string[columns.Count];
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        for (var i = 0; i < set.Columns.Count; i++)
+        for (var i = 0; i < columns.Count; i++)
         {
-            var name = string.IsNullOrEmpty(set.Columns[i].Name) ? $"column{i}" : set.Columns[i].Name;
+            var name = string.IsNullOrEmpty(columns[i].Name) ? $"column{i}" : columns[i].Name;
             while (!seen.Add(name))
             {
                 name += "_";
@@ -187,19 +306,18 @@ internal static class GridletPublishedEndpoints
             names[i] = name;
         }
 
-        var rows = set.Rows
-            .Select(row =>
-            {
-                var item = new Dictionary<string, object?>(row.Length);
-                for (var i = 0; i < row.Length; i++)
-                {
-                    item[names[i]] = row[i];
-                }
+        return names;
+    }
 
-                return item;
-            })
-            .ToList();
+    /// <summary>Shapes one streamed row into an API-friendly object keyed by column name.</summary>
+    private static Dictionary<string, object?> ToRecord(string[] names, object?[] row)
+    {
+        var item = new Dictionary<string, object?>(row.Length);
+        for (var i = 0; i < row.Length && i < names.Length; i++)
+        {
+            item[names[i]] = row[i];
+        }
 
-        return new { rows, rowCount = rows.Count, truncated = set.Truncated };
+        return item;
     }
 }

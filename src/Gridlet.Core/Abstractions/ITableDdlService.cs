@@ -53,6 +53,27 @@ public interface ITableDdlService
         string columnName,
         CancellationToken cancellationToken = default);
 
+    Task AddPrimaryKeyAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        PrimaryKeyDesign primaryKey,
+        CancellationToken cancellationToken = default);
+
+    Task AddForeignKeyAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        ForeignKeyDesign foreignKey,
+        CancellationToken cancellationToken = default);
+
+    Task DropConstraintAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        string constraintName,
+        CancellationToken cancellationToken = default);
+
     Task DropTableAsync(
         GridletConnectionContext context,
         string schema,

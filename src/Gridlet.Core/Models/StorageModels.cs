@@ -21,6 +21,12 @@ public sealed record PublishedParameter(string Name, bool Required, string Type 
 /// (<c>{mount}/pub/{route}</c>). Endpoints inherit Gridlet's authorization and can
 /// additionally require their own policy.
 /// </summary>
+/// <param name="MaxRows">
+/// Optional row cap for the streamed result. Published endpoints are uncapped by default:
+/// <c>null</c> (and any value of <c>0</c> or less) streams every row, letting the endpoint paginate
+/// in SQL via <c>OFFSET/FETCH</c>. Only a positive value applies a cap, at that many rows. Responses
+/// stream progressively, so server memory stays bounded regardless of this value.
+/// </param>
 public sealed record PublishedEndpoint(
     string Id,
     string Name,
@@ -32,4 +38,5 @@ public sealed record PublishedEndpoint(
     IReadOnlyList<PublishedParameter> Parameters,
     string? AuthorizationPolicy,
     bool Enabled,
-    DateTimeOffset UpdatedAtUtc);
+    DateTimeOffset UpdatedAtUtc,
+    int? MaxRows = null);

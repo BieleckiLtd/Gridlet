@@ -97,6 +97,66 @@ public sealed class FakeGridletProvider :
                 DurationMs: 1));
     }
 
+    /// <summary>
+    /// Streams a single-row result set. Recognised sentinels: <c>boom</c> fails before any event is
+    /// emitted (clean status code), and <c>stream-boom</c> fails after a row has streamed (in-body
+    /// error marker). Records the query options so cap behaviour can be asserted.
+    /// </summary>
+    public async IAsyncEnumerable<QueryStreamEvent> StreamAsync(
+        GridletConnectionContext context, string sql, QueryRequestOptions options,
+        IReadOnlyDictionary<string, object?>? parameters = null,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        LastQueryParameters = parameters;
+        LastQueryOptions = options;
+
+        if (sql == "boom")
+        {
+            throw new GridletQueryException("kaboom");
+        }
+
+        await Task.Yield();
+
+        // "many:N" streams N rows in batches, to prove uncapped streaming past the global default.
+        if (sql.StartsWith("many:", StringComparison.Ordinal) &&
+            int.TryParse(sql["many:".Length..], out var total))
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0, [new ResultColumn("N", "int")]);
+            var batch = new List<object?[]>();
+            for (var i = 0; i < total; i++)
+            {
+                batch.Add([i]);
+                if (batch.Count == 500)
+                {
+                    yield return new QueryStreamEvent("rows", 0, Rows: batch.ToArray());
+                    batch = [];
+                }
+            }
+
+            if (batch.Count > 0)
+            {
+                yield return new QueryStreamEvent("rows", 0, Rows: batch.ToArray());
+            }
+
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        yield return new QueryStreamEvent("started");
+        yield return new QueryStreamEvent("resultSet", 0, [new ResultColumn("Answer", "int")]);
+        yield return new QueryStreamEvent("rows", 0, Rows: [[42]]);
+
+        if (sql == "stream-boom")
+        {
+            throw new GridletQueryException("mid-stream kaboom");
+        }
+
+        yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+        yield return new QueryStreamEvent("message", Message: "hello from fake");
+        yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+    }
+
     // ---- writes ----
 
     public Task<int> InsertRowAsync(
@@ -175,6 +235,30 @@ public sealed class FakeGridletProvider :
         CancellationToken cancellationToken = default)
     {
         Calls.Add($"dropColumn {schema}.{table}.{columnName}");
+        return Task.CompletedTask;
+    }
+
+    public Task AddPrimaryKeyAsync(
+        GridletConnectionContext context, string schema, string table, PrimaryKeyDesign primaryKey,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"addPrimaryKey {schema}.{table}.{primaryKey.Name}");
+        return Task.CompletedTask;
+    }
+
+    public Task AddForeignKeyAsync(
+        GridletConnectionContext context, string schema, string table, ForeignKeyDesign foreignKey,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"addForeignKey {schema}.{table}.{foreignKey.Name}");
+        return Task.CompletedTask;
+    }
+
+    public Task DropConstraintAsync(
+        GridletConnectionContext context, string schema, string table, string constraintName,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"dropConstraint {schema}.{table}.{constraintName}");
         return Task.CompletedTask;
     }
 

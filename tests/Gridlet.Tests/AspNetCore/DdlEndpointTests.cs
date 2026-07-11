@@ -50,6 +50,15 @@ public class DdlEndpointTests
         var alterColumn = await client.PutAsJsonAsync($"{Db}/objects/dbo/Widgets/columns/Age",
             new { name = "Years", dataType = "bigint", isNullable = false });
         var dropColumn = await client.DeleteAsync($"{Db}/objects/dbo/Widgets/columns/Years");
+        var addPrimaryKey = await client.PostAsJsonAsync($"{Db}/objects/dbo/Widgets/primary-key",
+            new { name = "PK_Widgets", columns = new[] { "Id" }, isClustered = true });
+        var addForeignKey = await client.PostAsJsonAsync($"{Db}/objects/dbo/Widgets/foreign-keys", new
+        {
+            name = "FK_Widgets_Owners", referencedSchema = "dbo", referencedTable = "Owners",
+            columns = new[] { new { column = "OwnerId", referencedColumn = "Id" } },
+            onDelete = "CASCADE", onUpdate = "NO ACTION",
+        });
+        var dropConstraint = await client.DeleteAsync($"{Db}/objects/dbo/Widgets/constraints/FK_Widgets_Owners");
         var dropTable = await client.DeleteAsync($"{Db}/objects/dbo/Widgets");
         var dropView = await client.DeleteAsync($"{Db}/objects/dbo/WidgetView?type=View");
 
@@ -57,12 +66,18 @@ public class DdlEndpointTests
         Assert.Equal(HttpStatusCode.OK, addColumn.StatusCode);
         Assert.Equal(HttpStatusCode.OK, alterColumn.StatusCode);
         Assert.Equal(HttpStatusCode.OK, dropColumn.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, addPrimaryKey.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, addForeignKey.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, dropConstraint.StatusCode);
         Assert.Equal(HttpStatusCode.OK, dropTable.StatusCode);
         Assert.Equal(HttpStatusCode.OK, dropView.StatusCode);
         Assert.Contains("createTable dbo.Widgets (1 columns)", fake.Calls);
         Assert.Contains("addColumn dbo.Widgets.Age", fake.Calls);
         Assert.Contains("alterColumn dbo.Widgets.Age -> Years", fake.Calls);
         Assert.Contains("dropColumn dbo.Widgets.Years", fake.Calls);
+        Assert.Contains("addPrimaryKey dbo.Widgets.PK_Widgets", fake.Calls);
+        Assert.Contains("addForeignKey dbo.Widgets.FK_Widgets_Owners", fake.Calls);
+        Assert.Contains("dropConstraint dbo.Widgets.FK_Widgets_Owners", fake.Calls);
         Assert.Contains("dropObject Table dbo.Widgets", fake.Calls);
         Assert.Contains("dropObject View dbo.WidgetView", fake.Calls);
     }
