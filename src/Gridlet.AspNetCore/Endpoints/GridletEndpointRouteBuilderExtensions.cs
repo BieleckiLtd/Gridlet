@@ -14,6 +14,12 @@ public static class GridletEndpointRouteBuilderExtensions
     /// <see cref="GridletSecurityOptions.AllowAnonymous"/> is set, every endpoint requires
     /// authorization (the configured policy, or the host's default policy).
     /// </summary>
+    /// <param name="endpoints">The application's endpoint route builder.</param>
+    /// <param name="pattern">
+    /// Route prefix for the UI and all Gridlet APIs. Defaults to <c>/gridlet</c>. A leading or
+    /// trailing slash is optional; Gridlet normalizes the value.
+    /// </param>
+    /// <returns>The mapped route group, allowing additional endpoint conventions to be applied.</returns>
     public static IEndpointConventionBuilder MapGridlet(
         this IEndpointRouteBuilder endpoints,
         string pattern = "/gridlet")

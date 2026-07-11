@@ -59,6 +59,31 @@ public static partial class SqlServerDdlBuilder
         return $"CREATE TABLE {target} (\n    {string.Join(",\n    ", lines)}\n);";
     }
 
+    /// <summary>Creates a schema only when it is not already present.</summary>
+    public static string BuildCreateSchemaIfMissing(string schema)
+    {
+        var quoted = SqlServerIdentifier.Quote(schema).Replace("'", "''", StringComparison.Ordinal);
+        // CREATE SCHEMA does not accept a parameter for its identifier. The identifier is
+        // validated and bracket-quoted before it is placed in the dynamic statement.
+        return $"IF SCHEMA_ID(@schema) IS NULL EXEC(N'CREATE SCHEMA {quoted}');";
+    }
+
+    public static string BuildCreateSchema(SchemaDesign design)
+    {
+        var sql = $"CREATE SCHEMA {SqlServerIdentifier.Quote(design.Name)}";
+        if (!string.IsNullOrWhiteSpace(design.Owner))
+        {
+            sql += $" AUTHORIZATION {SqlServerIdentifier.Quote(design.Owner)}";
+        }
+        return sql + ";";
+    }
+
+    public static string BuildAlterSchemaOwner(string schema, string owner)
+        => $"ALTER AUTHORIZATION ON SCHEMA::{SqlServerIdentifier.Quote(schema)} TO {SqlServerIdentifier.Quote(owner)};";
+
+    public static string BuildDropSchema(string schema)
+        => $"DROP SCHEMA {SqlServerIdentifier.Quote(schema)};";
+
     public static string BuildAddColumn(string schema, string table, ColumnDesign column)
         => $"ALTER TABLE {SqlServerIdentifier.QuoteQualified(schema, table)} ADD {BuildColumnDefinition(column, includeDefault: true)};";
 
@@ -72,6 +97,16 @@ public static partial class SqlServerDdlBuilder
 
     public static string BuildDropTable(string schema, string table)
         => $"DROP TABLE {SqlServerIdentifier.QuoteQualified(schema, table)};";
+
+    public static string BuildDropObject(string schema, string name, DbObjectType type)
+        => $"DROP {type switch
+        {
+            DbObjectType.Table => "TABLE",
+            DbObjectType.View => "VIEW",
+            DbObjectType.StoredProcedure => "PROCEDURE",
+            DbObjectType.ScalarFunction or DbObjectType.TableValuedFunction => "FUNCTION",
+            _ => throw new GridletValidationException($"Unsupported database object type '{type}'."),
+        }} {SqlServerIdentifier.QuoteQualified(schema, name)};";
 
     private static string BuildColumnDefinition(ColumnDesign column, bool includeDefault)
     {

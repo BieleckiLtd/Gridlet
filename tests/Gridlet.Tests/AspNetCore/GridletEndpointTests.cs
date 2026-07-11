@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
 using Gridlet.Tests.AspNetCore.Fakes;
+using Gridlet.Abstractions;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Gridlet.Tests.AspNetCore;
@@ -66,6 +68,23 @@ public class GridletEndpointTests
         Assert.Contains("Main", body);
         Assert.Contains(FakeGridletProvider.Name, body);
         Assert.DoesNotContain("secret-host", body);
+        Assert.Contains("\"maxQueryResultRows\":10000", body);
+    }
+
+    [Fact]
+    public async Task Meta_exposes_the_developer_configured_query_safety_cap()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(o =>
+        {
+            o.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            o.Limits.MaxQueryResultRows = 12_345;
+            o.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+
+        var body = await client.GetStringAsync("/gridlet/api/meta");
+
+        Assert.Contains("\"maxQueryResultRows\":12345", body);
     }
 
     [Fact]
@@ -116,6 +135,23 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Data_stream_returns_progressive_events()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream?maxRows=100");
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/x-ndjson", response.Content.Headers.ContentType!.MediaType);
+        Assert.Contains("\"type\":\"resultSet\"", body);
+        Assert.Contains("\"type\":\"rows\"", body);
+        Assert.Contains("\"type\":\"completed\"", body);
+    }
+
+    [Fact]
     public async Task Query_executes_and_returns_result_sets()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();
@@ -126,7 +162,11 @@ public class GridletEndpointTests
             new { sql = "SELECT 42" });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/x-ndjson", response.Content.Headers.ContentType!.MediaType);
         var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("\"type\":\"started\"", body);
+        Assert.Contains("\"type\":\"rows\"", body);
+        Assert.Contains("\"type\":\"completed\"", body);
         Assert.Contains("42", body);
         Assert.Contains("hello from fake", body);
     }
@@ -143,6 +183,25 @@ public class GridletEndpointTests
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Contains("kaboom", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Query_row_cap_cannot_exceed_the_developer_configured_maximum()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(o =>
+        {
+            o.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            o.Limits.MaxQueryResultRows = 250;
+            o.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+
+        await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query",
+            new { sql = "SELECT 42", maxRows = 50_000 });
+
+        var provider = Assert.IsType<FakeGridletProvider>(app.Services.GetRequiredService<IGridletProvider>());
+        Assert.Equal(250, provider.LastQueryOptions!.MaxRowsPerResultSet);
     }
 
     [Fact]

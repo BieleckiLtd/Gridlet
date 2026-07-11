@@ -5,6 +5,31 @@ namespace Gridlet.SqlServer;
 
 public sealed class SqlServerSchemaReader : ISchemaReader
 {
+    public async Task<IReadOnlyList<SchemaInfo>> GetSchemasAsync(
+        GridletConnectionContext context,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql =
+            """
+            SELECT s.name, USER_NAME(s.principal_id) AS owner_name
+            FROM sys.schemas s
+            ORDER BY s.name;
+            """;
+
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+
+        var schemas = new List<SchemaInfo>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            schemas.Add(new SchemaInfo(reader.GetString(0), reader.IsDBNull(1) ? "" : reader.GetString(1)));
+        }
+
+        return schemas;
+    }
+
     public async Task<IReadOnlyList<DatabaseInfo>> GetDatabasesAsync(
         GridletConnectionContext context,
         CancellationToken cancellationToken = default)

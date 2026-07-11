@@ -74,5 +74,29 @@ public class SqlServerDdlBuilderTests
         Assert.Equal(
             "DROP TABLE [dbo].[T];",
             SqlServerDdlBuilder.BuildDropTable("dbo", "T"));
+        Assert.Equal(
+            "DROP VIEW [dbo].[V];",
+            SqlServerDdlBuilder.BuildDropObject("dbo", "V", DbObjectType.View));
+        Assert.Equal(
+            "DROP PROCEDURE [dbo].[P];",
+            SqlServerDdlBuilder.BuildDropObject("dbo", "P", DbObjectType.StoredProcedure));
+    }
+
+    [Fact]
+    public void Builds_safe_create_schema_if_missing()
+    {
+        Assert.Equal(
+            "IF SCHEMA_ID(@schema) IS NULL EXEC(N'CREATE SCHEMA [sales'']]archive]');",
+            SqlServerDdlBuilder.BuildCreateSchemaIfMissing("sales']archive"));
+    }
+
+    [Fact]
+    public void Builds_schema_operations()
+    {
+        Assert.Equal("CREATE SCHEMA [sales] AUTHORIZATION [reporting_user];",
+            SqlServerDdlBuilder.BuildCreateSchema(new SchemaDesign("sales", "reporting_user")));
+        Assert.Equal("ALTER AUTHORIZATION ON SCHEMA::[sales] TO [dbo];",
+            SqlServerDdlBuilder.BuildAlterSchemaOwner("sales", "dbo"));
+        Assert.Equal("DROP SCHEMA [sales];", SqlServerDdlBuilder.BuildDropSchema("sales"));
     }
 }

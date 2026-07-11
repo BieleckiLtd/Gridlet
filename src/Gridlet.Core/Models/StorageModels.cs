@@ -9,8 +9,12 @@ public sealed record SavedQuery(
     string Sql,
     DateTimeOffset UpdatedAtUtc);
 
-/// <summary>A parameter of a published API endpoint, bound to a SQL parameter of the same name.</summary>
-public sealed record PublishedParameter(string Name, bool Required);
+/// <summary>
+/// A value parameter of a published API endpoint, bound to a SQL parameter of the same name.
+/// Type is one of auto, string, integer, number, or boolean. Auto preserves the value supplied
+/// by a JSON client and treats query-string values as strings.
+/// </summary>
+public sealed record PublishedParameter(string Name, bool Required, string Type = "auto");
 
 /// <summary>
 /// A data operation published as an HTTP endpoint under the Gridlet mount path
