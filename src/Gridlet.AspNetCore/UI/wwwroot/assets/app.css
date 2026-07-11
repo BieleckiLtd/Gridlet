@@ -44,7 +44,7 @@ html, body {
 }
 
 .brand { font-weight: 650; font-size: 15px; letter-spacing: 0.3px; display: flex; align-items: center; gap: 7px; }
-.brand-mark { width: 24px; height: 24px; border-radius: 5px; object-fit: cover; }
+.brand-mark { width: 24px; height: 24px; }
 
 .picker { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
 
@@ -434,7 +434,7 @@ pre.code {
 }
 
 .empty-inner { text-align: center; color: var(--muted); }
-.empty-mark { width: 96px; height: 96px; border-radius: 18px; object-fit: cover; margin-bottom: 14px; opacity: 0.82; }
+.empty-mark { width: 96px; height: 96px; margin-bottom: 14px; }
 
 #toast-stack {
   position: fixed;
