@@ -7,18 +7,18 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <!-- Projects opt in to packing explicitly (the three src/ packages). -->
+    <!-- Projects opt in to packing explicitly (the src/ packages). -->
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <!-- Shared NuGet package metadata for packable projects. -->
   <PropertyGroup>
-    <Version>1.1.1</Version>
+    <Version>1.2.0</Version>
     <Authors>BieleckiLtd</Authors>
     <Product>Gridlet</Product>
     <RepositoryUrl>https://github.com/BieleckiLtd/Gridlet</RepositoryUrl>
     <PackageProjectUrl>https://github.com/BieleckiLtd/Gridlet</PackageProjectUrl>
-    <PackageTags>sql-server;database;admin;aspnetcore;management;embedded</PackageTags>
+    <PackageTags>sql-server;sqlite;database;admin;aspnetcore;management;embedded</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageIcon>icon_sm.png</PackageIcon>

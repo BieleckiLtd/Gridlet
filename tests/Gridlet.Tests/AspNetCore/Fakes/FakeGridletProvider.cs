@@ -5,9 +5,10 @@ namespace Gridlet.Tests.AspNetCore.Fakes;
 
 /// <summary>An in-memory provider so endpoint behaviour can be tested without a database.</summary>
 public sealed class FakeGridletProvider :
-    IGridletProvider, ISchemaReader, ITableDataService, IQueryRunner, ITableWriteService, ITableDdlService
+    IGridletProvider, IGridletProviderMetadata, ISchemaReader, ITableDataService, IQueryRunner,
+    ITableWriteService, ITableDdlService
 {
-    public const string Name = "Fake";
+    public const GridletProviderNames Name = GridletProviderNames.SqlServer;
 
     /// <summary>Human-readable record of every write/DDL call, for assertions.</summary>
     public List<string> Calls { get; } = [];
@@ -17,7 +18,23 @@ public sealed class FakeGridletProvider :
 
     public QueryRequestOptions? LastQueryOptions { get; private set; }
 
-    public string ProviderName => Name;
+    public string? LastQuerySql { get; private set; }
+
+    public GridletProviderNames ProviderName => Name;
+
+    public GridletProviderCapabilities Capabilities { get; } = new(
+        DefaultSchema: "dbo",
+        SupportsSchemas: true,
+        SupportsViews: true,
+        SupportsStoredProcedures: true,
+        SupportsFunctions: true,
+        SupportsTriggers: true,
+        SupportsClusteredPrimaryKeys: true,
+        SuggestedDataTypes: ["int", "nvarchar(100)"],
+        SelectExample: "SELECT TOP (100) * FROM {object};",
+        CreateTriggerExample:
+            "CREATE TRIGGER dbo.NewTrigger\nON dbo.Customers\nAFTER INSERT\nAS\nBEGIN\n    SELECT 1;\nEND;",
+        ObjectEditMode: "Alter");
 
     public ISchemaReader Schema => this;
 
@@ -44,7 +61,11 @@ public sealed class FakeGridletProvider :
         => Task.FromResult<IReadOnlyList<DbObjectInfo>>(
         [
             new DbObjectInfo("dbo", "Customers", DbObjectType.Table),
+            new DbObjectInfo("dbo", "NoKeys", DbObjectType.Table),
             new DbObjectInfo("dbo", "vw_Orders", DbObjectType.View),
+            new DbObjectInfo("dbo", "RefreshOrders", DbObjectType.StoredProcedure),
+            new DbObjectInfo("dbo", "OrderCount", DbObjectType.ScalarFunction),
+            new DbObjectInfo("dbo", "AuditCustomers", DbObjectType.Trigger),
         ]);
 
     public Task<IReadOnlyList<SchemaInfo>> GetSchemasAsync(
@@ -60,15 +81,22 @@ public sealed class FakeGridletProvider :
         => Task.FromResult(new TableDefinition(
             new DbObjectInfo(schema, name, DbObjectType.Table),
             [
-                new ColumnInfo("Id", "int", false, true, false, true, null, 0),
+                new ColumnInfo("Id", "int", false, true, false, name != "NoKeys", null, 0),
                 new ColumnInfo("Name", "nvarchar(100)", false, false, false, false, null, 1),
             ],
-            [new IndexInfo("PK_" + name, "CLUSTERED", true, true, ["Id"])],
+            name == "NoKeys"
+                ? []
+                : [
+                    new IndexInfo("PK_" + name, "CLUSTERED", true, true, ["Id"]),
+                    new IndexInfo("IX_" + name + "_Name", "NONCLUSTERED", false, false, ["Name"]),
+                ],
             []));
 
     public Task<string?> GetObjectDefinitionAsync(
         GridletConnectionContext context, string schema, string name, CancellationToken cancellationToken = default)
-        => Task.FromResult<string?>($"CREATE VIEW {schema}.{name} AS SELECT 1 AS One;");
+        => Task.FromResult<string?>(name == "AuditCustomers"
+            ? $"CREATE TRIGGER {schema}.{name} ON {schema}.Customers AFTER INSERT AS SELECT 1;"
+            : $"CREATE VIEW {schema}.{name} AS SELECT 1 AS One;");
 
     // ---- data ----
 
@@ -89,6 +117,7 @@ public sealed class FakeGridletProvider :
         IReadOnlyDictionary<string, object?>? parameters = null,
         CancellationToken cancellationToken = default)
     {
+        LastQuerySql = sql;
         LastQueryParameters = parameters;
         LastQueryOptions = options;
         return sql == "boom"
@@ -110,6 +139,7 @@ public sealed class FakeGridletProvider :
         IReadOnlyDictionary<string, object?>? parameters = null,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        LastQuerySql = sql;
         LastQueryParameters = parameters;
         LastQueryOptions = options;
 

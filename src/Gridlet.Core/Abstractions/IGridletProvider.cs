@@ -8,7 +8,7 @@ namespace Gridlet.Abstractions;
 public interface IGridletProvider
 {
     /// <summary>Unique provider name matched against <see cref="GridletConnectionOptions.ProviderName"/>.</summary>
-    string ProviderName { get; }
+    GridletProviderNames ProviderName { get; }
 
     /// <summary>Reads databases, objects, and object structure.</summary>
     ISchemaReader Schema { get; }
@@ -24,4 +24,13 @@ public interface IGridletProvider
 
     /// <summary>Schema changes driven by the table designer.</summary>
     ITableDdlService Ddl { get; }
+}
+
+/// <summary>
+/// Optional provider metadata used to tailor the Gridlet UI. Keeping this separate from
+/// <see cref="IGridletProvider"/> preserves compatibility with existing third-party providers.
+/// </summary>
+public interface IGridletProviderMetadata
+{
+    Models.GridletProviderCapabilities Capabilities { get; }
 }

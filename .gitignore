@@ -30,3 +30,6 @@ appsettings.*.local.json
 ## Gridlet runtime state (saved queries / published endpoints of the demo host)
 samples/**/gridlet-store.json
 !samples/Gridlet.Demo/gridlet-store.json
+samples/Gridlet.Demo/*.db
+samples/Gridlet.Demo/*.db-shm
+samples/Gridlet.Demo/*.db-wal

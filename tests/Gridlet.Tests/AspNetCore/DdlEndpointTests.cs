@@ -61,6 +61,7 @@ public class DdlEndpointTests
         var dropConstraint = await client.DeleteAsync($"{Db}/objects/dbo/Widgets/constraints/FK_Widgets_Owners");
         var dropTable = await client.DeleteAsync($"{Db}/objects/dbo/Widgets");
         var dropView = await client.DeleteAsync($"{Db}/objects/dbo/WidgetView?type=View");
+        var dropTrigger = await client.DeleteAsync($"{Db}/objects/dbo/AuditWidgets?type=Trigger");
 
         Assert.Equal(HttpStatusCode.OK, create.StatusCode);
         Assert.Equal(HttpStatusCode.OK, addColumn.StatusCode);
@@ -71,6 +72,7 @@ public class DdlEndpointTests
         Assert.Equal(HttpStatusCode.OK, dropConstraint.StatusCode);
         Assert.Equal(HttpStatusCode.OK, dropTable.StatusCode);
         Assert.Equal(HttpStatusCode.OK, dropView.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, dropTrigger.StatusCode);
         Assert.Contains("createTable dbo.Widgets (1 columns)", fake.Calls);
         Assert.Contains("addColumn dbo.Widgets.Age", fake.Calls);
         Assert.Contains("alterColumn dbo.Widgets.Age -> Years", fake.Calls);
@@ -80,6 +82,7 @@ public class DdlEndpointTests
         Assert.Contains("dropConstraint dbo.Widgets.FK_Widgets_Owners", fake.Calls);
         Assert.Contains("dropObject Table dbo.Widgets", fake.Calls);
         Assert.Contains("dropObject View dbo.WidgetView", fake.Calls);
+        Assert.Contains("dropObject Trigger dbo.AuditWidgets", fake.Calls);
     }
 
     [Fact]

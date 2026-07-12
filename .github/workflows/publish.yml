@@ -1,6 +1,6 @@
 name: Publish
 
-# Publishes the three Gridlet packages to nuget.org when a version tag is pushed.
+# Publishes the four Gridlet packages to nuget.org when a version tag is pushed.
 # Uses nuget.org Trusted Publishing (OIDC) — no API key secret required.
 on:
   push:

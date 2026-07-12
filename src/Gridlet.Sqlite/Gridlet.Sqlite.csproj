@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <IsPackable>true</IsPackable>
+    <Description>SQLite provider for Gridlet, an embeddable web-based database management interface for ASP.NET Core.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <!-- Override Microsoft.Data.Sqlite's older native bundle, which is affected by
+         GHSA-2m69-gcr7-jv3q, with the current patched SQLitePCLRaw bundle. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Gridlet.Core\Gridlet.Core.csproj" />
+  </ItemGroup>
+
+</Project>

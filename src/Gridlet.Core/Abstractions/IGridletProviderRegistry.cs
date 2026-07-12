@@ -9,7 +9,7 @@ public interface IGridletProviderRegistry
     IReadOnlyList<IGridletProvider> All { get; }
 
     /// <summary>Returns the provider with the given name, or throws <see cref="GridletUnknownProviderException"/>.</summary>
-    IGridletProvider Get(string providerName);
+    IGridletProvider Get(GridletProviderNames providerName);
 
-    bool TryGet(string providerName, [NotNullWhen(true)] out IGridletProvider? provider);
+    bool TryGet(GridletProviderNames providerName, [NotNullWhen(true)] out IGridletProvider? provider);
 }

@@ -28,9 +28,11 @@ public sealed class GridletOptionsValidator : IValidateOptions<GridletOptions>
                 failures.Add($"Gridlet connection '{connection.Name}' has an empty ConnectionString.");
             }
 
-            if (string.IsNullOrWhiteSpace(connection.ProviderName))
+            if (connection.ProviderName == GridletProviderNames.Unspecified ||
+                !Enum.IsDefined(connection.ProviderName))
             {
-                failures.Add($"Gridlet connection '{connection.Name}' has an empty ProviderName.");
+                failures.Add(
+                    $"Gridlet connection '{connection.Name}' has an unsupported ProviderName '{connection.ProviderName}'.");
             }
         }
 

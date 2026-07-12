@@ -224,9 +224,12 @@
         label: 'Licences',
         render: () => h('div', {},
           h('h2', { text: 'Third-party software' }),
-          h('p', { text: 'Gridlet’s browser UI uses plain HTML, CSS, and JavaScript. The following Microsoft packages are used at runtime under the MIT License:' }),
+          h('p', { text: 'Gridlet’s browser UI uses plain HTML, CSS, and JavaScript. Its provider and hosting packages use these third-party projects:' }),
           h('ul', {},
             h('li', {}, h('a', { href: 'https://github.com/dotnet/SqlClient', target: '_blank', rel: 'noopener', text: 'Microsoft.Data.SqlClient ↗' })),
+            h('li', {}, h('a', { href: 'https://learn.microsoft.com/dotnet/standard/data/sqlite/', target: '_blank', rel: 'noopener', text: 'Microsoft.Data.Sqlite ↗' })),
+            h('li', {}, h('a', { href: 'https://github.com/ericsink/SQLitePCL.raw', target: '_blank', rel: 'noopener', text: 'SQLitePCLRaw ↗' })),
+            h('li', {}, h('a', { href: 'https://sqlite.org/copyright.html', target: '_blank', rel: 'noopener', text: 'SQLite ↗' })),
             h('li', {}, h('a', { href: 'https://github.com/dotnet/runtime', target: '_blank', rel: 'noopener', text: 'Microsoft.Extensions hosting abstractions ↗' })),
             h('li', {}, h('a', { href: 'https://github.com/dotnet/aspnetcore', target: '_blank', rel: 'noopener', text: 'ASP.NET Core and Embedded File Provider ↗' }))),
           h('p', { class: 'muted', text: 'Copyrights remain with their respective owners. Complete licence texts and notices are available from the linked projects.' })),
@@ -393,10 +396,21 @@
 
   const currentConn = () =>
     (state.meta && state.meta.connections.find((c) => c.name === state.connection)) || {};
+  const DEFAULT_CAPABILITIES = {
+    defaultSchema: 'dbo', supportsSchemas: true, supportsViews: true,
+    supportsStoredProcedures: true, supportsFunctions: true, supportsTriggers: true,
+    supportsClusteredPrimaryKeys: true,
+    suggestedDataTypes: ['int', 'nvarchar(100)'], selectExample: 'SELECT TOP (100) * FROM {object};',
+    createTriggerExample: 'CREATE TRIGGER dbo.NewTrigger ON dbo.SomeTable AFTER INSERT AS SELECT 1;',
+    objectEditMode: 'Alter',
+  };
+  const currentCapabilities = () => currentConn().capabilities || DEFAULT_CAPABILITIES;
 
-  const COMMON_TYPES = ['int', 'bigint', 'smallint', 'tinyint', 'bit', 'nvarchar(50)', 'nvarchar(100)',
-    'nvarchar(max)', 'varchar(50)', 'decimal(18,2)', 'money', 'float', 'date', 'time', 'datetime2',
-    'datetimeoffset', 'uniqueidentifier', 'varbinary(max)'];
+  function refreshTypeSuggestions() {
+    const list = $('#gridlet-types');
+    if (list) list.replaceChildren(...currentCapabilities().suggestedDataTypes
+      .map((type) => h('option', { value: type })));
+  }
 
   const SQL_KEYWORDS = (`ADD ALL ALTER AND ANY AS ASC AUTHORIZATION BACKUP BEGIN BETWEEN BREAK BROWSE BULK BY CASCADE CASE CHECK CHECKPOINT CLOSE CLUSTERED COALESCE COLLATE COLUMN COMMIT COMPUTE CONSTRAINT CONTAINS CONTINUE CONVERT CREATE CROSS CURRENT CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER CURSOR DATABASE DBCC DEALLOCATE DECLARE DEFAULT DELETE DENY DESC DISK DISTINCT DISTRIBUTED DOUBLE DROP DUMP ELSE END ERRLVL ESCAPE EXCEPT EXEC EXECUTE EXISTS EXIT EXTERNAL FETCH FILE FILLFACTOR FOR FOREIGN FREETEXT FROM FULL FUNCTION GOTO GRANT GROUP HAVING HOLDLOCK IDENTITY IDENTITYCOL IF IN INDEX INNER INSERT INTERSECT INTO IS JOIN KEY KILL LEFT LIKE LINENO LOAD MERGE NATIONAL NOCHECK NONCLUSTERED NOT NULL NULLIF OF OFF OFFSETS ON OPEN OPENDATASOURCE OPENQUERY OPENROWSET OPENXML OPTION OR ORDER OUTER OVER PERCENT PIVOT PLAN PRECISION PRIMARY PRINT PROC PROCEDURE PUBLIC RAISERROR READ READTEXT RECONFIGURE REFERENCES REPLICATION RESTORE RESTRICT RETURN REVERT REVOKE RIGHT ROLLBACK ROWCOUNT ROWGUIDCOL RULE SAVE SCHEMA SECURITYAUDIT SELECT SEMANTICKEYPHRASETABLE SEMANTICSIMILARITYDETAILSTABLE SEMANTICSIMILARITYTABLE SESSION_USER SET SETUSER SHUTDOWN SOME STATISTICS SYSTEM_USER TABLE TABLESAMPLE TEXTSIZE THEN TO TOP TRAN TRANSACTION TRIGGER TRUNCATE TRY_CONVERT TSEQUAL UNION UNIQUE UNPIVOT UPDATE UPDATETEXT USE USER VALUES VARYING VIEW WAITFOR WHEN WHERE WHILE WITH WITHIN GROUP WRITETEXT`).split(/\s+/);
   const SQL_FUNCTIONS = (`ABS AVG CAST CONCAT COUNT DATEADD DATEDIFF DATENAME DATEPART FORMAT GETDATE ISNULL LEN LOWER LTRIM MAX MIN NEWID OBJECT_ID REPLACE ROUND RTRIM SCOPE_IDENTITY STRING_AGG SUBSTRING SUM SYSDATETIME UPPER`).split(/\s+/);
@@ -424,7 +438,7 @@
     for (const match of sql.matchAll(sourcePattern)) {
       const alias = unquoteSqlIdentifier(match[3]);
       if (alias.toLowerCase() !== qualifier.toLowerCase()) continue;
-      const schema = match[2] ? unquoteSqlIdentifier(match[1]) : 'dbo';
+      const schema = match[2] ? unquoteSqlIdentifier(match[1]) : currentCapabilities().defaultSchema;
       const name = unquoteSqlIdentifier(match[2] || match[1]);
       object = state.objects.find((o) => o.schema.toLowerCase() === schema.toLowerCase() && o.name.toLowerCase() === name.toLowerCase());
       if (object) break;
@@ -561,8 +575,7 @@
     const navigationOverflow = setupOverflowToolbar($('#topbar'), [
       $('#version'), $('#about-btn'), $('#apis-btn'), $('#theme-btn'), $('#refresh-btn'),
     ], 'More app actions');
-    document.body.append(h('datalist', { id: 'gridlet-types' },
-      COMMON_TYPES.map((t) => h('option', { value: t }))));
+    document.body.append(h('datalist', { id: 'gridlet-types' }));
 
     try {
       state.meta = await api(urls.meta());
@@ -616,6 +629,7 @@
       return;
     }
     state.connection = name;
+    refreshTypeSuggestions();
     let databases;
     try {
       databases = await api(urls.databases(name));
@@ -654,7 +668,12 @@
 
   async function loadObjects() {
     try {
-      [state.objects, state.schemas] = await Promise.all([api(urls.objects()), api(urls.schemas())]);
+      if (currentCapabilities().supportsSchemas) {
+        [state.objects, state.schemas] = await Promise.all([api(urls.objects()), api(urls.schemas())]);
+      } else {
+        state.objects = await api(urls.objects());
+        state.schemas = [];
+      }
     } catch (err) {
       state.objects = [];
       state.schemas = [];
@@ -759,10 +778,11 @@
   // ---- sidebar tree ------------------------------------------------------------
 
   const SECTIONS = [
-    ['Tables', ['Table'], 'T'],
-    ['Views', ['View'], 'V'],
-    ['Stored procedures', ['StoredProcedure'], 'P'],
-    ['Functions', ['ScalarFunction', 'TableValuedFunction'], 'F'],
+    ['Tables', ['Table'], 'T', null],
+    ['Views', ['View'], 'V', 'supportsViews'],
+    ['Stored procedures', ['StoredProcedure'], 'P', 'supportsStoredProcedures'],
+    ['Functions', ['ScalarFunction', 'TableValuedFunction'], 'F', 'supportsFunctions'],
+    ['Triggers', ['Trigger'], 'R', 'supportsTriggers'],
   ];
 
   const treeViewStorageKey = () => `gridlet.tree.${state.connection}.${state.database}`;
@@ -791,38 +811,43 @@
     const filter = $('#search').value.trim().toLowerCase();
     const tree = $('#tree');
     tree.replaceChildren();
-    const schemaSummary = h('summary', {}, 'Schemas ',
-      h('span', { class: 'count', text: String(state.schemas.length) }));
-    if (currentConn().allowDdl) {
-      schemaSummary.append(h('button', {
-        class: 'mini-btn summary-add', title: 'Create schema',
-        onclick: (e) => { e.preventDefault(); e.stopPropagation(); openSchemaDialog(); },
-      }, '＋'));
+    const capabilities = currentCapabilities();
+    if (capabilities.supportsSchemas) {
+      const schemaSummary = h('summary', {}, 'Schemas ',
+        h('span', { class: 'count', text: String(state.schemas.length) }));
+      if (currentConn().allowDdl) {
+        schemaSummary.append(h('button', {
+          class: 'mini-btn summary-add', title: 'Create schema',
+          onclick: (e) => { e.preventDefault(); e.stopPropagation(); openSchemaDialog(); },
+        }, '＋'));
+      }
+      tree.append(treeSection('schemas', false, schemaSummary,
+        h('div', { class: 'items' }, state.schemas
+          .filter((s) => !filter || s.name.toLowerCase().includes(filter) || s.owner.toLowerCase().includes(filter))
+          .map((s) => h('button', {
+            class: 'tree-item', title: `${s.name} (owner: ${s.owner || 'unknown'})`,
+            onclick: () => openSchemaDialog(s),
+            oncontextmenu: (event) => showContextMenu(event, [
+              { label: 'Edit schema', action: () => openSchemaDialog(s) },
+              ...(currentConn().allowDdl ? [
+                { separator: true },
+                { label: 'Delete schema…', danger: true, action: () => deleteSchema(s) },
+              ] : []),
+            ]),
+          },
+            h('span', { class: 'badge badge-S', text: 'S' }),
+            h('span', { class: 'item-name', text: s.name }),
+            h('span', { class: 'schema-owner', text: s.owner })))), !!filter));
     }
-    tree.append(treeSection('schemas', false, schemaSummary,
-      h('div', { class: 'items' }, state.schemas
-        .filter((s) => !filter || s.name.toLowerCase().includes(filter) || s.owner.toLowerCase().includes(filter))
-        .map((s) => h('button', {
-          class: 'tree-item', title: `${s.name} (owner: ${s.owner || 'unknown'})`,
-          onclick: () => openSchemaDialog(s),
-          oncontextmenu: (event) => showContextMenu(event, [
-            { label: 'Edit schema', action: () => openSchemaDialog(s) },
-            ...(currentConn().allowDdl ? [
-              { separator: true },
-              { label: 'Delete schema…', danger: true, action: () => deleteSchema(s) },
-            ] : []),
-          ]),
-        },
-          h('span', { class: 'badge badge-S', text: 'S' }),
-          h('span', { class: 'item-name', text: s.name }),
-          h('span', { class: 'schema-owner', text: s.owner })))), !!filter));
 
-    for (const [label, types, badge] of SECTIONS) {
+    for (const [label, types, badge, capability] of SECTIONS) {
+      if (capability && !capabilities[capability]) continue;
       const items = state.objects.filter((o) =>
         types.includes(o.type) &&
         (!filter || (o.schema + '.' + o.name).toLowerCase().includes(filter)));
       const summary = h('summary', {}, label + ' ', h('span', { class: 'count', text: String(items.length) }));
-      if (currentConn().allowDdl && (badge === 'T' || currentConn().allowSqlExecution)) {
+      const canCreate = currentConn().allowDdl && (badge === 'T' || currentConn().allowSqlExecution);
+      if (canCreate) {
         summary.append(h('button', {
           class: 'mini-btn summary-add',
           title: `Create ${label.toLowerCase().replace(/s$/, '')}`,
@@ -894,7 +919,7 @@
   }
 
   function displayName(o) {
-    return o.schema + '.' + o.name;
+    return currentCapabilities().supportsSchemas ? o.schema + '.' + o.name : o.name;
   }
 
   const sqlName = (o) => `[${o.schema.replaceAll(']', ']]')}].[${o.name.replaceAll(']', ']]')}]`;
@@ -902,11 +927,13 @@
   function objectQuerySql(o) {
     if (o.type === 'StoredProcedure') return `EXEC ${sqlName(o)};`;
     if (o.type === 'ScalarFunction') return `SELECT ${sqlName(o)}(/* arguments */);`;
-    if (o.type === 'Table' || o.type === 'View') return `SELECT TOP (100) * FROM ${sqlName(o)};`;
+    if (o.type === 'Table' || o.type === 'View') {
+      return currentCapabilities().selectExample.replace('{object}', sqlName(o));
+    }
     return `SELECT * FROM ${sqlName(o)}(/* arguments */);`;
   }
 
-  const useInQueryButton = (o) => currentConn().allowSqlExecution ? h('button', {
+  const useInQueryButton = (o) => currentConn().allowSqlExecution && o.type !== 'Trigger' ? h('button', {
     onclick: () => openQueryTab(objectQuerySql(o), `Use ${o.name}`),
   }, 'Use in query') : null;
 
@@ -1024,7 +1051,7 @@
     }
   }
 
-  // ---- object tabs (tables, views, procedures, functions) -----------------------
+  // ---- object tabs (tables, views, procedures, functions, triggers) -------------
 
   function openObjectTab(o) {
     const key = `${o.type}:${o.schema}.${o.name}`;
@@ -1036,7 +1063,8 @@
 
     const badge = o.type === 'Table' ? 'T'
       : o.type === 'View' ? 'V'
-      : o.type === 'StoredProcedure' ? 'P' : 'F';
+      : o.type === 'StoredProcedure' ? 'P'
+      : o.type === 'Trigger' ? 'R' : 'F';
 
     const tab = {
       id: state.nextTabId++,
@@ -1427,7 +1455,7 @@
         const identityToggle = h('input', {
           type: 'checkbox',
           disabled: existing ? '' : null,
-          title: existing ? 'SQL Server cannot add or remove IDENTITY on an existing column.' : 'Identity',
+          title: existing ? 'Identity settings are fixed after creation.' : 'Identity',
         });
         identityToggle.checked = !!existing?.isIdentity;
         const identitySeed = h('input', { type: 'number', value: existing?.identitySeed ?? 1, title: 'Identity seed' });
@@ -1513,6 +1541,7 @@
         const name = h('input', { type: 'text', value: `PK_${o.name}` });
         const clustered = h('input', { type: 'checkbox' });
         clustered.checked = true;
+        clustered.disabled = !currentCapabilities().supportsClusteredPrimaryKeys;
         const choices = s.columns.filter((c) => !c.isComputed && !c.isNullable).map((c) => {
           const input = h('input', { type: 'checkbox' });
           return { column: c.name, input, label: h('label', { class: 'constraint-column' }, input, c.name) };
@@ -1521,7 +1550,10 @@
           h('label', { class: 'field-label' }, 'Constraint name', name),
           h('div', { class: 'field-label' }, 'Key columns (in table order)',
             h('div', { class: 'constraint-columns' }, choices.map((x) => x.label))),
-          h('label', { class: 'null-toggle' }, clustered, 'Clustered primary key'),
+          h('label', { class: 'null-toggle' }, clustered,
+            currentCapabilities().supportsClusteredPrimaryKeys
+              ? 'Clustered primary key'
+              : 'Clustered (not supported by this provider)'),
           h('p', { class: 'muted', text: 'Only NOT NULL columns are listed. Edit a nullable column first if it should become part of the key.' })), [
           { label: 'Cancel', onClick: (close) => close() },
           { label: 'Add primary key', primary: true, onClick: async (close, showError) => {
@@ -1728,7 +1760,11 @@
       return;
     }
 
-    const editor = createSqlEditor(definition.replace(/^\s*CREATE\s+(?:OR\s+ALTER\s+)?/i, 'ALTER '));
+    const recreatesObject = currentCapabilities().objectEditMode === 'Recreate';
+    const editableDefinition = recreatesObject
+      ? definition
+      : definition.replace(/^\s*CREATE\s+(?:OR\s+ALTER\s+)?/i, 'ALTER ');
+    const editor = createSqlEditor(editableDefinition);
     let appliedDefinition = editor.value;
     const error = h('div', { class: 'inline-error', hidden: '' });
     const save = h('button', { class: 'primary', text: 'Execute' });
@@ -1736,7 +1772,14 @@
       save.disabled = true;
       error.hidden = true;
       try {
-        await executeSql(editor.value);
+        let sql = editor.value;
+        if (recreatesObject) {
+          const dropType = o.type === 'Trigger' ? 'TRIGGER' : o.type === 'View' ? 'VIEW' : null;
+          if (!dropType) throw new Error(`Editing ${o.type} is not supported by this provider.`);
+          const createSql = editor.value.trim().replace(/;?\s*$/, ';');
+          sql = `BEGIN IMMEDIATE;\nDROP ${dropType} IF EXISTS ${sqlName(o)};\n${createSql}\nCOMMIT;`;
+        }
+        await executeSql(sql);
         appliedDefinition = editor.value;
         tab.hasUnsavedDefinition = false;
         toast(`${tab ? tab.title : o.name} updated.`, false);
@@ -1778,7 +1821,10 @@
       });
     };
     const useButton = useInQueryButton(o);
-    if (toolbar) toolbar.append(useButton, save);
+    if (toolbar) {
+      if (useButton) toolbar.append(useButton);
+      toolbar.append(save);
+    }
     body.replaceChildren(h('div', { class: 'inline-editor' },
       toolbar ? null : h('div', { class: 'inline-form' }, h('span', { class: 'spacer' }), useButton, save),
       editor, error));
@@ -1786,10 +1832,15 @@
 
   function openNewSchemaObject(type) {
     if (!state.database) { toast('Select a database first.'); return; }
+    const capabilities = currentCapabilities();
+    const schemaPrefix = capabilities.supportsSchemas
+      ? capabilities.defaultSchema
+      : `[${capabilities.defaultSchema.replaceAll(']', ']]')}]`;
     const templates = {
-      View: ['New view', 'CREATE VIEW dbo.NewView\nAS\n    SELECT 1 AS Value;'],
-      StoredProcedure: ['New procedure', 'CREATE PROCEDURE dbo.NewProcedure\nAS\nBEGIN\n    SET NOCOUNT ON;\n    SELECT 1 AS Value;\nEND;'],
-      ScalarFunction: ['New function', 'CREATE FUNCTION dbo.NewFunction (@value int)\nRETURNS int\nAS\nBEGIN\n    RETURN @value;\nEND;'],
+      View: ['New view', `CREATE VIEW ${schemaPrefix}.NewView\nAS\n    SELECT 1 AS Value;`],
+      StoredProcedure: ['New procedure', `CREATE PROCEDURE ${schemaPrefix}.NewProcedure\nAS\nBEGIN\n    SET NOCOUNT ON;\n    SELECT 1 AS Value;\nEND;`],
+      ScalarFunction: ['New function', `CREATE FUNCTION ${schemaPrefix}.NewFunction (@value int)\nRETURNS int\nAS\nBEGIN\n    RETURN @value;\nEND;`],
+      Trigger: ['New trigger', capabilities.createTriggerExample],
     };
     const template = templates[type];
     openQueryTab(template[1], template[0]);
@@ -1798,10 +1849,12 @@
   // ---- table designer -----------------------------------------------------------
 
   function openTableDesignerTab() {
+    const capabilities = currentCapabilities();
     const schemaInput = h('input', {
-      type: 'text', value: 'dbo', class: 'designer-name', 'data-testid': 'table-schema',
+      type: 'text', value: capabilities.defaultSchema, class: 'designer-name', 'data-testid': 'table-schema',
       'aria-label': 'Table schema',
     });
+    if (!capabilities.supportsSchemas) schemaInput.readOnly = true;
     const nameInput = h('input', {
       type: 'text', placeholder: 'TableName', class: 'designer-name', 'data-testid': 'table-name',
       'aria-label': 'Table name',
@@ -1847,7 +1900,9 @@
       syncKind();
     };
 
-    addColumnRow({ name: 'Id', type: 'int', pk: true, identity: true, nullable: false });
+    addColumnRow({
+      name: 'Id', type: capabilities.suggestedDataTypes[0] || '', pk: true, identity: true, nullable: false,
+    });
 
     const tab = {
       id: state.nextTabId++,
@@ -1861,7 +1916,7 @@
 
     const create = async () => {
       const design = {
-        schema: schemaInput.value.trim() || 'dbo',
+        schema: schemaInput.value.trim() || capabilities.defaultSchema,
         name: nameInput.value.trim(),
         columns: rows
           .filter((r) => r.name.value.trim())
@@ -1892,7 +1947,10 @@
 
     tab.panel = h('div', { class: 'panel query-panel' },
       h('div', { class: 'query-toolbar' },
-        h('span', { class: 'muted', text: 'Schema (created if needed)' }), schemaInput,
+        h('span', {
+          class: 'muted',
+          text: capabilities.supportsSchemas ? 'Schema (created if needed)' : 'Schema',
+        }), schemaInput,
         h('span', { class: 'muted', text: 'Name' }), nameInput,
         h('span', { class: 'spacer' }),
         h('button', { class: 'primary', onclick: create, 'data-testid': 'create-table' }, 'Create table')),
@@ -1913,7 +1971,9 @@
       return;
     }
 
-    const editor = createSqlEditor(initialSql, 'SELECT TOP (100) * FROM dbo.SomeTable');
+    const exampleObject = `[${currentCapabilities().defaultSchema.replaceAll(']', ']]')}].[SomeTable]`;
+    const editor = createSqlEditor(initialSql,
+      currentCapabilities().selectExample.replace('{object}', exampleObject));
     const results = h('div', { class: 'query-results', 'data-testid': 'query-results' });
     const status = h('span', { class: 'muted', 'data-testid': 'query-status' });
     const runButton = h('button', {

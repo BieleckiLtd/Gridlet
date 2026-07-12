@@ -265,6 +265,7 @@ button.ghost { background: transparent; }
 .badge-V { background: #2b3f63; color: #8fb7ff; }
 .badge-P { background: #55402a; color: #ffc07f; }
 .badge-F { background: #4b2a55; color: #dc9fff; }
+.badge-R { background: #573034; color: #ff9aa2; }
 .badge-S { background: #3b355e; color: #b9a9ff; }
 .badge-Q { background: #263244; color: #9db9e4; }
 
@@ -272,6 +273,7 @@ button.ghost { background: transparent; }
 :root[data-theme="light"] .badge-V { background: #dce8fa; color: #285b9f; }
 :root[data-theme="light"] .badge-P { background: #f6e8d8; color: #8b5319; }
 :root[data-theme="light"] .badge-F { background: #eeddf3; color: #743788; }
+:root[data-theme="light"] .badge-R { background: #f8dfe1; color: #92363d; }
 :root[data-theme="light"] .badge-S { background: #e6e0f5; color: #594692; }
 :root[data-theme="light"] .badge-Q { background: #e1e8f1; color: #405a7d; }
 

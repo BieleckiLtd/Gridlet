@@ -10,7 +10,7 @@ public interface ISchemaReader
         GridletConnectionContext context,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Lists user tables, views, stored procedures, and functions in the target database.</summary>
+    /// <summary>Lists user tables, views, stored procedures, functions, and triggers in the target database.</summary>
     Task<IReadOnlyList<DbObjectInfo>> GetObjectsAsync(
         GridletConnectionContext context,
         CancellationToken cancellationToken = default);
@@ -27,7 +27,7 @@ public interface ISchemaReader
         string name,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Returns the source text of a view, stored procedure, or function, or <c>null</c> when unavailable.</summary>
+    /// <summary>Returns the source text of a view, stored procedure, function, or trigger, or <c>null</c> when unavailable.</summary>
     Task<string?> GetObjectDefinitionAsync(
         GridletConnectionContext context,
         string schema,
