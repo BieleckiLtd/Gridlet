@@ -5,14 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Gridlet</title>
   <base href="%GRIDLET_BASE%/" />
-  <link rel="icon" type="image/png" href="assets/favicon.png" />
-  <link rel="apple-touch-icon" href="assets/icon.png" />
+  <link rel="icon" type="image/png" href="assets/icon_sm.png" />
+  <link rel="apple-touch-icon" href="assets/icon_sm.png" />
+  <script>
+    (() => {
+      let theme;
+      try { theme = localStorage.getItem('gridlet.theme'); } catch { /* unavailable */ }
+      if (theme !== 'light' && theme !== 'dark') {
+        theme = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
   <link rel="stylesheet" href="assets/app.css" />
 </head>
 <body>
   <div id="app">
     <header id="topbar">
-      <div class="brand"><img class="brand-mark" src="assets/icon.png" alt="" />Gridlet</div>
+      <div class="brand"><img class="brand-mark" src="assets/icon_sm.png" alt="" />Gridlet</div>
       <label class="picker">Connection
         <select id="connection-select"></select>
       </label>
@@ -21,6 +31,15 @@
       </label>
       <button id="refresh-btn" class="ghost" title="Reload objects">⟳</button>
       <div class="spacer"></div>
+      <button id="theme-btn" class="ghost theme-switch" title="Switch to light theme" aria-label="Switch to light theme">
+        <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="4"></circle>
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path>
+        </svg>
+        <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"></path>
+        </svg>
+      </button>
       <button id="apis-btn" class="ghost" title="Published API endpoints">APIs</button>
       <button id="new-query-btn" class="primary" title="Open an ad-hoc SQL workspace">Query</button>
       <button id="about-btn" class="ghost" title="About Gridlet, help, contributing, and licences">About</button>
@@ -30,8 +49,8 @@
       <aside id="sidebar">
         <input id="search" type="search" placeholder="Filter objects…" autocomplete="off" />
         <div id="tree" class="tree"></div>
+        <div id="sidebar-grip" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>
       </aside>
-      <div id="sidebar-grip" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>
       <section id="content">
         <div id="tabbar"></div>
         <div id="panels"></div>

@@ -10,9 +10,9 @@ namespace Microsoft.AspNetCore.Builder;
 public static class GridletEndpointRouteBuilderExtensions
 {
     /// <summary>
-    /// Maps the Gridlet UI and API under <paramref name="pattern"/>. Unless
-    /// <see cref="GridletSecurityOptions.AllowAnonymous"/> is set, every endpoint requires
-    /// authorization (the configured policy, or the host's default policy).
+    /// Maps the Gridlet UI and API under <paramref name="pattern"/>. A configured authorization
+    /// policy always applies. Otherwise, every endpoint requires the host's default authorization
+    /// policy unless <see cref="GridletSecurityOptions.AllowAnonymous"/> is set.
     /// </summary>
     /// <param name="endpoints">The application's endpoint route builder.</param>
     /// <param name="pattern">
@@ -32,16 +32,15 @@ public static class GridletEndpointRouteBuilderExtensions
 
         var group = endpoints.MapGroup(pattern);
 
-        if (!options.Security.AllowAnonymous)
+        if (options.Security.AuthorizationPolicy is { Length: > 0 } policy)
         {
-            if (options.Security.AuthorizationPolicy is { Length: > 0 } policy)
-            {
-                group.RequireAuthorization(policy);
-            }
-            else
-            {
-                group.RequireAuthorization();
-            }
+            // An explicitly selected policy is the strongest signal and always wins, even if
+            // AllowAnonymous was also set (for example by a development configuration layer).
+            group.RequireAuthorization(policy);
+        }
+        else if (!options.Security.AllowAnonymous)
+        {
+            group.RequireAuthorization();
         }
 
         GridletUiEndpoints.Map(group, pattern);

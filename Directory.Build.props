@@ -13,7 +13,7 @@
 
   <!-- Shared NuGet package metadata for packable projects. -->
   <PropertyGroup>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <Authors>BieleckiLtd</Authors>
     <Product>Gridlet</Product>
     <RepositoryUrl>https://github.com/BieleckiLtd/Gridlet</RepositoryUrl>
@@ -21,13 +21,13 @@
     <PackageTags>sql-server;database;admin;aspnetcore;management;embedded</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageIcon>icon.png</PackageIcon>
+    <PackageIcon>icon_sm.png</PackageIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" />
     <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" />
-    <None Include="$(MSBuildThisFileDirectory)assets\gridlet-icon.png" Pack="true" PackagePath="\icon.png" />
+    <None Include="$(MSBuildThisFileDirectory)icon_sm.png" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

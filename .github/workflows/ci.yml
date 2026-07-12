@@ -21,5 +21,8 @@ jobs:
       - name: Build
         run: dotnet build --no-restore --configuration Release
 
+      - name: Install browser test runtime
+        run: pwsh tests/Gridlet.BrowserTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+
       - name: Test
         run: dotnet test --no-build --configuration Release --logger "console;verbosity=normal"
