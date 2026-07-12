@@ -21,8 +21,14 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Build & test
-        run: dotnet test --configuration Release
+      - name: Build
+        run: dotnet build --configuration Release
+
+      - name: Install browser test runtime
+        run: pwsh tests/Gridlet.BrowserTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+
+      - name: Test
+        run: dotnet test --no-build --configuration Release
 
       - name: Pack
         run: dotnet pack --configuration Release --output ${{ github.workspace }}/artifacts/nupkg
