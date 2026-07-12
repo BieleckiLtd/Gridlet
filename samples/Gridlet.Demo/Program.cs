@@ -1,16 +1,26 @@
+using Gridlet;
 using Gridlet.Demo;
+using Microsoft.Data.Sqlite;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var connectionString = builder.Configuration.GetConnectionString("MySqlServer")
-    ?? throw new InvalidOperationException("ConnectionStrings:MySqlServer is not configured.");
+var configuredConnectionString = builder.Configuration.GetConnectionString("SQLite")
+    ?? throw new InvalidOperationException("ConnectionStrings:SQLite is not configured.");
+var connectionBuilder = new SqliteConnectionStringBuilder(configuredConnectionString);
+if (!string.Equals(connectionBuilder.DataSource, ":memory:", StringComparison.OrdinalIgnoreCase) &&
+    !Path.IsPathRooted(connectionBuilder.DataSource))
+{
+    connectionBuilder.DataSource = Path.Combine(builder.Environment.ContentRootPath, connectionBuilder.DataSource);
+}
+var connectionString = connectionBuilder.ConnectionString;
+builder.Configuration["ConnectionStrings:SQLite"] = connectionString;
 
 builder.Services.AddAuthorizationPolicies();
 
 builder.Services
     .AddGridlet(options =>
     {
-        options.AddConnection("LocalDB", connectionString);
+        options.AddConnection(builder.Configuration, "SQLite", GridletProviderNames.Sqlite);
 
         // Demo only.
         options.Security.AllowAnonymous = true;
@@ -19,7 +29,7 @@ builder.Services
 
         options.Limits.MaxQueryResultRows = 999_999;
     })
-    .AddSqlServer();
+    .AddSqlite();
 
 var app = builder.Build();
 

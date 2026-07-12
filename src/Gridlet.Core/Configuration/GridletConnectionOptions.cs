@@ -18,10 +18,10 @@ public sealed class GridletConnectionOptions
 
     /// <summary>
     /// Name of the registered <see cref="Abstractions.IGridletProvider"/> that serves this
-    /// connection. Defaults to <see cref="GridletProviderNames.SqlServer"/>; the matching provider
-    /// package must also be registered, for example with <c>AddSqlServer()</c>.
+    /// connection. The matching provider package must also be registered, for example with
+    /// <c>AddSqlServer()</c>.
     /// </summary>
-    public string ProviderName { get; set; } = GridletProviderNames.SqlServer;
+    public GridletProviderNames ProviderName { get; set; }
 
     /// <summary>
     /// Whether the ad-hoc SQL editor may execute statements against this connection.

@@ -10,7 +10,12 @@ public sealed record GridletMetaResponse(
     int MaxQueryResultRows);
 
 public sealed record GridletConnectionSummary(
-    string Name, string ProviderName, bool AllowSqlExecution, bool AllowWrites, bool AllowDdl);
+    string Name,
+    string ProviderName,
+    bool AllowSqlExecution,
+    bool AllowWrites,
+    bool AllowDdl,
+    GridletProviderCapabilities Capabilities);
 
 public sealed record DbObjectDto(string Schema, string Name, string Type);
 

@@ -10,7 +10,7 @@ public static class GridletServiceCollectionExtensions
 {
     /// <summary>
     /// Adds Gridlet to the host. Chain a provider registration afterwards, e.g.
-    /// <c>services.AddGridlet(o =&gt; o.AddConnection("Default", cs)).AddSqlServer();</c>
+    /// <c>services.AddGridlet(o =&gt; o.AddConnection("Default", cs, GridletProviderNames.SqlServer)).AddSqlServer();</c>
     /// then map the UI and API with <c>app.MapGridlet()</c>.
     /// </summary>
     /// <param name="services">The host application's service collection.</param>

@@ -1,4 +1,5 @@
 using Gridlet.Abstractions;
+using Gridlet.Models;
 using Gridlet.Tests.AspNetCore.Fakes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -22,6 +23,8 @@ public sealed class BrowserAppFixture : IAsyncLifetime
 
     public FakeGridletProvider Provider { get; } = new();
 
+    private IGridletProvider SqliteUiProvider => new BrowserSqliteProvider(Provider);
+
     public async Task InitializeAsync()
     {
         storePath = Path.Combine(Path.GetTempPath(), $"gridlet-browser-tests-{Guid.NewGuid():n}.json");
@@ -35,10 +38,12 @@ public sealed class BrowserAppFixture : IAsyncLifetime
         builder.Services.AddGridlet(options =>
         {
             options.AddConnection("Main", "Server=browser-test;", FakeGridletProvider.Name);
+            options.AddConnection("SQLite", "Data Source=browser-test.db;", BrowserSqliteProvider.Name);
             options.Security.AllowAnonymous = true;
             options.Storage.FilePath = storePath;
         });
         builder.Services.AddSingleton<IGridletProvider>(Provider);
+        builder.Services.AddSingleton(SqliteUiProvider);
 
         app = builder.Build();
         app.MapGridlet();
@@ -82,6 +87,37 @@ public sealed class BrowserAppFixture : IAsyncLifetime
             File.Delete(storePath);
         }
     }
+}
+
+internal sealed class BrowserSqliteProvider(FakeGridletProvider inner) : IGridletProvider, IGridletProviderMetadata
+{
+    public const GridletProviderNames Name = GridletProviderNames.Sqlite;
+
+    public GridletProviderNames ProviderName => Name;
+
+    public GridletProviderCapabilities Capabilities { get; } = new(
+        DefaultSchema: "main",
+        SupportsSchemas: false,
+        SupportsViews: true,
+        SupportsStoredProcedures: false,
+        SupportsFunctions: false,
+        SupportsTriggers: true,
+        SupportsClusteredPrimaryKeys: false,
+        SuggestedDataTypes: ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC"],
+        SelectExample: "SELECT * FROM {object} LIMIT 100;",
+        CreateTriggerExample:
+            "CREATE TRIGGER [main].[NewTrigger]\nAFTER INSERT ON [Customers]\nBEGIN\n    SELECT 1;\nEND;",
+        ObjectEditMode: "Recreate");
+
+    public ISchemaReader Schema => inner.Schema;
+
+    public ITableDataService Data => inner.Data;
+
+    public IQueryRunner Query => inner.Query;
+
+    public ITableWriteService Writes => inner.Writes;
+
+    public ITableDdlService Ddl => inner.Ddl;
 }
 
 public sealed class BrowserTestPage : IAsyncDisposable

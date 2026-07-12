@@ -76,6 +76,37 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Tailors_object_explorer_and_designer_to_provider_capabilities()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
+        await Assertions.Expect(page.Locator("#database-select")).ToHaveValueAsync("FakeDb");
+
+        var summaries = page.Locator("#tree summary");
+        await Assertions.Expect(summaries.Filter(new() { HasText = "Tables" })).ToHaveCountAsync(1);
+        await Assertions.Expect(summaries.Filter(new() { HasText = "Views" })).ToHaveCountAsync(1);
+        await Assertions.Expect(summaries.Filter(new() { HasText = "Schemas" })).ToHaveCountAsync(0);
+        await Assertions.Expect(summaries.Filter(new() { HasText = "Stored procedures" })).ToHaveCountAsync(0);
+        await Assertions.Expect(summaries.Filter(new() { HasText = "Functions" })).ToHaveCountAsync(0);
+        await Assertions.Expect(summaries.Filter(new() { HasText = "Triggers" })).ToHaveCountAsync(1);
+        await Assertions.Expect(page.GetByTitle("dbo.Customers").GetByText("Customers", new() { Exact = true }))
+            .ToBeVisibleAsync();
+
+        await page.GetByTitle("Create table").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByTestId("table-schema")).ToHaveValueAsync("main");
+        await Assertions.Expect(panel.Locator(".designer-grid input").Nth(1)).ToHaveValueAsync("INTEGER");
+        Assert.Equal(
+            ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC"],
+            await page.Locator("#gridlet-types option").EvaluateAllAsync<string[]>(
+                "options => options.map(option => option.value)"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Runs_a_query_and_exports_exact_csv_and_json()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -216,6 +247,138 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(control.Locator(".sql-highlight .sql-keyword").First)
             .ToHaveTextAsync("CREATE");
         Assert.Equal("sql", await control.GetAttributeAsync("data-editor-language"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Creates_views_procedures_functions_and_triggers_from_the_sidebar()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var scenarios = new[]
+        {
+            (Button: "Create view", Sql: "CREATE VIEW dbo.NewView\nAS\n    SELECT 1 AS Value;"),
+            (Button: "Create stored procedure", Sql: "CREATE PROCEDURE dbo.NewProcedure\nAS\nBEGIN\n    SET NOCOUNT ON;\n    SELECT 1 AS Value;\nEND;"),
+            (Button: "Create function", Sql: "CREATE FUNCTION dbo.NewFunction (@value int)\nRETURNS int\nAS\nBEGIN\n    RETURN @value;\nEND;"),
+            (Button: "Create trigger", Sql: "CREATE TRIGGER dbo.NewTrigger\nON dbo.Customers\nAFTER INSERT\nAS\nBEGIN\n    SELECT 1;\nEND;"),
+        };
+
+        foreach (var scenario in scenarios)
+        {
+            await page.GetByTitle(scenario.Button).ClickAsync();
+            var panel = ActivePanel(page);
+            await Assertions.Expect(panel.GetByTestId("sql-editor")).ToHaveValueAsync(scenario.Sql);
+            await panel.GetByTestId("query-run").ClickAsync();
+            await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+            Assert.Equal(scenario.Sql, fixture.Provider.LastQuerySql);
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Uses_provider_specific_trigger_editing_for_sql_server_and_sqlite()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("summary").Filter(new() { HasText = "Triggers" }).ClickAsync();
+        await page.GetByTitle("dbo.AuditCustomers").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByTestId("sql-editor")).ToHaveValueAsync(
+            "ALTER TRIGGER dbo.AuditCustomers ON dbo.Customers AFTER INSERT AS SELECT 1;");
+
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
+        await page.Locator("summary").Filter(new() { HasText = "Triggers" }).ClickAsync();
+        await page.GetByTitle("dbo.AuditCustomers").ClickAsync();
+        panel = ActivePanel(page);
+        const string definition =
+            "CREATE TRIGGER AuditCustomers AFTER INSERT ON Customers BEGIN SELECT 2; END;";
+        await panel.GetByTestId("sql-editor").FillAsync(definition);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Execute", Exact = true }).ClickAsync();
+
+        Assert.Equal(
+            "BEGIN IMMEDIATE;\nDROP TRIGGER IF EXISTS [dbo].[AuditCustomers];\n" + definition + "\nCOMMIT;",
+            fixture.Provider.LastQuerySql);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Edits_an_existing_schema_object_definition()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("summary").Filter(new() { HasText = "Views" }).ClickAsync();
+        await page.GetByTitle("dbo.vw_Orders").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Definition", Exact = true }).ClickAsync();
+
+        const string sql = "ALTER VIEW dbo.vw_Orders AS SELECT 2 AS Two;";
+        await panel.GetByTestId("sql-editor").FillAsync(sql);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Execute", Exact = true }).ClickAsync();
+
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "dbo.vw_Orders updated.", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.Equal(sql, fixture.Provider.LastQuerySql);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Adds_primary_and_foreign_keys_from_the_structure_designer()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.NoKeys").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Primary key", Exact = true }).ClickAsync();
+        var primaryKeyDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Add primary key" });
+        await primaryKeyDialog.GetByLabel("Id", new() { Exact = true }).CheckAsync();
+        await primaryKeyDialog.GetByRole(AriaRole.Button, new() { Name = "Add primary key", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "Primary key added.", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.Contains("addPrimaryKey dbo.NoKeys.PK_NoKeys", fixture.Provider.Calls);
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Foreign key", Exact = true }).ClickAsync();
+        var foreignKeyDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Add foreign key" });
+        await foreignKeyDialog.Locator("select").First.SelectOptionAsync("dbo\0Customers");
+        await Assertions.Expect(foreignKeyDialog.Locator(".constraint-pair")).ToHaveCountAsync(1);
+        await foreignKeyDialog.GetByRole(AriaRole.Button, new() { Name = "Add foreign key", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "Foreign key added.", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.Contains("addForeignKey dbo.NoKeys.FK_NoKeys_Customers", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Displays_indexes_and_executes_index_ddl()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByRole(AriaRole.Cell, new() { Name = "IX_Customers_Name" }))
+            .ToBeVisibleAsync();
+
+        const string sql = "CREATE UNIQUE INDEX IX_Customers_Name_Unique ON dbo.Customers ([Name]);";
+        await page.Locator("#new-query-btn").ClickAsync();
+        panel = ActivePanel(page);
+        await panel.GetByTestId("sql-editor").FillAsync(sql);
+        await panel.GetByTestId("query-run").ClickAsync();
+
+        await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        Assert.Equal(sql, fixture.Provider.LastQuerySql);
         browserPage.AssertNoUnexpectedErrors();
     }
 

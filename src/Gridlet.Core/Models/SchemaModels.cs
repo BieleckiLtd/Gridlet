@@ -11,6 +11,7 @@ public enum DbObjectType
     StoredProcedure,
     ScalarFunction,
     TableValuedFunction,
+    Trigger,
 }
 
 /// <summary>A schema-qualified database object.</summary>

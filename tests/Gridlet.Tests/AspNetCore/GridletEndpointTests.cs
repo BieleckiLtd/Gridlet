@@ -66,9 +66,12 @@ public class GridletEndpointTests
         var body = await client.GetStringAsync("/gridlet/api/meta");
 
         Assert.Contains("Main", body);
-        Assert.Contains(FakeGridletProvider.Name, body);
+        Assert.Contains(FakeGridletProvider.Name.ToString(), body);
         Assert.DoesNotContain("secret-host", body);
         Assert.Contains("\"maxQueryResultRows\":10000", body);
+        Assert.Contains("\"defaultSchema\":\"dbo\"", body);
+        Assert.Contains("\"supportsStoredProcedures\":true", body);
+        Assert.Contains("\"supportsTriggers\":true", body);
     }
 
     [Fact]
@@ -120,6 +123,7 @@ public class GridletEndpointTests
 
         Assert.Contains("\"Table\"", body);
         Assert.Contains("\"View\"", body);
+        Assert.Contains("\"Trigger\"", body);
     }
 
     [Fact]

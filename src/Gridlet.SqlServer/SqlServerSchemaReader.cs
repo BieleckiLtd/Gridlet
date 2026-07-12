@@ -65,7 +65,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             SELECT s.name AS [schema], o.name, o.type
             FROM sys.objects o
             JOIN sys.schemas s ON s.schema_id = o.schema_id
-            WHERE o.type IN ('U', 'V', 'P', 'FN', 'IF', 'TF')
+            WHERE o.type IN ('U', 'V', 'P', 'FN', 'IF', 'TF', 'TR')
               AND o.is_ms_shipped = 0
             ORDER BY s.name, o.name;
             """;
@@ -289,6 +289,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             "P" => DbObjectType.StoredProcedure,
             "FN" => DbObjectType.ScalarFunction,
             "IF" or "TF" => DbObjectType.TableValuedFunction,
+            "TR" => DbObjectType.Trigger,
             _ => null,
         };
 }

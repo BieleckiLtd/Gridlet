@@ -5,10 +5,12 @@
   <Folder Name="/src/">
     <Project Path="src/Gridlet.AspNetCore/Gridlet.AspNetCore.csproj" />
     <Project Path="src/Gridlet.Core/Gridlet.Core.csproj" />
+    <Project Path="src/Gridlet.Sqlite/Gridlet.Sqlite.csproj" />
     <Project Path="src/Gridlet.SqlServer/Gridlet.SqlServer.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Gridlet.BrowserTests/Gridlet.BrowserTests.csproj" />
+    <Project Path="tests/Gridlet.ConsumerCompileTest/Gridlet.ConsumerCompileTest.csproj" />
     <Project Path="tests/Gridlet.Tests/Gridlet.Tests.csproj" />
   </Folder>
 </Solution>

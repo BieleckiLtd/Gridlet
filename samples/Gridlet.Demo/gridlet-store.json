@@ -1,113 +1,46 @@
 {
   "SavedQueries": [
     {
-      "Id": "8f66cc01bc0e418caf795a16cc5c0ba3",
-      "Name": "Q1",
-      "ConnectionName": "LocalDB",
-      "Database": "GridletSample",
-      "Sql": "SELECT * FROM vw_OrderSummary;",
-      "UpdatedAtUtc": "2026-07-10T19:27:58.7265269+00:00"
-    },
-    {
-      "Id": "d79be395b85c4a65a7c7827e3e8adc71",
-      "Name": "stress",
-      "ConnectionName": "LocalDB",
-      "Database": "GridletSample",
-      "Sql": "SET NOCOUNT ON;\n\nWITH Numbers AS\n(\n    SELECT TOP (500000)\n        ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNumber\n    FROM sys.all_objects a\n    CROSS JOIN sys.all_objects b\n)\nSELECT\n    RowNumber,\n    HASHBYTES(\n        \u0027SHA2_512\u0027,\n        REPLICATE(CONVERT(varchar(max), RowNumber), 100)\n    ) AS CalculatedValue,\n    REPLICATE(N\u0027X\u0027, 500) AS SampleData\nFROM Numbers\nORDER BY RowNumber;",
-      "UpdatedAtUtc": "2026-07-11T10:46:12.9833594+00:00"
+      "Id": "sample-order-summary-query",
+      "Name": "Order summary",
+      "ConnectionName": "SQLite",
+      "Database": "main",
+      "Sql": "SELECT * FROM vw_OrderSummary ORDER BY OrderedAtUtc DESC LIMIT 100;",
+      "UpdatedAtUtc": "2026-07-12T00:00:00+00:00"
     }
   ],
   "PublishedEndpoints": [
     {
-      "Id": "062aea0dd9fd48cdb3d69f27aa0dca04",
-      "Name": "Q1",
-      "Method": "GET",
-      "Route": "q1",
-      "ConnectionName": "LocalDB",
-      "Database": "GridletSample",
-      "Sql": "SELECT * FROM vw_OrderSummary;",
-      "Parameters": [],
-      "AuthorizationPolicy": null,
-      "Enabled": true,
-      "UpdatedAtUtc": "2026-07-10T19:28:50.5683428+00:00"
-    },
-    {
-      "Id": "0c0b4de2306e4894b45d181bd11bd6e9",
-      "Name": "Customers",
+      "Id": "sample-customers-endpoint",
+      "Name": "Customers by country",
       "Method": "GET",
       "Route": "customers",
-      "ConnectionName": "LocalDB",
-      "Database": "GridletSample",
-      "Sql": "SELECT * FROM [dbo].[Customers] WHERE [Country] = @c",
+      "ConnectionName": "SQLite",
+      "Database": "main",
+      "Sql": "SELECT * FROM Customers WHERE Country = @country ORDER BY LastName, FirstName;",
       "Parameters": [
         {
-          "Name": "c",
-          "Required": false,
-          "Type": "auto"
-        }
-      ],
-      "AuthorizationPolicy": null,
-      "Enabled": true,
-      "UpdatedAtUtc": "2026-07-10T22:29:48.7252053+00:00"
-    },
-    {
-      "Id": "062988b7c32e47aca814144ccb48c69a",
-      "Name": "stress",
-      "Method": "GET",
-      "Route": "stress",
-      "ConnectionName": "LocalDB",
-      "Database": "GridletSample",
-      "Sql": "SET NOCOUNT ON;\n\nWITH Numbers AS\n(\n    SELECT TOP (500000)\n        ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNumber\n    FROM sys.all_objects a\n    CROSS JOIN sys.all_objects b\n)\nSELECT\n    RowNumber,\n    HASHBYTES(\n        \u0027SHA2_512\u0027,\n        REPLICATE(CONVERT(varchar(max), RowNumber), 100)\n    ) AS CalculatedValue,\n    REPLICATE(N\u0027X\u0027, 500) AS SampleData\nFROM Numbers\nORDER BY RowNumber;",
-      "Parameters": [],
-      "AuthorizationPolicy": null,
-      "Enabled": true,
-      "UpdatedAtUtc": "2026-07-11T19:09:31.211529+00:00",
-      "MaxRows": 0
-    },
-    {
-      "Id": "537cb380bd6b474899f8e10cf75abad3",
-      "Name": "Run usp_GetCustomerOrders",
-      "Method": "POST",
-      "Route": "run-usp-getcustomerorders",
-      "ConnectionName": "LocalDB",
-      "Database": "GridletSample",
-      "Sql": "EXEC [dbo].[usp_GetCustomerOrders] @customerId;",
-      "Parameters": [
-        {
-          "Name": "customerId",
+          "Name": "country",
           "Required": true,
-          "Type": "integer"
+          "Type": "string"
         }
       ],
       "AuthorizationPolicy": null,
       "Enabled": true,
-      "UpdatedAtUtc": "2026-07-11T19:13:02.9542981+00:00"
-    },
-    {
-      "Id": "721ac5e6fd0240fca4b9af135be02038",
-      "Name": "dbo.vw_OrderSummary",
-      "Method": "GET",
-      "Route": "dbo-vw-ordersummary",
-      "ConnectionName": "LocalDB",
-      "Database": "GridletSample",
-      "Sql": "SELECT * FROM [dbo].[vw_OrderSummary];",
-      "Parameters": [],
-      "AuthorizationPolicy": null,
-      "Enabled": true,
-      "UpdatedAtUtc": "2026-07-11T20:03:50.0607076+00:00"
+      "UpdatedAtUtc": "2026-07-12T00:00:00+00:00"
     },
     {
       "Id": "sample-odd-second-endpoint",
       "Name": "Odd-second policy demo",
       "Method": "GET",
       "Route": "samples/odd-second",
-      "ConnectionName": "LocalDB",
-      "Database": "GridletSample",
-      "Sql": "SELECT SYSUTCDATETIME() AS ExecutedAtUtc, \u0027OddSecond policy passed\u0027 AS Message;",
+      "ConnectionName": "SQLite",
+      "Database": "main",
+      "Sql": "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS ExecutedAtUtc, 'OddSecond policy passed' AS Message;",
       "Parameters": [],
       "AuthorizationPolicy": "OddSecond",
       "Enabled": true,
-      "UpdatedAtUtc": "2026-07-11T20:04:34.375299+00:00"
+      "UpdatedAtUtc": "2026-07-12T00:00:00+00:00"
     }
   ]
 }

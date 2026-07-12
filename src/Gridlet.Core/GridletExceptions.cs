@@ -15,10 +15,10 @@ public sealed class GridletUnknownConnectionException(string connectionName)
 }
 
 /// <summary>Thrown when a connection references a provider that is not registered.</summary>
-public sealed class GridletUnknownProviderException(string providerName)
+public sealed class GridletUnknownProviderException(GridletProviderNames providerName)
     : GridletException($"No Gridlet provider named '{providerName}' is registered. Did you forget to call Add{providerName}() on the Gridlet builder?")
 {
-    public string ProviderName { get; } = providerName;
+    public GridletProviderNames ProviderName { get; } = providerName;
 }
 
 /// <summary>Thrown when a requested database object does not exist.</summary>

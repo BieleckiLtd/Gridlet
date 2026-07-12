@@ -22,6 +22,20 @@ internal static partial class GridletApiEndpoints
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion.Split('+')[0] ?? "dev";
 
+    private static readonly GridletProviderCapabilities LegacyProviderCapabilities = new(
+        DefaultSchema: "dbo",
+        SupportsSchemas: true,
+        SupportsViews: true,
+        SupportsStoredProcedures: true,
+        SupportsFunctions: true,
+        SupportsTriggers: true,
+        SupportsClusteredPrimaryKeys: true,
+        SuggestedDataTypes: ["int", "nvarchar(100)"],
+        SelectExample: "SELECT TOP (100) * FROM {object};",
+        CreateTriggerExample:
+            "CREATE TRIGGER dbo.NewTrigger\nON dbo.SomeTable\nAFTER INSERT\nAS\nBEGIN\n    SELECT 1;\nEND;",
+        ObjectEditMode: "Alter");
+
     [GeneratedRegex(@"^[a-zA-Z0-9][a-zA-Z0-9\-_/]*$")]
     private static partial Regex RoutePattern();
 
@@ -68,10 +82,20 @@ internal static partial class GridletApiEndpoints
 
     // ---- meta & schema ----
 
-    private static IResult GetMeta(IOptionsMonitor<GridletOptions> options)
+    private static IResult GetMeta(
+        IOptionsMonitor<GridletOptions> options,
+        IGridletProviderRegistry providers)
     {
         var connections = options.CurrentValue.Connections
-            .Select(c => new GridletConnectionSummary(c.Name, c.ProviderName, c.AllowSqlExecution, c.AllowWrites, c.AllowDdl))
+            .Select(c => new GridletConnectionSummary(
+                c.Name,
+                c.ProviderName.ToString(),
+                c.AllowSqlExecution,
+                c.AllowWrites,
+                c.AllowDdl,
+                providers.Get(c.ProviderName) is IGridletProviderMetadata metadata
+                    ? metadata.Capabilities
+                    : LegacyProviderCapabilities))
             .ToArray();
         return Results.Ok(new GridletMetaResponse(
             Version, connections, options.CurrentValue.Limits.MaxQueryResultRows));

@@ -4,7 +4,7 @@
 
 <h1 align="center">Gridlet</h1>
 
-Gridlet is an embeddable ASP.NET Core NuGet package that adds a configurable, web-based SQL Server
+Gridlet is an embeddable ASP.NET Core NuGet package that adds a configurable, web-based database
 management interface to an existing application — browse schema, view and page through data, inspect
 keys/indexes/relationships, and run queries, all from inside the host app using the host's own
 authentication, authorization, routing, logging, and deployment model.
@@ -12,6 +12,8 @@ authentication, authorization, routing, logging, and deployment model.
 ## Quick start
 
 ```csharp
+using Gridlet;
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddAuthentication(/* configure the host's authentication scheme */);
@@ -26,7 +28,10 @@ builder.Services.AddAuthorizationBuilder()
 builder.Services
     .AddGridlet(options =>
     {
-        options.AddConnection("Default", builder.Configuration.GetConnectionString("Default")!);
+        options.AddConnection(
+            builder.Configuration,
+            "Default", // configuration key and Gridlet display/route name
+            GridletProviderNames.SqlServer);
         // AllowAnonymous is false by default. This named host policy protects every endpoint
         // under /gridlet; leave the policy null to use the host's default authorization policy.
         options.Security.AuthorizationPolicy = "GridletAccess";
@@ -44,18 +49,34 @@ app.Run();
 Browse to `/gridlet`. Every Gridlet endpoint (UI and API) requires authorization by default;
 `options.Security.AllowAnonymous = true` exists for local development only.
 
+For SQLite, reference `Gridlet.Sqlite` and select its provider explicitly:
+
+```csharp
+builder.Services
+    .AddGridlet(options => options.AddConnection(
+        "Local",
+        "Data Source=App_Data/app.db;Foreign Keys=True",
+        GridletProviderNames.Sqlite))
+    .AddSqlite();
+```
+
+SQLite exposes its primary database and schema as `main`. It supports tables, views, indexes,
+foreign keys, generated columns, row editing, and table-designer DDL; stored procedures, functions,
+and user-created schemas are not SQLite features and are omitted from the UI.
+
 ## Developer configuration reference
 
 `AddGridlet` registers Gridlet and accepts an optional `Action<GridletOptions>`. Register at least
-one connection, then chain the provider package that matches its `ProviderName`:
+one connection, then chain the provider package that matches its `ProviderName` (`AddSqlServer()` or
+`AddSqlite()`):
 
 ```csharp
 builder.Services
     .AddGridlet(options =>
     {
         options.AddConnection(
-            name: "Reporting",
-            connectionString: builder.Configuration.GetConnectionString("Reporting")!,
+            configuration: builder.Configuration,
+            connectionName: "Reporting",
             providerName: GridletProviderNames.SqlServer,
             configure: connection =>
             {
@@ -92,8 +113,14 @@ builder.Services
 | --- | --- |
 | `name` | Unique, case-insensitive name displayed in the UI and embedded in API routes. |
 | `connectionString` | Provider-specific connection string used only on the server; it is never returned to the browser. Use a least-privileged database identity. |
-| `providerName` | Provider implementation used for this connection. Defaults to `GridletProviderNames.SqlServer`; chain `.AddSqlServer()` to register it. |
+| `providerName` | Required `GridletProviderNames` enum value selecting the provider implementation. Chain `.AddSqlServer()` or `.AddSqlite()` to register the selected provider. |
 | `configure` | Optional callback for the connection feature gates described below. |
+
+When the connection comes from the standard `ConnectionStrings` configuration section, prefer
+`AddConnection(configuration, connectionName, providerName, configure)`. It resolves the value and
+uses `connectionName` as the Gridlet display/route name, so the key is written only once. The
+raw-string overload still requires `name` because a resolved connection-string value no longer
+contains the configuration key it came from.
 
 ### Per-connection options
 
@@ -101,7 +128,7 @@ builder.Services
 | --- | --- | --- |
 | `Name` | Empty | Display and route name. Normally set by `AddConnection`. Must be non-empty and unique. |
 | `ConnectionString` | Empty | Secret server-side database connection string. Normally set by `AddConnection` and never exposed by Gridlet APIs. |
-| `ProviderName` | `SqlServer` | Selects the registered `IGridletProvider`. |
+| `ProviderName` | `GridletProviderNames.Unspecified` | Strongly typed provider selection. `Unspecified` is rejected during validation, and `AddConnection` requires a concrete value explicitly. |
 | `AllowSqlExecution` | `true` | Shows and enables the ad-hoc SQL editor. This permits any statement allowed by the database login, including writes or DDL; it is independent of the two UI feature gates below. |
 | `AllowWrites` | `true` | Enables Gridlet's explicit row insert/update/delete UI and endpoints. It does not prevent write statements submitted through the SQL editor. |
 | `AllowDdl` | `true` | Enables Gridlet's schema/table designer UI and endpoints. It does not prevent DDL submitted through the SQL editor. |
@@ -152,9 +179,10 @@ Query execution, row writes, schema changes, and published endpoint invocations 
 | `Gridlet.Core` | Provider-agnostic abstractions, domain model, options, auditing. |
 | `Gridlet.AspNetCore` | `AddGridlet()` / `MapGridlet()`, JSON API, embedded web UI. |
 | `Gridlet.SqlServer` | SQL Server provider (schema, data paging, query execution). |
+| `Gridlet.Sqlite` | SQLite provider (schema, data paging, query execution, writes, and DDL). |
 
 The provider boundary (`IGridletProvider` → `ISchemaReader`, `ITableDataService`, `IQueryRunner`)
-keeps the core and UI engine-neutral so `Gridlet.Postgres`, `Gridlet.MySql`, and `Gridlet.Sqlite`
+keeps the core and UI engine-neutral so providers such as `Gridlet.Postgres` and `Gridlet.MySql`
 can be added later without rewriting the product.
 
 ## Repository layout
@@ -164,17 +192,19 @@ src/
   Gridlet.Core/          core abstractions + domain model
   Gridlet.AspNetCore/    host integration, API endpoints, embedded UI
   Gridlet.SqlServer/     SQL Server provider
+  Gridlet.Sqlite/        SQLite provider
 tests/
   Gridlet.Tests/         unit tests + in-memory endpoint/auth tests (no DB required)
 samples/
-  Gridlet.Demo/          runnable demo against SQL Server LocalDB
+  Gridlet.Demo/          runnable demo against a local SQLite file
 ```
 
 ## Demo
 
-`samples/Gridlet.Demo` is the runnable sample project. It connects to `(localdb)\MSSQLLocalDB`,
-creates and seeds a `GridletSample` database on first run (customers/products/orders plus a view,
-a stored procedure, and a function), and mounts Gridlet at `/gridlet` with anonymous access.
+`samples/Gridlet.Demo` is the runnable sample project. It creates and seeds a local
+`GridletSample.db` SQLite database on first run (customers/products/orders plus a view and an audit
+trigger), and mounts
+Gridlet at `/gridlet` with anonymous access.
 It also registers an `OddSecond` ASP.NET Core authorization policy and includes a published endpoint
 definition in the sample `gridlet-store.json` for `GET /gridlet/pub/samples/odd-second`. The endpoint
 returns query results during odd-numbered UTC
@@ -216,9 +246,13 @@ You can configure a second named connection for published endpoints so their SQL
 least-privileged database user:
 
 ```csharp
-options.AddConnection("Management", adminConnectionString);
+options.AddConnection("Management", adminConnectionString, GridletProviderNames.SqlServer);
 
-options.AddConnection("PublishedApi", restrictedApiConnectionString, configure: connection =>
+options.AddConnection(
+    "PublishedApi",
+    restrictedApiConnectionString,
+    GridletProviderNames.SqlServer,
+    configure: connection =>
 {
     // Hide interactive mutation tools for this connection. These are Gridlet feature gates;
     // the restricted database user's GRANT/DENY permissions remain the security boundary.
@@ -308,9 +342,15 @@ FETCH NEXT @page_size ROWS ONLY;
 - [x] Export results and table data (CSV/JSON)
 - [x] Publish queries/operations as protected API endpoints
 - [x] Resizable grid columns (data grids and query results)
-- [ ] Create/edit views and stored procedures from the UI
-- [ ] Index/foreign-key designer
+- [x] Create/edit views, stored procedures, and functions from the UI
+- [x] Discover, create, edit, and delete database triggers
+- [x] Create/edit indexes and primary/foreign keys
 - [ ] Server-side full-table export (current export covers the loaded rows)
+
+## Next milestone
+
+- [x] Add SQLite support through a `Gridlet.Sqlite` provider, with provider-specific schema,
+  query, write, trigger, and DDL coverage
 
 ## Development
 
@@ -320,8 +360,8 @@ pwsh tests/Gridlet.BrowserTests/bin/Debug/net10.0/playwright.ps1 install chromiu
 dotnet test
 ```
 
-Tests run against an in-memory fake provider and the real endpoint pipeline — no SQL Server needed,
-so they also run in CI (`.github/workflows/ci.yml`). Browser tests start Gridlet on an ephemeral
+Tests run against an in-memory fake provider, temporary SQLite databases, and the real endpoint
+pipeline — no SQL Server needed, so they also run in CI (`.github/workflows/ci.yml`). Browser tests start Gridlet on an ephemeral
 loopback port and use headless Chromium; install its pinned Playwright browser once after cloning or
 after updating the Playwright package.
 
@@ -330,11 +370,13 @@ after updating the Playwright package.
 Gridlet's browser UI is implemented in plain HTML, CSS, and JavaScript; it does not bundle a
 third-party front-end framework, editor, icon set, or web font.
 
-The distributable packages use the following MIT-licensed Microsoft projects at runtime:
+The distributable packages use the following third-party projects at runtime:
 
 | Dependency | Used by |
 | --- | --- |
 | [`Microsoft.Data.SqlClient`](https://github.com/dotnet/SqlClient) | SQL Server connectivity |
+| [`Microsoft.Data.Sqlite`](https://learn.microsoft.com/dotnet/standard/data/sqlite/) | SQLite ADO.NET connectivity (MIT). |
+| [`SQLitePCLRaw`](https://github.com/ericsink/SQLitePCL.raw) and SQLite | Patched native SQLite bundle used by `Gridlet.Sqlite` (Apache-2.0 / public domain). |
 | [`Microsoft.Extensions.DependencyInjection.Abstractions`](https://github.com/dotnet/runtime), [`Microsoft.Extensions.Logging.Abstractions`](https://github.com/dotnet/runtime), and [`Microsoft.Extensions.Options`](https://github.com/dotnet/runtime) | Core hosting abstractions |
 | [`Microsoft.Extensions.FileProviders.Embedded`](https://github.com/dotnet/aspnetcore) and the ASP.NET Core shared framework | Embedded UI and ASP.NET Core integration |
 

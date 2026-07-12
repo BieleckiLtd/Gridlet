@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Configuration;
+
 namespace Gridlet;
 
 /// <summary>
@@ -27,13 +29,13 @@ public sealed class GridletOptions
     /// </summary>
     /// <param name="name">Unique display/route name for the connection.</param>
     /// <param name="connectionString">Provider-specific server-side connection string.</param>
-    /// <param name="providerName">Registered provider name; defaults to SQL Server.</param>
+    /// <param name="providerName">Registered provider serving this connection.</param>
     /// <param name="configure">Optional per-connection feature-gate configuration.</param>
     /// <returns>This options instance, allowing multiple calls to be chained.</returns>
     public GridletOptions AddConnection(
         string name,
         string connectionString,
-        string providerName = GridletProviderNames.SqlServer,
+        GridletProviderNames providerName,
         Action<GridletConnectionOptions>? configure = null)
     {
         var connection = new GridletConnectionOptions
@@ -46,11 +48,43 @@ public sealed class GridletOptions
         Connections.Add(connection);
         return this;
     }
+
+    /// <summary>
+    /// Adds the connection stored under <c>ConnectionStrings:{connectionName}</c>, using that
+    /// configuration key as its Gridlet display and route name.
+    /// </summary>
+    /// <param name="configuration">Host configuration containing the connection string.</param>
+    /// <param name="connectionName">Key within the standard <c>ConnectionStrings</c> section.</param>
+    /// <param name="providerName">Registered provider serving this connection.</param>
+    /// <param name="configure">Optional per-connection feature-gate configuration.</param>
+    public GridletOptions AddConnection(
+        IConfiguration configuration,
+        string connectionName,
+        GridletProviderNames providerName,
+        Action<GridletConnectionOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (string.IsNullOrWhiteSpace(connectionName))
+        {
+            throw new GridletValidationException("A connection-string configuration key is required.");
+        }
+
+        var connectionString = configuration.GetConnectionString(connectionName)
+            ?? throw new GridletValidationException(
+                $"ConnectionStrings:{connectionName} is not configured.");
+        return AddConnection(connectionName, connectionString, providerName, configure);
+    }
 }
 
-/// <summary>Well-known provider names.</summary>
-public static class GridletProviderNames
+/// <summary>Database providers supported by Gridlet.</summary>
+public enum GridletProviderNames
 {
-    /// <summary>Provider name registered by the Gridlet.SqlServer package.</summary>
-    public const string SqlServer = "SqlServer";
+    /// <summary>No provider selected. This value is rejected by configuration validation.</summary>
+    Unspecified,
+
+    /// <summary>Provider registered by the Gridlet.SqlServer package.</summary>
+    SqlServer,
+
+    /// <summary>Provider registered by the Gridlet.Sqlite package.</summary>
+    Sqlite,
 }

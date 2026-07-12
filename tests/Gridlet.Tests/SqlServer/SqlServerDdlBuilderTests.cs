@@ -80,6 +80,9 @@ public class SqlServerDdlBuilderTests
         Assert.Equal(
             "DROP PROCEDURE [dbo].[P];",
             SqlServerDdlBuilder.BuildDropObject("dbo", "P", DbObjectType.StoredProcedure));
+        Assert.Equal(
+            "DROP TRIGGER [dbo].[AuditT];",
+            SqlServerDdlBuilder.BuildDropObject("dbo", "AuditT", DbObjectType.Trigger));
     }
 
     [Fact]
