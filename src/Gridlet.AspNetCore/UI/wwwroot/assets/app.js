@@ -51,6 +51,94 @@
     return h('div', { class: 'error-box' }, message);
   }
 
+  function setupOverflowToolbar(toolbar, collapsible, label, reserve = 0) {
+    const menu = h('div', { class: 'toolbar-more-menu' });
+    const more = h('details', { class: 'toolbar-more', hidden: '' },
+      h('summary', { role: 'button', title: label, 'aria-label': label, text: '…' }), menu);
+    const records = collapsible.map((element) => {
+      const slot = h('span', { class: 'toolbar-slot' });
+      if (element.id) slot.dataset.overflowFor = element.id;
+      element.replaceWith(slot);
+      slot.append(element);
+      return { element, slot };
+    });
+    toolbar.append(more);
+
+    const fits = () => {
+      const bounds = toolbar.getBoundingClientRect();
+      const paddingRight = parseFloat(getComputedStyle(toolbar).paddingRight) || 0;
+      const visibleChildren = [
+        ...[...toolbar.children].filter((child) => !child.hidden && !child.classList.contains('toolbar-slot')),
+        ...records.filter((record) => record.element.parentElement === record.slot).map((record) => record.element),
+      ];
+      const contentRight = visibleChildren.length
+        ? Math.max(...visibleChildren.map((child) => child.getBoundingClientRect().right))
+        : bounds.left;
+      // A spacer pins right-aligned items flush to the edge, so contentRight lands exactly on
+      // bounds.right and sub-pixel rounding (fractional devicePixelRatio) can tip it just past.
+      // Allow a 1px slack so items don't collapse into the overflow menu when they actually fit;
+      // scrollWidth still catches genuine overflow because the spacer shrinks to zero first.
+      return toolbar.scrollWidth <= toolbar.clientWidth + 1
+        && contentRight <= bounds.right - paddingRight - reserve + 1;
+    };
+
+    const update = () => {
+      more.open = false;
+      for (const record of records) record.slot.append(record.element);
+      more.hidden = true;
+      if (fits()) return;
+
+      more.hidden = false;
+      for (const record of records) {
+        menu.append(record.element);
+        if (fits()) break;
+      }
+    };
+
+    menu.addEventListener('click', (event) => {
+      if (event.target.closest('button')) more.open = false;
+    });
+    more.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { more.open = false; more.querySelector('summary').focus(); }
+    });
+    const observer = new ResizeObserver(update);
+    observer.observe(toolbar);
+    for (const child of toolbar.children) {
+      if (!child.classList.contains('toolbar-slot') && child !== more) observer.observe(child);
+    }
+    requestAnimationFrame(update);
+    return { refresh: () => requestAnimationFrame(update) };
+  }
+
+  // ---- theme ---------------------------------------------------------------
+
+  const systemTheme = matchMedia('(prefers-color-scheme: dark)');
+  let hasThemeOverride = false;
+  try { hasThemeOverride = ['light', 'dark'].includes(localStorage.getItem('gridlet.theme')); } catch { /* unavailable */ }
+
+  function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    const button = $('#theme-btn');
+    if (!button) return;
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    const label = `Switch to ${nextTheme} theme`;
+    button.title = label;
+    button.setAttribute('aria-label', label);
+  }
+
+  function setupTheme() {
+    applyTheme(document.documentElement.dataset.theme || (systemTheme.matches ? 'dark' : 'light'));
+    $('#theme-btn').addEventListener('click', () => {
+      const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      hasThemeOverride = true;
+      try { localStorage.setItem('gridlet.theme', theme); } catch { /* unavailable */ }
+      applyTheme(theme);
+    });
+    systemTheme.addEventListener('change', (event) => {
+      if (!hasThemeOverride) applyTheme(event.matches ? 'dark' : 'light');
+    });
+  }
+
   // ---- modal infrastructure -----------------------------------------------
 
   function modal(title, body, actions, onDismiss = null) {
@@ -64,7 +152,10 @@
     };
     const errorSlot = h('div', { class: 'dialog-error', hidden: '' });
     const showError = (message) => { errorSlot.textContent = message; errorSlot.hidden = false; };
-    overlay.append(h('div', { class: 'dialog' },
+    overlay.append(h('div', {
+      class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': title,
+      'data-testid': 'dialog',
+    },
       h('div', { class: 'dialog-title' },
         h('span', { text: title }),
         h('button', { class: 'tab-close', title: 'Close', onclick: close }, '×')),
@@ -100,7 +191,7 @@
         label: 'About',
         render: () => h('div', {},
           h('div', { class: 'about-heading' },
-            h('img', { src: 'assets/icon.png', alt: '' }),
+            h('img', { src: 'assets/icon_sm.png', alt: '' }),
             h('div', {}, h('h2', { text: 'Gridlet' }),
               h('p', { class: 'muted', text: `Version ${state.meta?.version || ''}` }))),
           h('p', { text: 'An embeddable database management interface for ASP.NET Core. Browse schema, inspect and edit data, run queries, and publish protected API endpoints using your host application’s security and configuration.' }),
@@ -391,14 +482,22 @@
     return found ? found[0] : '';
   }
 
-  function createSqlEditor(initialValue = '', placeholder = '') {
+  function createSqlEditor(initialValue = '', placeholder = '', options = {}) {
     const lines = h('div', { class: 'sql-lines', 'aria-hidden': 'true' });
     const highlight = h('pre', { class: 'sql-highlight', 'aria-hidden': 'true' });
-    const input = h('textarea', { class: 'sql-input', spellcheck: 'false', autocomplete: 'off', placeholder });
+    const input = h('textarea', {
+      class: 'sql-input', spellcheck: 'false', autocomplete: 'off', placeholder,
+      'data-testid': options.testId || 'sql-editor',
+      'aria-label': options.label || 'SQL editor',
+      readonly: options.readOnly ? '' : null,
+    });
     const completion = h('div', { class: 'sql-completions', hidden: '' });
     const diagnostic = h('div', { class: 'sql-diagnostic muted' });
     const surface = h('div', { class: 'sql-surface' }, lines, highlight, input, completion);
-    const editor = h('div', { class: 'sql-editor' }, surface, diagnostic);
+    const editor = h('div', {
+      class: `sql-editor${options.readOnly ? ' read-only' : ''}`,
+      'data-editor-language': 'sql',
+    }, surface, diagnostic);
     let matches = [], selected = 0, completionRequest = 0;
 
     const refresh = () => {
@@ -434,10 +533,11 @@
       input.dispatchEvent(new Event('input', { bubbles: true }));
       hideCompletion(); input.focus();
     };
-    input.addEventListener('input', () => { refresh(); complete(); });
+    input.addEventListener('input', () => { refresh(); if (!options.readOnly) complete(); });
     input.addEventListener('scroll', () => { highlight.scrollTop = input.scrollTop; highlight.scrollLeft = input.scrollLeft; lines.scrollTop = input.scrollTop; });
     input.addEventListener('blur', () => setTimeout(hideCompletion, 120));
     input.addEventListener('keydown', (e) => {
+      if (options.readOnly) return;
       if (e.ctrlKey && e.key === ' ') { e.preventDefault(); complete(true); return; }
       if (!completion.hidden && ['ArrowDown', 'ArrowUp'].includes(e.key)) {
         e.preventDefault(); selected = (selected + (e.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length;
@@ -457,6 +557,10 @@
   // ---- boot -------------------------------------------------------------------
 
   async function boot() {
+    setupTheme();
+    const navigationOverflow = setupOverflowToolbar($('#topbar'), [
+      $('#version'), $('#about-btn'), $('#apis-btn'), $('#theme-btn'), $('#refresh-btn'),
+    ], 'More app actions');
     document.body.append(h('datalist', { id: 'gridlet-types' },
       COMMON_TYPES.map((t) => h('option', { value: t }))));
 
@@ -468,6 +572,7 @@
     }
 
     $('#version').textContent = 'v' + state.meta.version;
+    navigationOverflow.refresh();
 
     window.addEventListener('beforeunload', (event) => {
       if (!state.tabs.some((tab) => tab.hasUnsavedDefinition || tab.isRunning)) return;
@@ -1587,62 +1692,12 @@
     catch (err) { body.replaceChildren(errorBox(err.message)); return; }
 
     const currentDefinition = response.definition || '-- definition unavailable --';
-    const snapshot = h('pre', { class: 'code table-definition-snapshot', text: currentDefinition });
-    const canExecute = currentConn().allowDdl && currentConn().allowSqlExecution;
-    if (!canExecute) {
-      if (toolbar && currentConn().allowSqlExecution) toolbar.append(useInQueryButton(o));
-      body.replaceChildren(h('div', { class: 'definition-section' },
-        h('h3', { text: 'Current definition' }), snapshot));
-      return;
-    }
-
-    const target = sqlName(o);
-    const initialSql = `-- Write ALTER statements for ${target}.\n` +
-      `-- The current CREATE definition is shown below for reference.\n\n` +
-      `-- ALTER TABLE ${target} ADD [ColumnName] int NULL;`;
-    const editor = createSqlEditor(initialSql);
-    const error = h('div', { class: 'inline-error', hidden: '' });
-    const execute = h('button', { class: 'primary', text: 'Execute ALTER script' });
-    let appliedSql = initialSql;
-    const run = async (showError = null) => {
-      execute.disabled = true; error.hidden = true;
-      try {
-        await executeSql(editor.value);
-        appliedSql = editor.value;
-        tab.hasUnsavedDefinition = false;
-        const refreshed = await api(urls.definition(o.schema, o.name));
-        snapshot.textContent = refreshed.definition || '-- definition unavailable --';
-        toast(`${tab.title} altered.`, false);
-        return true;
-      } catch (err) {
-        error.textContent = err.message; error.hidden = false; showError?.(err.message); return false;
-      } finally { execute.disabled = false; }
-    };
-    execute.addEventListener('click', () => run());
-    editor.textarea.addEventListener('input', () => {
-      tab.hasUnsavedDefinition = editor.value !== appliedSql;
+    const editor = createSqlEditor(currentDefinition, '', {
+      label: `${o.name} definition`,
+      testId: 'table-definition-editor',
     });
-    tab.beforeLeave = () => {
-      if (!tab.hasUnsavedDefinition) return Promise.resolve(true);
-      return new Promise((resolve) => {
-        let decision = false;
-        modal('Unsaved ALTER script', h('p', { text: `Execute or discard the ALTER script for ${tab.title} before leaving?` }), [
-          { label: 'Stay', onClick: (close) => close() },
-          { label: 'Discard', danger: true, onClick: (close) => {
-            tab.hasUnsavedDefinition = false; decision = true; close();
-          } },
-          { label: 'Execute', primary: true, onClick: async (close, showError) => {
-            if (!await run(showError)) return; decision = true; close();
-          } },
-        ], () => resolve(decision));
-      });
-    };
-    if (toolbar) toolbar.append(useInQueryButton(o), execute);
-    body.replaceChildren(
-      h('div', { class: 'definition-section alter-definition' },
-        h('h3', { text: 'ALTER script' }), editor, error),
-      h('details', { class: 'definition-section', open: '' },
-        h('summary', { text: 'Current CREATE definition' }), snapshot));
+    if (toolbar && currentConn().allowSqlExecution) toolbar.append(useInQueryButton(o));
+    body.replaceChildren(editor);
   }
 
   async function renderObjectDefinition(body, o, tab, toolbar = null) {
@@ -1660,10 +1715,15 @@
     if (!canEdit) {
       const useButton = canExecute ? useInQueryButton(o) : null;
       if (toolbar && useButton) toolbar.append(useButton);
+      const editor = createSqlEditor(definition, '', {
+        readOnly: true,
+        label: `${o.name} definition`,
+        testId: 'object-definition-editor',
+      });
       body.replaceChildren(...[
         toolbar ? null : (useButton ? h('div', { class: 'inline-form' },
           h('span', { class: 'spacer' }), useButton) : null),
-        h('pre', { class: 'code', text: definition }),
+        h('div', { class: 'definition-section definition-readonly' }, editor),
       ].filter(Boolean));
       return;
     }
@@ -1738,8 +1798,14 @@
   // ---- table designer -----------------------------------------------------------
 
   function openTableDesignerTab() {
-    const schemaInput = h('input', { type: 'text', value: 'dbo', class: 'designer-name' });
-    const nameInput = h('input', { type: 'text', placeholder: 'TableName', class: 'designer-name' });
+    const schemaInput = h('input', {
+      type: 'text', value: 'dbo', class: 'designer-name', 'data-testid': 'table-schema',
+      'aria-label': 'Table schema',
+    });
+    const nameInput = h('input', {
+      type: 'text', placeholder: 'TableName', class: 'designer-name', 'data-testid': 'table-name',
+      'aria-label': 'Table name',
+    });
     const columnsHost = h('div', { class: 'designer-grid' });
     const rows = [];
 
@@ -1829,7 +1895,7 @@
         h('span', { class: 'muted', text: 'Schema (created if needed)' }), schemaInput,
         h('span', { class: 'muted', text: 'Name' }), nameInput,
         h('span', { class: 'spacer' }),
-        h('button', { class: 'primary', onclick: create }, 'Create table')),
+        h('button', { class: 'primary', onclick: create, 'data-testid': 'create-table' }, 'Create table')),
       h('div', { class: 'designer-header muted' },
         'Columns — define regular, identity, primary-key, defaulted, or computed (optionally persisted) columns.'),
       columnsHost,
@@ -1848,10 +1914,12 @@
     }
 
     const editor = createSqlEditor(initialSql, 'SELECT TOP (100) * FROM dbo.SomeTable');
-    const results = h('div', { class: 'query-results' });
-    const status = h('span', { class: 'muted' });
-    const runButton = h('button', { class: 'primary', text: 'Run (Ctrl+Enter)' });
-    const cancelButton = h('button', { text: 'Cancel', disabled: '' });
+    const results = h('div', { class: 'query-results', 'data-testid': 'query-results' });
+    const status = h('span', { class: 'muted', 'data-testid': 'query-status' });
+    const runButton = h('button', {
+      class: 'primary', text: 'Run (Ctrl+Enter)', 'data-testid': 'query-run',
+    });
+    const cancelButton = h('button', { text: 'Cancel', disabled: '', 'data-testid': 'query-cancel' });
     const serverMaxRows = state.meta.maxQueryResultRows;
     let savedMaxRows = serverMaxRows;
     try { savedMaxRows = Number(localStorage.getItem('gridlet.queryMaxRows')) || serverMaxRows; } catch { /* unavailable */ }
@@ -1965,6 +2033,7 @@
       runButton.disabled = true;
       cancelButton.disabled = false;
       results.replaceChildren();
+      results.classList.remove('single-result');
       const startedAt = performance.now();
       status.textContent = 'Running…';
       const timer = setInterval(() => {
@@ -1984,8 +2053,10 @@
           gridView.setColumns(event.columns);
           results.append(meta, scroll);
           sets.set(event.resultSetIndex, {
-            columns: gridView.columns, rows: gridView.rows, metaText, exports, scroll, gridView,
+            columns: gridView.columns, rows: gridView.rows, metaText, meta, exports, scroll, gridView,
           });
+          // A single result set fills the panel; a second reverts to capped, scroll-between grids.
+          results.classList.toggle('single-result', sets.size === 1);
         } else if (event.type === 'rows') {
           const set = sets.get(event.resultSetIndex);
           if (!set) return;
@@ -1997,9 +2068,12 @@
           if (!set.gridView.table) set.gridView.render();
           set.metaText.textContent = set.rows.length + ' row(s)'
             + (event.truncated ? ' — truncated at the configured limit' : '');
-          set.exports.replaceWith(exportButtons(set.columns, set.rows,
+          const controls = exportButtons(set.columns, set.rows,
             `${tab.title}-result${event.resultSetIndex + 1}`,
-            { sql: editor.value.trim(), name: tab.title.startsWith('Query ') ? '' : tab.title }));
+            { sql: editor.value.trim(), name: tab.title.startsWith('Query ') ? '' : tab.title });
+          set.exports.replaceWith(controls);
+          set.exports = controls;
+          setupOverflowToolbar(set.meta, [controls], 'More result actions');
         } else if (event.type === 'message') {
           messages.append(h('div', { class: 'message mono', text: event.message }));
           if (!messages.isConnected) results.append(messages);
@@ -2061,13 +2135,17 @@
       }
     });
 
-    const queryToolbar = h('div', { class: 'query-toolbar' },
+    const savedActions = h('span', { class: 'toolbar-group saved-query-actions' },
+      h('span', { class: 'toolbar-divider' }), savedSelect, saveButton, deleteButton);
+    const limitActions = h('span', { class: 'toolbar-group' },
+      h('label', { class: 'query-limit-label', title: maxRowsInput.title }, 'Row cap ', maxRowsInput));
+    const queryToolbar = h('div', { class: 'query-toolbar', 'data-testid': 'query-toolbar' },
         runButton, cancelButton,
-        h('span', { class: 'toolbar-divider' }),
-        savedSelect, saveButton, deleteButton,
+        savedActions,
         h('span', { class: 'spacer' }),
-        h('label', { class: 'query-limit-label', title: maxRowsInput.title }, 'Row cap ', maxRowsInput),
+        limitActions,
         status);
+    setupOverflowToolbar(queryToolbar, [savedActions, limitActions], 'More query actions');
     tab.panel = h('div', { class: 'panel query-panel' },
       resizableQueryEditor(editor),
       results,
@@ -2133,10 +2211,19 @@
   }
 
   function openPublishDialog(sql, suggestedName) {
-    const nameInput = h('input', { type: 'text', value: suggestedName || '' });
+    const nameInput = h('input', {
+      type: 'text', value: suggestedName || '', 'data-testid': 'publish-name',
+      'aria-label': 'Endpoint name',
+    });
     const methodSelect = publishedMethodSelect();
-    const routeInput = h('input', { type: 'text', placeholder: 'e.g. sales/top-customers' });
-    const policyInput = h('input', { type: 'text', placeholder: 'optional policy name' });
+    const routeInput = h('input', {
+      type: 'text', placeholder: 'e.g. sales/top-customers', 'data-testid': 'publish-route',
+      'aria-label': 'Endpoint route',
+    });
+    const policyInput = h('input', {
+      type: 'text', placeholder: 'optional policy name', 'data-testid': 'publish-policy',
+      'aria-label': 'Authorization policy',
+    });
     nameInput.addEventListener('input', () => {
       if (!routeInput.dataset.touched) {
         routeInput.value = nameInput.value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -2241,14 +2328,17 @@
     return editor;
   }
 
-  function createVirtualCodeViewer() {
+  function createVirtualCodeViewer(label = 'Response body') {
     const responseCode = h('pre', { class: 'api-code-content' });
+    const gutter = h('div', { class: 'api-code-gutter', 'aria-hidden': 'true' });
     const lineNumbers = h('pre', { class: 'api-code-lines', 'aria-hidden': 'true' });
     const spacer = h('div', { class: 'api-code-spacer', 'aria-hidden': 'true' });
-    // The gutter is painted after the content so it always covers content scrolled beneath it.
+    // The gutter rail and its numbers are painted after the content so they always cover content
+    // scrolled beneath them. The rail spans the full viewport height (pinned to the visible area)
+    // so the numbered strip meets the top edge instead of floating below a gap.
     const viewport = h('div', {
-      class: 'api-code-view', role: 'region', tabindex: '0', 'aria-label': 'Response body',
-    }, spacer, responseCode, lineNumbers);
+      class: 'api-code-view', role: 'region', tabindex: '0', 'aria-label': label,
+    }, spacer, responseCode, gutter, lineNumbers);
     const lineHeight = 20;
     const topPadding = 10;
     const bottomPadding = 18;
@@ -2306,7 +2396,11 @@
       const rows = lines.slice(start, end);
       const visibleLines = wrap ? rows : rows.map((line) => line.slice(charStart, sliceEnd));
       responseCode.style.transform = `translate(${tx}px, ${ty}px)`;
-      // The gutter is pinned to the left edge (translateX = scrollLeft) and shares the row offset.
+      // The rail is pinned to the visible viewport (left via scrollLeft, top via scrollTop) so it
+      // fills the full height with no gap; the numbers ride the left edge and share the row offset.
+      gutter.style.transform = `translate(${viewport.scrollLeft}px, ${viewport.scrollTop}px)`;
+      gutter.style.width = `${gutterWidth}px`;
+      gutter.style.height = `${viewport.clientHeight}px`;
       lineNumbers.style.transform = `translate(${viewport.scrollLeft}px, ${ty}px)`;
       lineNumbers.style.width = `${gutterWidth}px`;
       lineNumbers.textContent = labels.slice(start, end).join('\n');
@@ -2910,10 +3004,16 @@
 
   function exportButtons(columns, rows, baseName, apiDefinition = null) {
     return h('span', { class: 'export-buttons' },
-      h('button', { class: 'ghost', title: 'Download as CSV', onclick: () => exportData(columns, rows, 'csv', baseName) }, 'CSV'),
-      h('button', { class: 'ghost', title: 'Download as JSON', onclick: () => exportData(columns, rows, 'json', baseName) }, 'JSON'),
+      h('button', {
+        class: 'ghost', title: 'Download as CSV', 'data-testid': 'export-csv',
+        onclick: () => exportData(columns, rows, 'csv', baseName),
+      }, 'CSV'),
+      h('button', {
+        class: 'ghost', title: 'Download as JSON', 'data-testid': 'export-json',
+        onclick: () => exportData(columns, rows, 'json', baseName),
+      }, 'JSON'),
       apiDefinition ? h('button', {
-        class: 'ghost', title: 'Publish as an API endpoint',
+        class: 'ghost', title: 'Publish as an API endpoint', 'data-testid': 'publish-api',
         onclick: () => openPublishDialog(apiDefinition.sql, apiDefinition.name),
       }, 'API') : null);
   }

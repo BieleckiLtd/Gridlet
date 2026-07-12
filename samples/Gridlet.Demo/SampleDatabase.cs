@@ -1,6 +1,6 @@
 using Microsoft.Data.SqlClient;
 
-namespace Gridlet.VisualTest;
+namespace Gridlet.Demo;
 
 /// <summary>Creates and seeds the GridletSample database (idempotent, runs at startup).</summary>
 public static class SampleDatabase

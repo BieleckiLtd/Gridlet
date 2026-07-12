@@ -59,7 +59,10 @@ public sealed class FakeGridletProvider :
         GridletConnectionContext context, string schema, string name, CancellationToken cancellationToken = default)
         => Task.FromResult(new TableDefinition(
             new DbObjectInfo(schema, name, DbObjectType.Table),
-            [new ColumnInfo("Id", "int", false, true, false, true, null, 0)],
+            [
+                new ColumnInfo("Id", "int", false, true, false, true, null, 0),
+                new ColumnInfo("Name", "nvarchar(100)", false, false, false, false, null, 1),
+            ],
             [new IndexInfo("PK_" + name, "CLUSTERED", true, true, ["Id"])],
             []));
 
@@ -73,8 +76,8 @@ public sealed class FakeGridletProvider :
         GridletConnectionContext context, string schema, string name, TableDataRequest request,
         CancellationToken cancellationToken = default)
         => Task.FromResult(new TableDataPage(
-            [new ResultColumn("Id", "int")],
-            [[1], [2]],
+            [new ResultColumn("Id", "int"), new ResultColumn("Name", "nvarchar(100)")],
+            [[1, "Ada"], [2, "Grace"]],
             request.Page,
             request.PageSize,
             TotalRows: 2));

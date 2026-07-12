@@ -69,4 +69,32 @@ public class GridletAuthorizationTests
         Assert.Equal(HttpStatusCode.OK, ui.StatusCode);
         Assert.Equal(HttpStatusCode.OK, api.StatusCode);
     }
+
+    [Fact]
+    public async Task Configured_authorization_policy_overrides_AllowAnonymous()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(
+            o =>
+            {
+                o.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+                o.Security.AllowAnonymous = true;
+                o.Security.AuthorizationPolicy = "Admins";
+            },
+            services =>
+            {
+                services.AddAuthentication(Scheme)
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(Scheme, null);
+                services.AddAuthorizationBuilder()
+                    .AddPolicy("Admins", policy => policy.RequireAuthenticatedUser());
+            });
+        await using var _ = app;
+
+        var anonymous = await client.GetAsync("/gridlet/api/meta");
+
+        client.DefaultRequestHeaders.Add("X-Test-User", "admin@example.com");
+        var authenticated = await client.GetAsync("/gridlet/api/meta");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, authenticated.StatusCode);
+    }
 }

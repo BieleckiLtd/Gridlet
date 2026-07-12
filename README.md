@@ -14,11 +14,22 @@ authentication, authorization, routing, logging, and deployment model.
 ```csharp
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Services.AddAuthentication(/* configure the host's authentication scheme */);
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("GridletAccess", policy =>
+    {
+        // The policy name and its requirements are entirely defined by the host application.
+        policy.RequireAuthenticatedUser();
+        policy.RequireClaim("permission", "gridlet:manage");
+    });
+
 builder.Services
     .AddGridlet(options =>
     {
         options.AddConnection("Default", builder.Configuration.GetConnectionString("Default")!);
-        options.Security.AuthorizationPolicy = "DbAdmins"; // or leave null for the default policy
+        // AllowAnonymous is false by default. This named host policy protects every endpoint
+        // under /gridlet; leave the policy null to use the host's default authorization policy.
+        options.Security.AuthorizationPolicy = "GridletAccess";
         options.Limits.MaxQueryResultRows = 10_000; // server-enforced maximum for the UI row-cap control
     })
     .AddSqlServer();
@@ -59,7 +70,7 @@ builder.Services
         options.Limits.CommandTimeoutSeconds = 30;
 
         options.Security.AllowAnonymous = false;
-        options.Security.AuthorizationPolicy = "DbAdmins";
+        options.Security.AuthorizationPolicy = "GridletAccess";
 
         options.Storage.FilePath = "App_Data/gridlet-store.json";
     })
@@ -108,8 +119,8 @@ builder.Services
 
 | Property | Default | Effect |
 | --- | --- | --- |
-| `AllowAnonymous` | `false` | When false, `MapGridlet` applies ASP.NET Core authorization to every UI, API, asset, and published endpoint under the mount path. Set true only when anonymous database tooling is intentional, typically local development. |
-| `AuthorizationPolicy` | `null` | Named ASP.NET Core authorization policy applied to the Gridlet route group. When null, the host's default policy is used. The policy must be registered by the host. Ignored when `AllowAnonymous` is true. |
+| `AllowAnonymous` | `false` | When false, `MapGridlet` applies ASP.NET Core authorization to every UI, API, asset, and published endpoint under the mount path. Set true only when anonymous database tooling is intentional, typically local development. A named `AuthorizationPolicy` takes precedence. |
+| `AuthorizationPolicy` | `null` | Named ASP.NET Core authorization policy applied to the Gridlet route group. When null, the host's default policy is used unless `AllowAnonymous` is true. The policy must be registered by the host. When set, it always applies. |
 
 Authentication itself remains the host application's responsibility. Configure ASP.NET Core
 authentication and authorization before mapping Gridlet; Gridlet does not provide a separate login.
@@ -156,12 +167,12 @@ src/
 tests/
   Gridlet.Tests/         unit tests + in-memory endpoint/auth tests (no DB required)
 samples/
-  Gridlet.VisualTest/    startup project for visual testing against SQL Server LocalDB
+  Gridlet.Demo/          runnable demo against SQL Server LocalDB
 ```
 
-## Visual testing
+## Demo
 
-`samples/Gridlet.VisualTest` is the startup project. It connects to `(localdb)\MSSQLLocalDB`,
+`samples/Gridlet.Demo` is the runnable sample project. It connects to `(localdb)\MSSQLLocalDB`,
 creates and seeds a `GridletSample` database on first run (customers/products/orders plus a view,
 a stored procedure, and a function), and mounts Gridlet at `/gridlet` with anonymous access.
 It also registers an `OddSecond` ASP.NET Core authorization policy and includes a published endpoint
@@ -171,7 +182,7 @@ seconds and returns `403 Forbidden` during even-numbered UTC seconds, demonstrat
 endpoint can require a host-defined policy while the rest of the sample remains anonymous.
 
 ```
-dotnet run --project samples/Gridlet.VisualTest
+dotnet run --project samples/Gridlet.Demo
 # → http://localhost:5088/gridlet
 # retry this URL on consecutive seconds to see alternating 200/403 responses:
 # → http://localhost:5088/gridlet/pub/samples/odd-second
@@ -194,6 +205,34 @@ dotnet run --project samples/Gridlet.VisualTest
   bracket-quoted, and row values always travel as SQL parameters.
 - **Audit** — queries, row writes, schema changes, and published-API invocations flow through
   `IGridletAuditSink` (default: structured logging); replace the sink to persist audit events.
+
+An explicitly configured `AuthorizationPolicy` takes precedence over `AllowAnonymous`. This makes a
+named policy fail closed even if a development configuration layer also sets `AllowAnonymous` to
+`true`. Anonymous access is enabled only when `AllowAnonymous` is `true` and no named policy is set.
+
+### Separate database identity for published APIs
+
+You can configure a second named connection for published endpoints so their SQL runs as a
+least-privileged database user:
+
+```csharp
+options.AddConnection("Management", adminConnectionString);
+
+options.AddConnection("PublishedApi", restrictedApiConnectionString, configure: connection =>
+{
+    // Hide interactive mutation tools for this connection. These are Gridlet feature gates;
+    // the restricted database user's GRANT/DENY permissions remain the security boundary.
+    connection.AllowSqlExecution = false;
+    connection.AllowWrites = false;
+    connection.AllowDdl = false;
+});
+```
+
+Select `PublishedApi` as the connection when publishing the endpoint. Gridlet stores that connection
+name with the endpoint and uses its connection string on invocation. This separation is currently
+selectable rather than mandatory: a publisher can still select `Management`, so the host must limit
+publishing to trusted administrators and review stored endpoint definitions. Gridlet does not yet
+have a dedicated execution connection that automatically overrides every published endpoint.
 
 ## API publishing
 
@@ -277,11 +316,14 @@ FETCH NEXT @page_size ROWS ONLY;
 
 ```
 dotnet build
+pwsh tests/Gridlet.BrowserTests/bin/Debug/net10.0/playwright.ps1 install chromium # first run only
 dotnet test
 ```
 
 Tests run against an in-memory fake provider and the real endpoint pipeline — no SQL Server needed,
-so they also run in CI (`.github/workflows/ci.yml`).
+so they also run in CI (`.github/workflows/ci.yml`). Browser tests start Gridlet on an ephemeral
+loopback port and use headless Chromium; install its pinned Playwright browser once after cloning or
+after updating the Playwright package.
 
 ## Third-party software
 

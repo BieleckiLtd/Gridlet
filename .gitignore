@@ -27,6 +27,6 @@ packages/
 ## Local secrets
 appsettings.*.local.json
 
-## Gridlet runtime state (saved queries / published endpoints of the visual test host)
+## Gridlet runtime state (saved queries / published endpoints of the demo host)
 samples/**/gridlet-store.json
-!samples/Gridlet.VisualTest/gridlet-store.json
+!samples/Gridlet.Demo/gridlet-store.json

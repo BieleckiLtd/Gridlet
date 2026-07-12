@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Gridlet"
+  short_description: "Version, test, tag, and publish Gridlet"
+  default_prompt: "Use $release to cut and publish the next Gridlet release."
