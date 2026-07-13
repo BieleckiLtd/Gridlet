@@ -13,7 +13,7 @@
 
   <!-- Shared NuGet package metadata for packable projects. -->
   <PropertyGroup>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <Authors>BieleckiLtd</Authors>
     <Product>Gridlet</Product>
     <RepositoryUrl>https://github.com/BieleckiLtd/Gridlet</RepositoryUrl>
@@ -27,7 +27,7 @@
   <ItemGroup>
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" />
     <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" />
-    <None Include="$(MSBuildThisFileDirectory)icon_sm.png" Pack="true" PackagePath="\" />
+    <None Include="$(MSBuildThisFileDirectory)assets\icon_sm.png" Pack="true" PackagePath="icon_sm.png" />
   </ItemGroup>
 
 </Project>

@@ -42,6 +42,33 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Header_pickers_use_themed_dropdowns_and_keep_native_values_in_sync()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var trigger = page.GetByRole(AriaRole.Button, new() { Name = "Connection: Main" });
+        await trigger.ClickAsync();
+        var menu = page.GetByRole(AriaRole.Listbox, new() { Name = "Connection" });
+        await Assertions.Expect(menu).ToBeVisibleAsync();
+        Assert.True(await menu.EvaluateAsync<bool>("""
+            element => {
+                const style = getComputedStyle(element);
+                return style.borderRadius === '10px'
+                    && style.backgroundColor === getComputedStyle(
+                        document.querySelector('.select-trigger')).backgroundColor;
+            }
+            """));
+
+        await menu.GetByRole(AriaRole.Option, new() { Name = "SQLite" }).ClickAsync();
+        await Assertions.Expect(page.Locator("#connection-select")).ToHaveValueAsync("SQLite");
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Button, new() { Name = "Connection: SQLite" })).ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Boots_and_streams_table_data()
     {
         await using var browserPage = await fixture.NewPageAsync();

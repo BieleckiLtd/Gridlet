@@ -117,6 +117,89 @@ html, body {
 
 .picker { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
 
+.picker-select { position: relative; color: var(--text); }
+.picker-select select {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 118px;
+  height: 32px;
+  padding: 5px 10px 5px 11px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  text-align: left;
+}
+.select-trigger::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 140ms ease;
+}
+.picker-select.open .select-trigger {
+  border-color: var(--accent);
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+.picker-select.open .select-trigger::after { transform: translateY(2px) rotate(225deg); }
+.select-menu {
+  position: absolute;
+  z-index: 100;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  max-height: min(320px, calc(100vh - 72px));
+  overflow: auto;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  box-shadow: 0 12px 30px var(--shadow);
+}
+.select-group-label {
+  padding: 7px 9px 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.55px;
+  text-transform: uppercase;
+}
+.select-option {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.select-option:hover,
+.select-option.active { background: var(--view-active-bg); color: var(--view-active-text); }
+.select-option[aria-selected="true"] { color: var(--accent); font-weight: 600; }
+.select-option[aria-selected="true"]::after {
+  content: '✓';
+  margin-left: auto;
+  padding-left: 18px;
+  color: var(--accent);
+}
+.select-option[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+
 select, input, textarea {
   background: var(--panel-2);
   color: var(--text);

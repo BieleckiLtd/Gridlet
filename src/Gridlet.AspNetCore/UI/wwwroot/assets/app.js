@@ -139,6 +139,118 @@
     });
   }
 
+  function setupThemedSelect(select) {
+    const parent = select.parentElement;
+    const wrapper = h('div', { class: 'picker-select' });
+    const value = h('span', { class: 'select-value' });
+    const button = h('button', {
+      type: 'button', class: 'select-trigger', 'aria-haspopup': 'listbox', 'aria-expanded': 'false',
+    }, value);
+    const menu = h('div', {
+      class: 'select-menu', role: 'listbox', tabindex: '-1', hidden: '',
+      'aria-label': select.getAttribute('aria-label') || 'Options',
+    });
+    wrapper.append(select, button, menu);
+    parent.append(wrapper);
+    let optionElements = [];
+    let activeIndex = -1;
+
+    const close = (restoreFocus = false) => {
+      menu.hidden = true;
+      wrapper.classList.remove('open');
+      button.setAttribute('aria-expanded', 'false');
+      if (restoreFocus) button.focus();
+    };
+
+    const setActive = (index) => {
+      if (!optionElements.length) return;
+      activeIndex = (index + optionElements.length) % optionElements.length;
+      optionElements.forEach((option, i) => option.classList.toggle('active', i === activeIndex));
+      optionElements[activeIndex].scrollIntoView({ block: 'nearest' });
+    };
+
+    const choose = (option) => {
+      if (!option || option.disabled) return;
+      select.value = option.value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      sync();
+      close(true);
+    };
+
+    const optionElement = (option) => h('div', {
+      class: 'select-option', role: 'option', tabindex: '-1', text: option.textContent,
+      'aria-selected': String(option.selected),
+      'aria-disabled': option.disabled ? 'true' : null,
+      onclick: (event) => { event.preventDefault(); choose(option); },
+      onmousemove: () => setActive(optionElements.findIndex((item) => item.dataset.value === option.value)),
+      'data-value': option.value,
+    });
+
+    const render = () => {
+      menu.replaceChildren();
+      for (const child of select.children) {
+        if (child.tagName === 'OPTGROUP') {
+          menu.append(h('div', { class: 'select-group-label', text: child.label }));
+          for (const option of child.children) menu.append(optionElement(option));
+        } else if (child.tagName === 'OPTION') {
+          menu.append(optionElement(child));
+        }
+      }
+      optionElements = [...menu.querySelectorAll('.select-option:not([aria-disabled="true"])')];
+      const selectedIndex = optionElements.findIndex((option) => option.dataset.value === select.value);
+      activeIndex = selectedIndex >= 0 ? selectedIndex : 0;
+    };
+
+    const sync = () => {
+      value.textContent = select.selectedOptions[0]?.textContent || '—';
+      button.disabled = select.disabled || !select.options.length;
+      button.setAttribute('aria-label', `${select.getAttribute('aria-label') || 'Select'}: ${value.textContent}`);
+      render();
+    };
+
+    const open = () => {
+      if (button.disabled) return;
+      document.querySelectorAll('.picker-select.open').forEach((other) => {
+        if (other !== wrapper) other.querySelector('.select-trigger').click();
+      });
+      render();
+      menu.hidden = false;
+      wrapper.classList.add('open');
+      button.setAttribute('aria-expanded', 'true');
+      setActive(activeIndex);
+      menu.focus();
+    };
+
+    button.addEventListener('click', () => menu.hidden ? open() : close());
+    button.addEventListener('keydown', (event) => {
+      if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(event.key)) {
+        event.preventDefault();
+        open();
+        if (event.key === 'ArrowUp') setActive(optionElements.length - 1);
+      }
+    });
+    menu.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        setActive(activeIndex + (event.key === 'ArrowDown' ? 1 : -1));
+      } else if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault(); setActive(event.key === 'Home' ? 0 : optionElements.length - 1);
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        choose([...select.options].find((option) => option.value === optionElements[activeIndex]?.dataset.value));
+      } else if (event.key === 'Escape') {
+        event.preventDefault(); close(true);
+      } else if (event.key === 'Tab') close();
+    });
+    document.addEventListener('pointerdown', (event) => {
+      if (!wrapper.contains(event.target)) close();
+    });
+    select.addEventListener('change', () => queueMicrotask(sync));
+    new MutationObserver(sync).observe(select, { childList: true, subtree: true, attributes: true });
+    select.themedSelectSync = sync;
+    sync();
+  }
+
   // ---- modal infrastructure -----------------------------------------------
 
   function modal(title, body, actions, onDismiss = null) {
@@ -572,6 +684,8 @@
 
   async function boot() {
     setupTheme();
+    setupThemedSelect($('#connection-select'));
+    setupThemedSelect($('#database-select'));
     const navigationOverflow = setupOverflowToolbar($('#topbar'), [
       $('#version'), $('#about-btn'), $('#apis-btn'), $('#theme-btn'), $('#refresh-btn'),
     ], 'More app actions');
@@ -626,6 +740,7 @@
   async function selectConnection(name, skipTabGuard = false) {
     if (!skipTabGuard && !await closeAllTabs()) {
       $('#connection-select').value = state.connection || '';
+      $('#connection-select').themedSelectSync();
       return;
     }
     state.connection = name;
@@ -651,18 +766,23 @@
         system.map((d) => h('option', { value: d.name, text: d.name }))));
     }
 
-    const first = user[0] || system[0];
+    const configuredDefault = currentConn().defaultDatabase;
+    const first = databases.find((database) => configuredDefault
+      && database.name.toLowerCase() === configuredDefault.toLowerCase())
+      || user[0] || system[0];
     if (first) await selectDatabase(first.name, true);
   }
 
   async function selectDatabase(name, skipTabGuard = false) {
     if (!skipTabGuard && !await closeAllTabs()) {
       $('#database-select').value = state.database || '';
+      $('#database-select').themedSelectSync();
       return;
     }
     state.database = name;
     state.structures.clear();
     $('#database-select').value = name;
+    $('#database-select').themedSelectSync();
     await loadObjects();
   }
 
