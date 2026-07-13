@@ -13,11 +13,6 @@ authentication, authorization, routing, logging, and deployment model.
   <img src="assets/screenshot-1.png" width="100%" alt="Gridlet table browser showing customer data" />
 </p>
 
-<p align="center">
-  <img src="assets/screenshot-2.png" height="280" alt="Gridlet published API preview showing a JSON response" />
-  <img src="assets/screenshot-3.png" height="280" alt="Gridlet query editor showing order summary results" />
-</p>
-
 ## Multiple providers
 
 Register SQL Server and SQLite connections side by side, then switch between providers and their
@@ -32,6 +27,25 @@ functions in SQL Server, while omitting concepts that do not apply to that provi
 
 <p align="center">
   <img src="assets/screenshot-4.png" width="720" alt="Gridlet connection selector showing SQLite and SQL Server connections in one app" />
+</p>
+
+## Query editor
+
+Write and run SQL inside Gridlet, inspect results as they stream in, save useful queries, and export
+the current result set as CSV or JSON.
+
+<p align="center">
+  <img src="assets/screenshot-3.png" width="100%" alt="Gridlet query editor showing order summary results" />
+</p>
+
+## Published APIs
+
+Turn a query into an HTTP endpoint, then test it with the built-in request preview and inspect the
+status, timing, size, and formatted JSON response. Published endpoints can be protected by
+authorization policies already defined by the host ASP.NET Core app.
+
+<p align="center">
+  <img src="assets/screenshot-2.png" width="620" alt="Gridlet published API preview showing a formatted JSON response" />
 </p>
 
 ## Quick start
