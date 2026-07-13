@@ -90,6 +90,7 @@ internal static partial class GridletApiEndpoints
             .Select(c => new GridletConnectionSummary(
                 c.Name,
                 c.ProviderName.ToString(),
+                c.DefaultDatabase,
                 c.AllowSqlExecution,
                 c.AllowWrites,
                 c.AllowDdl,

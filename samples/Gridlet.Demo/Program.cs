@@ -1,39 +1,32 @@
 using Gridlet;
 using Gridlet.Demo;
-using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
-
-var configuredConnectionString = builder.Configuration.GetConnectionString("SQLite")
-    ?? throw new InvalidOperationException("ConnectionStrings:SQLite is not configured.");
-var connectionBuilder = new SqliteConnectionStringBuilder(configuredConnectionString);
-if (!string.Equals(connectionBuilder.DataSource, ":memory:", StringComparison.OrdinalIgnoreCase) &&
-    !Path.IsPathRooted(connectionBuilder.DataSource))
-{
-    connectionBuilder.DataSource = Path.Combine(builder.Environment.ContentRootPath, connectionBuilder.DataSource);
-}
-var connectionString = connectionBuilder.ConnectionString;
-builder.Configuration["ConnectionStrings:SQLite"] = connectionString;
 
 builder.Services.AddAuthorizationPolicies();
 
 builder.Services
     .AddGridlet(options =>
     {
-        options.AddConnection(builder.Configuration, "SQLite", GridletProviderNames.Sqlite);
-
         // Demo only.
         options.Security.AllowAnonymous = true;
         // A configured policy takes precedence over anonymous access.
         // options.Security.AuthorizationPolicy = AuthorizationExtensions.GridletAccessPolicy;
 
-        options.Limits.MaxQueryResultRows = 999_999;
+        options.Limits.MaxQueryResultRows = 100_000;
     })
-    .AddSqlite();
+    .AddSqlite(
+        builder.Configuration,
+        "SQLite",
+        relativePathBase: builder.Environment.ContentRootPath);
 
 var app = builder.Build();
 
 // Demo only.
+var connectionString = app.Services.GetRequiredService<IOptions<GridletOptions>>()
+    .Value.Connections.Single(connection => connection.ProviderName == GridletProviderNames.Sqlite)
+    .ConnectionString;
 await SampleDatabase.EnsureAsync(connectionString, app.Logger, app.Lifetime.ApplicationStopping);
 
 app.MapGet("/", () => Results.Redirect("/gridlet"));

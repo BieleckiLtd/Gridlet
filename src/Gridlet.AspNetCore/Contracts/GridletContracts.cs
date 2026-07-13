@@ -12,6 +12,7 @@ public sealed record GridletMetaResponse(
 public sealed record GridletConnectionSummary(
     string Name,
     string ProviderName,
+    string? DefaultDatabase,
     bool AllowSqlExecution,
     bool AllowWrites,
     bool AllowDdl,

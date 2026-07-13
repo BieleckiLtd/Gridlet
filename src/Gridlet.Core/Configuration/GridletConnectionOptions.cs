@@ -24,6 +24,12 @@ public sealed class GridletConnectionOptions
     public GridletProviderNames ProviderName { get; set; }
 
     /// <summary>
+    /// Database selected when the UI first opens this connection. Provider-specific registration
+    /// derives it from the connection string when available.
+    /// </summary>
+    public string? DefaultDatabase { get; set; }
+
+    /// <summary>
     /// Whether the ad-hoc SQL editor may execute statements against this connection.
     /// Statement-level write protection is delegated to the SQL principal's own permissions;
     /// grant the connection's login only the rights users should have. Defaults to <c>true</c>.

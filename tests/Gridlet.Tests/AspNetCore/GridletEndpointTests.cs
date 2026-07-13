@@ -91,6 +91,23 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Meta_exposes_the_connection_default_database()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(o =>
+        {
+            o.AddConnection("Main", "Server=x;Database=Reporting;", FakeGridletProvider.Name,
+                connection => connection.DefaultDatabase = "Reporting");
+            o.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+
+        var body = await client.GetStringAsync("/gridlet/api/meta");
+
+        Assert.Contains("\"defaultDatabase\":\"Reporting\"", body);
+        Assert.DoesNotContain("Server=x", body);
+    }
+
+    [Fact]
     public async Task Databases_come_from_the_provider()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();

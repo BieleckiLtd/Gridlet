@@ -5,11 +5,9 @@ builder.Configuration["ConnectionStrings:Default"] =
     "Server=(localdb)\\MSSQLLocalDB;Integrated Security=True";
 
 builder.Services
-    .AddGridlet(options => options.AddConnection(
-        builder.Configuration,
-        "Default",
-        GridletProviderNames.SqlServer))
-    .AddSqlServer();
+    .AddGridlet()
+    .AddSqlServer(builder.Configuration.GetConnectionString("Default"))
+    .AddSqlite("Data Source=GridletSample.db");
 
 var app = builder.Build();
 app.MapGridlet();
