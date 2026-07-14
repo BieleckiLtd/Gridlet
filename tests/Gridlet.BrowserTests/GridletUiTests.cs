@@ -8,6 +8,65 @@ namespace Gridlet.BrowserTests;
 public sealed class GridletUiTests(BrowserAppFixture fixture)
 {
     [Fact]
+    public async Task Talks_with_the_database_using_an_ephemeral_user_key()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var credentialsBefore = fixture.Agent.StoredCredentials.Count;
+        var requestsBefore = fixture.Agent.Requests.Count;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-scope"))
+            .ToContainTextAsync("Main / FakeDb");
+        await Assertions.Expect(page.GetByTestId("agent-disclosure"))
+            .ToContainTextAsync("external provider");
+
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("Summarize the customers");
+        await page.GetByTestId("agent-send").ClickAsync();
+
+        await Assertions.Expect(page.GetByTestId("agent-message-assistant"))
+            .ToContainTextAsync("Fake data response");
+        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+        Assert.Equal(credentialsBefore + 1, fixture.Agent.StoredCredentials.Count);
+        Assert.Equal(requestsBefore + 1, fixture.Agent.Requests.Count);
+        Assert.Equal("Summarize the customers", fixture.Agent.Requests[^1].Message);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Renders_agent_reasoning_and_markdown_tables()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("Show markdown join logic");
+        await page.GetByTestId("agent-send").ClickAsync();
+
+        var assistant = page.GetByTestId("agent-message-assistant");
+        await Assertions.Expect(assistant.Locator(".agent-reasoning")).ToContainTextAsync("Thought for");
+        await Assertions.Expect(assistant.Locator(".agent-reasoning")).Not.ToHaveAttributeAsync("open", "");
+        await assistant.Locator(".agent-reasoning summary").ClickAsync();
+        await Assertions.Expect(assistant.Locator(".agent-reasoning-body"))
+            .ToContainTextAsync("compact tabular answer");
+        await Assertions.Expect(assistant.Locator(".agent-tool-call"))
+            .ToContainTextAsync("Calling describe_table");
+        await Assertions.Expect(assistant.Locator(".agent-tool-result"))
+            .ToContainTextAsync("Result from describe_table");
+        await Assertions.Expect(assistant.Locator("strong"))
+            .ToHaveTextAsync("Explanation of the join logic:");
+        await Assertions.Expect(assistant.Locator(".agent-table")).ToBeVisibleAsync();
+        await Assertions.Expect(assistant.Locator(".agent-table th").Nth(0)).ToHaveTextAsync("Step");
+        await Assertions.Expect(assistant.Locator(".agent-table code").Nth(0)).ToHaveTextAsync("Orders");
+        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Theme_follows_system_and_persists_an_explicit_choice()
     {
         await using var browserPage = await fixture.NewPageAsync();

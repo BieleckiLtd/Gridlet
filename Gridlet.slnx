@@ -3,6 +3,7 @@
     <Project Path="samples/Gridlet.Demo/Gridlet.Demo.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/Gridlet.AgentFramework/Gridlet.AgentFramework.csproj" />
     <Project Path="src/Gridlet.AspNetCore/Gridlet.AspNetCore.csproj" />
     <Project Path="src/Gridlet.Core/Gridlet.Core.csproj" />
     <Project Path="src/Gridlet.Sqlite/Gridlet.Sqlite.csproj" />

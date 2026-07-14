@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <IsPackable>true</IsPackable>
+    <!-- Anthropic's Microsoft Agent Framework adapter is preview; keep this optional package
+         prerelease until that upstream dependency is stable. -->
+    <PackageVersion>$(Version)-preview.1</PackageVersion>
+    <Description>Microsoft Agent Framework integration for safe, conversational schema exploration and read-only data analysis in Gridlet.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Agents.AI" />
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" />
+    <PackageReference Include="Microsoft.Agents.AI.Anthropic" />
+    <PackageReference Include="OllamaSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Gridlet.Core\Gridlet.Core.csproj" />
+  </ItemGroup>
+
+</Project>

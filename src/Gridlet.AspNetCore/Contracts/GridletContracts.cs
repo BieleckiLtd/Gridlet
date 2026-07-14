@@ -7,7 +7,8 @@ namespace Gridlet.AspNetCore.Contracts;
 public sealed record GridletMetaResponse(
     string Version,
     IReadOnlyList<GridletConnectionSummary> Connections,
-    int MaxQueryResultRows);
+    int MaxQueryResultRows,
+    GridletAgentInfo? Agent = null);
 
 public sealed record GridletConnectionSummary(
     string Name,
@@ -16,7 +17,9 @@ public sealed record GridletConnectionSummary(
     bool AllowSqlExecution,
     bool AllowWrites,
     bool AllowDdl,
-    GridletProviderCapabilities Capabilities);
+    GridletProviderCapabilities Capabilities,
+    bool AllowAgentSchemaAccess = false,
+    bool AllowAgentDataAccess = false);
 
 public sealed record DbObjectDto(string Schema, string Name, string Type);
 
@@ -29,6 +32,18 @@ public sealed record TableStructureResponse(
 public sealed record ObjectDefinitionResponse(string? Definition);
 
 public sealed record QueryRequestBody(string? Sql, int? MaxRows = null);
+
+public sealed record AgentCredentialRequestBody(string? ApiKey);
+
+public sealed record AgentCredentialResponse(string Handle, DateTimeOffset ExpiresAt);
+
+public sealed record AgentCredentialRemoveRequestBody(string? Handle);
+
+public sealed record AgentChatRequestBody(
+    string? ProfileId,
+    string? Message,
+    List<GridletAgentMessage>? History = null,
+    string? CredentialHandle = null);
 
 public sealed record GridletErrorResponse(string Error);
 

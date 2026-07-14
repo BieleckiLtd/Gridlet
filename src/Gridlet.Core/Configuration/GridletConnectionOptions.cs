@@ -49,4 +49,34 @@ public sealed class GridletConnectionOptions
     /// permissions remain authoritative.
     /// </summary>
     public bool AllowDdl { get; set; } = true;
+
+    /// <summary>
+    /// Whether an AI agent may inspect schema metadata for this connection. Defaults to
+    /// <c>false</c> because metadata can leave the application when a remote model profile is
+    /// selected. Design-mode agents can explain and propose schema changes, but never apply them.
+    /// </summary>
+    public bool AllowAgentSchemaAccess { get; set; } = false;
+
+    /// <summary>
+    /// Whether an AI agent may inspect schema metadata and execute bounded, read-only queries for
+    /// this connection. Defaults to <c>false</c>. Use a database identity that has only the SELECT
+    /// permissions agent users should receive; Gridlet's statement guard is defense in depth, not
+    /// a substitute for database permissions.
+    /// </summary>
+    public bool AllowAgentDataAccess { get; set; } = false;
+
+    /// <summary>
+    /// Optional provider-specific connection string used only by the data agent's read-only query
+    /// tool. Configure a SELECT-only database identity here when the main Gridlet connection has
+    /// broader privileges. It is server-side secret configuration and is never returned by Gridlet.
+    /// When <c>null</c>, the main <see cref="ConnectionString"/> is used.
+    /// </summary>
+    public string? AgentDataConnectionString { get; set; }
+
+    /// <summary>
+    /// Explicitly permits the data agent to fall back to the primary Gridlet connection when
+    /// <see cref="AgentDataConnectionString"/> is not configured. Defaults to <c>false</c> because
+    /// the primary identity commonly has write or DDL privileges.
+    /// </summary>
+    public bool AllowAgentDataWithPrimaryConnection { get; set; } = false;
 }

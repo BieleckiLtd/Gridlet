@@ -34,6 +34,14 @@ public sealed class GridletOptionsValidator : IValidateOptions<GridletOptions>
                 failures.Add(
                     $"Gridlet connection '{connection.Name}' has an unsupported ProviderName '{connection.ProviderName}'.");
             }
+
+            if (connection.AllowAgentDataAccess &&
+                string.IsNullOrWhiteSpace(connection.AgentDataConnectionString) &&
+                !connection.AllowAgentDataWithPrimaryConnection)
+            {
+                failures.Add(
+                    $"Gridlet connection '{connection.Name}' enables agent data access but has no AgentDataConnectionString. Configure a read-only identity or explicitly set AllowAgentDataWithPrimaryConnection.");
+            }
         }
 
         var limits = options.Limits;

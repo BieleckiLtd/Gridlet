@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Gridlet.AgentFramework\Gridlet.AgentFramework.csproj" />
     <ProjectReference Include="..\..\src\Gridlet.AspNetCore\Gridlet.AspNetCore.csproj" />
     <ProjectReference Include="..\..\src\Gridlet.Sqlite\Gridlet.Sqlite.csproj" />
     <ProjectReference Include="..\..\src\Gridlet.SqlServer\Gridlet.SqlServer.csproj" />
