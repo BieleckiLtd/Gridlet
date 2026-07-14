@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Gridlet.Abstractions;
@@ -9,6 +12,7 @@ using Gridlet.Models;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using static Gridlet.AspNetCore.GridletEndpointHelpers;
 
@@ -39,7 +43,7 @@ internal static partial class GridletApiEndpoints
     [GeneratedRegex(@"^[a-zA-Z0-9][a-zA-Z0-9\-_/]*$")]
     private static partial Regex RoutePattern();
 
-    public static void Map(RouteGroupBuilder api)
+    public static void Map(RouteGroupBuilder api, GridletOptions options)
     {
         api.MapGet("/meta", GetMeta);
         api.MapGet("/connections/{connection}/databases", GetDatabases);
@@ -50,6 +54,30 @@ internal static partial class GridletApiEndpoints
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/structure", GetObjectStructure);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/definition", GetObjectDefinition);
         api.MapPost("/connections/{connection}/databases/{database}/query", ExecuteQuery);
+
+        // Optional Microsoft Agent Framework integration. The routes stay dormant when no
+        // IGridletAgentService has been registered by the host.
+        var storeAgentCredential = api.MapPost(
+            "/agents/{profileId}/credentials", StoreAgentCredential);
+        var removeAgentCredential = api.MapDelete(
+            "/agents/credentials", RemoveAgentCredential);
+        var dataAgent = api.MapPost(
+            "/connections/{connection}/databases/{database}/agents/data/chat", ChatWithDataAgent);
+        var schemaAgent = api.MapPost(
+            "/connections/{connection}/databases/{database}/agents/schema/chat", ChatWithSchemaAgent);
+        if (!string.IsNullOrWhiteSpace(options.Security.AgentDataAuthorizationPolicy))
+        {
+            dataAgent.RequireAuthorization(options.Security.AgentDataAuthorizationPolicy);
+        }
+        if (!string.IsNullOrWhiteSpace(options.Security.AgentSchemaAuthorizationPolicy))
+        {
+            schemaAgent.RequireAuthorization(options.Security.AgentSchemaAuthorizationPolicy);
+        }
+        if (!string.IsNullOrWhiteSpace(options.Security.AgentCredentialAuthorizationPolicy))
+        {
+            storeAgentCredential.RequireAuthorization(options.Security.AgentCredentialAuthorizationPolicy);
+            removeAgentCredential.RequireAuthorization(options.Security.AgentCredentialAuthorizationPolicy);
+        }
 
         // Row editing (POST for update/delete so the JSON body binds on every server).
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/rows", InsertRow);
@@ -84,7 +112,8 @@ internal static partial class GridletApiEndpoints
 
     private static IResult GetMeta(
         IOptionsMonitor<GridletOptions> options,
-        IGridletProviderRegistry providers)
+        IGridletProviderRegistry providers,
+        IServiceProvider services)
     {
         var connections = options.CurrentValue.Connections
             .Select(c => new GridletConnectionSummary(
@@ -96,10 +125,15 @@ internal static partial class GridletApiEndpoints
                 c.AllowDdl,
                 providers.Get(c.ProviderName) is IGridletProviderMetadata metadata
                     ? metadata.Capabilities
-                    : LegacyProviderCapabilities))
+                    : LegacyProviderCapabilities,
+                c.AllowAgentSchemaAccess,
+                c.AllowAgentDataAccess))
             .ToArray();
         return Results.Ok(new GridletMetaResponse(
-            Version, connections, options.CurrentValue.Limits.MaxQueryResultRows));
+            Version,
+            connections,
+            options.CurrentValue.Limits.MaxQueryResultRows,
+            services.GetService<IGridletAgentService>()?.Info));
     }
 
     private static Task<IResult> GetDatabases(
@@ -250,6 +284,397 @@ internal static partial class GridletApiEndpoints
                 resolved.Context, schema, name, cancellationToken);
             return Results.Ok(new ObjectDefinitionResponse(definition));
         });
+
+    // ---- database agents ----
+
+    private static Task<IResult> StoreAgentCredential(
+        string profileId,
+        AgentCredentialRequestBody body,
+        IServiceProvider services,
+        IGridletAuditSink audit,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+        => ExecuteAgentCredentialAsync(async () =>
+        {
+            httpContext.Response.Headers.CacheControl = "no-store";
+            var agent = services.GetService<IGridletAgentService>();
+            if (agent is null)
+            {
+                return Results.NotFound(new GridletErrorResponse(
+                    "Database agents are not configured for this application."));
+            }
+
+            var user = AgentUser(httpContext);
+            var options = httpContext.RequestServices
+                .GetRequiredService<IOptionsMonitor<GridletOptions>>().CurrentValue;
+            if (!user.IsAuthenticated && !options.Security.AllowAnonymousAgentCredentials)
+            {
+                return Results.Unauthorized();
+            }
+
+            var profile = agent.Info.Profiles.FirstOrDefault(candidate =>
+                string.Equals(candidate.Id, profileId, StringComparison.OrdinalIgnoreCase));
+            if (profile is null || !profile.AllowsUserApiKey)
+            {
+                throw new GridletAgentException(
+                    "The selected agent profile does not accept user-supplied API keys.");
+            }
+
+            if (string.IsNullOrWhiteSpace(body.ApiKey) || body.ApiKey.Length > 8_192)
+            {
+                throw new GridletAgentException("A valid API key is required.");
+            }
+
+            var credential = await agent.StoreCredentialAsync(
+                profile.Id, body.ApiKey, user, cancellationToken);
+            await AuditCredentialAsync(audit, user.DisplayName, "agent.credential.store", profile.Id, true, null);
+            return Results.Ok(new AgentCredentialResponse(credential.Handle, credential.ExpiresAt));
+        }, audit, httpContext, "agent.credential.store", profileId);
+
+    private static Task<IResult> RemoveAgentCredential(
+        [Microsoft.AspNetCore.Mvc.FromBody] AgentCredentialRemoveRequestBody body,
+        IServiceProvider services,
+        IGridletAuditSink audit,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+        => ExecuteAgentCredentialAsync(async () =>
+        {
+            httpContext.Response.Headers.CacheControl = "no-store";
+            var agent = services.GetService<IGridletAgentService>();
+            if (agent is null)
+            {
+                return Results.NotFound(new GridletErrorResponse(
+                    "Database agents are not configured for this application."));
+            }
+
+            var user = AgentUser(httpContext);
+            var options = httpContext.RequestServices
+                .GetRequiredService<IOptionsMonitor<GridletOptions>>().CurrentValue;
+            if (!user.IsAuthenticated && !options.Security.AllowAnonymousAgentCredentials)
+            {
+                return Results.Unauthorized();
+            }
+            if (string.IsNullOrWhiteSpace(body.Handle) || body.Handle.Length > 256)
+            {
+                throw new GridletAgentException("The credential handle is invalid or expired.");
+            }
+
+            await agent.RemoveCredentialAsync(body.Handle, user, cancellationToken);
+            await AuditCredentialAsync(audit, user.DisplayName, "agent.credential.remove", null, true, null);
+            return Results.NoContent();
+        }, audit, httpContext, "agent.credential.remove", profileId: null);
+
+    private static Task ChatWithDataAgent(
+        string connection,
+        string database,
+        AgentChatRequestBody body,
+        IGridletConnectionResolver resolver,
+        IGridletAuditSink audit,
+        IServiceProvider services,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+        => ChatWithAgent(
+            connection, database, GridletAgentMode.Data, body, resolver, audit, services,
+            httpContext, cancellationToken);
+
+    private static Task ChatWithSchemaAgent(
+        string connection,
+        string database,
+        AgentChatRequestBody body,
+        IGridletConnectionResolver resolver,
+        IGridletAuditSink audit,
+        IServiceProvider services,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+        => ChatWithAgent(
+            connection, database, GridletAgentMode.Schema, body, resolver, audit, services,
+            httpContext, cancellationToken);
+
+    private static async Task ChatWithAgent(
+        string connection,
+        string database,
+        GridletAgentMode mode,
+        AgentChatRequestBody body,
+        IGridletConnectionResolver resolver,
+        IGridletAuditSink audit,
+        IServiceProvider services,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        httpContext.Response.Headers.CacheControl = "no-store";
+        ResolvedConnection resolved;
+        try
+        {
+            resolved = resolver.Resolve(connection, database);
+        }
+        catch (GridletUnknownConnectionException ex)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+            await httpContext.Response.WriteAsJsonAsync(
+                new GridletErrorResponse(ex.Message), cancellationToken);
+            return;
+        }
+        var allowed = mode == GridletAgentMode.Data
+            ? resolved.Context.Connection.AllowAgentDataAccess
+            : resolved.Context.Connection.AllowAgentSchemaAccess;
+        if (!allowed)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await httpContext.Response.WriteAsJsonAsync(
+                new GridletErrorResponse(
+                    $"{(mode == GridletAgentMode.Data ? "Data" : "Schema")} agent access is disabled for connection '{connection}'."),
+                cancellationToken);
+            return;
+        }
+
+        var agent = services.GetService<IGridletAgentService>();
+        if (agent is null)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+            await httpContext.Response.WriteAsJsonAsync(
+                new GridletErrorResponse("Database agents are not configured for this application."),
+                cancellationToken);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(body.ProfileId))
+        {
+            await WriteAgentRequestErrorAsync(httpContext, "An agent profile is required.", cancellationToken);
+            return;
+        }
+        var profile = agent.Info.Profiles.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, body.ProfileId, StringComparison.OrdinalIgnoreCase));
+        if (profile is null)
+        {
+            await WriteAgentRequestErrorAsync(
+                httpContext, "The selected agent profile is not configured.", cancellationToken);
+            return;
+        }
+        if (body.CredentialHandle is { Length: > 256 })
+        {
+            await WriteAgentRequestErrorAsync(
+                httpContext, "The credential handle is invalid or expired.", cancellationToken);
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(body.Message) || body.Message.Length > 20_000)
+        {
+            await WriteAgentRequestErrorAsync(
+                httpContext, "A message between 1 and 20,000 characters is required.", cancellationToken);
+            return;
+        }
+
+        var history = body.History ?? [];
+        if (history.Count > 50 || history.Any(message =>
+                message is null ||
+                string.IsNullOrWhiteSpace(message.Content) ||
+                message.Content.Length > 20_000 ||
+                message.Role is not ("user" or "assistant")) ||
+            history.Sum(message => (long)(message?.Content?.Length ?? 0)) > 200_000)
+        {
+            await WriteAgentRequestErrorAsync(httpContext, "The conversation history is invalid or too long.", cancellationToken);
+            return;
+        }
+
+        var request = new GridletAgentRequest(
+            connection,
+            database,
+            mode,
+            profile.Id,
+            body.Message,
+            history,
+            body.CredentialHandle,
+            AgentUser(httpContext));
+        var stopwatch = Stopwatch.StartNew();
+        httpContext.Response.ContentType = "application/x-ndjson; charset=utf-8";
+
+        var completed = false;
+        var serviceReportedError = false;
+        try
+        {
+            await foreach (var agentEvent in agent.ChatAsync(request, cancellationToken))
+            {
+                if (string.Equals(agentEvent.Type, "completed", StringComparison.OrdinalIgnoreCase))
+                {
+                    completed = true;
+                }
+                else if (string.Equals(agentEvent.Type, "error", StringComparison.OrdinalIgnoreCase))
+                {
+                    serviceReportedError = true;
+                }
+                await JsonSerializer.SerializeAsync(
+                    httpContext.Response.Body, agentEvent, JsonSerializerOptions.Web, cancellationToken);
+                await httpContext.Response.WriteAsync("\n", cancellationToken);
+                await httpContext.Response.Body.FlushAsync(cancellationToken);
+            }
+
+            if (!completed && !serviceReportedError)
+            {
+                throw new GridletAgentException("The agent response ended before completion.");
+            }
+
+            await AuditAsync(
+                audit, httpContext, $"agent.{mode.ToString().ToLowerInvariant()}.chat",
+                connection, database, profile.Id, sql: null, succeeded: !serviceReportedError,
+                stopwatch.ElapsedMilliseconds,
+                error: serviceReportedError ? "The agent service reported an error." : null);
+        }
+        catch (OperationCanceledException) when (httpContext.RequestAborted.IsCancellationRequested)
+        {
+            await AuditAsync(
+                audit, httpContext, $"agent.{mode.ToString().ToLowerInvariant()}.chat",
+                connection, database, profile.Id, sql: null, succeeded: false,
+                stopwatch.ElapsedMilliseconds, "Cancelled by the client.");
+        }
+        catch (OperationCanceledException)
+        {
+            const string timeoutMessage = "The agent request timed out.";
+            await AuditAsync(
+                audit, httpContext, $"agent.{mode.ToString().ToLowerInvariant()}.chat",
+                connection, database, profile.Id, sql: null, succeeded: false,
+                stopwatch.ElapsedMilliseconds, timeoutMessage);
+            if (!httpContext.Response.HasStarted)
+            {
+                httpContext.Response.StatusCode = StatusCodes.Status504GatewayTimeout;
+                await httpContext.Response.WriteAsJsonAsync(
+                    new GridletErrorResponse(timeoutMessage), CancellationToken.None);
+            }
+            else
+            {
+                await TryWriteAgentStreamEventAsync(
+                    httpContext, new GridletAgentStreamEvent("error", timeoutMessage));
+            }
+        }
+        catch (Exception ex)
+        {
+            var safeMessage = SafeAgentError(ex);
+            await AuditAsync(
+                audit, httpContext, $"agent.{mode.ToString().ToLowerInvariant()}.chat",
+                connection, database, profile.Id, sql: null, succeeded: false,
+                stopwatch.ElapsedMilliseconds, safeMessage);
+
+            if (httpContext.RequestAborted.IsCancellationRequested)
+            {
+                return;
+            }
+            if (!httpContext.Response.HasStarted)
+            {
+                httpContext.Response.StatusCode = ex is GridletAgentException
+                    ? StatusCodes.Status400BadRequest
+                    : StatusCodes.Status502BadGateway;
+                await httpContext.Response.WriteAsJsonAsync(
+                    new GridletErrorResponse(safeMessage), cancellationToken);
+                return;
+            }
+
+            await TryWriteAgentStreamEventAsync(
+                httpContext, new GridletAgentStreamEvent("error", safeMessage));
+        }
+    }
+
+    private static async Task WriteAgentRequestErrorAsync(
+        HttpContext httpContext,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await httpContext.Response.WriteAsJsonAsync(new GridletErrorResponse(message), cancellationToken);
+    }
+
+    private static string SafeAgentError(Exception exception)
+        => exception switch
+        {
+            GridletAgentException => exception.Message,
+            _ => "The agent provider could not complete the request. Check its endpoint, model, and credential.",
+        };
+
+    private static async Task TryWriteAgentStreamEventAsync(
+        HttpContext httpContext,
+        GridletAgentStreamEvent value)
+    {
+        if (httpContext.RequestAborted.IsCancellationRequested) return;
+        try
+        {
+            await JsonSerializer.SerializeAsync(
+                httpContext.Response.Body, value, JsonSerializerOptions.Web, CancellationToken.None);
+            await httpContext.Response.WriteAsync("\n", CancellationToken.None);
+            await httpContext.Response.Body.FlushAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
+        {
+            // The client disconnected while the final error event was being written.
+        }
+    }
+
+    private static async Task<IResult> ExecuteAgentCredentialAsync(
+        Func<Task<IResult>> action,
+        IGridletAuditSink audit,
+        HttpContext httpContext,
+        string actionName,
+        string? profileId)
+    {
+        try
+        {
+            return await action();
+        }
+        catch (GridletAgentException exception)
+        {
+            await AuditCredentialAsync(
+                audit, UserName(httpContext), actionName, profileId, false, exception.Message);
+            return Results.BadRequest(new GridletErrorResponse(exception.Message));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            const string message = "The agent credential operation could not be completed.";
+            await AuditCredentialAsync(
+                audit, UserName(httpContext), actionName, profileId, false, message);
+            return Results.Json(
+                new GridletErrorResponse(message), statusCode: StatusCodes.Status502BadGateway);
+        }
+    }
+
+    private static ValueTask AuditCredentialAsync(
+        IGridletAuditSink audit,
+        string? userName,
+        string action,
+        string? profileId,
+        bool succeeded,
+        string? error)
+        => audit.WriteAsync(new GridletAuditEvent(
+            DateTimeOffset.UtcNow,
+            userName,
+            action,
+            ConnectionName: "-",
+            Database: null,
+            ObjectName: profileId,
+            Sql: null,
+            succeeded,
+            DurationMs: 0,
+            error), CancellationToken.None);
+
+    private static GridletAgentUserContext AgentUser(HttpContext httpContext)
+    {
+        var identity = httpContext.User.Identity;
+        if (identity?.IsAuthenticated != true)
+        {
+            return new GridletAgentUserContext(null, null, IsAuthenticated: false);
+        }
+
+        var issuer = httpContext.User.FindFirst("iss")?.Value
+            ?? identity.AuthenticationType
+            ?? "authenticated";
+        var subject = httpContext.User.FindFirst("sub")?.Value
+            ?? httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+            ?? identity.Name
+            ?? throw new GridletAgentException(
+                "The authenticated user has no stable identifier for agent credentials.");
+        var ownerHash = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes($"{issuer}\u001f{subject}")));
+        return new GridletAgentUserContext(ownerHash, identity.Name, IsAuthenticated: true);
+    }
 
     // ---- ad-hoc queries ----
 

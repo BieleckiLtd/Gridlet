@@ -1,4 +1,5 @@
 using Gridlet;
+using Gridlet.Abstractions;
 using Gridlet.AspNetCore;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
@@ -29,6 +30,9 @@ public static class GridletEndpointRouteBuilderExtensions
 
         // Resolving options here validates the configuration at startup rather than on first request.
         var options = endpoints.ServiceProvider.GetRequiredService<IOptions<GridletOptions>>().Value;
+        // The agent integration is optional, but when present its provider profiles should also
+        // fail fast during endpoint mapping rather than on the first chat request.
+        _ = endpoints.ServiceProvider.GetService<IGridletAgentService>()?.Info;
 
         var group = endpoints.MapGroup(pattern);
 
@@ -44,7 +48,7 @@ public static class GridletEndpointRouteBuilderExtensions
         }
 
         GridletUiEndpoints.Map(group, pattern);
-        GridletApiEndpoints.Map(group.MapGroup("/api"));
+        GridletApiEndpoints.Map(group.MapGroup("/api"), options);
         GridletPublishedEndpoints.Map(group);
 
         return group;

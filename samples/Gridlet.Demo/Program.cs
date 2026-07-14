@@ -15,11 +15,26 @@ builder.Services
         // options.Security.AuthorizationPolicy = AuthorizationExtensions.GridletAccessPolicy;
 
         options.Limits.MaxQueryResultRows = 100_000;
+        options.Security.AllowAnonymousAgentCredentials = true;
     })
     .AddSqlite(
         builder.Configuration,
         "SQLite",
-        relativePathBase: builder.Environment.ContentRootPath);
+        c =>
+        {
+            //relativePathBase: builder.Environment.ContentRootPath
+            c.AllowAgentSchemaAccess = true;
+            c.AllowAgentDataAccess = true;
+            c.AllowAgentDataWithPrimaryConnection = true;
+        })
+    .AddAgentFramework(agents =>
+    {
+        agents.AddOllama("local-qwen3.5-4b", new Uri("http://127.0.0.1:11434"), "qwen3.5:4b");
+        agents.AddOllama("local-qwen3.5-2b", new Uri("http://127.0.0.1:11434"), "qwen3.5:2b");
+        agents.AddOllama("local-qwen3.5-0.8b", new Uri("http://127.0.0.1:11434"), "qwen3.5:0.8b");
+        agents.AddOllama("local-gemma4-12b", new Uri("http://127.0.0.1:11434"), "gemma4:12b");
+        agents.AddOllama("local-qwen3.6-35b-a3b", new Uri("http://127.0.0.1:11434"), "qwen3.6:35b-a3b");
+    });
 
 var app = builder.Build();
 

@@ -38,6 +38,50 @@ the current result set as CSV or JSON.
   <img src="assets/screenshot-3.png" width="100%" alt="Gridlet query editor showing order summary results" />
 </p>
 
+## Talk with your database
+
+The optional `Gridlet.AgentFramework` package adds an **Ask** workspace powered by
+[Microsoft Agent Framework](https://learn.microsoft.com/en-us/agent-framework/). It keeps two
+capability sets separate:
+
+- **Data** mode can inspect schema and run one bounded, read-only query at a time. It has no write
+  or DDL tool.
+- **Design / Schema** mode can inspect objects, columns, indexes, relationships, and definitions.
+  It can propose DDL in its answer, but it cannot apply it.
+
+Profiles can use OpenAI (including OpenAI API credentials used for Codex-capable models), Anthropic
+Claude, an OpenAI-compatible endpoint, or local Ollama. Provider URLs and models are allow-listed by
+the host. A server key may come from configuration, User Secrets, or a vault; alternatively,
+authenticated users can enter their own key. User keys are held only in server memory behind an
+expiring, user-bound handle and are never written to Gridlet storage or browser storage.
+
+```csharp
+builder.Services
+    .AddGridlet()
+    .AddSqlServer(managementConnectionString, connection =>
+    {
+        connection.AllowAgentSchemaAccess = true;
+        connection.AllowAgentDataAccess = true;
+        connection.AgentDataConnectionString = readOnlyConnectionString;
+    })
+    .AddAgentFramework(agents =>
+    {
+        agents.AddOpenAI("openai", "gpt-5-mini")
+            .WithServerApiKey(builder.Configuration["AI:OpenAI:ApiKey"])
+            .AllowUserApiKeys();
+
+        agents.AddAnthropic("claude", "claude-sonnet-4-5")
+            .AllowUserApiKeys();
+
+        agents.AddOllama(
+            "local", new Uri("http://127.0.0.1:11434"), "qwen3:4b");
+    });
+```
+
+An OpenAI/ChatGPT/Codex subscription is not itself an API credential; the OpenAI profile requires
+an OpenAI API key. `Gridlet.AgentFramework` is currently published as a prerelease package because
+Anthropic's Microsoft Agent Framework adapter remains a preview dependency.
+
 ## Published APIs
 
 Turn a query into an HTTP endpoint, then test it with the built-in request preview and inspect the
@@ -90,6 +134,9 @@ builder.Services
 
         options.Security.AllowAnonymous = false;
         options.Security.AuthorizationPolicy = "GridletAccess";
+        options.Security.AgentDataAuthorizationPolicy = "GridletDataAgent";
+        options.Security.AgentSchemaAuthorizationPolicy = "GridletSchemaAgent";
+        options.Security.AgentCredentialAuthorizationPolicy = "GridletAgentCredentials";
 
         options.Storage.FilePath = "App_Data/gridlet-store.json";
     })
@@ -98,6 +145,9 @@ builder.Services
         connection.AllowSqlExecution = true;
         connection.AllowWrites = false;
         connection.AllowDdl = false;
+        connection.AllowAgentSchemaAccess = true;
+        connection.AllowAgentDataAccess = true;
+        connection.AgentDataConnectionString = readOnlyReportingConnectionString;
     });
 ```
 
@@ -136,6 +186,10 @@ the built-in SQL Server and SQLite providers because it does not require a name 
 | `AllowSqlExecution` | `true` | Shows and enables the ad-hoc SQL editor. This permits any statement allowed by the database login, including writes or DDL; it is independent of the two UI feature gates below. |
 | `AllowWrites` | `true` | Enables Gridlet's explicit row insert/update/delete UI and endpoints. It does not prevent write statements submitted through the SQL editor. |
 | `AllowDdl` | `true` | Enables Gridlet's schema-changing UI and endpoints: creating, altering, and dropping schemas, tables, columns, keys, indexes, views, routines, and triggers where supported. It does not prevent DDL submitted through the SQL editor. |
+| `AllowAgentSchemaAccess` | `false` | Allows Design / Schema chat to send schema metadata and object definitions to a configured model. The agent cannot apply DDL. |
+| `AllowAgentDataAccess` | `false` | Allows Data chat to inspect schema and run bounded read-only queries. |
+| `AgentDataConnectionString` | `null` | Separate server-side connection string for the Data agent. Use a SELECT-only identity. Never returned by Gridlet. |
+| `AllowAgentDataWithPrimaryConnection` | `false` | Explicitly opts into using the primary Gridlet identity when no agent-specific connection is configured. Avoid this when the primary identity can write or run DDL. |
 
 ### Limit options
 
@@ -152,6 +206,26 @@ the built-in SQL Server and SQLite providers because it does not require a name 
 | --- | --- | --- |
 | `AllowAnonymous` | `false` | When false, `MapGridlet` applies ASP.NET Core authorization to every UI, API, asset, and published endpoint under the mount path. Set true only when anonymous database tooling is intentional, typically local development. A named `AuthorizationPolicy` takes precedence. |
 | `AuthorizationPolicy` | `null` | Named ASP.NET Core authorization policy applied to the Gridlet route group. When null, the host's default policy is used unless `AllowAnonymous` is true. The policy must be registered by the host. When set, it always applies. |
+| `AgentDataAuthorizationPolicy` | `null` | Optional additional policy for Data chat. |
+| `AgentSchemaAuthorizationPolicy` | `null` | Optional additional policy for Design / Schema chat. |
+| `AgentCredentialAuthorizationPolicy` | `null` | Optional additional policy for creating and removing ephemeral user-key handles. |
+| `AllowAnonymousAgentCredentials` | `false` | Allows anonymous BYOK handles only when explicitly enabled. Authenticated, user-bound keys are the default. |
+
+### Agent Framework options
+
+`AddAgentFramework` is optional and lives in the `Gridlet.AgentFramework` package. It accepts named,
+host-controlled profiles through `AddOpenAI`, `AddAnthropic`, `AddOpenAICompatible`, and `AddOllama`.
+Each returned profile builder supports `WithServerApiKey`, `AllowUserApiKeys`, and `AsLocal`.
+
+| Property | Default | Effect |
+| --- | --- | --- |
+| `CredentialLifetime` | 30 minutes | Lifetime of an ephemeral user-key handle; constrained to at most one day. |
+| `MaxHistoryMessages` / `MaxHistoryCharacters` | `50` / `200,000` | Per-turn conversation-history limits. Conversations remain browser-held and are not persisted. |
+| `MaxMessageCharacters` | `20,000` | Maximum current user message length. |
+| `MaxToolResultCharacters` | `32,000` | Maximum serialized schema or query result sent back to a model tool call. |
+| `MaxQueryCharacters` / `MaxQueryRows` | `20,000` / `100` | Data-agent SQL and per-result-set row caps. |
+| `QueryTimeoutSeconds` | `120` | Timeout for the data agent's read-only query tool. |
+| `MaxToolIterations` / `MaxOutputTokens` | `8` / `4,096` | Model/tool loop and response limits. |
 
 Authentication itself remains the host application's responsibility. Configure ASP.NET Core
 authentication and authorization before mapping Gridlet; Gridlet does not provide a separate login.
@@ -182,6 +256,7 @@ Query execution, row writes, schema changes, and published endpoint invocations 
 | --- | --- |
 | `Gridlet.Core` | Provider-agnostic abstractions, domain model, options, auditing. |
 | `Gridlet.AspNetCore` | `AddGridlet()` / `MapGridlet()`, JSON API, embedded web UI. |
+| `Gridlet.AgentFramework` | Optional Microsoft Agent Framework integration with OpenAI, Anthropic, OpenAI-compatible, and Ollama profiles. |
 | `Gridlet.SqlServer` | SQL Server provider (schema, data paging, query execution). |
 | `Gridlet.Sqlite` | SQLite provider (schema, data paging, query execution, writes, and DDL). |
 
@@ -194,6 +269,7 @@ can be added later without rewriting the product.
 ```
 src/
   Gridlet.Core/          core abstractions + domain model
+  Gridlet.AgentFramework/ optional Microsoft Agent Framework integration
   Gridlet.AspNetCore/    host integration, API endpoints, embedded UI
   Gridlet.SqlServer/     SQL Server provider
   Gridlet.Sqlite/        SQLite provider
@@ -241,6 +317,13 @@ dotnet run --project samples/Gridlet.Demo
   bracket-quoted, and row values always travel as SQL parameters.
 - **Audit:** queries, row writes, schema changes, and published-API invocations flow through
   `IGridletAuditSink` (default: structured logging); replace the sink to persist audit events.
+- **Agents:** both modes are default-off per connection. Data mode has only a guarded read-query
+  tool and should use `AgentDataConnectionString` with a SELECT-only database principal. Design mode
+  never receives a query or mutation tool. Tool results, schema definitions, and cell values are
+  treated as untrusted model input; row, character, iteration, token, and timeout caps are enforced.
+- **Agent keys:** server keys remain in host configuration. User keys require authentication by
+  default, live only in process memory, are zeroed when removed/expired, and are referenced by
+  opaque handles sent in request bodies rather than URLs.
 
 An explicitly configured `AuthorizationPolicy` takes precedence over `AllowAnonymous`. This makes a
 named policy fail closed even if a development configuration layer also sets `AllowAnonymous` to

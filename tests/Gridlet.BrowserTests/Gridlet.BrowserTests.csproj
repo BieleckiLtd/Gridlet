@@ -20,6 +20,8 @@
     <ProjectReference Include="..\..\src\Gridlet.AspNetCore\Gridlet.AspNetCore.csproj" />
     <Compile Include="..\Gridlet.Tests\AspNetCore\Fakes\FakeGridletProvider.cs"
              Link="Fakes\FakeGridletProvider.cs" />
+    <Compile Include="..\Gridlet.Tests\AspNetCore\Fakes\FakeGridletAgentService.cs"
+             Link="Fakes\FakeGridletAgentService.cs" />
   </ItemGroup>
 
 </Project>

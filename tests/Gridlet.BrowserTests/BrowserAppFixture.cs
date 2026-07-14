@@ -23,6 +23,8 @@ public sealed class BrowserAppFixture : IAsyncLifetime
 
     public FakeGridletProvider Provider { get; } = new();
 
+    public FakeGridletAgentService Agent { get; } = new();
+
     private IGridletProvider SqliteUiProvider => new BrowserSqliteProvider(Provider);
 
     public async Task InitializeAsync()
@@ -37,12 +39,19 @@ public sealed class BrowserAppFixture : IAsyncLifetime
         builder.Logging.ClearProviders();
         builder.Services.AddGridlet(options =>
         {
-            options.AddConnection("Main", "Server=browser-test;", FakeGridletProvider.Name);
+            options.AddConnection("Main", "Server=browser-test;", FakeGridletProvider.Name, connection =>
+            {
+                connection.AllowAgentDataAccess = true;
+                connection.AllowAgentDataWithPrimaryConnection = true;
+                connection.AllowAgentSchemaAccess = true;
+            });
             options.AddConnection("SQLite", "Data Source=browser-test.db;", BrowserSqliteProvider.Name);
             options.Security.AllowAnonymous = true;
+            options.Security.AllowAnonymousAgentCredentials = true;
             options.Storage.FilePath = storePath;
         });
         builder.Services.AddSingleton<IGridletProvider>(Provider);
+        builder.Services.AddSingleton<IGridletAgentService>(Agent);
         builder.Services.AddSingleton(SqliteUiProvider);
 
         app = builder.Build();
@@ -54,6 +63,8 @@ public sealed class BrowserAppFixture : IAsyncLifetime
         Browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
             Headless = true,
+            // Lets restricted development environments reuse an installed Chromium-based browser.
+            ExecutablePath = Environment.GetEnvironmentVariable("GRIDLET_PLAYWRIGHT_EXECUTABLE_PATH"),
         });
     }
 
