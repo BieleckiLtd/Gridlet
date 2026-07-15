@@ -758,6 +758,19 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   overflow-wrap: normal;
   word-break: normal;
 }
+.agent-reasoning-label {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+.agent-reasoning-raw,
+.agent-reasoning-raw-final {
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+}
 .agent-tool-event {
   max-width: 100%;
   padding: 5px 8px;

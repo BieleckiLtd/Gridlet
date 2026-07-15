@@ -4,6 +4,7 @@ using System.Text.Json;
 using Gridlet.Abstractions;
 using Gridlet.Auditing;
 using Gridlet.Models;
+using GitHub.Copilot;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OllamaSharp;
@@ -93,32 +94,52 @@ internal sealed class GridletAgentFrameworkService(
             (name, result) => pendingToolEvents.Enqueue(new GridletAgentStreamEvent(
                 "tool-result", SerializeToolPayload(new { result }), name)));
         var tools = databaseTools.Create(request.Mode);
-        using var chatClient = CreateChatClient(profile, apiKey)
-            .AsBuilder()
-            .UseFunctionInvocation(configure: client =>
-                client.MaximumIterationsPerRequest = settings.MaxToolIterations)
-            .Build();
+        var instructions = request.Mode == GridletAgentMode.Schema
+            ? SchemaInstructions
+            : DataInstructions;
+        await using var copilotClient = profile.Provider == GridletAgentProvider.GitHubCopilot
+            ? await StartCopilotClientAsync(cancellationToken)
+            : null;
+        using var chatClient = profile.Provider is
+                GridletAgentProvider.Codex or GridletAgentProvider.GitHubCopilot
+            ? null
+            : CreateChatClient(profile, apiKey)
+                .AsBuilder()
+                .UseFunctionInvocation(configure: client =>
+                    client.MaximumIterationsPerRequest =
+                        settings.MaxToolIterations ?? int.MaxValue)
+                .Build();
 
-        var agent = new ChatClientAgent(
-            chatClient,
-            new ChatClientAgentOptions
-            {
-                Name = "GridletDatabaseAgent",
-                Description = "A bounded database schema and read-only data assistant.",
-                ChatOptions = new ChatOptions
+        AIAgent agent = profile.Provider switch
+        {
+            GridletAgentProvider.Codex => new CodexAppServerAgent(
+                settings.CodexExecutablePath,
+                profile.Model,
+                instructions,
+                tools.OfType<AIFunction>().ToArray(),
+                settings.MaxToolIterations,
+                profile.ReasoningEffort),
+            GridletAgentProvider.GitHubCopilot => CreateGitHubCopilotAgent(
+                copilotClient!, profile, instructions, tools, settings.MaxToolIterations),
+            _ => new ChatClientAgent(
+                chatClient!,
+                new ChatClientAgentOptions
                 {
-                    Instructions = request.Mode == GridletAgentMode.Schema
-                        ? SchemaInstructions
-                        : DataInstructions,
-                    Tools = tools,
-                    MaxOutputTokens = settings.MaxOutputTokens,
-                    Reasoning = new ReasoningOptions
+                    Name = "GridletDatabaseAgent",
+                    Description = "A bounded database schema and read-only data assistant.",
+                    ChatOptions = new ChatOptions
                     {
-                        Output = ReasoningOutput.Summary,
+                        Instructions = instructions,
+                        Tools = tools,
+                        MaxOutputTokens = settings.MaxOutputTokens,
+                        Reasoning = new ReasoningOptions
+                        {
+                            Output = ReasoningOutput.Summary,
+                        },
                     },
-                },
-                UseProvidedChatClientAsIs = true,
-            });
+                    UseProvidedChatClientAsIs = true,
+                }),
+        };
 
         var messages = CreateMessages(request);
         var observedCalls = new HashSet<string>(StringComparer.Ordinal);
@@ -149,9 +170,21 @@ internal sealed class GridletAgentFrameworkService(
 
             foreach (var reasoning in update.Contents.OfType<TextReasoningContent>())
             {
-                if (!string.IsNullOrEmpty(reasoning.Text))
+                var eventType = reasoning.RawRepresentation is CodexReasoningEvent codexReasoning
+                    ? codexReasoning.Kind
+                    : "reasoning";
+                if (!string.IsNullOrEmpty(reasoning.Text) || eventType == "reasoning-section")
                 {
-                    yield return new GridletAgentStreamEvent("reasoning", reasoning.Text);
+                    yield return new GridletAgentStreamEvent(eventType, reasoning.Text);
+                }
+            }
+
+            foreach (var functionResult in update.Contents.OfType<FunctionResultContent>())
+            {
+                if (TryReadFailedCodexToolResult(functionResult, out var toolName, out var result))
+                {
+                    yield return new GridletAgentStreamEvent(
+                        "tool-result", SerializeToolPayload(new { result }), toolName);
                 }
             }
 
@@ -280,11 +313,44 @@ internal sealed class GridletAgentFrameworkService(
         return json.Length <= 8_000 ? json : string.Concat(json.AsSpan(0, 8_000), "… [truncated]");
     }
 
+    private static bool TryReadFailedCodexToolResult(
+        FunctionResultContent functionResult,
+        out string? toolName,
+        out string? result)
+    {
+        toolName = null;
+        result = null;
+        if (functionResult.Result is not JsonElement item ||
+            !item.TryGetProperty("type", out var type) ||
+            type.GetString() != "dynamicToolCall" ||
+            !item.TryGetProperty("success", out var success) ||
+            success.ValueKind != JsonValueKind.False)
+        {
+            return false;
+        }
+
+        toolName = item.TryGetProperty("tool", out var tool) ? tool.GetString() : null;
+        if (item.TryGetProperty("contentItems", out var contentItems) &&
+            contentItems.ValueKind == JsonValueKind.Array)
+        {
+            result = contentItems.EnumerateArray()
+                .Select(content => content.TryGetProperty("text", out var text)
+                    ? text.GetString()
+                    : null)
+                .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text));
+        }
+        return true;
+    }
+
     private IChatClient CreateChatClient(
         GridletAgentProfileSettings profile,
         string? apiKey)
         => profile.Provider switch
         {
+            GridletAgentProvider.Codex => throw new InvalidOperationException(
+                "Codex profiles use the local app-server rather than an API chat client."),
+            GridletAgentProvider.GitHubCopilot => throw new InvalidOperationException(
+                "GitHub Copilot profiles use the local CLI rather than an API chat client."),
             GridletAgentProvider.OpenAI => CreateOpenAIChatClient(profile, apiKey!),
             GridletAgentProvider.OpenAICompatible => CreateOpenAIChatClient(
                 profile, apiKey ?? "gridlet-no-api-key"),
@@ -294,6 +360,100 @@ internal sealed class GridletAgentFrameworkService(
             }.AsIChatClient(profile.Model, settings.MaxOutputTokens),
             GridletAgentProvider.Ollama => CreateOllamaChatClient(profile),
             _ => throw new InvalidOperationException("The configured agent provider is not supported."),
+        };
+
+    private async Task<CopilotClient> StartCopilotClientAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var client = new CopilotClient(new CopilotClientOptions
+        {
+            Connection = RuntimeConnection.ForStdio(settings.CopilotExecutablePath),
+        });
+
+        try
+        {
+            await client.StartAsync();
+            cancellationToken.ThrowIfCancellationRequested();
+            return client;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await client.DisposeAsync();
+            throw;
+        }
+        catch (Exception exception)
+        {
+            await client.DisposeAsync();
+            throw new GridletAgentException(
+                $"Could not start GitHub Copilot CLI using '{settings.CopilotExecutablePath}'. " +
+                "Install GitHub Copilot CLI, run 'copilot login', or configure " +
+                $"{nameof(GridletAgentFrameworkOptions.CopilotExecutablePath)}. {exception.Message}");
+        }
+    }
+
+    private static AIAgent CreateGitHubCopilotAgent(
+        CopilotClient client,
+        GridletAgentProfileSettings profile,
+        string instructions,
+        IList<AITool> tools,
+        int? maxToolCalls)
+    {
+        var copilotTools = tools.OfType<AIFunction>().ToArray();
+        var toolCallCount = 0;
+        var toolCallLimit = maxToolCalls.GetValueOrDefault();
+        var sessionConfig = new SessionConfig
+        {
+            Model = profile.Model,
+            ReasoningEffort = ToCopilotReasoningEffort(profile.CopilotReasoningEffort),
+            ReasoningSummary = ReasoningSummary.Concise,
+            Streaming = true,
+            Tools = copilotTools,
+            AvailableTools = new ToolSet().AddCustom("*"),
+            EnableConfigDiscovery = false,
+            Hooks = maxToolCalls.HasValue
+                ? new SessionHooks
+                {
+                    OnPreToolUse = (_, _) =>
+                    {
+                        var currentToolCall = Interlocked.Increment(ref toolCallCount);
+                        return Task.FromResult<PreToolUseHookOutput?>(new PreToolUseHookOutput
+                        {
+                            PermissionDecision = currentToolCall <= toolCallLimit
+                                ? "allow"
+                                : "deny",
+                            AdditionalContext = currentToolCall <= toolCallLimit
+                                ? null
+                                : $"Gridlet's limit of {toolCallLimit} tool calls was reached. " +
+                                  "Do not call another tool; finish the response using the information " +
+                                  "already collected and tell the user if more data is required.",
+                        });
+                    },
+                }
+                : null,
+            SystemMessage = new SystemMessageConfig
+            {
+                Mode = SystemMessageMode.Append,
+                Content = instructions,
+            },
+        };
+
+        return client.AsAIAgent(
+            sessionConfig,
+            ownsClient: false,
+            id: "GridletDatabaseAgent",
+            name: "GridletDatabaseAgent",
+            description: "A bounded database schema and read-only data assistant.");
+    }
+
+    private static string? ToCopilotReasoningEffort(GridletCopilotReasoningEffort? effort)
+        => effort switch
+        {
+            null => null,
+            GridletCopilotReasoningEffort.Low => "low",
+            GridletCopilotReasoningEffort.Medium => "medium",
+            GridletCopilotReasoningEffort.High => "high",
+            GridletCopilotReasoningEffort.ExtraHigh => "xhigh",
+            _ => throw new ArgumentOutOfRangeException(nameof(effort)),
         };
 
     private static IChatClient CreateOllamaChatClient(GridletAgentProfileSettings profile)

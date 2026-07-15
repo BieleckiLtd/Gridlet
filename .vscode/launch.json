@@ -1,0 +1,23 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Gridlet.Demo",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build Gridlet.Demo",
+      "program": "${workspaceFolder}/samples/Gridlet.Demo/bin/Debug/net10.0/Gridlet.Demo.dll",
+      "cwd": "${workspaceFolder}/samples/Gridlet.Demo",
+      "env": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "ASPNETCORE_URLS": "http://localhost:5088"
+      },
+      "serverReadyAction": {
+        "action": "openExternally",
+        "pattern": "\\bNow listening on:\\s+(https?://\\S+)",
+        "uriFormat": "%s/gridlet"
+      },
+      "justMyCode": true
+    }
+  ]
+}

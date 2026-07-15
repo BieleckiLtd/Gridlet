@@ -32,11 +32,26 @@ public sealed class GridletAgentFrameworkOptions
     /// <summary>Database command timeout used by the data-mode query tool.</summary>
     public int QueryTimeoutSeconds { get; set; } = 120;
 
-    /// <summary>Maximum model/tool round trips permitted during one chat turn.</summary>
-    public int MaxToolIterations { get; set; } = 8;
+    /// <summary>
+    /// Maximum model/tool round trips permitted during one chat turn, or <see langword="null"/>
+    /// for no Gridlet-imposed limit. Providers may still enforce their own limits.
+    /// </summary>
+    public int? MaxToolIterations { get; set; } = 8;
 
     /// <summary>Maximum output tokens requested from the configured model.</summary>
     public int MaxOutputTokens { get; set; } = 4_096;
+
+    /// <summary>
+    /// Command used to launch the locally installed Codex CLI for subscription-backed profiles.
+    /// Authentication is owned by that local Codex installation and is never read by Gridlet.
+    /// </summary>
+    public string CodexExecutablePath { get; set; } = "codex";
+
+    /// <summary>
+    /// Command used to launch the locally installed GitHub Copilot CLI for subscription-backed
+    /// profiles. Authentication is owned by that local installation and is never read by Gridlet.
+    /// </summary>
+    public string CopilotExecutablePath { get; set; } = "copilot";
 
     /// <summary>Adds a profile using OpenAI's hosted API.</summary>
     public GridletAgentProfileBuilder AddOpenAI(
@@ -44,6 +59,30 @@ public sealed class GridletAgentFrameworkOptions
         string model,
         string? displayName = null)
         => Add(id, displayName ?? "OpenAI", model, GridletAgentProvider.OpenAI, endpoint: null);
+
+    /// <summary>
+    /// Adds a subscription-backed profile that communicates with the local Codex app-server.
+    /// The operating-system user running the application must first sign in with
+    /// <c>codex login</c> using a ChatGPT account.
+    /// </summary>
+    public GridletAgentProfileBuilder AddCodex(
+        string id,
+        string model,
+        string? displayName = null)
+        => Add(id, displayName ?? "Codex (ChatGPT subscription)", model,
+            GridletAgentProvider.Codex, endpoint: null);
+
+    /// <summary>
+    /// Adds a subscription-backed profile that communicates with the local GitHub Copilot CLI.
+    /// The operating-system user running the application must first sign in with
+    /// <c>copilot login</c> using an account with access to GitHub Copilot.
+    /// </summary>
+    public GridletAgentProfileBuilder AddGitHubCopilot(
+        string id,
+        string model,
+        string? displayName = null)
+        => Add(id, displayName ?? "GitHub Copilot subscription", model,
+            GridletAgentProvider.GitHubCopilot, endpoint: null);
 
     /// <summary>Adds a profile using Anthropic's hosted Claude API.</summary>
     public GridletAgentProfileBuilder AddAnthropic(
@@ -104,10 +143,20 @@ public sealed class GridletAgentFrameworkOptions
             nameof(MaxQueryRows), "between 1 and 10,000");
         ValidateRange(QueryTimeoutSeconds is >= 1 and <= 300,
             nameof(QueryTimeoutSeconds), "between 1 and 300");
-        ValidateRange(MaxToolIterations is >= 1 and <= 20,
-            nameof(MaxToolIterations), "between 1 and 20");
+        ValidateRange(MaxToolIterations is null or >= 1 and <= 100,
+            nameof(MaxToolIterations), "null or between 1 and 100");
         ValidateRange(MaxOutputTokens is >= 1 and <= 100_000,
             nameof(MaxOutputTokens), "between 1 and 100,000");
+        if (string.IsNullOrWhiteSpace(CodexExecutablePath) || CodexExecutablePath.Length > 1_024)
+        {
+            throw new GridletValidationException(
+                $"{nameof(CodexExecutablePath)} must contain 1-1,024 characters.");
+        }
+        if (string.IsNullOrWhiteSpace(CopilotExecutablePath) || CopilotExecutablePath.Length > 1_024)
+        {
+            throw new GridletValidationException(
+                $"{nameof(CopilotExecutablePath)} must contain 1-1,024 characters.");
+        }
 
         if (_profiles.Count == 0)
         {
@@ -139,6 +188,8 @@ public sealed class GridletAgentFrameworkOptions
             QueryTimeoutSeconds,
             MaxToolIterations,
             MaxOutputTokens,
+            CodexExecutablePath,
+            CopilotExecutablePath,
             new ReadOnlyCollection<GridletAgentProfileSettings>(profiles));
     }
 
@@ -177,6 +228,8 @@ public sealed class GridletAgentProfileBuilder
     internal string? ServerApiKey { get; private set; }
     internal bool AllowsUserApiKey { get; private set; }
     internal bool IsLocal { get; private set; }
+    internal GridletCodexReasoningEffort? ReasoningEffort { get; private set; }
+    internal GridletCopilotReasoningEffort? CopilotReasoningEffort { get; private set; }
 
     /// <summary>Changes the safe display label exposed to Gridlet clients.</summary>
     public GridletAgentProfileBuilder WithDisplayName(string displayName)
@@ -212,6 +265,48 @@ public sealed class GridletAgentProfileBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets the reasoning effort sent to <c>codex app-server</c> for each turn. When omitted,
+    /// Codex uses the model or local configuration default.
+    /// </summary>
+    public GridletAgentProfileBuilder WithReasoningEffort(
+        GridletCodexReasoningEffort reasoningEffort)
+    {
+        if (Provider != GridletAgentProvider.Codex)
+        {
+            throw new GridletValidationException(
+                "Reasoning effort can only be configured for a Codex profile.");
+        }
+        if (!Enum.IsDefined(reasoningEffort))
+        {
+            throw new ArgumentOutOfRangeException(nameof(reasoningEffort));
+        }
+
+        ReasoningEffort = reasoningEffort;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the reasoning effort sent to GitHub Copilot for each turn. When omitted, Copilot uses
+    /// the selected model's default. The selected model must support reasoning effort.
+    /// </summary>
+    public GridletAgentProfileBuilder WithReasoningEffort(
+        GridletCopilotReasoningEffort reasoningEffort)
+    {
+        if (Provider != GridletAgentProvider.GitHubCopilot)
+        {
+            throw new GridletValidationException(
+                "Copilot reasoning effort can only be configured for a GitHub Copilot profile.");
+        }
+        if (!Enum.IsDefined(reasoningEffort))
+        {
+            throw new ArgumentOutOfRangeException(nameof(reasoningEffort));
+        }
+
+        CopilotReasoningEffort = reasoningEffort;
+        return this;
+    }
+
     internal GridletAgentProfileSettings Build()
     {
         if (string.IsNullOrWhiteSpace(Id) || Id.Length > 100 ||
@@ -234,6 +329,13 @@ public sealed class GridletAgentProfileBuilder
         {
             throw new GridletValidationException(
                 $"The server API key configured for agent profile '{Id}' is too long.");
+        }
+
+        if (Provider is GridletAgentProvider.Codex or GridletAgentProvider.GitHubCopilot &&
+            (ServerApiKey is not null || AllowsUserApiKey))
+        {
+            throw new GridletValidationException(
+                $"Subscription-backed profile '{Id}' uses the local CLI login and cannot accept API keys.");
         }
 
         if (Provider is GridletAgentProvider.OpenAICompatible or GridletAgentProvider.Ollama)
@@ -262,12 +364,48 @@ public sealed class GridletAgentProfileBuilder
             Endpoint,
             ServerApiKey,
             AllowsUserApiKey,
-            IsLocal);
+            IsLocal,
+            ReasoningEffort,
+            CopilotReasoningEffort);
     }
+}
+
+/// <summary>Reasoning effort requested from a subscription-backed Codex model.</summary>
+public enum GridletCodexReasoningEffort
+{
+    /// <summary>Faster responses with less reasoning.</summary>
+    Low,
+
+    /// <summary>Balanced reasoning and latency.</summary>
+    Medium,
+
+    /// <summary>More reasoning for difficult requests.</summary>
+    High,
+
+    /// <summary>Maximum reasoning for models that advertise <c>xhigh</c> support.</summary>
+    ExtraHigh,
+}
+
+/// <summary>Reasoning effort requested from a subscription-backed GitHub Copilot model.</summary>
+public enum GridletCopilotReasoningEffort
+{
+    /// <summary>Faster responses with less reasoning.</summary>
+    Low,
+
+    /// <summary>Balanced reasoning and latency.</summary>
+    Medium,
+
+    /// <summary>More reasoning for difficult requests.</summary>
+    High,
+
+    /// <summary>Maximum reasoning for models that advertise <c>xhigh</c> support.</summary>
+    ExtraHigh,
 }
 
 internal enum GridletAgentProvider
 {
+    Codex,
+    GitHubCopilot,
     OpenAI,
     Anthropic,
     OpenAICompatible,
@@ -282,12 +420,15 @@ internal sealed record GridletAgentProfileSettings(
     Uri? Endpoint,
     string? ServerApiKey,
     bool AllowsUserApiKey,
-    bool IsLocal)
+    bool IsLocal,
+    GridletCodexReasoningEffort? ReasoningEffort,
+    GridletCopilotReasoningEffort? CopilotReasoningEffort)
 {
     public bool RequiresUserApiKey =>
         ServerApiKey is null &&
         AllowsUserApiKey &&
-        Provider is not GridletAgentProvider.Ollama;
+        Provider is not (GridletAgentProvider.Ollama or GridletAgentProvider.Codex or
+            GridletAgentProvider.GitHubCopilot);
 }
 
 internal sealed record GridletAgentFrameworkSettings(
@@ -299,8 +440,10 @@ internal sealed record GridletAgentFrameworkSettings(
     int MaxQueryCharacters,
     int MaxQueryRows,
     int QueryTimeoutSeconds,
-    int MaxToolIterations,
+    int? MaxToolIterations,
     int MaxOutputTokens,
+    string CodexExecutablePath,
+    string CopilotExecutablePath,
     IReadOnlyList<GridletAgentProfileSettings> Profiles)
 {
     private readonly IReadOnlyDictionary<string, GridletAgentProfileSettings> _profilesById =

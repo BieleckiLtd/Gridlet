@@ -49,11 +49,12 @@ capability sets separate:
 - **Design / Schema** mode can inspect objects, columns, indexes, relationships, and definitions.
   It can propose DDL in its answer, but it cannot apply it.
 
-Profiles can use OpenAI (including OpenAI API credentials used for Codex-capable models), Anthropic
-Claude, an OpenAI-compatible endpoint, or local Ollama. Provider URLs and models are allow-listed by
-the host. A server key may come from configuration, User Secrets, or a vault; alternatively,
-authenticated users can enter their own key. User keys are held only in server memory behind an
-expiring, user-bound handle and are never written to Gridlet storage or browser storage.
+Profiles can use a ChatGPT subscription through the local Codex runtime, a GitHub Copilot
+subscription through the local Copilot CLI, the OpenAI API, Anthropic Claude, an OpenAI-compatible
+endpoint, or local Ollama. Provider URLs and models are allow-listed by the host. An API server key
+may come from configuration, User Secrets, or a vault; alternatively, authenticated users can enter
+their own key. User keys are held only in server memory behind an expiring, user-bound handle and
+are never written to Gridlet storage or browser storage.
 
 ```csharp
 builder.Services
@@ -66,6 +67,14 @@ builder.Services
     })
     .AddAgentFramework(agents =>
     {
+        // Uses the ChatGPT account owned by the local Codex installation; no API key.
+        agents.AddCodex("codex-subscription", "gpt-5.4")
+            .WithReasoningEffort(GridletCodexReasoningEffort.High);
+
+        // Uses the account owned by the local GitHub Copilot CLI; no API key.
+        agents.AddGitHubCopilot("github-copilot", "gpt-5")
+            .WithReasoningEffort(GridletCopilotReasoningEffort.Medium);
+
         agents.AddOpenAI("openai", "gpt-5-mini")
             .WithServerApiKey(builder.Configuration["AI:OpenAI:ApiKey"])
             .AllowUserApiKeys();
@@ -78,9 +87,40 @@ builder.Services
     });
 ```
 
-An OpenAI/ChatGPT/Codex subscription is not itself an API credential; the OpenAI profile requires
-an OpenAI API key. `Gridlet.AgentFramework` is currently published as a prerelease package because
-Anthropic's Microsoft Agent Framework adapter remains a preview dependency.
+`AddCodex` launches `codex app-server` over stdio/JSON-RPC and uses the ChatGPT login stored by that
+local Codex installation. Install the Codex CLI and run `codex login` as the same operating-system
+user that runs the .NET application. Gridlet never receives the ChatGPT tokens. This is a host-level
+identity, not a separate identity for each web user: use it only where application users are meant
+to share the host's Codex entitlement, and protect the agent endpoints with authorization policies.
+The app-server custom-tool bridge is currently an experimental Codex protocol surface.
+Set per-profile reasoning with `WithReasoningEffort`; omit it to retain the Codex/model default.
+Supported levels depend on the selected model, and `ExtraHigh` maps to app-server's `xhigh` value.
+The expanded Thinking panel shows every reasoning surface app-server supplies without requesting
+more than Codex's concise summary: summary sections, optional model-supported raw reasoning, tool
+activity, and authoritative completed-item corrections. Raw reasoning is not available from every
+model or turn.
+For schema-heavy conversations, increase `MaxToolIterations` up to its validated maximum of `100`,
+or set it to `null` for no Gridlet-imposed ceiling. Providers can still impose their own limits.
+When Gridlet's configured limit is reached, it asks Codex to finish using the information already
+collected and streams that tool feedback to the client.
+
+`AddGitHubCopilot` launches the installed GitHub Copilot CLI over stdio using GitHub's Copilot SDK
+and Microsoft Agent Framework adapter. Install the CLI and run `copilot login` as the same
+operating-system user that runs the .NET application. Gridlet never receives the stored GitHub
+credentials. As with Codex, this is a shared host-level identity rather than a separate identity for
+each web user. Gridlet disables Copilot configuration discovery and allow-lists only the custom
+schema/read-only database tools for the session; Copilot's shell, filesystem, MCP, and other built-in
+tools are unavailable. `WithReasoningEffort` supports `Low`, `Medium`, `High`, and `ExtraHigh` when
+the selected Copilot model advertises that capability. Gridlet requests Copilot's concise reasoning
+summary and shows every reasoning event supplied by the adapter in the expanded Thinking panel.
+The optional `MaxToolIterations` ceiling is enforced through a pre-tool hook; when reached, the
+denial includes feedback directing the model to finish with the data already collected.
+
+See GitHub's documentation for [local CLI authentication](https://docs.github.com/en/copilot/how-tos/copilot-sdk/setup/local-cli)
+and the [Microsoft Agent Framework integration](https://docs.github.com/en/copilot/how-tos/copilot-sdk/integrations/microsoft-agent-framework).
+
+`Gridlet.AgentFramework` is published as a prerelease package because some Microsoft Agent
+Framework provider adapters remain preview dependencies.
 
 ## Published APIs
 
@@ -214,8 +254,11 @@ the built-in SQL Server and SQLite providers because it does not require a name 
 ### Agent Framework options
 
 `AddAgentFramework` is optional and lives in the `Gridlet.AgentFramework` package. It accepts named,
-host-controlled profiles through `AddOpenAI`, `AddAnthropic`, `AddOpenAICompatible`, and `AddOllama`.
-Each returned profile builder supports `WithServerApiKey`, `AllowUserApiKeys`, and `AsLocal`.
+host-controlled profiles through `AddCodex`, `AddGitHubCopilot`, `AddOpenAI`, `AddAnthropic`,
+`AddOpenAICompatible`, and `AddOllama`. API-backed profile builders support `WithServerApiKey` and
+`AllowUserApiKeys`; subscription-backed Codex and GitHub Copilot profiles reject both because
+authentication belongs exclusively to the local CLI runtime. `AsLocal` controls the safe locality
+metadata exposed for OpenAI-compatible profiles.
 
 | Property | Default | Effect |
 | --- | --- | --- |
@@ -225,7 +268,9 @@ Each returned profile builder supports `WithServerApiKey`, `AllowUserApiKeys`, a
 | `MaxToolResultCharacters` | `32,000` | Maximum serialized schema or query result sent back to a model tool call. |
 | `MaxQueryCharacters` / `MaxQueryRows` | `20,000` / `100` | Data-agent SQL and per-result-set row caps. |
 | `QueryTimeoutSeconds` | `120` | Timeout for the data agent's read-only query tool. |
-| `MaxToolIterations` / `MaxOutputTokens` | `8` / `4,096` | Model/tool loop and response limits. |
+| `MaxToolIterations` / `MaxOutputTokens` | `8` / `4,096` | Optional tool-call limit (`null` disables Gridlet's ceiling) and API-model output-token request. Subscription-backed CLI providers do not expose an equivalent stable output-token field. |
+| `CodexExecutablePath` | `codex` | Command or absolute path used to launch `codex app-server` for subscription-backed profiles. |
+| `CopilotExecutablePath` | `copilot` | Command or absolute path used to launch GitHub Copilot CLI for subscription-backed profiles. |
 
 Authentication itself remains the host application's responsibility. Configure ASP.NET Core
 authentication and authorization before mapping Gridlet; Gridlet does not provide a separate login.
@@ -256,7 +301,7 @@ Query execution, row writes, schema changes, and published endpoint invocations 
 | --- | --- |
 | `Gridlet.Core` | Provider-agnostic abstractions, domain model, options, auditing. |
 | `Gridlet.AspNetCore` | `AddGridlet()` / `MapGridlet()`, JSON API, embedded web UI. |
-| `Gridlet.AgentFramework` | Optional Microsoft Agent Framework integration with OpenAI, Anthropic, OpenAI-compatible, and Ollama profiles. |
+| `Gridlet.AgentFramework` | Optional Microsoft Agent Framework integration with subscription-backed Codex, OpenAI, Anthropic, OpenAI-compatible, and Ollama profiles. |
 | `Gridlet.SqlServer` | SQL Server provider (schema, data paging, query execution). |
 | `Gridlet.Sqlite` | SQLite provider (schema, data paging, query execution, writes, and DDL). |
 

@@ -36,6 +36,57 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Opens_each_ask_click_as_a_new_conversation_tab()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-open").ClickAsync();
+
+        await Assertions.Expect(page.GetByTestId("agent-panel")).ToHaveCountAsync(2);
+        await Assertions.Expect(page.Locator("#tabbar .tab").Filter(new() { HasText = "Ask — FakeDb" }))
+            .ToHaveCountAsync(2);
+        await Assertions.Expect(page.Locator("#panels .agent-panel:not([hidden])"))
+            .ToHaveCountAsync(1);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Preserves_conversation_context_when_switching_models()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var requestsBefore = fixture.Agent.Requests.Count;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("First question");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+
+        await page.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
+        await Assertions.Expect(page.GetByTestId("agent-message-user"))
+            .ToContainTextAsync("First question");
+        await Assertions.Expect(page.GetByTestId("agent-message-assistant"))
+            .ToContainTextAsync("Fake data response");
+
+        await page.GetByTestId("agent-composer").FillAsync("Follow-up question");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+
+        Assert.Equal(requestsBefore + 2, fixture.Agent.Requests.Count);
+        var followUp = fixture.Agent.Requests[^1];
+        Assert.Equal("fake-local", followUp.ProfileId);
+        Assert.Equal(2, followUp.History.Count);
+        Assert.Equal("First question", followUp.History[0].Content);
+        Assert.Equal("Fake data response", followUp.History[1].Content);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Renders_agent_reasoning_and_markdown_tables()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -53,6 +104,14 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await assistant.Locator(".agent-reasoning summary").ClickAsync();
         await Assertions.Expect(assistant.Locator(".agent-reasoning-body"))
             .ToContainTextAsync("compact tabular answer");
+        await Assertions.Expect(assistant.Locator(".agent-reasoning-summary"))
+            .ToHaveCountAsync(2);
+        await Assertions.Expect(assistant.Locator(".agent-reasoning-raw"))
+            .ToContainTextAsync("Optional model-supplied raw reasoning");
+        await Assertions.Expect(assistant.Locator(".agent-reasoning-final"))
+            .ToContainTextAsync("Authoritative completed reasoning summary");
+        await Assertions.Expect(assistant.Locator(".agent-reasoning-raw-final"))
+            .ToContainTextAsync("Authoritative completed raw reasoning");
         await Assertions.Expect(assistant.Locator(".agent-tool-call"))
             .ToContainTextAsync("Calling describe_table");
         await Assertions.Expect(assistant.Locator(".agent-tool-result"))

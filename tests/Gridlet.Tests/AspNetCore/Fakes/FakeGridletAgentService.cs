@@ -74,6 +74,19 @@ public sealed class FakeGridletAgentService : IGridletAgentService
             yield return new GridletAgentStreamEvent(
                 "reasoning",
                 "Inspected the available schema metadata and chose a compact tabular answer.");
+            yield return new GridletAgentStreamEvent("reasoning-section");
+            yield return new GridletAgentStreamEvent(
+                "reasoning",
+                "Prepared the join explanation.");
+            yield return new GridletAgentStreamEvent(
+                "reasoning-raw",
+                "Optional model-supplied raw reasoning.");
+            yield return new GridletAgentStreamEvent(
+                "reasoning-final",
+                "Authoritative completed reasoning summary.");
+            yield return new GridletAgentStreamEvent(
+                "reasoning-raw-final",
+                "Authoritative completed raw reasoning.");
             yield return new GridletAgentStreamEvent(
                 "tool",
                 """{"arguments":{"schema":"dbo","name":"Orders"}}""",

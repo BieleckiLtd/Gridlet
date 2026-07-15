@@ -1,0 +1,6 @@
+<Project>
+  <!-- Gridlet intentionally uses the host-installed CLI selected by CopilotExecutablePath. -->
+  <PropertyGroup>
+    <CopilotSkipCliDownload Condition="'$(CopilotSkipCliDownload)' == ''">true</CopilotSkipCliDownload>
+  </PropertyGroup>
+</Project>

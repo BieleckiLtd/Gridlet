@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build Gridlet.Demo",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "build",
+        "${workspaceFolder}/samples/Gridlet.Demo/Gridlet.Demo.csproj"
+      ],
+      "problemMatcher": "$msCompile"
+    }
+  ]
+}
