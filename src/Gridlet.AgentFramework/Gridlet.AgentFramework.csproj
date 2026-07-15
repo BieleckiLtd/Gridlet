@@ -3,9 +3,10 @@
   <PropertyGroup>
     <TargetFrameworks>net10.0</TargetFrameworks>
     <IsPackable>true</IsPackable>
-    <!-- Anthropic's Microsoft Agent Framework adapter is preview; keep this optional package
-         prerelease until that upstream dependency is stable. -->
+    <!-- Some Microsoft Agent Framework provider adapters are preview; keep this optional package
+         prerelease until those upstream dependencies are stable. -->
     <PackageVersion>$(Version)-preview.1</PackageVersion>
+    <CopilotSkipCliDownload>true</CopilotSkipCliDownload>
     <Description>Microsoft Agent Framework integration for safe, conversational schema exploration and read-only data analysis in Gridlet.</Description>
   </PropertyGroup>
 
@@ -13,11 +14,18 @@
     <PackageReference Include="Microsoft.Agents.AI" />
     <PackageReference Include="Microsoft.Agents.AI.OpenAI" />
     <PackageReference Include="Microsoft.Agents.AI.Anthropic" />
+    <PackageReference Include="Microsoft.Agents.AI.GitHub.Copilot" />
     <PackageReference Include="OllamaSharp" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Gridlet.Core\Gridlet.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="buildTransitive\Gridlet.AgentFramework.props"
+          Pack="true"
+          PackagePath="buildTransitive\Gridlet.AgentFramework.props" />
   </ItemGroup>
 
 </Project>

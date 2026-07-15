@@ -1,6 +1,7 @@
 using Gridlet;
 using Gridlet.Demo;
 using Microsoft.Extensions.Options;
+using Gridlet.AgentFramework;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -34,6 +35,8 @@ builder.Services
         agents.AddOllama("local-qwen3.5-0.8b", new Uri("http://127.0.0.1:11434"), "qwen3.5:0.8b");
         agents.AddOllama("local-gemma4-12b", new Uri("http://127.0.0.1:11434"), "gemma4:12b");
         agents.AddOllama("local-qwen3.6-35b-a3b", new Uri("http://127.0.0.1:11434"), "qwen3.6:35b-a3b");
+        agents.AddCodex("codex-subscription", "gpt-5.6-luna").WithReasoningEffort(GridletCodexReasoningEffort.Medium);
+        agents.AddGitHubCopilot("github-copilot", "gpt-5-mini").WithReasoningEffort(GridletCopilotReasoningEffort.Medium);
     });
 
 var app = builder.Build();

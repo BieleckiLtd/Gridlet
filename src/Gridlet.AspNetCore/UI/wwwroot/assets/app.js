@@ -2288,13 +2288,6 @@
 
     const connection = state.connection;
     const database = state.database;
-    const key = `Agent:${connection}:${database}`;
-    const existing = state.tabs.find((candidate) => candidate.key === key);
-    if (existing) {
-      setActiveTab(existing.id);
-      return;
-    }
-
     const modeSelect = h('select', {
       'aria-label': 'Agent mode', 'data-testid': 'agent-mode',
     }, modes.map((mode) => h('option', { value: mode.id, text: mode.label })));
@@ -2473,6 +2466,31 @@
         scrollMessages();
       };
 
+      const appendReasoningDelta = (delta, kind = 'summary', label = '') => {
+        const currentActivity = ensureActivity();
+        if (!delta) return;
+        if (!currentActivity.currentReasoningEntry
+          || currentActivity.currentReasoningEntry.kind !== kind) {
+          const content = h('div', { class: 'agent-reasoning-content' });
+          const reasoningElement = h('div', {
+            class: `agent-activity agent-reasoning-text agent-reasoning-${kind}`,
+          }, label ? h('div', { class: 'agent-reasoning-label', text: label }) : null,
+          content);
+          currentActivity.currentReasoningEntry = {
+            kind,
+            value: '',
+            element: reasoningElement,
+            content,
+          };
+          currentActivity.body.append(reasoningElement);
+        }
+        currentActivity.currentReasoningEntry.value += delta;
+        renderAgentContent(
+          currentActivity.currentReasoningEntry.content,
+          currentActivity.currentReasoningEntry.value);
+        scrollMessages();
+      };
+
       if (role === 'assistant' && content) {
         appendAnswerDelta(content);
         lastContentValue = content;
@@ -2489,25 +2507,23 @@
           scrollMessages();
         },
         setReasoning: (value) => {
-          const currentActivity = ensureActivity();
           const delta = value.startsWith(lastReasoningValue)
             ? value.slice(lastReasoningValue.length)
             : value;
           lastReasoningValue = value;
-          if (delta) {
-            if (!currentActivity.currentReasoningEntry) {
-              currentActivity.currentReasoningEntry = {
-                value: '',
-                element: h('div', { class: 'agent-activity agent-reasoning-text' }),
-              };
-              currentActivity.body.append(currentActivity.currentReasoningEntry.element);
-            }
-            currentActivity.currentReasoningEntry.value += delta;
-            renderAgentContent(
-              currentActivity.currentReasoningEntry.element,
-              currentActivity.currentReasoningEntry.value);
-          }
-          scrollMessages();
+          appendReasoningDelta(delta);
+        },
+        startReasoningSection: () => {
+          ensureActivity().currentReasoningEntry = null;
+        },
+        addRawReasoning: (delta) => appendReasoningDelta(
+          delta, 'raw', 'Raw reasoning supplied by the model'),
+        addFinalReasoning: (text, raw = false) => {
+          ensureActivity().currentReasoningEntry = null;
+          appendReasoningDelta(
+            text,
+            raw ? 'raw-final' : 'final',
+            raw ? 'Final raw reasoning' : 'Final reasoning summary');
         },
         addToolCall: (name, payload) => appendToolEvent(
           `Calling ${name || 'tool'}`, payload, 'agent-tool-call'),
@@ -2550,7 +2566,7 @@
 
     const tab = {
       id: state.nextTabId++,
-      key,
+      key: null,
       badge: 'A',
       title: `Ask — ${database}`,
       loaded: true,
@@ -2597,6 +2613,14 @@
           if (type === 'reasoning' || type === 'thought' || type === 'thinking') {
             reasoningText += text;
             assistantMessage.setReasoning(reasoningText);
+          } else if (type === 'reasoning-section') {
+            assistantMessage.startReasoningSection();
+          } else if (type === 'reasoning-raw') {
+            assistantMessage.addRawReasoning(text);
+          } else if (type === 'reasoning-final') {
+            assistantMessage.addFinalReasoning(text);
+          } else if (type === 'reasoning-raw-final') {
+            assistantMessage.addFinalReasoning(text, true);
           } else if (type === 'tool') {
             assistantMessage.addToolCall(event.name, text);
           } else if (type === 'tool-result' || type === 'toolresult') {
@@ -2653,7 +2677,6 @@
     providerSelect.addEventListener('change', () => {
       apiKeyInput.value = '';
       discardCredential();
-      resetConversation();
       refreshProfile();
     });
     modeSelect.addEventListener('change', resetConversation);
