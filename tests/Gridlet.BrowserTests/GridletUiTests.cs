@@ -101,7 +101,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var assistant = page.GetByTestId("agent-message-assistant");
         await Assertions.Expect(assistant.Locator(".agent-reasoning")).ToContainTextAsync("Thought for");
         await Assertions.Expect(assistant.Locator(".agent-reasoning")).Not.ToHaveAttributeAsync("open", "");
-        await assistant.Locator(".agent-reasoning summary").ClickAsync();
+        await assistant.Locator(".agent-reasoning > summary").ClickAsync();
         await Assertions.Expect(assistant.Locator(".agent-reasoning-body"))
             .ToContainTextAsync("compact tabular answer");
         await Assertions.Expect(assistant.Locator(".agent-reasoning-summary"))
