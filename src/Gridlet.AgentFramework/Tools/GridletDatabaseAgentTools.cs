@@ -43,13 +43,22 @@ internal sealed class GridletDatabaseAgentTools(
             token => resolved.Provider.Schema.GetSchemasAsync(resolved.Context, token),
             cancellationToken);
 
-    [Description("List tables, views, stored procedures, functions, and triggers in the selected database.")]
-    private Task<string> ListObjectsAsync(CancellationToken cancellationToken)
+    [Description("List tables, views, stored procedures, functions, and triggers in the selected database, optionally restricted to one schema.")]
+    private Task<string> ListObjectsAsync(
+        [Description("Optional database schema to restrict the results to.")] string? schema = null,
+        CancellationToken cancellationToken = default)
         => ExecuteAuditedAsync(
             "agent.tool.list_objects",
             "list_database_objects",
-            objectName: null,
-            token => resolved.Provider.Schema.GetObjectsAsync(resolved.Context, token),
+            objectName: string.IsNullOrWhiteSpace(schema) ? null : schema,
+            async token =>
+            {
+                var objects = await resolved.Provider.Schema.GetObjectsAsync(resolved.Context, token);
+                return string.IsNullOrWhiteSpace(schema)
+                    ? objects
+                    : objects.Where(item =>
+                        string.Equals(item.Schema, schema, StringComparison.OrdinalIgnoreCase)).ToArray();
+            },
             cancellationToken);
 
     [Description("Describe the columns, indexes, primary key, and foreign keys of one table or view.")]

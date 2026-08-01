@@ -23,6 +23,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Gridlet.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="buildTransitive\Gridlet.AgentFramework.props"
           Pack="true"
           PackagePath="buildTransitive\Gridlet.AgentFramework.props" />

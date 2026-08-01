@@ -313,7 +313,7 @@ internal sealed class GridletAgentFrameworkService(
         return json.Length <= 8_000 ? json : string.Concat(json.AsSpan(0, 8_000), "… [truncated]");
     }
 
-    private static bool TryReadFailedCodexToolResult(
+    internal static bool TryReadFailedCodexToolResult(
         FunctionResultContent functionResult,
         out string? toolName,
         out string? result)
@@ -321,6 +321,7 @@ internal sealed class GridletAgentFrameworkService(
         toolName = null;
         result = null;
         if (functionResult.Result is not JsonElement item ||
+            item.ValueKind != JsonValueKind.Object ||
             !item.TryGetProperty("type", out var type) ||
             type.GetString() != "dynamicToolCall" ||
             !item.TryGetProperty("success", out var success) ||

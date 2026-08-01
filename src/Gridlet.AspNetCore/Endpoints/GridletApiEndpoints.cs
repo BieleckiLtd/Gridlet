@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using static Gridlet.AspNetCore.GridletEndpointHelpers;
 
@@ -546,6 +547,10 @@ internal static partial class GridletApiEndpoints
         }
         catch (Exception ex)
         {
+            httpContext.RequestServices
+                .GetRequiredService<ILoggerFactory>()
+                .CreateLogger(typeof(GridletApiEndpoints))
+                .LogError(ex, "Agent chat failed for profile {ProfileId}.", profile.Id);
             var safeMessage = SafeAgentError(ex);
             await AuditAsync(
                 audit, httpContext, $"agent.{mode.ToString().ToLowerInvariant()}.chat",

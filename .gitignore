@@ -27,6 +27,12 @@ Thumbs.db
 packages/
 
 ## Local secrets
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
 appsettings.*.local.json
 
 ## Gridlet runtime state (saved queries / published endpoints of the demo host)

@@ -49,6 +49,10 @@ capability sets separate:
 - **Design / Schema** mode can inspect objects, columns, indexes, relationships, and definitions.
   It can propose DDL in its answer, but it cannot apply it.
 
+<p align="center">
+  <img src="assets/screenshot-5.png" width="100%" alt="Gridlet Ask workspace showing a data conversation and generated SQL query" />
+</p>
+
 Profiles can use a ChatGPT subscription through the local Codex runtime, a GitHub Copilot
 subscription through the local Copilot CLI, the OpenAI API, Anthropic Claude, an OpenAI-compatible
 endpoint, or local Ollama. Provider URLs and models are allow-listed by the host. An API server key
