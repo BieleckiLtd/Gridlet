@@ -3,7 +3,7 @@
     {
       "Id": "sample-order-summary-query",
       "Name": "Order summary",
-      "ConnectionName": "SQLite",
+      "ConnectionName": "GridletSample.db",
       "Database": "main",
       "Sql": "SELECT * FROM vw_OrderSummary ORDER BY OrderedAtUtc DESC LIMIT 100;",
       "UpdatedAtUtc": "2026-07-12T00:00:00+00:00"
@@ -15,7 +15,7 @@
       "Name": "Customers by country",
       "Method": "GET",
       "Route": "customers",
-      "ConnectionName": "SQLite",
+      "ConnectionName": "GridletSample.db",
       "Database": "main",
       "Sql": "SELECT * FROM Customers WHERE Country = @country ORDER BY LastName, FirstName;",
       "Parameters": [
@@ -34,7 +34,7 @@
       "Name": "Odd-second policy demo",
       "Method": "GET",
       "Route": "samples/odd-second",
-      "ConnectionName": "SQLite",
+      "ConnectionName": "GridletSample.db",
       "Database": "main",
       "Sql": "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS ExecutedAtUtc, 'OddSecond policy passed' AS Message;",
       "Parameters": [],
