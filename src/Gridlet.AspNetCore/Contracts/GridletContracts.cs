@@ -43,7 +43,8 @@ public sealed record AgentChatRequestBody(
     string? ProfileId,
     string? Message,
     List<GridletAgentMessage>? History = null,
-    string? CredentialHandle = null);
+    string? CredentialHandle = null,
+    string? ConversationId = null);
 
 public sealed record GridletErrorResponse(string Error);
 

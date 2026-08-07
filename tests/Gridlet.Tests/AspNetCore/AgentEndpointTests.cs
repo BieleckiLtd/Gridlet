@@ -264,6 +264,7 @@ public class AgentEndpointTests
                     new { role = "assistant", content = "Earlier answer" },
                 },
                 credentialHandle = FakeGridletAgentService.CredentialHandle,
+                conversationId = "ask-tab-42",
             });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -290,6 +291,7 @@ public class AgentEndpointTests
         Assert.Equal(FakeGridletAgentService.ProfileId, request.ProfileId);
         Assert.Equal("What should I know?", request.Message);
         Assert.Equal(FakeGridletAgentService.CredentialHandle, request.CredentialHandle);
+        Assert.Equal("ask-tab-42", request.ConversationId);
         Assert.False(request.User.IsAuthenticated);
         Assert.Null(request.User.DisplayName);
         Assert.Collection(
@@ -304,6 +306,57 @@ public class AgentEndpointTests
                 Assert.Equal("assistant", message.Role);
                 Assert.Equal("Earlier answer", message.Content);
             });
+    }
+
+    [Fact]
+    public async Task Closing_agent_conversation_forwards_the_user_bound_session_id()
+    {
+        var agent = new FakeGridletAgentService();
+        var (app, client) = await GridletTestHost.StartAsync(
+            options => options.Security.AllowAnonymous = true,
+            services => services.AddSingleton<IGridletAgentService>(agent));
+        await using var _ = app;
+
+        var response = await client.DeleteAsync("/gridlet/api/agents/conversations/ask-tab-42");
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        var closed = Assert.Single(agent.ClosedConversations);
+        Assert.Equal("ask-tab-42", closed.ConversationId);
+        Assert.False(closed.User.IsAuthenticated);
+    }
+
+    [Theory]
+    [InlineData("bad.id")]
+    [InlineData("bad/id")]
+    public async Task Invalid_agent_conversation_ids_are_rejected(string conversationId)
+    {
+        var agent = new FakeGridletAgentService();
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name, connection =>
+                {
+                    connection.AllowAgentDataAccess = true;
+                    connection.AllowAgentDataWithPrimaryConnection = true;
+                });
+                options.Security.AllowAnonymous = true;
+            },
+            services => services.AddSingleton<IGridletAgentService>(agent));
+        await using var _ = app;
+
+        var close = await client.DeleteAsync(
+            $"/gridlet/api/agents/conversations/{Uri.EscapeDataString(conversationId)}");
+        var chat = await client.PostAsJsonAsync(DataChat, new
+        {
+            profileId = FakeGridletAgentService.ProfileId,
+            message = "Hello database",
+            conversationId,
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, close.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, chat.StatusCode);
+        Assert.Empty(agent.ClosedConversations);
+        Assert.Empty(agent.Requests);
     }
 
     [Fact]

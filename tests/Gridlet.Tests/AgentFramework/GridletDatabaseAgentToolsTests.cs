@@ -46,6 +46,8 @@ public sealed class GridletDatabaseAgentToolsTests
             new GridletConnectionContext(connection, "FakeDb"));
         var settings = new GridletAgentFrameworkSettings(
             TimeSpan.FromMinutes(15),
+            ConversationIdleTimeout: TimeSpan.FromMinutes(30),
+            MaxActiveConversations: 32,
             MaxHistoryMessages: 20,
             MaxHistoryCharacters: 100_000,
             MaxMessageCharacters: 20_000,

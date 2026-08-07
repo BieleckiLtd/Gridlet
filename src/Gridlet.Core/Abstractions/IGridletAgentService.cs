@@ -32,4 +32,14 @@ public interface IGridletAgentService
     IAsyncEnumerable<GridletAgentStreamEvent> ChatAsync(
         GridletAgentRequest request,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Releases provider resources held for a browser conversation. Implementations without
+    /// server-side conversation state may retain the default no-op behavior.
+    /// </summary>
+    Task CloseConversationAsync(
+        string conversationId,
+        GridletAgentUserContext user,
+        CancellationToken cancellationToken = default)
+        => Task.CompletedTask;
 }

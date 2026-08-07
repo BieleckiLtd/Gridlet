@@ -13,13 +13,33 @@ using System.ClientModel;
 
 namespace Gridlet.AgentFramework;
 
-internal sealed class GridletAgentFrameworkService(
-    GridletAgentFrameworkSettings settings,
-    EphemeralCredentialStore credentials,
-    IGridletConnectionResolver connectionResolver,
-    IGridletAuditSink auditSink) : IGridletAgentService
+internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisposable, IAsyncDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    private readonly GridletAgentFrameworkSettings settings;
+    private readonly EphemeralCredentialStore credentials;
+    private readonly IGridletConnectionResolver connectionResolver;
+    private readonly IGridletAuditSink auditSink;
+    private readonly ConcurrentDictionary<string, CodexConversation> codexConversations =
+        new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim conversationCreationGate = new(1, 1);
+    private readonly CancellationTokenSource cleanupCancellation = new();
+    private readonly Task cleanupTask;
+    private int disposeState;
+
+    public GridletAgentFrameworkService(
+        GridletAgentFrameworkSettings settings,
+        EphemeralCredentialStore credentials,
+        IGridletConnectionResolver connectionResolver,
+        IGridletAuditSink auditSink)
+    {
+        this.settings = settings;
+        this.credentials = credentials;
+        this.connectionResolver = connectionResolver;
+        this.auditSink = auditSink;
+        cleanupTask = CleanupExpiredConversationsAsync(cleanupCancellation.Token);
+    }
 
     private const string SchemaInstructions = """
         You are Gridlet's database schema assistant for database designers. Use the available
@@ -75,6 +95,25 @@ internal sealed class GridletAgentFrameworkService(
         return Task.CompletedTask;
     }
 
+    public async Task CloseConversationAsync(
+        string conversationId,
+        GridletAgentUserContext user,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!codexConversations.TryGetValue(conversationId, out var conversation) ||
+            !conversation.IsOwnedBy(user))
+        {
+            return;
+        }
+
+        if (codexConversations.TryRemove(
+                new KeyValuePair<string, CodexConversation>(conversationId, conversation)))
+        {
+            await conversation.DisposeAsync(cancellationToken);
+        }
+    }
+
     public async IAsyncEnumerable<GridletAgentStreamEvent> ChatAsync(
         GridletAgentRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -88,118 +127,253 @@ internal sealed class GridletAgentFrameworkService(
         EnsureModeAllowed(request.Mode, resolved.Context.Connection);
         var apiKey = ResolveApiKey(request, profile);
 
-        var pendingToolEvents = new ConcurrentQueue<GridletAgentStreamEvent>();
-        var databaseTools = new GridletDatabaseAgentTools(
-            resolved, request.User.DisplayName, settings, auditSink,
-            (name, result) => pendingToolEvents.Enqueue(new GridletAgentStreamEvent(
-                "tool-result", SerializeToolPayload(new { result }), name)));
-        var tools = databaseTools.Create(request.Mode);
-        var instructions = request.Mode == GridletAgentMode.Schema
-            ? SchemaInstructions
-            : DataInstructions;
-        await using var copilotClient = profile.Provider == GridletAgentProvider.GitHubCopilot
-            ? await StartCopilotClientAsync(cancellationToken)
-            : null;
-        using var chatClient = profile.Provider is
-                GridletAgentProvider.Codex or GridletAgentProvider.GitHubCopilot
-            ? null
-            : CreateChatClient(profile, apiKey)
-                .AsBuilder()
-                .UseFunctionInvocation(configure: client =>
-                    client.MaximumIterationsPerRequest =
-                        settings.MaxToolIterations ?? int.MaxValue)
-                .Build();
-
-        AIAgent agent = profile.Provider switch
+        CodexConversation? codexConversation = null;
+        if (profile.Provider == GridletAgentProvider.Codex && request.ConversationId is not null)
         {
-            GridletAgentProvider.Codex => new CodexAppServerAgent(
-                settings.CodexExecutablePath,
-                profile.Model,
-                instructions,
-                tools.OfType<AIFunction>().ToArray(),
-                settings.MaxToolIterations,
-                profile.ReasoningEffort),
-            GridletAgentProvider.GitHubCopilot => CreateGitHubCopilotAgent(
-                copilotClient!, profile, instructions, tools, settings.MaxToolIterations),
-            _ => new ChatClientAgent(
-                chatClient!,
-                new ChatClientAgentOptions
-                {
-                    Name = "GridletDatabaseAgent",
-                    Description = "A bounded database schema and read-only data assistant.",
-                    ChatOptions = new ChatOptions
-                    {
-                        Instructions = instructions,
-                        Tools = tools,
-                        MaxOutputTokens = settings.MaxOutputTokens,
-                        Reasoning = new ReasoningOptions
-                        {
-                            Output = ReasoningOutput.Summary,
-                        },
-                    },
-                    UseProvidedChatClientAsIs = true,
-                }),
-        };
-
-        var messages = CreateMessages(request);
-        var observedCalls = new HashSet<string>(StringComparer.Ordinal);
-        yield return new GridletAgentStreamEvent("started");
-
-        await foreach (var update in agent.RunStreamingAsync(
-                           messages, cancellationToken: cancellationToken))
-        {
-            while (pendingToolEvents.TryDequeue(out var toolEvent))
-            {
-                yield return toolEvent;
-            }
-
-            foreach (var functionCall in update.Contents.OfType<FunctionCallContent>())
-            {
-                var callKey = functionCall.CallId ?? functionCall.Name;
-                if (!string.IsNullOrWhiteSpace(functionCall.Name) && observedCalls.Add(callKey))
-                {
-                    yield return new GridletAgentStreamEvent(
-                        "tool",
-                        SerializeToolPayload(new
-                        {
-                            arguments = functionCall.Arguments,
-                        }),
-                        functionCall.Name);
-                }
-            }
-
-            foreach (var reasoning in update.Contents.OfType<TextReasoningContent>())
-            {
-                var eventType = reasoning.RawRepresentation is CodexReasoningEvent codexReasoning
-                    ? codexReasoning.Kind
-                    : "reasoning";
-                if (!string.IsNullOrEmpty(reasoning.Text) || eventType == "reasoning-section")
-                {
-                    yield return new GridletAgentStreamEvent(eventType, reasoning.Text);
-                }
-            }
-
-            foreach (var functionResult in update.Contents.OfType<FunctionResultContent>())
-            {
-                if (TryReadFailedCodexToolResult(functionResult, out var toolName, out var result))
-                {
-                    yield return new GridletAgentStreamEvent(
-                        "tool-result", SerializeToolPayload(new { result }), toolName);
-                }
-            }
-
-            if (!string.IsNullOrEmpty(update.Text))
-            {
-                yield return new GridletAgentStreamEvent("delta", update.Text);
-            }
-
-            while (pendingToolEvents.TryDequeue(out var toolEvent))
-            {
-                yield return toolEvent;
-            }
+            codexConversation = await GetCodexConversationAsync(request, profile, cancellationToken);
         }
 
-        yield return new GridletAgentStreamEvent("completed");
+        var completedNormally = false;
+        try
+        {
+
+            var pendingToolEvents = new ConcurrentQueue<GridletAgentStreamEvent>();
+            var databaseTools = new GridletDatabaseAgentTools(
+                resolved, request.User.DisplayName, settings, auditSink,
+                (name, result) => pendingToolEvents.Enqueue(new GridletAgentStreamEvent(
+                    "tool-result", SerializeToolPayload(new { result }), name)));
+            var tools = databaseTools.Create(request.Mode);
+            var instructions = request.Mode == GridletAgentMode.Schema
+                ? SchemaInstructions
+                : DataInstructions;
+            await using var copilotClient = profile.Provider == GridletAgentProvider.GitHubCopilot
+                ? await StartCopilotClientAsync(cancellationToken)
+                : null;
+            using var chatClient = profile.Provider is
+                    GridletAgentProvider.Codex or GridletAgentProvider.GitHubCopilot
+                ? null
+                : CreateChatClient(profile, apiKey)
+                    .AsBuilder()
+                    .UseFunctionInvocation(configure: client =>
+                        client.MaximumIterationsPerRequest =
+                            settings.MaxToolIterations ?? int.MaxValue)
+                    .Build();
+
+            AIAgent agent = profile.Provider switch
+            {
+                GridletAgentProvider.Codex => new CodexAppServerAgent(
+                    settings.CodexExecutablePath,
+                    profile.Model,
+                    instructions,
+                    tools.OfType<AIFunction>().ToArray(),
+                    settings.MaxToolIterations,
+                    profile.ReasoningEffort,
+                    codexConversation?.Runtime),
+                GridletAgentProvider.GitHubCopilot => CreateGitHubCopilotAgent(
+                    copilotClient!, profile, instructions, tools, settings.MaxToolIterations),
+                _ => new ChatClientAgent(
+                    chatClient!,
+                    new ChatClientAgentOptions
+                    {
+                        Name = "GridletDatabaseAgent",
+                        Description = "A bounded database schema and read-only data assistant.",
+                        ChatOptions = new ChatOptions
+                        {
+                            Instructions = instructions,
+                            Tools = tools,
+                            MaxOutputTokens = settings.MaxOutputTokens,
+                            Reasoning = new ReasoningOptions
+                            {
+                                Output = ReasoningOutput.Summary,
+                            },
+                        },
+                        UseProvidedChatClientAsIs = true,
+                    }),
+            };
+
+            var messages = CreateMessages(request);
+            var observedCalls = new HashSet<string>(StringComparer.Ordinal);
+            yield return new GridletAgentStreamEvent("started");
+
+            await foreach (var update in agent.RunStreamingAsync(
+                               messages,
+                               session: codexConversation?.AgentSession,
+                               cancellationToken: cancellationToken))
+            {
+                while (pendingToolEvents.TryDequeue(out var toolEvent))
+                {
+                    yield return toolEvent;
+                }
+
+                foreach (var functionCall in update.Contents.OfType<FunctionCallContent>())
+                {
+                    var callKey = functionCall.CallId ?? functionCall.Name;
+                    if (!string.IsNullOrWhiteSpace(functionCall.Name) && observedCalls.Add(callKey))
+                    {
+                        yield return new GridletAgentStreamEvent(
+                            "tool",
+                            SerializeToolPayload(new
+                            {
+                                arguments = functionCall.Arguments,
+                            }),
+                            functionCall.Name);
+                    }
+                }
+
+                foreach (var reasoning in update.Contents.OfType<TextReasoningContent>())
+                {
+                    var eventType = reasoning.RawRepresentation is CodexReasoningEvent codexReasoning
+                        ? codexReasoning.Kind
+                        : "reasoning";
+                    if (!string.IsNullOrEmpty(reasoning.Text) || eventType == "reasoning-section")
+                    {
+                        yield return new GridletAgentStreamEvent(eventType, reasoning.Text);
+                    }
+                }
+
+                foreach (var functionResult in update.Contents.OfType<FunctionResultContent>())
+                {
+                    if (TryReadFailedCodexToolResult(functionResult, out var toolName, out var result))
+                    {
+                        yield return new GridletAgentStreamEvent(
+                            "tool-result", SerializeToolPayload(new { result }), toolName);
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(update.Text))
+                {
+                    yield return new GridletAgentStreamEvent("delta", update.Text);
+                }
+
+                while (pendingToolEvents.TryDequeue(out var toolEvent))
+                {
+                    yield return toolEvent;
+                }
+            }
+
+            yield return new GridletAgentStreamEvent("completed");
+            completedNormally = true;
+        }
+        finally
+        {
+            if (codexConversation is not null)
+            {
+                codexConversation.Touch();
+                codexConversation.Gate.Release();
+                if (!completedNormally &&
+                    codexConversations.TryRemove(new KeyValuePair<string, CodexConversation>(
+                        request.ConversationId!, codexConversation)))
+                {
+                    await codexConversation.DisposeAsync(CancellationToken.None);
+                }
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref disposeState, 1) != 0) return;
+
+        await cleanupCancellation.CancelAsync();
+        try
+        {
+            await cleanupTask;
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal singleton shutdown.
+        }
+
+        var conversations = codexConversations.ToArray();
+        codexConversations.Clear();
+        foreach (var conversation in conversations)
+        {
+            await conversation.Value.DisposeAsync(CancellationToken.None);
+        }
+        conversationCreationGate.Dispose();
+        cleanupCancellation.Dispose();
+    }
+
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+    private async Task<CodexConversation> GetCodexConversationAsync(
+        GridletAgentRequest request,
+        GridletAgentProfileSettings profile,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            if (!codexConversations.TryGetValue(request.ConversationId!, out var conversation))
+            {
+                await conversationCreationGate.WaitAsync(cancellationToken);
+                try
+                {
+                    if (!codexConversations.TryGetValue(request.ConversationId!, out conversation))
+                    {
+                        if (codexConversations.Count >= settings.MaxActiveConversations)
+                        {
+                            throw new GridletAgentException(
+                                "The maximum number of active agent conversations has been reached. " +
+                                "Close an existing Ask tab or wait for an inactive conversation to expire.");
+                        }
+                        conversation = new CodexConversation(
+                            request, profile, settings.CodexExecutablePath);
+                        if (!codexConversations.TryAdd(request.ConversationId!, conversation))
+                        {
+                            await conversation.DisposeAsync(CancellationToken.None);
+                            continue;
+                        }
+                    }
+                }
+                finally
+                {
+                    conversationCreationGate.Release();
+                }
+            }
+            if (!conversation.Matches(request, profile))
+            {
+                throw new GridletAgentException(
+                    "The agent conversation does not belong to this user or database context.");
+            }
+
+            await conversation.Gate.WaitAsync(cancellationToken);
+            if (codexConversations.TryGetValue(request.ConversationId!, out var current) &&
+                ReferenceEquals(current, conversation))
+            {
+                conversation.Touch();
+                return conversation;
+            }
+            conversation.Gate.Release();
+        }
+    }
+
+    private async Task CleanupExpiredConversationsAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
+        while (await timer.WaitForNextTickAsync(cancellationToken))
+        {
+            var expiresBefore = DateTimeOffset.UtcNow - settings.ConversationIdleTimeout;
+            foreach (var entry in codexConversations)
+            {
+                if (entry.Value.LastAccessed > expiresBefore || !entry.Value.Gate.Wait(0))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (entry.Value.LastAccessed <= expiresBefore &&
+                        codexConversations.TryRemove(entry))
+                    {
+                        await entry.Value.DisposeRuntimeAsync();
+                    }
+                }
+                finally
+                {
+                    entry.Value.Gate.Release();
+                }
+            }
+        }
     }
 
     private GridletAgentProfileSettings GetProfile(string profileId)
@@ -213,6 +387,13 @@ internal sealed class GridletAgentFrameworkService(
 
     private void ValidateRequest(GridletAgentRequest request)
     {
+        if (request.ConversationId is { } conversationId &&
+            (conversationId.Length is < 1 or > 100 ||
+             conversationId.Any(character =>
+                 !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_')))
+        {
+            throw new GridletAgentException("The agent conversation id is invalid.");
+        }
         if (!Enum.IsDefined(request.Mode))
         {
             throw new GridletAgentException("The selected agent mode is invalid.");
@@ -478,5 +659,72 @@ internal sealed class GridletAgentFrameworkService(
         }
         var client = new OpenAIClient(new ApiKeyCredential(apiKey), options);
         return client.GetChatClient(profile.Model).AsIChatClient();
+    }
+
+    private sealed class CodexConversation : IAsyncDisposable
+    {
+        private readonly string connectionName;
+        private readonly string? database;
+        private readonly GridletAgentMode mode;
+        private readonly string profileId;
+        private readonly bool ownerIsAuthenticated;
+        private readonly string? ownerSubject;
+        private long lastAccessedUtcTicks = DateTimeOffset.UtcNow.UtcTicks;
+
+        public CodexConversation(
+            GridletAgentRequest request,
+            GridletAgentProfileSettings profile,
+            string executablePath)
+        {
+            connectionName = request.ConnectionName;
+            database = request.Database;
+            mode = request.Mode;
+            profileId = profile.Id;
+            ownerIsAuthenticated = request.User.IsAuthenticated;
+            ownerSubject = request.User.Subject;
+            Runtime = new CodexAppServerRuntime(executablePath);
+            AgentSession = CodexAppServerAgent.CreateEphemeralSession();
+        }
+
+        public SemaphoreSlim Gate { get; } = new(1, 1);
+        public CodexAppServerRuntime Runtime { get; }
+        public AgentSession AgentSession { get; }
+        public DateTimeOffset LastAccessed =>
+            new(Interlocked.Read(ref lastAccessedUtcTicks), TimeSpan.Zero);
+
+        public void Touch() =>
+            Interlocked.Exchange(ref lastAccessedUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
+
+        public bool IsOwnedBy(GridletAgentUserContext user) =>
+            ownerIsAuthenticated == user.IsAuthenticated &&
+            (!ownerIsAuthenticated ||
+             string.Equals(ownerSubject, user.Subject, StringComparison.Ordinal));
+
+        public bool Matches(
+            GridletAgentRequest request,
+            GridletAgentProfileSettings profile) =>
+            IsOwnedBy(request.User) &&
+            string.Equals(connectionName, request.ConnectionName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(database, request.Database, StringComparison.OrdinalIgnoreCase) &&
+            mode == request.Mode &&
+            string.Equals(profileId, profile.Id, StringComparison.OrdinalIgnoreCase);
+
+        public async ValueTask DisposeAsync() =>
+            await DisposeAsync(CancellationToken.None);
+
+        public async ValueTask DisposeAsync(CancellationToken cancellationToken)
+        {
+            await Gate.WaitAsync(cancellationToken);
+            try
+            {
+                await DisposeRuntimeAsync();
+            }
+            finally
+            {
+                Gate.Release();
+            }
+        }
+
+        public ValueTask DisposeRuntimeAsync() => Runtime.DisposeAsync();
     }
 }

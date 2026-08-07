@@ -11,6 +11,15 @@ public sealed class GridletAgentFrameworkOptions
     /// <summary>How long a browser-supplied API key remains available in process memory.</summary>
     public TimeSpan CredentialLifetime { get; set; } = TimeSpan.FromMinutes(30);
 
+    /// <summary>
+    /// How long an inactive browser conversation may retain a subscription-backed CLI session.
+    /// Closing the Ask tab releases it immediately.
+    /// </summary>
+    public TimeSpan ConversationIdleTimeout { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>Maximum number of Codex CLI sessions retained by this application instance.</summary>
+    public int MaxActiveConversations { get; set; } = 32;
+
     /// <summary>Maximum number of client-supplied history messages accepted for one turn.</summary>
     public int MaxHistoryMessages { get; set; } = 50;
 
@@ -129,6 +138,11 @@ public sealed class GridletAgentFrameworkOptions
     {
         ValidateRange(CredentialLifetime > TimeSpan.Zero && CredentialLifetime <= TimeSpan.FromDays(1),
             nameof(CredentialLifetime), "greater than zero and no more than one day");
+        ValidateRange(ConversationIdleTimeout >= TimeSpan.FromMinutes(1) &&
+                      ConversationIdleTimeout <= TimeSpan.FromDays(1),
+            nameof(ConversationIdleTimeout), "between one minute and one day");
+        ValidateRange(MaxActiveConversations is >= 1 and <= 256,
+            nameof(MaxActiveConversations), "between 1 and 256");
         ValidateRange(MaxHistoryMessages is >= 0 and <= 50,
             nameof(MaxHistoryMessages), "between 0 and 50");
         ValidateRange(MaxHistoryCharacters is >= 1 and <= 1_000_000,
@@ -179,6 +193,8 @@ public sealed class GridletAgentFrameworkOptions
 
         return new GridletAgentFrameworkSettings(
             CredentialLifetime,
+            ConversationIdleTimeout,
+            MaxActiveConversations,
             MaxHistoryMessages,
             MaxHistoryCharacters,
             MaxMessageCharacters,
@@ -433,6 +449,8 @@ internal sealed record GridletAgentProfileSettings(
 
 internal sealed record GridletAgentFrameworkSettings(
     TimeSpan CredentialLifetime,
+    TimeSpan ConversationIdleTimeout,
+    int MaxActiveConversations,
     int MaxHistoryMessages,
     int MaxHistoryCharacters,
     int MaxMessageCharacters,

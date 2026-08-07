@@ -96,6 +96,8 @@ local Codex installation. Install the Codex CLI and run `codex login` as the sam
 user that runs the .NET application. Gridlet never receives the ChatGPT tokens. This is a host-level
 identity, not a separate identity for each web user: use it only where application users are meant
 to share the host's Codex entitlement, and protect the agent endpoints with authorization policies.
+Each Ask tab owns an ephemeral Codex thread and reuses its app-server process across turns. Closing
+the tab releases the process; abandoned sessions are evicted after `ConversationIdleTimeout`.
 The app-server custom-tool bridge is currently an experimental Codex protocol surface.
 Set per-profile reasoning with `WithReasoningEffort`; omit it to retain the Codex/model default.
 Supported levels depend on the selected model, and `ExtraHigh` maps to app-server's `xhigh` value.
@@ -267,6 +269,8 @@ metadata exposed for OpenAI-compatible profiles.
 | Property | Default | Effect |
 | --- | --- | --- |
 | `CredentialLifetime` | 30 minutes | Lifetime of an ephemeral user-key handle; constrained to at most one day. |
+| `ConversationIdleTimeout` | 30 minutes | Inactivity timeout for a Codex CLI session owned by an Ask tab; constrained to one minute through one day. Explicitly closing the tab releases it immediately. |
+| `MaxActiveConversations` | `32` | Maximum retained Codex CLI sessions per application instance, preventing abandoned tabs from creating an unbounded process pool. |
 | `MaxHistoryMessages` / `MaxHistoryCharacters` | `50` / `200,000` | Per-turn conversation-history limits. Conversations remain browser-held and are not persisted. |
 | `MaxMessageCharacters` | `20,000` | Maximum current user message length. |
 | `MaxToolResultCharacters` | `32,000` | Maximum serialized schema or query result sent back to a model tool call. |

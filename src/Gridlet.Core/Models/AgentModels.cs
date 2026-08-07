@@ -43,7 +43,8 @@ public sealed record GridletAgentRequest(
     string Message,
     IReadOnlyList<GridletAgentMessage> History,
     string? CredentialHandle,
-    GridletAgentUserContext User);
+    GridletAgentUserContext User,
+    string? ConversationId = null);
 
 /// <summary>A progressive event emitted by a database-agent response.</summary>
 public sealed record GridletAgentStreamEvent(

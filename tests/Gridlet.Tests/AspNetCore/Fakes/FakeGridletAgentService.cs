@@ -35,6 +35,8 @@ public sealed class FakeGridletAgentService : IGridletAgentService
 
     public List<(string Handle, GridletAgentUserContext User)> RemovedCredentials { get; } = [];
 
+    public List<(string ConversationId, GridletAgentUserContext User)> ClosedConversations { get; } = [];
+
     public Exception? CredentialException { get; set; }
 
     public Task<GridletAgentCredential> StoreCredentialAsync(
@@ -115,5 +117,15 @@ public sealed class FakeGridletAgentService : IGridletAgentService
             $"Fake {request.Mode.ToString().ToLowerInvariant()} response",
             "assistant");
         yield return new GridletAgentStreamEvent("completed");
+    }
+
+    public Task CloseConversationAsync(
+        string conversationId,
+        GridletAgentUserContext user,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ClosedConversations.Add((conversationId, user));
+        return Task.CompletedTask;
     }
 }

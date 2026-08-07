@@ -486,6 +486,7 @@
     publishedOne: (id) => `api/published/${enc(id)}`,
     agentCredential: (profileId) => `api/agents/${enc(profileId)}/credentials`,
     agentCredentials: () => 'api/agents/credentials',
+    agentConversation: (conversationId) => `api/agents/conversations/${enc(conversationId)}`,
     agentChat: (connection, database, mode) =>
       `api/connections/${enc(connection)}/databases/${enc(database)}/agents/${enc(mode)}/chat`,
   };
@@ -2337,9 +2338,17 @@
     let credentialHandle = null;
     let credentialProfileId = null;
     let conversation = [];
+    let conversationId = crypto.randomUUID();
+
+    const closeProviderConversation = () => {
+      const closingId = conversationId;
+      conversationId = crypto.randomUUID();
+      return del(urls.agentConversation(closingId)).catch(() => {});
+    };
 
     const selectedProfile = () => profiles.find((profile) => profile.id === providerSelect.value) || profiles[0];
     const resetConversation = () => {
+      void closeProviderConversation();
       conversation = [];
       messages.replaceChildren(welcome);
       status.textContent = 'Ready';
@@ -2606,6 +2615,7 @@
             message,
             history,
             credentialHandle: handle,
+            conversationId,
           }),
         }, (event) => {
           const type = String(event.type || '').toLowerCase();
@@ -2675,6 +2685,7 @@
     };
 
     providerSelect.addEventListener('change', () => {
+      void closeProviderConversation();
       apiKeyInput.value = '';
       discardCredential();
       refreshProfile();
@@ -2712,6 +2723,7 @@
       activeRequest?.abort();
       discardCredential();
       conversation = [];
+      return closeProviderConversation();
     };
 
     tab.panel = h('div', { class: 'panel agent-panel', 'data-testid': 'agent-panel' },

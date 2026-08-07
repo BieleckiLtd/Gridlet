@@ -62,6 +62,7 @@ internal static partial class GridletApiEndpoints
             "/agents/{profileId}/credentials", StoreAgentCredential);
         var removeAgentCredential = api.MapDelete(
             "/agents/credentials", RemoveAgentCredential);
+        api.MapDelete("/agents/conversations/{conversationId}", CloseAgentConversation);
         var dataAgent = api.MapPost(
             "/connections/{connection}/databases/{database}/agents/data/chat", ChatWithDataAgent);
         var schemaAgent = api.MapPost(
@@ -378,6 +379,29 @@ internal static partial class GridletApiEndpoints
             connection, database, GridletAgentMode.Data, body, resolver, audit, services,
             httpContext, cancellationToken);
 
+    private static async Task<IResult> CloseAgentConversation(
+        string conversationId,
+        IServiceProvider services,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        if (!IsValidConversationId(conversationId))
+        {
+            return Results.BadRequest(new GridletErrorResponse("The agent conversation id is invalid."));
+        }
+
+        var agent = services.GetService<IGridletAgentService>();
+        if (agent is null)
+        {
+            return Results.NotFound(new GridletErrorResponse(
+                "Database agents are not configured for this application."));
+        }
+
+        await agent.CloseConversationAsync(
+            conversationId, AgentUser(httpContext), cancellationToken);
+        return Results.NoContent();
+    }
+
     private static Task ChatWithSchemaAgent(
         string connection,
         string database,
@@ -457,6 +481,12 @@ internal static partial class GridletApiEndpoints
                 httpContext, "The credential handle is invalid or expired.", cancellationToken);
             return;
         }
+        if (body.ConversationId is not null && !IsValidConversationId(body.ConversationId))
+        {
+            await WriteAgentRequestErrorAsync(
+                httpContext, "The agent conversation id is invalid.", cancellationToken);
+            return;
+        }
         if (string.IsNullOrWhiteSpace(body.Message) || body.Message.Length > 20_000)
         {
             await WriteAgentRequestErrorAsync(
@@ -484,7 +514,8 @@ internal static partial class GridletApiEndpoints
             body.Message,
             history,
             body.CredentialHandle,
-            AgentUser(httpContext));
+            AgentUser(httpContext),
+            body.ConversationId);
         var stopwatch = Stopwatch.StartNew();
         httpContext.Response.ContentType = "application/x-ndjson; charset=utf-8";
 
@@ -680,6 +711,10 @@ internal static partial class GridletApiEndpoints
             SHA256.HashData(Encoding.UTF8.GetBytes($"{issuer}\u001f{subject}")));
         return new GridletAgentUserContext(ownerHash, identity.Name, IsAuthenticated: true);
     }
+
+    private static bool IsValidConversationId(string value)
+        => value.Length is >= 1 and <= 100 &&
+           value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
 
     // ---- ad-hoc queries ----
 

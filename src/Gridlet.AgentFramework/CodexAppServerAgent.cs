@@ -18,7 +18,8 @@ internal sealed class CodexAppServerAgent(
     string instructions,
     IReadOnlyList<AIFunction> tools,
     int? maxToolIterations,
-    GridletCodexReasoningEffort? reasoningEffort) : AIAgent
+    GridletCodexReasoningEffort? reasoningEffort,
+    CodexAppServerRuntime? sharedRuntime = null) : AIAgent
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -34,6 +35,9 @@ internal sealed class CodexAppServerAgent(
 
     public override string Description =>
         "A bounded database assistant backed by a locally authenticated Codex app-server.";
+
+    internal static AgentSession CreateEphemeralSession() =>
+        new CodexAppServerSession(ephemeral: true);
 
     protected override ValueTask<AgentSession> CreateSessionCoreAsync(
         CancellationToken cancellationToken)
@@ -96,24 +100,13 @@ internal sealed class CodexAppServerAgent(
         // A null Agent Framework session is intentionally ephemeral. Gridlet supplies the
         // browser-held history on every request and must not persist database conversations in
         // Codex's local thread store. Explicit Agent Framework sessions remain resumable.
-        var codexSession = session as CodexAppServerSession ?? new CodexAppServerSession();
-        await using var client = await CodexAppServerClient.StartAsync(
-            executablePath, cancellationToken);
-
-        await client.InitializeAsync(cancellationToken);
-        var account = await client.RequestAsync(
-            "account/read", new { refreshToken = false }, cancellationToken);
-        var accountType = account.TryGetProperty("account", out var accountElement) &&
-                          accountElement.ValueKind == JsonValueKind.Object &&
-                          accountElement.TryGetProperty("type", out var typeElement)
-            ? typeElement.GetString()
+        var codexSession = session as CodexAppServerSession ??
+                           new CodexAppServerSession(ephemeral: true);
+        await using var ownedClient = sharedRuntime is null
+            ? await CodexAppServerClient.StartAsync(executablePath, cancellationToken)
             : null;
-        if (!string.Equals(accountType, "chatgpt", StringComparison.Ordinal))
-        {
-            throw new GridletAgentException(
-                "The local Codex runtime is not signed in with ChatGPT. Run 'codex login' " +
-                "as the operating-system user that hosts this application, then try again.");
-        }
+        var client = ownedClient ?? await sharedRuntime!.GetClientAsync(cancellationToken);
+        await client.EnsureReadyAsync(cancellationToken);
 
         if (string.IsNullOrWhiteSpace(codexSession.ThreadId))
         {
@@ -122,7 +115,7 @@ internal sealed class CodexAppServerAgent(
                 new
                 {
                     model,
-                    ephemeral = session is null,
+                    ephemeral = codexSession.Ephemeral,
                     approvalPolicy = "never",
                     sandbox = "read-only",
                     baseInstructions = string.Concat(instructions, CapabilityInstructions),
@@ -152,8 +145,10 @@ internal sealed class CodexAppServerAgent(
                     cancellationToken);
             }
         }
-        else
+        else if (sharedRuntime is null)
         {
+            // A turn-scoped client must load an explicitly persisted Agent Framework session.
+            // Tab-scoped runtimes already own the live thread in this app-server process.
             await client.RequestAsync(
                 "thread/resume",
                 new { threadId = codexSession.ThreadId },
@@ -544,9 +539,12 @@ internal sealed class CodexAppServerAgent(
         }
     }
 
-    private sealed class CodexAppServerSession(string? threadId = null) : AgentSession
+    private sealed class CodexAppServerSession(
+        string? threadId = null,
+        bool ephemeral = false) : AgentSession
     {
         public string? ThreadId { get; set; } = threadId;
+        public bool Ephemeral { get; } = ephemeral;
     }
 
     private sealed record CodexSessionState(string? ThreadId);
@@ -563,7 +561,9 @@ internal sealed class CodexAppServerClient : IAsyncDisposable
     private readonly StreamWriter _input;
     private readonly StreamReader _output;
     private readonly Task<string> _stderr;
+    private readonly SemaphoreSlim _initializationLock = new(1, 1);
     private long _nextId;
+    private bool _ready;
 
     private CodexAppServerClient(Process process)
     {
@@ -673,6 +673,36 @@ internal sealed class CodexAppServerClient : IAsyncDisposable
         await SendAsync(new { method = "initialized", @params = new { } }, cancellationToken);
     }
 
+    public async Task EnsureReadyAsync(CancellationToken cancellationToken)
+    {
+        if (_ready) return;
+
+        await _initializationLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_ready) return;
+            await InitializeAsync(cancellationToken);
+            var account = await RequestAsync(
+                "account/read", new { refreshToken = false }, cancellationToken);
+            var accountType = account.TryGetProperty("account", out var accountElement) &&
+                              accountElement.ValueKind == JsonValueKind.Object &&
+                              accountElement.TryGetProperty("type", out var typeElement)
+                ? typeElement.GetString()
+                : null;
+            if (!string.Equals(accountType, "chatgpt", StringComparison.Ordinal))
+            {
+                throw new GridletAgentException(
+                    "The local Codex runtime is not signed in with ChatGPT. Run 'codex login' " +
+                    "as the operating-system user that hosts this application, then try again.");
+            }
+            _ready = true;
+        }
+        finally
+        {
+            _initializationLock.Release();
+        }
+    }
+
     public async Task<JsonElement> RequestAsync(
         string method,
         object parameters,
@@ -748,6 +778,7 @@ internal sealed class CodexAppServerClient : IAsyncDisposable
         }
         finally
         {
+            _initializationLock.Dispose();
             _process.Dispose();
         }
     }
@@ -757,5 +788,49 @@ internal sealed class CodexAppServerClient : IAsyncDisposable
         var json = JsonSerializer.Serialize(message, SerializerOptions);
         await _input.WriteLineAsync(json.AsMemory(), cancellationToken);
         await _input.FlushAsync(cancellationToken);
+    }
+}
+
+internal sealed class CodexAppServerRuntime(string executablePath) : IAsyncDisposable
+{
+    private readonly SemaphoreSlim _startLock = new(1, 1);
+    private CodexAppServerClient? _client;
+    private bool _disposed;
+
+    public async Task<CodexAppServerClient> GetClientAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_client is not null) return _client;
+
+        await _startLock.WaitAsync(cancellationToken);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_client is not null) return _client;
+            var client = await CodexAppServerClient.StartAsync(executablePath, cancellationToken);
+            try
+            {
+                await client.EnsureReadyAsync(cancellationToken);
+                _client = client;
+                return client;
+            }
+            catch
+            {
+                await client.DisposeAsync();
+                throw;
+            }
+        }
+        finally
+        {
+            _startLock.Release();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        if (_client is not null) await _client.DisposeAsync();
+        _startLock.Dispose();
     }
 }

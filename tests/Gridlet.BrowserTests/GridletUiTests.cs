@@ -54,6 +54,43 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Reuses_one_provider_conversation_per_ask_tab_and_closes_it_with_the_tab()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var requestsBefore = fixture.Agent.Requests.Count;
+        var closesBefore = fixture.Agent.ClosedConversations.Count;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("First question");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+
+        await page.GetByTestId("agent-composer").FillAsync("Second question");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+
+        Assert.Equal(requestsBefore + 2, fixture.Agent.Requests.Count);
+        var firstConversationId = fixture.Agent.Requests[^2].ConversationId;
+        Assert.False(string.IsNullOrWhiteSpace(firstConversationId));
+        Assert.Equal(firstConversationId, fixture.Agent.Requests[^1].ConversationId);
+
+        await page.Locator("#tabbar .tab.active .tab-close").ClickAsync();
+        for (var attempt = 0;
+             attempt < 50 && fixture.Agent.ClosedConversations.Count == closesBefore;
+             attempt++)
+        {
+            await Task.Delay(20);
+        }
+
+        Assert.Equal(closesBefore + 1, fixture.Agent.ClosedConversations.Count);
+        Assert.Equal(firstConversationId, fixture.Agent.ClosedConversations[^1].ConversationId);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Preserves_conversation_context_when_switching_models()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -80,6 +117,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal(requestsBefore + 2, fixture.Agent.Requests.Count);
         var followUp = fixture.Agent.Requests[^1];
         Assert.Equal("fake-local", followUp.ProfileId);
+        Assert.NotEqual(fixture.Agent.Requests[^2].ConversationId, followUp.ConversationId);
         Assert.Equal(2, followUp.History.Count);
         Assert.Equal("First question", followUp.History[0].Content);
         Assert.Equal("Fake data response", followUp.History[1].Content);
