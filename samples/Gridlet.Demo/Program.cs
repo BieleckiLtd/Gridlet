@@ -36,7 +36,13 @@ builder.Services
         agents.AddOllama("local-gemma4-12b", new Uri("http://127.0.0.1:11434"), "gemma4:12b");
         agents.AddOllama("local-qwen3.6-35b-a3b", new Uri("http://127.0.0.1:11434"), "qwen3.6:35b-a3b");
         agents.AddCodex("codex-subscription", "gpt-5.6-luna").WithReasoningEffort(GridletCodexReasoningEffort.Medium);
-        agents.AddClaudeCode("claude-subscription", "sonnet").WithReasoningEffort(GridletClaudeCodeEffort.Medium);
+        // Each profile becomes a runtime-selectable entry in the Ask model dropdown.
+        agents.AddClaudeCode("claude-sonnet", "sonnet", "Claude Code — Sonnet")
+            .WithReasoningEffort(GridletClaudeCodeEffort.Medium);
+        agents.AddClaudeCode("claude-opus", "opus", "Claude Code — Opus")
+            .WithReasoningEffort(GridletClaudeCodeEffort.High);
+        agents.AddClaudeCode("claude-haiku", "haiku", "Claude Code — Haiku")
+            .WithReasoningEffort(GridletClaudeCodeEffort.Low);
         agents.AddGitHubCopilot("github-copilot", "gpt-5-mini").WithReasoningEffort(GridletCopilotReasoningEffort.Medium);
     });
 
