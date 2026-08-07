@@ -21,7 +21,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
     private readonly EphemeralCredentialStore credentials;
     private readonly IGridletConnectionResolver connectionResolver;
     private readonly IGridletAuditSink auditSink;
-    private readonly ConcurrentDictionary<string, CodexConversation> codexConversations =
+    private readonly ConcurrentDictionary<string, CliConversation> cliConversations =
         new(StringComparer.Ordinal);
     private readonly SemaphoreSlim conversationCreationGate = new(1, 1);
     private readonly CancellationTokenSource cleanupCancellation = new();
@@ -101,14 +101,14 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!codexConversations.TryGetValue(conversationId, out var conversation) ||
+        if (!cliConversations.TryGetValue(conversationId, out var conversation) ||
             !conversation.IsOwnedBy(user))
         {
             return;
         }
 
-        if (codexConversations.TryRemove(
-                new KeyValuePair<string, CodexConversation>(conversationId, conversation)))
+        if (cliConversations.TryRemove(
+                new KeyValuePair<string, CliConversation>(conversationId, conversation)))
         {
             await conversation.DisposeAsync(cancellationToken);
         }
@@ -127,10 +127,15 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         EnsureModeAllowed(request.Mode, resolved.Context.Connection);
         var apiKey = ResolveApiKey(request, profile);
 
-        CodexConversation? codexConversation = null;
-        if (profile.Provider == GridletAgentProvider.Codex && request.ConversationId is not null)
+        var instructions = request.Mode == GridletAgentMode.Schema
+            ? SchemaInstructions
+            : DataInstructions;
+        CliConversation? cliConversation = null;
+        if (profile.Provider is GridletAgentProvider.Codex or GridletAgentProvider.ClaudeCode &&
+            request.ConversationId is not null)
         {
-            codexConversation = await GetCodexConversationAsync(request, profile, cancellationToken);
+            cliConversation = await GetCliConversationAsync(
+                request, profile, instructions, cancellationToken);
         }
 
         var completedNormally = false;
@@ -143,14 +148,18 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
                 (name, result) => pendingToolEvents.Enqueue(new GridletAgentStreamEvent(
                     "tool-result", SerializeToolPayload(new { result }), name)));
             var tools = databaseTools.Create(request.Mode);
-            var instructions = request.Mode == GridletAgentMode.Schema
-                ? SchemaInstructions
-                : DataInstructions;
             await using var copilotClient = profile.Provider == GridletAgentProvider.GitHubCopilot
                 ? await StartCopilotClientAsync(cancellationToken)
                 : null;
+            await using var transientClaudeRuntime = profile.Provider == GridletAgentProvider.ClaudeCode &&
+                                                     cliConversation is null
+                ? new ClaudeCodeRuntime(
+                    settings.ClaudeExecutablePath, profile.Model, instructions,
+                    profile.ClaudeCodeEffort)
+                : null;
             using var chatClient = profile.Provider is
-                    GridletAgentProvider.Codex or GridletAgentProvider.GitHubCopilot
+                    GridletAgentProvider.Codex or GridletAgentProvider.ClaudeCode or
+                    GridletAgentProvider.GitHubCopilot
                 ? null
                 : CreateChatClient(profile, apiKey)
                     .AsBuilder()
@@ -168,7 +177,11 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
                     tools.OfType<AIFunction>().ToArray(),
                     settings.MaxToolIterations,
                     profile.ReasoningEffort,
-                    codexConversation?.Runtime),
+                    cliConversation?.CodexRuntime),
+                GridletAgentProvider.ClaudeCode => new ClaudeCodeAgent(
+                    cliConversation?.ClaudeRuntime ?? transientClaudeRuntime!,
+                    tools.OfType<AIFunction>().ToArray(),
+                    settings.MaxToolIterations),
                 GridletAgentProvider.GitHubCopilot => CreateGitHubCopilotAgent(
                     copilotClient!, profile, instructions, tools, settings.MaxToolIterations),
                 _ => new ChatClientAgent(
@@ -197,14 +210,9 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
 
             await foreach (var update in agent.RunStreamingAsync(
                                messages,
-                               session: codexConversation?.AgentSession,
+                               session: cliConversation?.CodexAgentSession,
                                cancellationToken: cancellationToken))
             {
-                while (pendingToolEvents.TryDequeue(out var toolEvent))
-                {
-                    yield return toolEvent;
-                }
-
                 foreach (var functionCall in update.Contents.OfType<FunctionCallContent>())
                 {
                     var callKey = functionCall.CallId ?? functionCall.Name;
@@ -256,15 +264,15 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         }
         finally
         {
-            if (codexConversation is not null)
+            if (cliConversation is not null)
             {
-                codexConversation.Touch();
-                codexConversation.Gate.Release();
+                cliConversation.Touch();
+                cliConversation.Gate.Release();
                 if (!completedNormally &&
-                    codexConversations.TryRemove(new KeyValuePair<string, CodexConversation>(
-                        request.ConversationId!, codexConversation)))
+                    cliConversations.TryRemove(new KeyValuePair<string, CliConversation>(
+                        request.ConversationId!, cliConversation)))
                 {
-                    await codexConversation.DisposeAsync(CancellationToken.None);
+                    await cliConversation.DisposeAsync(CancellationToken.None);
                 }
             }
         }
@@ -284,8 +292,8 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
             // Normal singleton shutdown.
         }
 
-        var conversations = codexConversations.ToArray();
-        codexConversations.Clear();
+        var conversations = cliConversations.ToArray();
+        cliConversations.Clear();
         foreach (var conversation in conversations)
         {
             await conversation.Value.DisposeAsync(CancellationToken.None);
@@ -296,29 +304,30 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
 
     public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
-    private async Task<CodexConversation> GetCodexConversationAsync(
+    private async Task<CliConversation> GetCliConversationAsync(
         GridletAgentRequest request,
         GridletAgentProfileSettings profile,
+        string instructions,
         CancellationToken cancellationToken)
     {
         while (true)
         {
-            if (!codexConversations.TryGetValue(request.ConversationId!, out var conversation))
+            if (!cliConversations.TryGetValue(request.ConversationId!, out var conversation))
             {
                 await conversationCreationGate.WaitAsync(cancellationToken);
                 try
                 {
-                    if (!codexConversations.TryGetValue(request.ConversationId!, out conversation))
+                    if (!cliConversations.TryGetValue(request.ConversationId!, out conversation))
                     {
-                        if (codexConversations.Count >= settings.MaxActiveConversations)
+                        if (cliConversations.Count >= settings.MaxActiveConversations)
                         {
                             throw new GridletAgentException(
                                 "The maximum number of active agent conversations has been reached. " +
                                 "Close an existing Ask tab or wait for an inactive conversation to expire.");
                         }
-                        conversation = new CodexConversation(
-                            request, profile, settings.CodexExecutablePath);
-                        if (!codexConversations.TryAdd(request.ConversationId!, conversation))
+                        conversation = new CliConversation(
+                            request, profile, settings, instructions);
+                        if (!cliConversations.TryAdd(request.ConversationId!, conversation))
                         {
                             await conversation.DisposeAsync(CancellationToken.None);
                             continue;
@@ -337,7 +346,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
             }
 
             await conversation.Gate.WaitAsync(cancellationToken);
-            if (codexConversations.TryGetValue(request.ConversationId!, out var current) &&
+            if (cliConversations.TryGetValue(request.ConversationId!, out var current) &&
                 ReferenceEquals(current, conversation))
             {
                 conversation.Touch();
@@ -353,7 +362,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         while (await timer.WaitForNextTickAsync(cancellationToken))
         {
             var expiresBefore = DateTimeOffset.UtcNow - settings.ConversationIdleTimeout;
-            foreach (var entry in codexConversations)
+            foreach (var entry in cliConversations)
             {
                 if (entry.Value.LastAccessed > expiresBefore || !entry.Value.Gate.Wait(0))
                 {
@@ -363,7 +372,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
                 try
                 {
                     if (entry.Value.LastAccessed <= expiresBefore &&
-                        codexConversations.TryRemove(entry))
+                        cliConversations.TryRemove(entry))
                     {
                         await entry.Value.DisposeRuntimeAsync();
                     }
@@ -661,7 +670,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         return client.GetChatClient(profile.Model).AsIChatClient();
     }
 
-    private sealed class CodexConversation : IAsyncDisposable
+    private sealed class CliConversation : IAsyncDisposable
     {
         private readonly string connectionName;
         private readonly string? database;
@@ -671,10 +680,11 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         private readonly string? ownerSubject;
         private long lastAccessedUtcTicks = DateTimeOffset.UtcNow.UtcTicks;
 
-        public CodexConversation(
+        public CliConversation(
             GridletAgentRequest request,
             GridletAgentProfileSettings profile,
-            string executablePath)
+            GridletAgentFrameworkSettings settings,
+            string instructions)
         {
             connectionName = request.ConnectionName;
             database = request.Database;
@@ -682,13 +692,27 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
             profileId = profile.Id;
             ownerIsAuthenticated = request.User.IsAuthenticated;
             ownerSubject = request.User.Subject;
-            Runtime = new CodexAppServerRuntime(executablePath);
-            AgentSession = CodexAppServerAgent.CreateEphemeralSession();
+            if (profile.Provider == GridletAgentProvider.Codex)
+            {
+                CodexRuntime = new CodexAppServerRuntime(settings.CodexExecutablePath);
+                CodexAgentSession = CodexAppServerAgent.CreateEphemeralSession();
+            }
+            else if (profile.Provider == GridletAgentProvider.ClaudeCode)
+            {
+                ClaudeRuntime = new ClaudeCodeRuntime(
+                    settings.ClaudeExecutablePath, profile.Model, instructions,
+                    profile.ClaudeCodeEffort);
+            }
+            else
+            {
+                throw new ArgumentOutOfRangeException(nameof(profile));
+            }
         }
 
         public SemaphoreSlim Gate { get; } = new(1, 1);
-        public CodexAppServerRuntime Runtime { get; }
-        public AgentSession AgentSession { get; }
+        public CodexAppServerRuntime? CodexRuntime { get; }
+        public ClaudeCodeRuntime? ClaudeRuntime { get; }
+        public AgentSession? CodexAgentSession { get; }
         public DateTimeOffset LastAccessed =>
             new(Interlocked.Read(ref lastAccessedUtcTicks), TimeSpan.Zero);
 
@@ -725,6 +749,8 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
             }
         }
 
-        public ValueTask DisposeRuntimeAsync() => Runtime.DisposeAsync();
+        public ValueTask DisposeRuntimeAsync() => CodexRuntime?.DisposeAsync() ??
+                                                  ClaudeRuntime?.DisposeAsync() ??
+                                                  ValueTask.CompletedTask;
     }
 }

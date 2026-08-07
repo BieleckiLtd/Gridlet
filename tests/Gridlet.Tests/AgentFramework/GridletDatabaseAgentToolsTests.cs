@@ -58,6 +58,7 @@ public sealed class GridletDatabaseAgentToolsTests
             MaxToolIterations: 10,
             MaxOutputTokens: 2_000,
             CodexExecutablePath: "codex",
+            ClaudeExecutablePath: "claude",
             CopilotExecutablePath: "copilot",
             Profiles: []);
 

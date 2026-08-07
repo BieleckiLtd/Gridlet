@@ -17,7 +17,7 @@ public sealed class GridletAgentFrameworkOptions
     /// </summary>
     public TimeSpan ConversationIdleTimeout { get; set; } = TimeSpan.FromMinutes(30);
 
-    /// <summary>Maximum number of Codex CLI sessions retained by this application instance.</summary>
+    /// <summary>Maximum number of subscription-backed CLI sessions retained by this application instance.</summary>
     public int MaxActiveConversations { get; set; } = 32;
 
     /// <summary>Maximum number of client-supplied history messages accepted for one turn.</summary>
@@ -57,6 +57,12 @@ public sealed class GridletAgentFrameworkOptions
     public string CodexExecutablePath { get; set; } = "codex";
 
     /// <summary>
+    /// Command used to launch the locally installed Claude Code CLI for subscription-backed
+    /// profiles. Authentication is owned by that local installation and is never read by Gridlet.
+    /// </summary>
+    public string ClaudeExecutablePath { get; set; } = "claude";
+
+    /// <summary>
     /// Command used to launch the locally installed GitHub Copilot CLI for subscription-backed
     /// profiles. Authentication is owned by that local installation and is never read by Gridlet.
     /// </summary>
@@ -80,6 +86,18 @@ public sealed class GridletAgentFrameworkOptions
         string? displayName = null)
         => Add(id, displayName ?? "Codex (ChatGPT subscription)", model,
             GridletAgentProvider.Codex, endpoint: null);
+
+    /// <summary>
+    /// Adds a subscription-backed profile that communicates with the local Claude Code CLI.
+    /// The operating-system user running the application must first sign in with
+    /// <c>claude auth login</c> using a Claude account.
+    /// </summary>
+    public GridletAgentProfileBuilder AddClaudeCode(
+        string id,
+        string model,
+        string? displayName = null)
+        => Add(id, displayName ?? "Claude Code subscription", model,
+            GridletAgentProvider.ClaudeCode, endpoint: null);
 
     /// <summary>
     /// Adds a subscription-backed profile that communicates with the local GitHub Copilot CLI.
@@ -171,6 +189,11 @@ public sealed class GridletAgentFrameworkOptions
             throw new GridletValidationException(
                 $"{nameof(CopilotExecutablePath)} must contain 1-1,024 characters.");
         }
+        if (string.IsNullOrWhiteSpace(ClaudeExecutablePath) || ClaudeExecutablePath.Length > 1_024)
+        {
+            throw new GridletValidationException(
+                $"{nameof(ClaudeExecutablePath)} must contain 1-1,024 characters.");
+        }
 
         if (_profiles.Count == 0)
         {
@@ -205,6 +228,7 @@ public sealed class GridletAgentFrameworkOptions
             MaxToolIterations,
             MaxOutputTokens,
             CodexExecutablePath,
+            ClaudeExecutablePath,
             CopilotExecutablePath,
             new ReadOnlyCollection<GridletAgentProfileSettings>(profiles));
     }
@@ -246,6 +270,7 @@ public sealed class GridletAgentProfileBuilder
     internal bool IsLocal { get; private set; }
     internal GridletCodexReasoningEffort? ReasoningEffort { get; private set; }
     internal GridletCopilotReasoningEffort? CopilotReasoningEffort { get; private set; }
+    internal GridletClaudeCodeEffort? ClaudeCodeEffort { get; private set; }
 
     /// <summary>Changes the safe display label exposed to Gridlet clients.</summary>
     public GridletAgentProfileBuilder WithDisplayName(string displayName)
@@ -323,6 +348,26 @@ public sealed class GridletAgentProfileBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets the effort sent to Claude Code. When omitted, Claude Code uses the selected model's
+    /// default.
+    /// </summary>
+    public GridletAgentProfileBuilder WithReasoningEffort(GridletClaudeCodeEffort reasoningEffort)
+    {
+        if (Provider != GridletAgentProvider.ClaudeCode)
+        {
+            throw new GridletValidationException(
+                "Claude Code effort can only be configured for a Claude Code profile.");
+        }
+        if (!Enum.IsDefined(reasoningEffort))
+        {
+            throw new ArgumentOutOfRangeException(nameof(reasoningEffort));
+        }
+
+        ClaudeCodeEffort = reasoningEffort;
+        return this;
+    }
+
     internal GridletAgentProfileSettings Build()
     {
         if (string.IsNullOrWhiteSpace(Id) || Id.Length > 100 ||
@@ -347,7 +392,8 @@ public sealed class GridletAgentProfileBuilder
                 $"The server API key configured for agent profile '{Id}' is too long.");
         }
 
-        if (Provider is GridletAgentProvider.Codex or GridletAgentProvider.GitHubCopilot &&
+        if (Provider is GridletAgentProvider.Codex or GridletAgentProvider.ClaudeCode or
+                GridletAgentProvider.GitHubCopilot &&
             (ServerApiKey is not null || AllowsUserApiKey))
         {
             throw new GridletValidationException(
@@ -382,7 +428,8 @@ public sealed class GridletAgentProfileBuilder
             AllowsUserApiKey,
             IsLocal,
             ReasoningEffort,
-            CopilotReasoningEffort);
+            CopilotReasoningEffort,
+            ClaudeCodeEffort);
     }
 }
 
@@ -418,9 +465,29 @@ public enum GridletCopilotReasoningEffort
     ExtraHigh,
 }
 
+/// <summary>Effort requested from a subscription-backed Claude Code model.</summary>
+public enum GridletClaudeCodeEffort
+{
+    /// <summary>Faster responses with less reasoning.</summary>
+    Low,
+
+    /// <summary>Balanced reasoning and latency.</summary>
+    Medium,
+
+    /// <summary>More reasoning for difficult requests.</summary>
+    High,
+
+    /// <summary>Extended reasoning for models that advertise <c>xhigh</c> support.</summary>
+    ExtraHigh,
+
+    /// <summary>Maximum effort for models that advertise <c>max</c> support.</summary>
+    Maximum,
+}
+
 internal enum GridletAgentProvider
 {
     Codex,
+    ClaudeCode,
     GitHubCopilot,
     OpenAI,
     Anthropic,
@@ -438,12 +505,14 @@ internal sealed record GridletAgentProfileSettings(
     bool AllowsUserApiKey,
     bool IsLocal,
     GridletCodexReasoningEffort? ReasoningEffort,
-    GridletCopilotReasoningEffort? CopilotReasoningEffort)
+    GridletCopilotReasoningEffort? CopilotReasoningEffort,
+    GridletClaudeCodeEffort? ClaudeCodeEffort)
 {
     public bool RequiresUserApiKey =>
         ServerApiKey is null &&
         AllowsUserApiKey &&
         Provider is not (GridletAgentProvider.Ollama or GridletAgentProvider.Codex or
+            GridletAgentProvider.ClaudeCode or
             GridletAgentProvider.GitHubCopilot);
 }
 
@@ -461,6 +530,7 @@ internal sealed record GridletAgentFrameworkSettings(
     int? MaxToolIterations,
     int MaxOutputTokens,
     string CodexExecutablePath,
+    string ClaudeExecutablePath,
     string CopilotExecutablePath,
     IReadOnlyList<GridletAgentProfileSettings> Profiles)
 {

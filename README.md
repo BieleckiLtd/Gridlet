@@ -53,9 +53,10 @@ capability sets separate:
   <img src="assets/screenshot-5.png" width="100%" alt="Gridlet Ask workspace showing a data conversation and generated SQL query" />
 </p>
 
-Profiles can use a ChatGPT subscription through the local Codex runtime, a GitHub Copilot
-subscription through the local Copilot CLI, the OpenAI API, Anthropic Claude, an OpenAI-compatible
-endpoint, or local Ollama. Provider URLs and models are allow-listed by the host. An API server key
+Profiles can use a ChatGPT subscription through the local Codex runtime, a Claude subscription
+through the local Claude Code CLI, a GitHub Copilot subscription through the local Copilot CLI,
+the OpenAI API, Anthropic's API, an OpenAI-compatible endpoint, or local Ollama. Provider URLs and
+models are allow-listed by the host. An API server key
 may come from configuration, User Secrets, or a vault; alternatively, authenticated users can enter
 their own key. User keys are held only in server memory behind an expiring, user-bound handle and
 are never written to Gridlet storage or browser storage.
@@ -74,6 +75,10 @@ builder.Services
         // Uses the ChatGPT account owned by the local Codex installation; no API key.
         agents.AddCodex("codex-subscription", "gpt-5.4")
             .WithReasoningEffort(GridletCodexReasoningEffort.High);
+
+        // Uses the account owned by the local Claude Code CLI; no API key.
+        agents.AddClaudeCode("claude-subscription", "sonnet")
+            .WithReasoningEffort(GridletClaudeCodeEffort.High);
 
         // Uses the account owned by the local GitHub Copilot CLI; no API key.
         agents.AddGitHubCopilot("github-copilot", "gpt-5")
@@ -109,6 +114,15 @@ For schema-heavy conversations, increase `MaxToolIterations` up to its validated
 or set it to `null` for no Gridlet-imposed ceiling. Providers can still impose their own limits.
 When Gridlet's configured limit is reached, it asks Codex to finish using the information already
 collected and streams that tool feedback to the client.
+
+`AddClaudeCode` launches the native Claude Code executable in bidirectional `stream-json` mode and
+uses the login stored by that installation. Install Claude Code and run `claude auth login` as the
+same operating-system user that runs the .NET application. Each Ask tab keeps one Claude Code
+process across turns and releases it under the same close, failure, idle-expiry, and process-cap
+rules as Codex; CLI session persistence is disabled. Gridlet disables Claude Code's built-in tools,
+settings discovery, and skills; the only enabled tools are Gridlet's bounded database functions,
+exposed through Claude Code's SDK MCP bridge. On Windows, use the native `claude.exe`: Gridlet
+rejects npm `.cmd`/`.bat` shims because Windows re-parses their arguments through `cmd.exe`.
 
 `AddGitHubCopilot` launches the installed GitHub Copilot CLI over stdio using GitHub's Copilot SDK
 and Microsoft Agent Framework adapter. Install the CLI and run `copilot login` as the same
@@ -260,17 +274,17 @@ the built-in SQL Server and SQLite providers because it does not require a name 
 ### Agent Framework options
 
 `AddAgentFramework` is optional and lives in the `Gridlet.AgentFramework` package. It accepts named,
-host-controlled profiles through `AddCodex`, `AddGitHubCopilot`, `AddOpenAI`, `AddAnthropic`,
+host-controlled profiles through `AddCodex`, `AddClaudeCode`, `AddGitHubCopilot`, `AddOpenAI`, `AddAnthropic`,
 `AddOpenAICompatible`, and `AddOllama`. API-backed profile builders support `WithServerApiKey` and
-`AllowUserApiKeys`; subscription-backed Codex and GitHub Copilot profiles reject both because
+`AllowUserApiKeys`; subscription-backed Codex, Claude Code, and GitHub Copilot profiles reject both because
 authentication belongs exclusively to the local CLI runtime. `AsLocal` controls the safe locality
 metadata exposed for OpenAI-compatible profiles.
 
 | Property | Default | Effect |
 | --- | --- | --- |
 | `CredentialLifetime` | 30 minutes | Lifetime of an ephemeral user-key handle; constrained to at most one day. |
-| `ConversationIdleTimeout` | 30 minutes | Inactivity timeout for a Codex CLI session owned by an Ask tab; constrained to one minute through one day. Explicitly closing the tab releases it immediately. |
-| `MaxActiveConversations` | `32` | Maximum retained Codex CLI sessions per application instance, preventing abandoned tabs from creating an unbounded process pool. |
+| `ConversationIdleTimeout` | 30 minutes | Inactivity timeout for a subscription-backed CLI session owned by an Ask tab; constrained to one minute through one day. Explicitly closing the tab releases it immediately. |
+| `MaxActiveConversations` | `32` | Maximum retained subscription-backed CLI sessions per application instance, preventing abandoned tabs from creating an unbounded process pool. |
 | `MaxHistoryMessages` / `MaxHistoryCharacters` | `50` / `200,000` | Per-turn conversation-history limits. Conversations remain browser-held and are not persisted. |
 | `MaxMessageCharacters` | `20,000` | Maximum current user message length. |
 | `MaxToolResultCharacters` | `32,000` | Maximum serialized schema or query result sent back to a model tool call. |
@@ -278,6 +292,7 @@ metadata exposed for OpenAI-compatible profiles.
 | `QueryTimeoutSeconds` | `120` | Timeout for the data agent's read-only query tool. |
 | `MaxToolIterations` / `MaxOutputTokens` | `8` / `4,096` | Optional tool-call limit (`null` disables Gridlet's ceiling) and API-model output-token request. Subscription-backed CLI providers do not expose an equivalent stable output-token field. |
 | `CodexExecutablePath` | `codex` | Command or absolute path used to launch `codex app-server` for subscription-backed profiles. |
+| `ClaudeExecutablePath` | `claude` | Command or absolute path used to launch the native Claude Code CLI for subscription-backed profiles. |
 | `CopilotExecutablePath` | `copilot` | Command or absolute path used to launch GitHub Copilot CLI for subscription-backed profiles. |
 
 Authentication itself remains the host application's responsibility. Configure ASP.NET Core

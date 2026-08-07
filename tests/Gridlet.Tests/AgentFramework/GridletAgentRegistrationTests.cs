@@ -20,6 +20,8 @@ public sealed class GridletAgentRegistrationTests
                     .AllowUserApiKeys();
                 options.AddCodex("codex", "gpt-5.4")
                     .WithReasoningEffort(GridletCodexReasoningEffort.High);
+                options.AddClaudeCode("claude-code", "sonnet")
+                    .WithReasoningEffort(GridletClaudeCodeEffort.High);
                 options.AddGitHubCopilot("copilot", "gpt-5")
                     .WithReasoningEffort(GridletCopilotReasoningEffort.Medium);
                 options.AddOllama(
@@ -30,14 +32,16 @@ public sealed class GridletAgentRegistrationTests
         var agent = provider.GetRequiredService<IGridletAgentService>();
         var serialized = System.Text.Json.JsonSerializer.Serialize(agent.Info);
 
-        Assert.Equal(4, agent.Info.Profiles.Count);
+        Assert.Equal(5, agent.Info.Profiles.Count);
         Assert.False(agent.Info.Profiles[0].RequiresUserApiKey);
         Assert.True(agent.Info.Profiles[0].AllowsUserApiKey);
         Assert.False(agent.Info.Profiles[1].AllowsUserApiKey);
         Assert.False(agent.Info.Profiles[1].RequiresUserApiKey);
         Assert.False(agent.Info.Profiles[2].AllowsUserApiKey);
         Assert.False(agent.Info.Profiles[2].RequiresUserApiKey);
-        Assert.True(agent.Info.Profiles[3].IsLocal);
+        Assert.False(agent.Info.Profiles[3].AllowsUserApiKey);
+        Assert.False(agent.Info.Profiles[3].RequiresUserApiKey);
+        Assert.True(agent.Info.Profiles[4].IsLocal);
         Assert.DoesNotContain("sk-server-secret", serialized, StringComparison.Ordinal);
         Assert.DoesNotContain("127.0.0.1", serialized, StringComparison.Ordinal);
     }
@@ -80,6 +84,30 @@ public sealed class GridletAgentRegistrationTests
                 options.AddGitHubCopilot("copilot", "gpt-5").WithServerApiKey("github-token")));
 
         Assert.Contains("cannot accept API keys", exception.Message);
+    }
+
+    [Fact]
+    public void Rejects_api_keys_for_subscription_backed_claude_code_profiles()
+    {
+        var services = new ServiceCollection();
+
+        var exception = Assert.Throws<GridletValidationException>(() =>
+            services.AddGridlet().AddAgentFramework(options =>
+                options.AddClaudeCode("claude-code", "sonnet").AllowUserApiKeys()));
+
+        Assert.Contains("cannot accept API keys", exception.Message);
+    }
+
+    [Fact]
+    public void Rejects_claude_code_effort_on_other_profiles()
+    {
+        var options = new GridletAgentFrameworkOptions();
+
+        var exception = Assert.Throws<GridletValidationException>(() =>
+            options.AddCodex("codex", "gpt-5.4")
+                .WithReasoningEffort(GridletClaudeCodeEffort.High));
+
+        Assert.Contains("Claude Code", exception.Message);
     }
 
     [Fact]
