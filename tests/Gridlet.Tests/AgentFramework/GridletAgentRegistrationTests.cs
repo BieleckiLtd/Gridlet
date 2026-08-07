@@ -21,7 +21,8 @@ public sealed class GridletAgentRegistrationTests
                 options.AddCodex("codex", "gpt-5.4")
                     .WithReasoningEffort(GridletCodexReasoningEffort.High);
                 options.AddClaudeCode("claude-code", "sonnet")
-                    .WithReasoningEffort(GridletClaudeCodeEffort.High);
+                    .WithReasoningEffort(GridletClaudeCodeEffort.High)
+                    .AllowReasoningEffortSelection();
                 options.AddGitHubCopilot("copilot", "gpt-5")
                     .WithReasoningEffort(GridletCopilotReasoningEffort.Medium);
                 options.AddOllama(
@@ -39,6 +40,8 @@ public sealed class GridletAgentRegistrationTests
         Assert.False(agent.Info.Profiles[1].RequiresUserApiKey);
         Assert.False(agent.Info.Profiles[2].AllowsUserApiKey);
         Assert.False(agent.Info.Profiles[2].RequiresUserApiKey);
+        Assert.Equal("high", agent.Info.Profiles[2].DefaultReasoningEffort);
+        Assert.Contains("max", agent.Info.Profiles[2].ReasoningEfforts!);
         Assert.False(agent.Info.Profiles[3].AllowsUserApiKey);
         Assert.False(agent.Info.Profiles[3].RequiresUserApiKey);
         Assert.True(agent.Info.Profiles[4].IsLocal);

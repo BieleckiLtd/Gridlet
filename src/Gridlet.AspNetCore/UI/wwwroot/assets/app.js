@@ -2293,11 +2293,16 @@
       'aria-label': 'Agent mode', 'data-testid': 'agent-mode',
     }, modes.map((mode) => h('option', { value: mode.id, text: mode.label })));
     const providerSelect = h('select', {
-      'aria-label': 'Agent provider', 'data-testid': 'agent-provider',
+      'aria-label': 'Agent model', 'data-testid': 'agent-provider',
     }, profiles.map((profile) => h('option', {
       value: profile.id,
       text: `${profile.displayName} — ${profile.model}`,
     })));
+    const effortSelect = h('select', {
+      'aria-label': 'Thinking effort', 'data-testid': 'agent-effort',
+    });
+    const effortControl = h('label', { class: 'agent-control agent-effort-control', hidden: '' },
+      h('span', { text: 'Effort' }), effortSelect);
     const apiKeyInput = h('input', {
       type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
       maxlength: '8192', 'aria-label': 'Provider API key', 'data-testid': 'agent-api-key',
@@ -2373,10 +2378,23 @@
       cancelButton.disabled = !activeRequest;
       modeSelect.disabled = Boolean(activeRequest);
       providerSelect.disabled = Boolean(activeRequest);
+      effortSelect.disabled = Boolean(activeRequest);
       apiKeyInput.disabled = Boolean(activeRequest);
     };
     const refreshProfile = () => {
       const profile = selectedProfile();
+      const efforts = profile?.reasoningEfforts || [];
+      const effortLabels = {
+        low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum',
+      };
+      effortSelect.replaceChildren(...efforts.map((value) => h('option', {
+        value, text: effortLabels[value] || value,
+      })));
+      effortControl.hidden = !efforts.length;
+      if (efforts.length) {
+        effortSelect.value = efforts.includes(profile.defaultReasoningEffort)
+          ? profile.defaultReasoningEffort : efforts[0];
+      }
       const acceptsKey = Boolean(profile?.allowsUserApiKey || profile?.requiresUserApiKey);
       apiKeyField.hidden = !acceptsKey;
       apiKeyInput.required = Boolean(profile?.requiresUserApiKey);
@@ -2616,6 +2634,7 @@
             history,
             credentialHandle: handle,
             conversationId,
+            reasoningEffort: effortControl.hidden ? null : effortSelect.value,
           }),
         }, (event) => {
           const type = String(event.type || '').toLowerCase();
@@ -2691,6 +2710,7 @@
       refreshProfile();
     });
     modeSelect.addEventListener('change', resetConversation);
+    effortSelect.addEventListener('change', syncControls);
     composer.addEventListener('input', syncControls);
     apiKeyInput.addEventListener('input', syncControls);
     composer.addEventListener('keydown', (event) => {
@@ -2733,7 +2753,9 @@
           h('strong', { text: `${connection} / ${database}` })),
         h('div', { class: 'agent-selectors' },
           h('label', { class: 'agent-control' }, h('span', { text: 'Mode' }), modeSelect),
-          h('label', { class: 'agent-control' }, h('span', { text: 'Provider' }), providerSelect)),
+          h('label', { class: 'agent-control agent-provider-control' },
+            h('span', { text: 'Model' }), providerSelect),
+          effortControl),
         apiKeyField,
         disclosure),
       messages,

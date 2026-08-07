@@ -91,6 +91,36 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Changes_effort_without_replacing_the_conversation()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var requestsBefore = fixture.Agent.Requests.Count;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-effort")).ToHaveValueAsync("medium");
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("First question");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+
+        await page.GetByTestId("agent-effort").SelectOptionAsync("high");
+        await page.GetByTestId("agent-composer").FillAsync("Second question");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+
+        Assert.Equal(requestsBefore + 2, fixture.Agent.Requests.Count);
+        var first = fixture.Agent.Requests[^2];
+        var second = fixture.Agent.Requests[^1];
+        Assert.Equal("medium", first.ReasoningEffort);
+        Assert.Equal("high", second.ReasoningEffort);
+        Assert.Equal(first.ConversationId, second.ConversationId);
+        Assert.Equal(2, second.History.Count);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Preserves_conversation_context_when_switching_models()
     {
         await using var browserPage = await fixture.NewPageAsync();

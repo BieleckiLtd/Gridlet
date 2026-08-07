@@ -70,4 +70,16 @@ public sealed class ClaudeCodeAgentTests
 
         Assert.Contains("native claude.exe", exception.Message);
     }
+
+    [Fact]
+    public void Literal_user_slash_commands_are_not_forwarded_to_claude_code()
+    {
+        Assert.Equal("ordinary question", ClaudeCodeRuntime.EscapeSlashCommand("ordinary question"));
+
+        var escaped = ClaudeCodeRuntime.EscapeSlashCommand("  /clear");
+
+        Assert.DoesNotMatch("^\\s*/", escaped);
+        Assert.Contains("literal text", escaped);
+        Assert.Contains("/clear", escaped);
+    }
 }

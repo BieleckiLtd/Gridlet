@@ -78,7 +78,8 @@ builder.Services
 
         // Uses the account owned by the local Claude Code CLI; no API key.
         agents.AddClaudeCode("claude-subscription", "sonnet")
-            .WithReasoningEffort(GridletClaudeCodeEffort.High);
+            .WithReasoningEffort(GridletClaudeCodeEffort.High)
+            .AllowReasoningEffortSelection();
 
         // Uses the account owned by the local GitHub Copilot CLI; no API key.
         agents.AddGitHubCopilot("github-copilot", "gpt-5")
@@ -119,10 +120,15 @@ collected and streams that tool feedback to the client.
 uses the login stored by that installation. Install Claude Code and run `claude auth login` as the
 same operating-system user that runs the .NET application. Each Ask tab keeps one Claude Code
 process across turns and releases it under the same close, failure, idle-expiry, and process-cap
-rules as Codex; CLI session persistence is disabled. Gridlet disables Claude Code's built-in tools,
-settings discovery, and skills; the only enabled tools are Gridlet's bounded database functions,
-exposed through Claude Code's SDK MCP bridge. On Windows, use the native `claude.exe`: Gridlet
-rejects npm `.cmd`/`.bat` shims because Windows re-parses their arguments through `cmd.exe`.
+rules as Codex; CLI session persistence is disabled. Gridlet disables Claude Code's built-in tools;
+the only model-callable tools are Gridlet's bounded database functions, exposed through Claude
+Code's SDK MCP bridge. On Windows, use the native `claude.exe`: Gridlet rejects npm `.cmd`/`.bat`
+shims because Windows re-parses their arguments through `cmd.exe`.
+`AllowReasoningEffortSelection` exposes the provider-supported effort levels in the Ask header.
+Changing effort applies to the next turn without clearing the conversation or replacing the
+tab-scoped Codex/Claude CLI session. For Claude, Gridlet invokes only the built-in `/effort` command
+and wraps user messages beginning with `/` as literal content so they cannot invoke CLI commands.
+The `WithReasoningEffort` value is the initial selection.
 
 `AddGitHubCopilot` launches the installed GitHub Copilot CLI over stdio using GitHub's Copilot SDK
 and Microsoft Agent Framework adapter. Install the CLI and run `copilot login` as the same

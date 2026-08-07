@@ -123,6 +123,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
 
         var profile = GetProfile(request.ProfileId);
         ValidateRequest(request);
+        ValidateReasoningEffort(request, profile);
         var resolved = connectionResolver.Resolve(request.ConnectionName, request.Database);
         EnsureModeAllowed(request.Mode, resolved.Context.Connection);
         var apiKey = ResolveApiKey(request, profile);
@@ -155,7 +156,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
                                                      cliConversation is null
                 ? new ClaudeCodeRuntime(
                     settings.ClaudeExecutablePath, profile.Model, instructions,
-                    profile.ClaudeCodeEffort)
+                    profile.ClaudeCodeEffort, profile.AllowsReasoningEffortSelection)
                 : null;
             using var chatClient = profile.Provider is
                     GridletAgentProvider.Codex or GridletAgentProvider.ClaudeCode or
@@ -176,14 +177,16 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
                     instructions,
                     tools.OfType<AIFunction>().ToArray(),
                     settings.MaxToolIterations,
-                    profile.ReasoningEffort,
+                    GetCodexReasoningEffort(request, profile),
                     cliConversation?.CodexRuntime),
                 GridletAgentProvider.ClaudeCode => new ClaudeCodeAgent(
                     cliConversation?.ClaudeRuntime ?? transientClaudeRuntime!,
                     tools.OfType<AIFunction>().ToArray(),
-                    settings.MaxToolIterations),
+                    settings.MaxToolIterations,
+                    GetClaudeCodeEffort(request, profile)),
                 GridletAgentProvider.GitHubCopilot => CreateGitHubCopilotAgent(
-                    copilotClient!, profile, instructions, tools, settings.MaxToolIterations),
+                    copilotClient!, profile, instructions, tools, settings.MaxToolIterations,
+                    GetCopilotReasoningEffort(request, profile)),
                 _ => new ChatClientAgent(
                     chatClient!,
                     new ChatClientAgentOptions
@@ -439,6 +442,32 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         }
     }
 
+    private static void ValidateReasoningEffort(
+        GridletAgentRequest request,
+        GridletAgentProfileSettings profile)
+    {
+        if (request.ReasoningEffort is null) return;
+        if (!profile.AllowsReasoningEffortSelection)
+        {
+            throw new GridletAgentException(
+                "Reasoning effort selection is not enabled for this agent profile.");
+        }
+
+        var valid = profile.Provider switch
+        {
+            GridletAgentProvider.ClaudeCode => request.ReasoningEffort is
+                "low" or "medium" or "high" or "xhigh" or "max",
+            GridletAgentProvider.Codex or GridletAgentProvider.GitHubCopilot =>
+                request.ReasoningEffort is "low" or "medium" or "high" or "xhigh",
+            _ => false,
+        };
+        if (!valid)
+        {
+            throw new GridletAgentException(
+                "The selected reasoning effort is not allowed for this agent profile.");
+        }
+    }
+
     private static void EnsureModeAllowed(
         GridletAgentMode mode,
         GridletConnectionOptions connection)
@@ -587,7 +616,8 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         GridletAgentProfileSettings profile,
         string instructions,
         IList<AITool> tools,
-        int? maxToolCalls)
+        int? maxToolCalls,
+        GridletCopilotReasoningEffort? reasoningEffort)
     {
         var copilotTools = tools.OfType<AIFunction>().ToArray();
         var toolCallCount = 0;
@@ -595,7 +625,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         var sessionConfig = new SessionConfig
         {
             Model = profile.Model,
-            ReasoningEffort = ToCopilotReasoningEffort(profile.CopilotReasoningEffort),
+            ReasoningEffort = ToCopilotReasoningEffort(reasoningEffort),
             ReasoningSummary = ReasoningSummary.Concise,
             Streaming = true,
             Tools = copilotTools,
@@ -645,6 +675,43 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
             GridletCopilotReasoningEffort.High => "high",
             GridletCopilotReasoningEffort.ExtraHigh => "xhigh",
             _ => throw new ArgumentOutOfRangeException(nameof(effort)),
+        };
+
+    private static GridletCodexReasoningEffort? GetCodexReasoningEffort(
+        GridletAgentRequest request,
+        GridletAgentProfileSettings profile) => request.ReasoningEffort switch
+        {
+            null => profile.ReasoningEffort,
+            "low" => GridletCodexReasoningEffort.Low,
+            "medium" => GridletCodexReasoningEffort.Medium,
+            "high" => GridletCodexReasoningEffort.High,
+            "xhigh" => GridletCodexReasoningEffort.ExtraHigh,
+            _ => throw new ArgumentOutOfRangeException(nameof(request)),
+        };
+
+    private static GridletClaudeCodeEffort? GetClaudeCodeEffort(
+        GridletAgentRequest request,
+        GridletAgentProfileSettings profile) => request.ReasoningEffort switch
+        {
+            null => profile.ClaudeCodeEffort,
+            "low" => GridletClaudeCodeEffort.Low,
+            "medium" => GridletClaudeCodeEffort.Medium,
+            "high" => GridletClaudeCodeEffort.High,
+            "xhigh" => GridletClaudeCodeEffort.ExtraHigh,
+            "max" => GridletClaudeCodeEffort.Maximum,
+            _ => throw new ArgumentOutOfRangeException(nameof(request)),
+        };
+
+    private static GridletCopilotReasoningEffort? GetCopilotReasoningEffort(
+        GridletAgentRequest request,
+        GridletAgentProfileSettings profile) => request.ReasoningEffort switch
+        {
+            null => profile.CopilotReasoningEffort,
+            "low" => GridletCopilotReasoningEffort.Low,
+            "medium" => GridletCopilotReasoningEffort.Medium,
+            "high" => GridletCopilotReasoningEffort.High,
+            "xhigh" => GridletCopilotReasoningEffort.ExtraHigh,
+            _ => throw new ArgumentOutOfRangeException(nameof(request)),
         };
 
     private static IChatClient CreateOllamaChatClient(GridletAgentProfileSettings profile)
@@ -701,7 +768,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
             {
                 ClaudeRuntime = new ClaudeCodeRuntime(
                     settings.ClaudeExecutablePath, profile.Model, instructions,
-                    profile.ClaudeCodeEffort);
+                    profile.ClaudeCodeEffort, profile.AllowsReasoningEffortSelection);
             }
             else
             {

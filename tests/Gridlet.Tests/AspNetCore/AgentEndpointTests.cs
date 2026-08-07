@@ -129,6 +129,8 @@ public class AgentEndpointTests
         Assert.Equal("fake-model-v1", profiles[0].GetProperty("model").GetString());
         Assert.True(profiles[0].GetProperty("allowsUserApiKey").GetBoolean());
         Assert.True(profiles[0].GetProperty("requiresUserApiKey").GetBoolean());
+        Assert.Equal("medium", profiles[0].GetProperty("defaultReasoningEffort").GetString());
+        Assert.Equal(3, profiles[0].GetProperty("reasoningEfforts").GetArrayLength());
         Assert.True(profiles[1].GetProperty("isLocal").GetBoolean());
 
         var connections = root.GetProperty("connections").EnumerateArray()
@@ -265,6 +267,7 @@ public class AgentEndpointTests
                 },
                 credentialHandle = FakeGridletAgentService.CredentialHandle,
                 conversationId = "ask-tab-42",
+                reasoningEffort = "high",
             });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -292,6 +295,7 @@ public class AgentEndpointTests
         Assert.Equal("What should I know?", request.Message);
         Assert.Equal(FakeGridletAgentService.CredentialHandle, request.CredentialHandle);
         Assert.Equal("ask-tab-42", request.ConversationId);
+        Assert.Equal("high", request.ReasoningEffort);
         Assert.False(request.User.IsAuthenticated);
         Assert.Null(request.User.DisplayName);
         Assert.Collection(
@@ -306,6 +310,34 @@ public class AgentEndpointTests
                 Assert.Equal("assistant", message.Role);
                 Assert.Equal("Earlier answer", message.Content);
             });
+    }
+
+    [Fact]
+    public async Task Rejects_reasoning_effort_not_allowed_by_the_profile()
+    {
+        var agent = new FakeGridletAgentService();
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name, connection =>
+                {
+                    connection.AllowAgentDataAccess = true;
+                    connection.AllowAgentDataWithPrimaryConnection = true;
+                });
+                options.Security.AllowAnonymous = true;
+            },
+            services => services.AddSingleton<IGridletAgentService>(agent));
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync(DataChat, new
+        {
+            profileId = FakeGridletAgentService.ProfileId,
+            message = "Hello",
+            reasoningEffort = "max",
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(agent.Requests);
     }
 
     [Fact]

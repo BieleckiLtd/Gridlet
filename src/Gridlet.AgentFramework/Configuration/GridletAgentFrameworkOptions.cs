@@ -271,6 +271,7 @@ public sealed class GridletAgentProfileBuilder
     internal GridletCodexReasoningEffort? ReasoningEffort { get; private set; }
     internal GridletCopilotReasoningEffort? CopilotReasoningEffort { get; private set; }
     internal GridletClaudeCodeEffort? ClaudeCodeEffort { get; private set; }
+    internal bool AllowsReasoningEffortSelection { get; private set; }
 
     /// <summary>Changes the safe display label exposed to Gridlet clients.</summary>
     public GridletAgentProfileBuilder WithDisplayName(string displayName)
@@ -345,6 +346,23 @@ public sealed class GridletAgentProfileBuilder
         }
 
         CopilotReasoningEffort = reasoningEffort;
+        return this;
+    }
+
+    /// <summary>
+    /// Allows the browser user to choose a provider-supported reasoning effort for each turn.
+    /// The configured <c>WithReasoningEffort</c> value remains the initial selection.
+    /// </summary>
+    public GridletAgentProfileBuilder AllowReasoningEffortSelection(bool allow = true)
+    {
+        if (Provider is not (GridletAgentProvider.Codex or GridletAgentProvider.ClaudeCode or
+                GridletAgentProvider.GitHubCopilot))
+        {
+            throw new GridletValidationException(
+                "Reasoning effort selection is available only for subscription-backed CLI profiles.");
+        }
+
+        AllowsReasoningEffortSelection = allow;
         return this;
     }
 
@@ -429,7 +447,8 @@ public sealed class GridletAgentProfileBuilder
             IsLocal,
             ReasoningEffort,
             CopilotReasoningEffort,
-            ClaudeCodeEffort);
+            ClaudeCodeEffort,
+            AllowsReasoningEffortSelection);
     }
 }
 
@@ -506,7 +525,8 @@ internal sealed record GridletAgentProfileSettings(
     bool IsLocal,
     GridletCodexReasoningEffort? ReasoningEffort,
     GridletCopilotReasoningEffort? CopilotReasoningEffort,
-    GridletClaudeCodeEffort? ClaudeCodeEffort)
+    GridletClaudeCodeEffort? ClaudeCodeEffort,
+    bool AllowsReasoningEffortSelection)
 {
     public bool RequiresUserApiKey =>
         ServerApiKey is null &&
@@ -544,8 +564,57 @@ internal sealed record GridletAgentFrameworkSettings(
             profile.Model,
             profile.IsLocal,
             profile.AllowsUserApiKey,
-            profile.RequiresUserApiKey)).ToArray());
+            profile.RequiresUserApiKey,
+            GetReasoningEfforts(profile),
+            GetDefaultReasoningEffort(profile))).ToArray());
 
     public bool TryGetProfile(string id, out GridletAgentProfileSettings profile)
         => _profilesById.TryGetValue(id, out profile!);
+
+    private static IReadOnlyList<string>? GetReasoningEfforts(
+        GridletAgentProfileSettings profile)
+    {
+        if (!profile.AllowsReasoningEffortSelection) return null;
+        return profile.Provider switch
+        {
+            GridletAgentProvider.ClaudeCode => ["low", "medium", "high", "xhigh", "max"],
+            GridletAgentProvider.Codex or GridletAgentProvider.GitHubCopilot =>
+                ["low", "medium", "high", "xhigh"],
+            _ => null,
+        };
+    }
+
+    private static string? GetDefaultReasoningEffort(GridletAgentProfileSettings profile)
+    {
+        if (!profile.AllowsReasoningEffortSelection) return null;
+        return profile.Provider switch
+        {
+            GridletAgentProvider.Codex => profile.ReasoningEffort switch
+            {
+                GridletCodexReasoningEffort.Low => "low",
+                GridletCodexReasoningEffort.Medium => "medium",
+                GridletCodexReasoningEffort.High => "high",
+                GridletCodexReasoningEffort.ExtraHigh => "xhigh",
+                _ => "medium",
+            },
+            GridletAgentProvider.ClaudeCode => profile.ClaudeCodeEffort switch
+            {
+                GridletClaudeCodeEffort.Low => "low",
+                GridletClaudeCodeEffort.Medium => "medium",
+                GridletClaudeCodeEffort.High => "high",
+                GridletClaudeCodeEffort.ExtraHigh => "xhigh",
+                GridletClaudeCodeEffort.Maximum => "max",
+                _ => "medium",
+            },
+            GridletAgentProvider.GitHubCopilot => profile.CopilotReasoningEffort switch
+            {
+                GridletCopilotReasoningEffort.Low => "low",
+                GridletCopilotReasoningEffort.Medium => "medium",
+                GridletCopilotReasoningEffort.High => "high",
+                GridletCopilotReasoningEffort.ExtraHigh => "xhigh",
+                _ => "medium",
+            },
+            _ => null,
+        };
+    }
 }

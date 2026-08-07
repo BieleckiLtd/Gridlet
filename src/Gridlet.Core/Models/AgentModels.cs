@@ -17,7 +17,9 @@ public sealed record GridletAgentProfileInfo(
     string Model,
     bool IsLocal,
     bool AllowsUserApiKey,
-    bool RequiresUserApiKey);
+    bool RequiresUserApiKey,
+    IReadOnlyList<string>? ReasoningEfforts = null,
+    string? DefaultReasoningEffort = null);
 
 /// <summary>Browser-visible agent availability and provider information.</summary>
 public sealed record GridletAgentInfo(IReadOnlyList<GridletAgentProfileInfo> Profiles);
@@ -44,7 +46,8 @@ public sealed record GridletAgentRequest(
     IReadOnlyList<GridletAgentMessage> History,
     string? CredentialHandle,
     GridletAgentUserContext User,
-    string? ConversationId = null);
+    string? ConversationId = null,
+    string? ReasoningEffort = null);
 
 /// <summary>A progressive event emitted by a database-agent response.</summary>
 public sealed record GridletAgentStreamEvent(

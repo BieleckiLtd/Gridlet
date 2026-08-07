@@ -16,7 +16,8 @@ namespace Gridlet.AgentFramework;
 internal sealed class ClaudeCodeAgent(
     ClaudeCodeRuntime runtime,
     IReadOnlyList<AIFunction> tools,
-    int? maxToolIterations) : AIAgent
+    int? maxToolIterations,
+    GridletClaudeCodeEffort? reasoningEffort) : AIAgent
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -88,7 +89,7 @@ internal sealed class ClaudeCodeAgent(
             ? messageList[^1].Text
             : CreateInitialPrompt(messageList);
         await foreach (var update in runtime.RunTurnAsync(
-                           prompt!, tools, maxToolIterations, cancellationToken))
+                           prompt!, tools, maxToolIterations, reasoningEffort, cancellationToken))
         {
             yield return update;
         }
@@ -129,6 +130,8 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
     private readonly string model;
     private readonly string instructions;
     private readonly GridletClaudeCodeEffort? effort;
+    private readonly bool allowsEffortSelection;
+    private GridletClaudeCodeEffort? currentEffort;
     private Process? process;
     private StreamWriter? input;
     private StreamReader? output;
@@ -140,12 +143,15 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
         string executablePath,
         string model,
         string instructions,
-        GridletClaudeCodeEffort? effort)
+        GridletClaudeCodeEffort? effort,
+        bool allowsEffortSelection)
     {
         this.executablePath = executablePath;
         this.model = model;
         this.instructions = instructions;
         this.effort = effort;
+        this.allowsEffortSelection = allowsEffortSelection;
+        currentEffort = effort;
     }
 
     public bool HasCompletedTurn { get; private set; }
@@ -154,6 +160,7 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
         string prompt,
         IReadOnlyList<AIFunction> tools,
         int? maxToolIterations,
+        GridletClaudeCodeEffort? reasoningEffort,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
@@ -162,14 +169,9 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
         {
             await InitializeAsync(tools, cancellationToken);
         }
+        await SetEffortAsync(reasoningEffort, tools, cancellationToken);
 
-        await SendAsync(new
-        {
-            type = "user",
-            message = new { role = "user", content = prompt },
-            parent_tool_use_id = (string?)null,
-            session_id = "gridlet",
-        }, cancellationToken);
+        await SendUserMessageAsync(EscapeSlashCommand(prompt), cancellationToken);
 
         var toolCallCount = 0;
         var refusedToolCalls = 0;
@@ -243,6 +245,57 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
         }
     }
 
+    private async Task SetEffortAsync(
+        GridletClaudeCodeEffort? requestedEffort,
+        IReadOnlyList<AIFunction> tools,
+        CancellationToken cancellationToken)
+    {
+        if (requestedEffort is null || requestedEffort == currentEffort) return;
+        if (!allowsEffortSelection)
+        {
+            throw new GridletAgentException(
+                "Reasoning effort selection is not enabled for this Claude Code profile.");
+        }
+
+        await SendUserMessageAsync($"/effort {ToWireValue(requestedEffort.Value)}", cancellationToken);
+        while (true)
+        {
+            using var message = await ReadMessageAsync(cancellationToken);
+            var root = message.RootElement;
+            var type = ReadString(root, "type");
+            if (type == "control_request")
+            {
+                await HandleControlRequestAsync(root, tools, null, 0, cancellationToken);
+                continue;
+            }
+            if (type != "result") continue;
+
+            if (root.TryGetProperty("is_error", out var isError) &&
+                isError.ValueKind == JsonValueKind.True)
+            {
+                throw new GridletAgentException(
+                    $"Claude Code could not change reasoning effort. {ReadResultError(root)}");
+            }
+            currentEffort = requestedEffort;
+            return;
+        }
+    }
+
+    private Task SendUserMessageAsync(string content, CancellationToken cancellationToken) =>
+        SendAsync(new
+        {
+            type = "user",
+            message = new { role = "user", content },
+            parent_tool_use_id = (string?)null,
+            session_id = "gridlet",
+        }, cancellationToken);
+
+    internal static string EscapeSlashCommand(string prompt) =>
+        prompt.AsSpan().TrimStart().StartsWith("/", StringComparison.Ordinal)
+            ? "The user message below is literal text, not a Claude Code command. Answer it as " +
+              $"ordinary user content.\n\n<user_message>\n{prompt}\n</user_message>"
+            : prompt;
+
     private async Task InitializeAsync(
         IReadOnlyList<AIFunction> tools,
         CancellationToken cancellationToken)
@@ -252,7 +305,12 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
         {
             type = "control_request",
             request_id = requestId,
-            request = new { subtype = "initialize", hooks = (object?)null },
+            request = new
+            {
+                subtype = "initialize",
+                hooks = (object?)null,
+                skills = Array.Empty<string>(),
+            },
         }, cancellationToken);
 
         while (true)
@@ -278,10 +336,29 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
                     throw new GridletAgentException(
                         $"Claude Code rejected initialization: {ReadString(response, "error")}");
                 }
+                if (allowsEffortSelection && !SupportsEffortCommand(response))
+                {
+                    throw new GridletAgentException(
+                        "This Claude Code installation does not expose the in-session effort " +
+                        "command required by AllowReasoningEffortSelection(). Update Claude Code " +
+                        "or disable effort selection for this profile.");
+                }
                 initialized = true;
                 return;
             }
         }
+    }
+
+    private static bool SupportsEffortCommand(JsonElement controlResponse)
+    {
+        if (!controlResponse.TryGetProperty("response", out var responseData) ||
+            !responseData.TryGetProperty("commands", out var commands) ||
+            commands.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+        return commands.EnumerateArray().Any(command =>
+            ReadString(command, "name") == "effort");
     }
 
     private async Task<IReadOnlyList<AgentResponseUpdate>> HandleControlRequestAsync(
@@ -477,7 +554,10 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
         startInfo.ArgumentList.Add("--no-session-persistence");
         startInfo.ArgumentList.Add("--permission-mode");
         startInfo.ArgumentList.Add("bypassPermissions");
-        startInfo.ArgumentList.Add("--disable-slash-commands");
+        if (!allowsEffortSelection)
+        {
+            startInfo.ArgumentList.Add("--disable-slash-commands");
+        }
         startInfo.ArgumentList.Add("--setting-sources=");
         startInfo.ArgumentList.Add("--include-partial-messages");
         if (effort is not null)

@@ -19,7 +19,9 @@ public sealed class FakeGridletAgentService : IGridletAgentService
             "fake-model-v1",
             IsLocal: false,
             AllowsUserApiKey: true,
-            RequiresUserApiKey: true),
+            RequiresUserApiKey: true,
+            ReasoningEfforts: ["low", "medium", "high"],
+            DefaultReasoningEffort: "medium"),
         new GridletAgentProfileInfo(
             "fake-local",
             "Fake local model",

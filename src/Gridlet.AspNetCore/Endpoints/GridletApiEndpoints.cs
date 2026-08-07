@@ -481,6 +481,16 @@ internal static partial class GridletApiEndpoints
                 httpContext, "The credential handle is invalid or expired.", cancellationToken);
             return;
         }
+        var reasoningEffort = body.ReasoningEffort?.Trim().ToLowerInvariant();
+        if (reasoningEffort is { Length: > 0 } &&
+            !(profile.ReasoningEfforts?.Contains(reasoningEffort, StringComparer.Ordinal) ?? false))
+        {
+            await WriteAgentRequestErrorAsync(
+                httpContext,
+                "The selected reasoning effort is not allowed for this agent profile.",
+                cancellationToken);
+            return;
+        }
         if (body.ConversationId is not null && !IsValidConversationId(body.ConversationId))
         {
             await WriteAgentRequestErrorAsync(
@@ -515,7 +525,8 @@ internal static partial class GridletApiEndpoints
             history,
             body.CredentialHandle,
             AgentUser(httpContext),
-            body.ConversationId);
+            body.ConversationId,
+            reasoningEffort is { Length: > 0 } ? reasoningEffort : null);
         var stopwatch = Stopwatch.StartNew();
         httpContext.Response.ContentType = "application/x-ndjson; charset=utf-8";
 

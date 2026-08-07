@@ -44,7 +44,8 @@ public sealed record AgentChatRequestBody(
     string? Message,
     List<GridletAgentMessage>? History = null,
     string? CredentialHandle = null,
-    string? ConversationId = null);
+    string? ConversationId = null,
+    string? ReasoningEffort = null);
 
 public sealed record GridletErrorResponse(string Error);
 
