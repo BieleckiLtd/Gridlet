@@ -2208,6 +2208,18 @@
         h('div', { class: 'agent-code-toolbar' },
           h('span', { class: 'muted mono', text: language || 'code' }),
           h('span', { class: 'spacer' }),
+          h('button', {
+            class: 'mini-btn', text: 'Copy', title: 'Copy this code',
+            'aria-label': `Copy ${language || 'code'} block`,
+            onclick: async () => {
+              try {
+                await navigator.clipboard.writeText(code);
+                toast('Code copied.', false);
+              } catch {
+                toast('Copy failed — clipboard unavailable.');
+              }
+            },
+          }),
           isSql ? h('button', {
             class: 'mini-btn', text: 'Open in Query', title: 'Open this SQL in a query tab',
             'data-testid': 'agent-open-query',
@@ -2345,7 +2357,7 @@
       class: 'agent-disclosure', 'data-testid': 'agent-disclosure', role: 'note',
     });
     const messages = h('div', {
-      class: 'agent-messages', role: 'log', 'aria-live': 'polite',
+      class: 'agent-messages', role: 'log', 'aria-live': 'off', 'aria-busy': 'false',
       'aria-label': 'Database conversation', 'data-testid': 'agent-messages',
     });
     const welcome = h('div', { class: 'agent-welcome muted' },
@@ -2363,10 +2375,14 @@
     const cancelButton = h('button', {
       text: 'Cancel', disabled: '', 'data-testid': 'agent-cancel',
     });
-    const status = h('span', {
-      class: 'agent-status muted', text: 'Ready', 'data-testid': 'agent-status',
-      'data-state': 'ready',
+    const statusVisible = h('span', { text: 'Ready', 'aria-hidden': 'true' });
+    const statusAnnouncement = h('span', {
+      class: 'sr-only agent-status-announcement', text: 'Ready',
     });
+    const status = h('span', {
+      class: 'agent-status muted', role: 'status', 'aria-live': 'polite',
+      'aria-atomic': 'true', 'data-testid': 'agent-status', 'data-state': 'ready',
+    }, statusVisible, statusAnnouncement);
 
     let activeRequest = null;
     let credentialHandle = null;
@@ -2374,6 +2390,13 @@
     let conversation = [];
     let conversationId = crypto.randomUUID();
     let messageScrollTop = 0;
+    let followMessages = true;
+
+    const setStatus = (stateName, visibleText, announcement = visibleText) => {
+      status.dataset.state = stateName;
+      statusVisible.textContent = visibleText;
+      statusAnnouncement.textContent = announcement;
+    };
 
     const closeProviderConversation = () => {
       const closingId = conversationId;
@@ -2386,8 +2409,10 @@
       void closeProviderConversation();
       conversation = [];
       messages.replaceChildren(welcome);
-      status.textContent = 'Ready';
-      status.dataset.state = 'ready';
+      messages.setAttribute('aria-busy', 'false');
+      followMessages = true;
+      messageScrollTop = 0;
+      setStatus('ready', 'Ready');
     };
     const removeCredential = (handle) => {
       if (handle) void api(urls.agentCredentials(), {
@@ -2400,12 +2425,14 @@
       credentialProfileId = null;
       removeCredential(handle);
     };
+    const hasRequiredCredential = (profile = selectedProfile()) => !profile?.requiresUserApiKey
+      || Boolean(apiKeyInput.value.trim())
+      || Boolean(credentialHandle && credentialProfileId === profile.id);
+    const canSend = () => Boolean(
+      !activeRequest && composer.value.trim() && selectedProfile()
+      && hasRequiredCredential());
     const syncControls = () => {
-      const profile = selectedProfile();
-      const hasRequiredKey = !profile?.requiresUserApiKey
-        || Boolean(apiKeyInput.value.trim())
-        || (credentialHandle && credentialProfileId === profile.id);
-      sendButton.disabled = Boolean(activeRequest) || !composer.value.trim() || !hasRequiredKey;
+      sendButton.disabled = !canSend();
       cancelButton.disabled = !activeRequest;
       modeSelect.disabled = Boolean(activeRequest);
       providerSelect.disabled = Boolean(activeRequest);
@@ -2446,12 +2473,34 @@
       state.agentPreferences.profileId = selectedProfile()?.id || null;
       state.agentPreferences.reasoningEffort = effortControl.hidden ? null : effortSelect.value || null;
     };
-    const scrollMessages = () => {
-      messages.scrollTop = messages.scrollHeight;
+    const scrollMessages = (force = false) => {
+      if (force) followMessages = true;
+      if (followMessages) messages.scrollTop = messages.scrollHeight;
       messageScrollTop = messages.scrollTop;
     };
+    messages.addEventListener('scroll', () => {
+      if (!messages.clientHeight) return;
+      const distanceFromBottom = messages.scrollHeight - messages.clientHeight - messages.scrollTop;
+      followMessages = distanceFromBottom <= 48;
+      messageScrollTop = messages.scrollTop;
+    });
     const appendMessage = (role, content = '', assistantLabel = 'Agent') => {
       welcome.remove();
+      let lastReasoningValue = '';
+      let lastContentValue = '';
+      const copyResponse = role === 'assistant' ? h('button', {
+        class: 'agent-copy-response', text: 'Copy response', title: 'Copy this response',
+        'aria-label': 'Copy agent response', hidden: '',
+        onclick: async () => {
+          if (!lastContentValue) return;
+          try {
+            await navigator.clipboard.writeText(lastContentValue);
+            toast('Response copied.', false);
+          } catch {
+            toast('Copy failed — clipboard unavailable.');
+          }
+        },
+      }) : null;
       const body = h('div', { class: 'agent-message-content' });
       const error = h('div', { class: 'agent-message-error', hidden: '' });
       const element = h('article', {
@@ -2462,15 +2511,14 @@
           h('span', { class: 'agent-message-role-name', text: role === 'user' ? 'Me' : 'Agent' }),
           role === 'assistant'
             ? h('span', { class: 'agent-message-role-detail', text: ` - ${assistantLabel}` })
-            : null),
+            : null,
+          copyResponse),
         role === 'assistant' ? null : body,
         error);
       messages.append(element);
       if (role !== 'assistant') body.textContent = content;
-      scrollMessages();
+      scrollMessages(role === 'user');
       let activity = null;
-      let lastReasoningValue = '';
-      let lastContentValue = '';
       let currentAnswer = null;
 
       const stopActivityAnimation = () => {
@@ -2563,8 +2611,9 @@
       };
 
       if (role === 'assistant' && content) {
-        appendAnswerDelta(content);
         lastContentValue = content;
+        copyResponse.hidden = false;
+        appendAnswerDelta(content);
       }
 
       return {
@@ -2574,6 +2623,7 @@
             ? value.slice(lastContentValue.length)
             : value;
           lastContentValue = value;
+          copyResponse.hidden = !value;
           appendAnswerDelta(delta);
           scrollMessages();
         },
@@ -2598,13 +2648,16 @@
         },
         addToolCall: (name, payload) => appendToolEvent(
           `Calling ${name || 'tool'}`, payload, 'agent-tool-call'),
-        addToolResult: (name, payload) => appendToolEvent(
-          `Result from ${name || 'tool'}`,
-          payload,
-          `agent-tool-result${agentToolResultFailed(payload) ? ' agent-tool-result-failed' : ''}`),
+        addToolResult: (name, payload) => {
+          const failed = agentToolResultFailed(payload);
+          appendToolEvent(
+            `${failed ? 'Failed result' : 'Result'} from ${name || 'tool'}`,
+            payload,
+            `agent-tool-result${failed ? ' agent-tool-result-failed' : ''}`);
+        },
         finishReasoning: finishActivity,
         setError: (value) => {
-          stopActivityAnimation();
+          finishActivity();
           error.textContent = value;
           error.hidden = !value;
           scrollMessages();
@@ -2660,12 +2713,17 @@
       const message = composer.value.trim();
       const profile = selectedProfile();
       if (!message || !profile || activeRequest) return;
+      if (!canSend()) {
+        if (!hasRequiredCredential(profile)) apiKeyInput.focus();
+        return;
+      }
 
       const controller = new AbortController();
       activeRequest = controller;
       tab.isRunning = true;
-      status.textContent = 'Connecting…';
-      status.dataset.state = 'connecting';
+      followMessages = true;
+      messages.setAttribute('aria-busy', 'true');
+      setStatus('connecting', 'Connecting…', `Connecting to ${profile.displayName}.`);
       syncControls();
 
       let assistantText = '';
@@ -2680,8 +2738,7 @@
         composer.value = '';
         appendMessage('user', message);
         assistantMessage = appendMessage('assistant', '', assistantLabel);
-        status.textContent = '';
-        status.dataset.state = 'streaming';
+        setStatus('streaming', '', `${profile.displayName} response is streaming.`);
 
         await streamNdjson(urls.agentChat(connection, database, modeSelect.value), {
           method: 'POST',
@@ -2723,49 +2780,44 @@
           } else if (type === 'error') {
             streamError = text || 'The agent could not complete the request.';
             assistantMessage.setError(streamError);
-            status.textContent = 'Failed';
-            status.dataset.state = 'failed';
+            setStatus('failed', 'Failed', `Agent response failed: ${streamError}`);
           } else if (type === 'completed') {
             assistantMessage.finishReasoning();
             completed = true;
-            status.textContent = '';
-            status.dataset.state = 'complete';
+            setStatus('complete', '', 'Agent response complete.');
           }
         });
 
         // Some compatible providers end their stream after one `assistant` event.
         if (!completed && assistantText && !streamError) completed = true;
         if (streamError) {
-          status.textContent = 'Failed';
-          status.dataset.state = 'failed';
+          setStatus('failed', 'Failed', `Agent response failed: ${streamError}`);
         }
         else if (completed) {
-          status.textContent = '';
-          status.dataset.state = 'complete';
+          setStatus('complete', '', 'Agent response complete.');
           conversation.push(
             { role: 'user', content: message },
             { role: 'assistant', content: assistantText });
         } else {
           streamError = 'The response ended before the agent reported completion.';
           assistantMessage.setError(streamError);
-          status.textContent = 'Failed';
-          status.dataset.state = 'failed';
+          setStatus('failed', 'Failed', `Agent response failed: ${streamError}`);
         }
       } catch (err) {
         if (err.name === 'AbortError') {
-          status.textContent = 'Cancelled';
-          status.dataset.state = 'cancelled';
+          assistantMessage?.setError('Response cancelled.');
+          setStatus('cancelled', 'Cancelled', 'Agent response cancelled.');
         }
         else {
           if (!assistantMessage) assistantMessage = appendMessage('assistant', '', assistantLabel);
           assistantMessage.setError(err.message);
-          status.textContent = 'Failed';
-          status.dataset.state = 'failed';
+          setStatus('failed', 'Failed', `Agent response failed: ${err.message}`);
         }
       } finally {
         if (activeRequest === controller) {
           activeRequest = null;
           tab.isRunning = false;
+          messages.setAttribute('aria-busy', 'false');
           syncControls();
           if (state.activeTabId === tab.id) composer.focus();
         }
@@ -2788,7 +2840,7 @@
     composer.addEventListener('input', syncControls);
     apiKeyInput.addEventListener('input', syncControls);
     composer.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.shiftKey) {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault();
         send();
       }

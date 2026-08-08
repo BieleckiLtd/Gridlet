@@ -149,6 +149,10 @@ public sealed class FakeGridletProvider :
         {
             throw new GridletQueryException("kaboom");
         }
+        if (sql == "unexpected-boom")
+        {
+            throw new InvalidOperationException("SECRET_PUBLISHED_SENTINEL");
+        }
 
         await Task.Yield();
 
@@ -185,6 +189,10 @@ public sealed class FakeGridletProvider :
         if (sql == "stream-boom")
         {
             throw new GridletQueryException("mid-stream kaboom");
+        }
+        if (sql == "stream-unexpected-boom")
+        {
+            throw new InvalidOperationException("SECRET_PUBLISHED_SENTINEL");
         }
 
         yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);

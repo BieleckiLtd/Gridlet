@@ -173,6 +173,40 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Data_stream_maps_unknown_connections_before_starting_the_response()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Nope/databases/FakeDb/objects/dbo/Customers/data/stream");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Contains("Nope", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Data_stream_does_not_expose_unexpected_resolver_errors()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+                options.Security.AllowAnonymous = true;
+            },
+            services => services.AddSingleton<IGridletConnectionResolver, SecretThrowingResolver>());
+        await using var _ = app;
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream");
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Contains("unexpected server error", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(SecretThrowingResolver.Secret, body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Query_executes_and_returns_result_sets()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();
@@ -204,6 +238,42 @@ public class GridletEndpointTests
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Contains("kaboom", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Query_stream_maps_unknown_connections_before_starting_the_response()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Nope/databases/FakeDb/query",
+            new { sql = "SELECT 1" });
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Contains("Nope", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Query_stream_does_not_expose_unexpected_resolver_errors()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+                options.Security.AllowAnonymous = true;
+            },
+            services => services.AddSingleton<IGridletConnectionResolver, SecretThrowingResolver>());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query",
+            new { sql = "SELECT 1" });
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Contains("unexpected server error", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(SecretThrowingResolver.Secret, body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -241,5 +311,13 @@ public class GridletEndpointTests
             new { sql = "SELECT 1" });
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    private sealed class SecretThrowingResolver : IGridletConnectionResolver
+    {
+        public const string Secret = "SECRET_RESOLVER_SENTINEL";
+
+        public ResolvedConnection Resolve(string connectionName, string? database = null)
+            => throw new InvalidOperationException(Secret);
     }
 }

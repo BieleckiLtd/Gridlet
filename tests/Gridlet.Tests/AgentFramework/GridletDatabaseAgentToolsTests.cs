@@ -34,6 +34,65 @@ public sealed class GridletDatabaseAgentToolsTests
     }
 
     [Fact]
+    public async Task List_database_objects_filters_by_name_and_type_case_insensitively()
+    {
+        var function = CreateTools()
+            .Create(GridletAgentMode.Data)
+            .OfType<AIFunction>()
+            .Single(tool => tool.Name == "list_database_objects");
+
+        var nameResult = await function.InvokeAsync(new AIFunctionArguments
+        {
+            ["nameContains"] = "order",
+        });
+        var typeResult = await function.InvokeAsync(new AIFunctionArguments
+        {
+            ["objectType"] = "vIeW",
+        });
+
+        Assert.Contains("vw_Orders", nameResult?.ToString(), StringComparison.Ordinal);
+        Assert.Contains("RefreshOrders", nameResult?.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("Customers", nameResult?.ToString(), StringComparison.Ordinal);
+        Assert.Contains("vw_Orders", typeResult?.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("RefreshOrders", typeResult?.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task List_database_object_filters_compose_with_schema()
+    {
+        var function = CreateTools()
+            .Create(GridletAgentMode.Data)
+            .OfType<AIFunction>()
+            .Single(tool => tool.Name == "list_database_objects");
+
+        var result = await function.InvokeAsync(new AIFunctionArguments
+        {
+            ["schema"] = "missing",
+            ["nameContains"] = "order",
+            ["objectType"] = "View",
+        });
+
+        Assert.DoesNotContain("vw_Orders", result?.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Invalid_database_object_type_is_a_recoverable_tool_error()
+    {
+        var function = CreateTools()
+            .Create(GridletAgentMode.Data)
+            .OfType<AIFunction>()
+            .Single(tool => tool.Name == "list_database_objects");
+
+        var result = await function.InvokeAsync(new AIFunctionArguments
+        {
+            ["objectType"] = "0",
+        });
+
+        Assert.Contains("GridletValidationException", result?.ToString(), StringComparison.Ordinal);
+        Assert.Contains("\"recoverable\":true", result?.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Missing_database_object_is_returned_as_a_recoverable_tool_error()
     {
         var function = CreateTools()

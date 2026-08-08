@@ -147,7 +147,7 @@ public static partial class SqliteDdlBuilder
                     "A computed column cannot also be an identity, default, or primary-key column.");
             }
 
-            return $"{SqliteIdentifier.Quote(column.Name)} AS ({RequireExpression(column.ComputedExpression, "computed")}) " +
+            return $"{SqliteIdentifier.Quote(column.Name)} AS ({SqliteExpressionSafety.RequireSingleExpression(column.ComputedExpression, "computed")}) " +
                    (column.IsPersisted ? "STORED" : "VIRTUAL");
         }
 
@@ -163,16 +163,11 @@ public static partial class SqliteDdlBuilder
 
         if (!string.IsNullOrWhiteSpace(column.DefaultExpression))
         {
-            definition += $" DEFAULT ({RequireExpression(column.DefaultExpression, "default")})";
+            definition += $" DEFAULT ({SqliteExpressionSafety.RequireSingleExpression(column.DefaultExpression, "default")})";
         }
 
         return definition;
     }
-
-    private static string RequireExpression(string? expression, string kind)
-        => string.IsNullOrWhiteSpace(expression)
-            ? throw new GridletValidationException($"A {kind} expression is required.")
-            : expression.Trim();
 
     private static string NormalizeReferentialAction(string? action)
     {

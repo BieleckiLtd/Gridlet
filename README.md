@@ -217,6 +217,20 @@ builder.Services
     });
 ```
 
+To bind the same options from an `IConfigurationSection`, use the explicit configuration entry
+point and then register every provider named by the configured connections:
+
+```csharp
+builder.Services
+    .AddGridletFromConfiguration(builder.Configuration.GetSection("Gridlet"))
+    .AddSqlServer()
+    .AddSqlite();
+```
+
+The bound connections, limits, security, storage, and audit settings go through the same startup
+validation as callback-based configuration. Provider registration remains explicit; omit a provider
+method only when no configured connection uses it.
+
 ### `GridletOptions`
 
 | Property | Default | Effect |
@@ -225,6 +239,7 @@ builder.Services
 | `Limits` | New `GridletLimitsOptions` | Server-side paging, result-size, and timeout protections. |
 | `Security` | New `GridletSecurityOptions` | Authentication and authorization applied to the entire Gridlet route group. |
 | `Storage` | New `GridletStorageOptions` | Persistence settings for saved queries and published endpoint definitions. |
+| `Audit` | New `GridletAuditOptions` | Privacy controls for SQL and error details written by the default audit logger. |
 
 The lower-level, provider-agnostic
 `AddConnection(name, connectionString, providerName, configure)` API remains available for custom
@@ -266,6 +281,11 @@ the built-in SQL Server and SQLite providers because it does not require a name 
 | `MaxQueryResultRows` | `10,000` | Maximum rows retained per query result set or streamed table/view for the interactive UI and ad-hoc query editor. This is a hard cap there: the **Row cap** control can request a lower value (persisted per browser) but can never exceed it. It does **not** apply to published API endpoints, which are uncapped by default and set any cap per endpoint (see [API publishing](#api-publishing)). Results stream progressively and virtualize above 1,000 rows; the cap still protects server and browser memory. |
 | `CommandTimeoutSeconds` | `30` | Provider command timeout for query execution. The user can cancel sooner with the query toolbar's Cancel button. Must be at least 1. |
 
+Paged table browsing uses the table's full primary key as its default order when one is available.
+When a user selects another sort column, remaining primary-key columns are appended as tie-breakers,
+so rows with equal sort values do not move unpredictably between pages. Without a usable primary
+key, otherwise-equal rows retain the database engine's ordering.
+
 ### Security options
 
 | Property | Default | Effect |
@@ -286,9 +306,15 @@ host-controlled profiles through `AddCodex`, `AddClaudeCode`, `AddGitHubCopilot`
 authentication belongs exclusively to the local CLI runtime. `AsLocal` controls the safe locality
 metadata exposed for OpenAI-compatible profiles.
 
+The agent's `list_database_objects` catalog tool accepts optional schema, case-insensitive name-text,
+and object-type filters. This lets the model narrow large catalogs before requesting table details
+or object definitions.
+
 | Property | Default | Effect |
 | --- | --- | --- |
 | `CredentialLifetime` | 30 minutes | Lifetime of an ephemeral user-key handle; constrained to at most one day. |
+| `MaxEphemeralCredentials` | `512` | Maximum active browser-supplied API-key handles retained by one application instance. New handles are rejected at the limit rather than evicting active credentials. |
+| `MaxEphemeralCredentialsPerOwner` | `8` | Maximum active browser-supplied API-key handles for one authenticated or explicitly anonymous owner. Must not exceed `MaxEphemeralCredentials`. |
 | `ConversationIdleTimeout` | 30 minutes | Inactivity timeout for a subscription-backed CLI session owned by an Ask tab; constrained to one minute through one day. Explicitly closing the tab releases it immediately. |
 | `MaxActiveConversations` | `32` | Maximum retained subscription-backed CLI sessions per application instance, preventing abandoned tabs from creating an unbounded process pool. |
 | `MaxHistoryMessages` / `MaxHistoryCharacters` | `50` / `200,000` | Per-turn conversation-history limits. Conversations remain browser-held and are not persisted. |
@@ -313,12 +339,34 @@ authentication and authorization before mapping Gridlet; Gridlet does not provid
 Replace `ISavedQueryStore` and/or `IPublishedEndpointStore` after `AddGridlet` to use a database or
 another persistence mechanism. Gridlet uses `TryAdd`, so explicit host registrations take precedence.
 
+### Audit options
+
+| Property | Default | Effect |
+| --- | --- | --- |
+| `IncludeSqlText` | `true` | Includes user-authored SQL in the default structured audit log. Set to `false` when SQL literals may contain private data. |
+| `IncludeErrorDetails` | `true` | Includes database and exception details in the default structured audit log. Set to `false` to redact them. |
+
+Both defaults preserve the existing audit output. These settings affect only the built-in logging
+sink; a replacement `IGridletAuditSink` controls its own handling of audit event fields.
+
 ### Mapping and operational services
 
 `app.MapGridlet(pattern)` maps the UI and its APIs under `pattern`, which defaults to `/gridlet`.
 The pattern may be changed, for example `app.MapGridlet("/internal/database")`. Configuration is
 validated when the endpoints are mapped, so invalid connection names or limit combinations fail at
 startup rather than on the first request.
+
+Hosts that do not need the embedded UI can map narrower surfaces under the same configurable prefix:
+
+```csharp
+app.MapGridletApi();       // management API plus published endpoints; no UI or assets
+// or
+app.MapGridletPublished(); // published endpoints only
+```
+
+`MapGridletApi` and `MapGridletPublished` use the same startup validation and security options as
+`MapGridlet`. They require authorization by default; `AuthorizationPolicy` takes precedence, and
+anonymous access is enabled only by explicitly setting `Security.AllowAnonymous`.
 
 Query execution, row writes, schema changes, and published endpoint invocations are sent to
 `IGridletAuditSink`. The default sink writes structured events through `ILogger`; register your own
@@ -458,6 +506,20 @@ large the result is (only one batch of rows is held at a time). The response bod
 array. A statement with no result set returns `{ "recordsAffected": N }` instead. There is no
 `truncated` field: published endpoints are uncapped by default (see below), so there is normally
 nothing to truncate.
+
+Clients that prefer line-delimited streaming can send `Accept: application/x-ndjson`. Gridlet then
+emits one event per line: a `row` event for each record followed by exactly one terminal event on a
+completed request:
+
+```json
+{"type":"row","row":{"col":"value"}}
+{"type":"completed","rowCount":123,"recordsAffected":-1}
+```
+
+An error before streaming returns the appropriate `4xx`/`5xx` status and one terminal `error` event
+with `rowCount: 0`. If rows have already been sent, the status cannot change from `200`; the final
+line is instead an `error` event containing the emitted `rowCount`. The existing JSON response
+remains the default when the NDJSON media type is not requested.
 
 Because the `200 OK` status and the first rows are already on the wire, a failure that occurs
 **after** streaming has begun cannot change the status code. Such a failure closes the JSON with an

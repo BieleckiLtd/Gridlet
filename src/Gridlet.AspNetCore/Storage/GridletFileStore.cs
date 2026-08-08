@@ -113,13 +113,81 @@ internal sealed class GridletFileStore(IOptions<GridletOptions> options, IHostEn
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            var data = await LoadAsync(cancellationToken);
-            mutate(data);
-            await File.WriteAllTextAsync(_path, JsonSerializer.Serialize(data, JsonOptions), cancellationToken);
+            var current = await LoadAsync(cancellationToken);
+            var candidate = new StoreData
+            {
+                SavedQueries = [.. current.SavedQueries],
+                PublishedEndpoints = [.. current.PublishedEndpoints],
+            };
+            mutate(candidate);
+            await PersistAsync(candidate, cancellationToken);
+            _data = candidate;
         }
         finally
         {
             _gate.Release();
+        }
+    }
+
+    private async Task PersistAsync(StoreData data, CancellationToken cancellationToken)
+    {
+        var fullPath = Path.GetFullPath(_path);
+        var directory = Path.GetDirectoryName(fullPath)
+            ?? throw new GridletValidationException($"Storage path '{_path}' has no parent directory.");
+        Directory.CreateDirectory(directory);
+
+        // Write beside the destination so the final rename stays on one volume. The cached state
+        // is replaced only after this succeeds, so failed/cancelled writes remain invisible.
+        var temporaryPath = Path.Combine(
+            directory,
+            $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.tmp");
+        var destinationExists = File.Exists(fullPath);
+        var unixMode = destinationExists && !OperatingSystem.IsWindows()
+            ? File.GetUnixFileMode(fullPath)
+            : (UnixFileMode?)null;
+        try
+        {
+            await using (var stream = new FileStream(
+                temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                bufferSize: 16 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await JsonSerializer.SerializeAsync(stream, data, JsonOptions, cancellationToken);
+                await stream.FlushAsync(cancellationToken);
+            }
+
+            if (!OperatingSystem.IsWindows() && unixMode is { } preservedUnixMode)
+            {
+                // rename/replace keeps the temporary inode on Unix, so copy the destination's
+                // permission bits before replacing it rather than falling back to the process umask.
+                File.SetUnixFileMode(temporaryPath, preservedUnixMode);
+            }
+
+            if (destinationExists)
+            {
+                // On Windows File.Replace uses the platform replacement API, which retains the
+                // destination file's ACL and metadata. On Unix the mode was copied above.
+                File.Replace(temporaryPath, fullPath, destinationBackupFileName: null);
+            }
+            else
+            {
+                // Do not overwrite a file created by another process after the existence check.
+                File.Move(temporaryPath, fullPath);
+            }
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(temporaryPath);
+            }
+            catch (IOException)
+            {
+                // Best-effort cleanup after a failed write/rename.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Best-effort cleanup after a failed write/rename.
+            }
         }
     }
 

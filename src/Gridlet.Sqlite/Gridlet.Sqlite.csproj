@@ -17,4 +17,8 @@
     <ProjectReference Include="..\Gridlet.Core\Gridlet.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Gridlet.Tests" />
+  </ItemGroup>
+
 </Project>

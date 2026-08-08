@@ -61,6 +61,30 @@ public sealed class ClaudeCodeAgentTests
     }
 
     [Fact]
+    public async Task Mcp_bridge_reports_unexpected_tool_failures_as_function_results()
+    {
+        var tool = AIFunctionFactory.Create(
+            (Func<string>)(() => throw new InvalidOperationException("provider exploded")),
+            name: "failing_tool");
+        var updates = new List<AgentResponseUpdate>();
+        using var callMessage = JsonDocument.Parse(
+            """{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"failing_tool","arguments":{}}}""");
+
+        var response = await ClaudeCodeRuntime.HandleMcpMessageAsync(
+            callMessage.RootElement, [tool], 8, 1, updates, CancellationToken.None);
+        var json = JsonSerializer.Serialize(response);
+        var functionResult = Assert.Single(
+            updates.SelectMany(update => update.Contents).OfType<FunctionResultContent>());
+        var result = Assert.IsType<AgentToolInvocationResult>(functionResult.Result);
+
+        Assert.False(result.Success);
+        Assert.Equal("failing_tool", result.ToolName);
+        Assert.Equal("Tool execution failed.", result.Result);
+        Assert.Contains("provider exploded", json);
+        Assert.Contains("\"isError\":true", json);
+    }
+
+    [Fact]
     public void Windows_batch_shims_are_rejected()
     {
         if (!OperatingSystem.IsWindows()) return;

@@ -43,9 +43,11 @@ internal sealed class GridletDatabaseAgentTools(
             token => resolved.Provider.Schema.GetSchemasAsync(resolved.Context, token),
             cancellationToken);
 
-    [Description("List tables, views, stored procedures, functions, and triggers in the selected database, optionally restricted to one schema.")]
+    [Description("List tables, views, stored procedures, functions, and triggers in the selected database, optionally filtered by schema, name, or object type.")]
     private Task<string> ListObjectsAsync(
         [Description("Optional database schema to restrict the results to.")] string? schema = null,
+        [Description("Optional case-insensitive text that the object name must contain.")] string? nameContains = null,
+        [Description("Optional object type: Table, View, StoredProcedure, ScalarFunction, TableValuedFunction, or Trigger.")] string? objectType = null,
         CancellationToken cancellationToken = default)
         => ExecuteAuditedAsync(
             "agent.tool.list_objects",
@@ -53,11 +55,42 @@ internal sealed class GridletDatabaseAgentTools(
             objectName: string.IsNullOrWhiteSpace(schema) ? null : schema,
             async token =>
             {
+                DbObjectType? requestedType = null;
+                if (!string.IsNullOrWhiteSpace(objectType))
+                {
+                    var normalizedType = objectType.Trim();
+                    if (!Enum.TryParse<DbObjectType>(normalizedType, ignoreCase: true, out var parsedType) ||
+                        !Enum.IsDefined(parsedType) ||
+                        !string.Equals(parsedType.ToString(), normalizedType, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new GridletValidationException(
+                            $"Object type '{objectType}' is invalid. Use Table, View, StoredProcedure, " +
+                            "ScalarFunction, TableValuedFunction, or Trigger.");
+                    }
+
+                    requestedType = parsedType;
+                }
+
                 var objects = await resolved.Provider.Schema.GetObjectsAsync(resolved.Context, token);
-                return string.IsNullOrWhiteSpace(schema)
-                    ? objects
-                    : objects.Where(item =>
-                        string.Equals(item.Schema, schema, StringComparison.OrdinalIgnoreCase)).ToArray();
+                IEnumerable<DbObjectInfo> filtered = objects;
+                if (!string.IsNullOrWhiteSpace(schema))
+                {
+                    filtered = filtered.Where(item =>
+                        string.Equals(item.Schema, schema, StringComparison.OrdinalIgnoreCase));
+                }
+
+                if (!string.IsNullOrWhiteSpace(nameContains))
+                {
+                    filtered = filtered.Where(item =>
+                        item.Name.Contains(nameContains, StringComparison.OrdinalIgnoreCase));
+                }
+
+                if (requestedType is not null)
+                {
+                    filtered = filtered.Where(item => item.Type == requestedType.Value);
+                }
+
+                return filtered.ToArray();
             },
             cancellationToken);
 

@@ -22,6 +22,7 @@ namespace Gridlet.AspNetCore;
 /// <summary>The JSON API consumed by the embedded UI (and usable directly).</summary>
 internal static partial class GridletApiEndpoints
 {
+    private const string UnexpectedErrorMessage = "An unexpected server error occurred.";
     private static readonly string Version =
         typeof(GridletApiEndpoints).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
@@ -205,12 +206,11 @@ internal static partial class GridletApiEndpoints
         string connection, string database, string schema, string name,
         int? maxRows, string? sort, string? dir,
         IGridletConnectionResolver resolver, IOptionsMonitor<GridletOptions> options,
-        HttpContext httpContext, CancellationToken cancellationToken)
+        ILoggerFactory loggerFactory, HttpContext httpContext, CancellationToken cancellationToken)
     {
         var limits = options.CurrentValue.Limits;
         var cap = Math.Clamp(maxRows ?? limits.MaxQueryResultRows, 1, limits.MaxQueryResultRows);
         var pageSize = Math.Min(500, limits.MaxPageSize);
-        var resolved = resolver.Resolve(connection, database);
         var direction = string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase)
             ? SortDirection.Descending : SortDirection.Ascending;
         httpContext.Response.ContentType = "application/x-ndjson; charset=utf-8";
@@ -224,6 +224,7 @@ internal static partial class GridletApiEndpoints
 
         try
         {
+            var resolved = resolver.Resolve(connection, database);
             var emitted = 0;
             var page = 1;
             long totalRows = 0;
@@ -246,13 +247,30 @@ internal static partial class GridletApiEndpoints
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+            var statusCode = ex switch
+            {
+                GridletUnknownConnectionException or GridletObjectNotFoundException
+                    => StatusCodes.Status404NotFound,
+                GridletValidationException or GridletQueryException
+                    => StatusCodes.Status400BadRequest,
+                _ => StatusCodes.Status500InternalServerError,
+            };
+            var clientMessage = ex.Message;
+            if (statusCode == StatusCodes.Status500InternalServerError)
+            {
+                LogUnexpectedStreamError(loggerFactory, ex, "table data");
+                clientMessage = UnexpectedErrorMessage;
+            }
+
             if (!httpContext.Response.HasStarted)
             {
-                httpContext.Response.StatusCode = ex is GridletObjectNotFoundException ? 404 : 400;
-                await httpContext.Response.WriteAsJsonAsync(new GridletErrorResponse(ex.Message), cancellationToken);
+                httpContext.Response.StatusCode = statusCode;
+                await httpContext.Response.WriteAsJsonAsync(
+                    new GridletErrorResponse(clientMessage), cancellationToken);
                 return;
             }
-            await TryWriteStreamEventAsync(httpContext, new QueryStreamEvent("error", Message: ex.Message));
+            await TryWriteStreamEventAsync(
+                httpContext, new QueryStreamEvent("error", Message: clientMessage));
         }
     }
 
@@ -736,10 +754,36 @@ internal static partial class GridletApiEndpoints
         IGridletConnectionResolver resolver,
         IOptionsMonitor<GridletOptions> options,
         IGridletAuditSink audit,
+        ILoggerFactory loggerFactory,
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-        var resolved = resolver.Resolve(connection, database);
+        ResolvedConnection resolved;
+        try
+        {
+            resolved = resolver.Resolve(connection, database);
+        }
+        catch (GridletUnknownConnectionException ex)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+            await httpContext.Response.WriteAsJsonAsync(new GridletErrorResponse(ex.Message), cancellationToken);
+            return;
+        }
+        catch (GridletValidationException ex)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await httpContext.Response.WriteAsJsonAsync(new GridletErrorResponse(ex.Message), cancellationToken);
+            return;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LogUnexpectedStreamError(loggerFactory, ex, "query preamble");
+            httpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            await httpContext.Response.WriteAsJsonAsync(
+                new GridletErrorResponse(UnexpectedErrorMessage), cancellationToken);
+            return;
+        }
+
         if (!resolved.Context.Connection.AllowSqlExecution)
         {
             httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
@@ -784,19 +828,45 @@ internal static partial class GridletApiEndpoints
             }
             if (!httpContext.Response.HasStarted)
             {
-                httpContext.Response.StatusCode = ex switch
+                var statusCode = ex switch
                 {
                     GridletUnknownConnectionException or GridletObjectNotFoundException => StatusCodes.Status404NotFound,
                     GridletValidationException or GridletQueryException => StatusCodes.Status400BadRequest,
                     _ => StatusCodes.Status500InternalServerError,
                 };
-                await httpContext.Response.WriteAsJsonAsync(new GridletErrorResponse(ex.Message), cancellationToken);
+                var clientMessage = statusCode == StatusCodes.Status500InternalServerError
+                    ? UnexpectedErrorMessage
+                    : ex.Message;
+                if (statusCode == StatusCodes.Status500InternalServerError)
+                {
+                    LogUnexpectedStreamError(loggerFactory, ex, "query execution");
+                }
+
+                httpContext.Response.StatusCode = statusCode;
+                await httpContext.Response.WriteAsJsonAsync(
+                    new GridletErrorResponse(clientMessage), cancellationToken);
                 return;
             }
-            var error = new QueryStreamEvent("error", Message: ex.Message, DurationMs: stopwatch.ElapsedMilliseconds);
+            var isExpected = ex is GridletValidationException or GridletQueryException or
+                GridletUnknownConnectionException or GridletObjectNotFoundException;
+            var streamedMessage = isExpected ? ex.Message : UnexpectedErrorMessage;
+            if (!isExpected)
+            {
+                LogUnexpectedStreamError(loggerFactory, ex, "query execution");
+            }
+
+            var error = new QueryStreamEvent(
+                "error", Message: streamedMessage, DurationMs: stopwatch.ElapsedMilliseconds);
             await TryWriteStreamEventAsync(httpContext, error);
         }
     }
+
+    private static void LogUnexpectedStreamError(
+        ILoggerFactory loggerFactory,
+        Exception exception,
+        string operation)
+        => loggerFactory.CreateLogger("Gridlet.AspNetCore.Streaming")
+            .LogError(exception, "Unexpected Gridlet {Operation} streaming failure.", operation);
 
     private static async Task TryWriteStreamEventAsync(HttpContext httpContext, QueryStreamEvent value)
     {

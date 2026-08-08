@@ -226,7 +226,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
         CancellationToken cancellationToken = default)
         => ExecuteAsync(context, SqliteDdlBuilder.BuildDropObject(schema, name, type), cancellationToken);
 
-    private static async Task RebuildTableAsync(
+    internal static async Task RebuildTableAsync(
         SqliteConnection connection,
         TableDefinition definition,
         IReadOnlyList<ColumnDesign> columns,
@@ -242,15 +242,16 @@ public sealed class SqliteTableDdlService : ITableDdlService
         var tempDesign = new TableDesign(schema, tempTable, columns);
         var createSql = SqliteDdlBuilder.BuildCreateTable(tempDesign, keyName, foreignKeys);
 
-        var partialIndexes = await LoadPartialIndexNamesAsync(connection, table, cancellationToken);
+        await EnsureTableCanBeRebuiltAsync(connection, schema, table, cancellationToken);
+        var unsupportedIndexes = await LoadUnsupportedIndexNamesAsync(connection, table, cancellationToken);
         var indexes = new List<IndexInfo>();
         var generatedIndexNumber = 0;
         foreach (var index in definition.Indexes.Where(i => !i.IsPrimaryKey))
         {
-            if (index.Columns.Count == 0 || partialIndexes.Contains(index.Name))
+            if (index.Columns.Count == 0 || unsupportedIndexes.Contains(index.Name))
             {
                 throw new GridletValidationException(
-                    $"Table {schema}.{table} has an expression or partial index ('{index.Name}') that cannot be preserved by this designer operation. Drop or recreate that index explicitly in the query editor.");
+                    $"Table {schema}.{table} has an index ('{index.Name}') with a partial predicate, expression, descending key, or non-default collation that cannot be preserved by this designer operation. Drop or recreate that index explicitly in the query editor.");
             }
 
             var mappedColumns = index.Columns
@@ -271,56 +272,73 @@ public sealed class SqliteTableDdlService : ITableDdlService
                 $"Table {schema}.{table} has triggers. Rename the column with explicit SQLite DDL so trigger references can be reviewed.");
         }
 
-        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        // SQLite implements DROP TABLE as an implicit DELETE when foreign-key enforcement is on.
+        // Deferring constraints does not defer ON DELETE actions, so rebuilding a parent table can
+        // otherwise cascade-delete child rows. Enforcement must be disabled before the transaction;
+        // foreign_key_check below prevents an invalid replacement schema from committing.
+        var baselineForeignKeyViolations = await LoadForeignKeyViolationsAsync(
+            connection, transaction: null, cancellationToken);
+        var foreignKeyEnforcementWasEnabled = await GetForeignKeyEnforcementAsync(connection, cancellationToken);
+        await SetForeignKeyEnforcementAsync(connection, enabled: false, cancellationToken);
         try
         {
-            await ExecuteAsync(connection, transaction, "PRAGMA defer_foreign_keys = ON;", cancellationToken);
-            await ExecuteAsync(connection, transaction, createSql, cancellationToken);
-
-            var copiedColumns = columns.Where(c => string.IsNullOrWhiteSpace(c.ComputedExpression))
-                .Select(c => (NewName: c.Name, OldName: renamedColumns is not null && renamedColumns.TryGetValue(c.Name, out var old)
-                    ? old
-                    : c.Name))
-                .Where(pair => definition.Columns.Any(c =>
-                    string.Equals(c.Name, pair.OldName, StringComparison.OrdinalIgnoreCase) && !c.IsComputed))
-                .ToArray();
-            if (copiedColumns.Length > 0)
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+            try
             {
-                var insert = $"INSERT INTO {SqliteIdentifier.QuoteQualified(schema, tempTable)} " +
-                             $"({string.Join(", ", copiedColumns.Select(c => SqliteIdentifier.Quote(c.NewName)))}) " +
-                             $"SELECT {string.Join(", ", copiedColumns.Select(c => SqliteIdentifier.Quote(c.OldName)))} " +
-                             $"FROM {SqliteIdentifier.QuoteQualified(schema, table)};";
-                await ExecuteAsync(connection, transaction, insert, cancellationToken);
-            }
+                await ExecuteAsync(connection, transaction, createSql, cancellationToken);
 
-            await ExecuteAsync(connection, transaction, SqliteDdlBuilder.BuildDropTable(schema, table), cancellationToken);
-            await ExecuteAsync(connection, transaction,
-                $"ALTER TABLE {SqliteIdentifier.QuoteQualified(schema, tempTable)} RENAME TO {SqliteIdentifier.Quote(table)};",
-                cancellationToken);
+                var copiedColumns = columns.Where(c => string.IsNullOrWhiteSpace(c.ComputedExpression))
+                    .Select(c => (NewName: c.Name, OldName: renamedColumns is not null && renamedColumns.TryGetValue(c.Name, out var old)
+                        ? old
+                        : c.Name))
+                    .Where(pair => definition.Columns.Any(c =>
+                        string.Equals(c.Name, pair.OldName, StringComparison.OrdinalIgnoreCase) && !c.IsComputed))
+                    .ToArray();
+                if (copiedColumns.Length > 0)
+                {
+                    var insert = $"INSERT INTO {SqliteIdentifier.QuoteQualified(schema, tempTable)} " +
+                                 $"({string.Join(", ", copiedColumns.Select(c => SqliteIdentifier.Quote(c.NewName)))}) " +
+                                 $"SELECT {string.Join(", ", copiedColumns.Select(c => SqliteIdentifier.Quote(c.OldName)))} " +
+                                 $"FROM {SqliteIdentifier.QuoteQualified(schema, table)};";
+                    await ExecuteAsync(connection, transaction, insert, cancellationToken);
+                }
 
-            foreach (var index in indexes)
-            {
+                await ExecuteAsync(connection, transaction, SqliteDdlBuilder.BuildDropTable(schema, table), cancellationToken);
                 await ExecuteAsync(connection, transaction,
-                    SqliteDdlBuilder.BuildCreateIndex(schema, table, index.Name, index.IsUnique, index.Columns),
+                    $"ALTER TABLE {SqliteIdentifier.QuoteQualified(schema, tempTable)} RENAME TO {SqliteIdentifier.Quote(table)};",
                     cancellationToken);
-            }
 
-            foreach (var trigger in triggers)
+                foreach (var index in indexes)
+                {
+                    await ExecuteAsync(connection, transaction,
+                        SqliteDdlBuilder.BuildCreateIndex(schema, table, index.Name, index.IsUnique, index.Columns),
+                        cancellationToken);
+                }
+
+                foreach (var trigger in triggers)
+                {
+                    await ExecuteAsync(connection, transaction, trigger, cancellationToken);
+                }
+
+                await EnsureNoNewForeignKeyViolationsAsync(
+                    connection, transaction, baselineForeignKeyViolations, cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+            }
+            catch (GridletException)
             {
-                await ExecuteAsync(connection, transaction, trigger, cancellationToken);
+                await transaction.RollbackAsync(CancellationToken.None);
+                throw;
             }
-
-            await transaction.CommitAsync(cancellationToken);
+            catch (SqliteException ex)
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                throw new GridletQueryException(ex.Message, ex);
+            }
         }
-        catch (GridletException)
+        finally
         {
-            await transaction.RollbackAsync(CancellationToken.None);
-            throw;
-        }
-        catch (SqliteException ex)
-        {
-            await transaction.RollbackAsync(CancellationToken.None);
-            throw new GridletQueryException(ex.Message, ex);
+            await SetForeignKeyEnforcementAsync(
+                connection, enabled: foreignKeyEnforcementWasEnabled, CancellationToken.None);
         }
     }
 
@@ -339,18 +357,142 @@ public sealed class SqliteTableDdlService : ITableDdlService
         return sql;
     }
 
-    private static async Task<HashSet<string>> LoadPartialIndexNamesAsync(
+    private static async Task<HashSet<string>> LoadUnsupportedIndexNamesAsync(
         SqliteConnection connection,
         string table,
         CancellationToken cancellationToken)
     {
-        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var indexes = new List<(string Name, bool IsPartial, string Origin)>();
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT name, partial, origin FROM pragma_index_list(@table, 'main');";
+            command.Parameters.AddWithValue("@table", table);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                indexes.Add((reader.GetString(0), reader.GetInt64(1) != 0, reader.GetString(2)));
+            }
+        }
+
+        var unsupported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var index in indexes)
+        {
+            if (index.IsPartial)
+            {
+                unsupported.Add(index.Name);
+                continue;
+            }
+
+            await using var detail = connection.CreateCommand();
+            detail.CommandText =
+                "SELECT 1 FROM pragma_index_xinfo(@index, 'main') " +
+                "WHERE [key] <> 0 AND (cid < 0 OR [desc] <> 0 OR UPPER(COALESCE(coll, '')) <> 'BINARY') LIMIT 1;";
+            detail.Parameters.AddWithValue("@index", index.Name);
+            if (await detail.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                if (string.Equals(index.Origin, "pk", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new GridletValidationException(
+                        $"Table main.{table} has a primary key with a descending column or non-default collation that cannot be preserved by this designer operation. Apply the change with explicit SQLite DDL instead.");
+                }
+
+                unsupported.Add(index.Name);
+            }
+        }
+
+        return unsupported;
+    }
+
+    private static async Task EnsureTableCanBeRebuiltAsync(
+        SqliteConnection connection,
+        string schema,
+        string table,
+        CancellationToken cancellationToken)
+    {
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT name FROM pragma_index_list(@table, 'main') WHERE partial <> 0;";
+        command.CommandText = "SELECT sql FROM main.sqlite_schema WHERE type = 'table' AND name = @table;";
         command.Parameters.AddWithValue("@table", table);
+        var source = Convert.ToString(await command.ExecuteScalarAsync(cancellationToken)) ?? "";
+
+        var unsupported = new List<string>();
+        if (SqliteSqlInspection.ContainsKeyword(source, "CHECK")) unsupported.Add("CHECK constraints");
+        if (SqliteSqlInspection.ContainsKeyword(source, "STRICT")) unsupported.Add("STRICT tables");
+        if (SqliteSqlInspection.ContainsKeywordSequence(source, "WITHOUT", "ROWID")) unsupported.Add("WITHOUT ROWID tables");
+        if (SqliteSqlInspection.ContainsKeyword(source, "COLLATE")) unsupported.Add("column collations");
+
+        if (unsupported.Count > 0)
+        {
+            throw new GridletValidationException(
+                $"Table {schema}.{table} uses {string.Join(", ", unsupported)} that cannot be preserved by this designer operation. Apply the change with explicit SQLite DDL instead.");
+        }
+    }
+
+    private static async Task EnsureNoNewForeignKeyViolationsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        IReadOnlyList<ForeignKeyViolation> baseline,
+        CancellationToken cancellationToken)
+    {
+        var baselineCounts = baseline
+            .GroupBy(violation => violation)
+            .ToDictionary(group => group.Key, group => group.Count());
+        foreach (var violation in await LoadForeignKeyViolationsAsync(
+                     connection, transaction, cancellationToken))
+        {
+            if (baselineCounts.TryGetValue(violation, out var count) && count > 0)
+            {
+                baselineCounts[violation] = count - 1;
+                continue;
+            }
+
+            throw new GridletValidationException(
+                $"The designer operation would leave an invalid foreign key from '{violation.ChildTable}' row {violation.RowId ?? "unknown"} to '{violation.ParentTable}'. No changes were applied.");
+        }
+    }
+
+    private static async Task<IReadOnlyList<ForeignKeyViolation>> LoadForeignKeyViolationsAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        var violations = new List<ForeignKeyViolation>();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "PRAGMA foreign_key_check;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken)) names.Add(reader.GetString(0));
-        return names;
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            violations.Add(new ForeignKeyViolation(
+                reader.GetString(0),
+                reader.IsDBNull(1) ? null : Convert.ToString(reader.GetValue(1)),
+                reader.GetString(2)));
+        }
+
+        return violations;
+    }
+
+    private sealed record ForeignKeyViolation(
+        string ChildTable,
+        string? RowId,
+        string ParentTable);
+
+    private static async Task SetForeignKeyEnforcementAsync(
+        SqliteConnection connection,
+        bool enabled,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = enabled ? "PRAGMA foreign_keys = ON;" : "PRAGMA foreign_keys = OFF;";
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task<bool> GetForeignKeyEnforcementAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA foreign_keys;";
+        return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)) != 0;
     }
 
     private static async Task<TableDefinition> RequireTableAsync(

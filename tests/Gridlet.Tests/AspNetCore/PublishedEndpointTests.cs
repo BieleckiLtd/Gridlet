@@ -220,6 +220,140 @@ public class PublishedEndpointTests
         Assert.Equal("mid-stream kaboom", root.GetProperty("error").GetString());
     }
 
+    [Fact]
+    public async Task Unexpected_failure_before_streaming_is_sanitized()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        await Publish(client, new
+        {
+            name = "Unexpected", method = "GET", route = "unexpected",
+            connectionName = "Main", sql = "unexpected-boom",
+        });
+
+        var invoke = await client.GetAsync("/gridlet/pub/unexpected");
+        var body = await invoke.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.InternalServerError, invoke.StatusCode);
+        Assert.Contains("unexpected server error", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SECRET_PUBLISHED_SENTINEL", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Ndjson_accept_header_streams_row_and_completion_events()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        await Publish(client, new
+        {
+            name = "NDJSON answers", method = "GET", route = "ndjson-answers",
+            connectionName = "Main", sql = "SELECT 42",
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/gridlet/pub/ndjson-answers");
+        request.Headers.Accept.ParseAdd("application/x-ndjson");
+        var invoke = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, invoke.StatusCode);
+        Assert.Equal("application/x-ndjson", invoke.Content.Headers.ContentType!.MediaType);
+        var lines = (await invoke.Content.ReadAsStringAsync())
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(2, lines.Length);
+
+        using var rowEvent = JsonDocument.Parse(lines[0]);
+        Assert.Equal("row", rowEvent.RootElement.GetProperty("type").GetString());
+        Assert.Equal(42, rowEvent.RootElement.GetProperty("row").GetProperty("Answer").GetInt32());
+
+        using var completedEvent = JsonDocument.Parse(lines[1]);
+        Assert.Equal("completed", completedEvent.RootElement.GetProperty("type").GetString());
+        Assert.Equal(1, completedEvent.RootElement.GetProperty("rowCount").GetInt64());
+        Assert.Equal(-1, completedEvent.RootElement.GetProperty("recordsAffected").GetInt32());
+    }
+
+    [Fact]
+    public async Task Ndjson_failure_before_streaming_returns_error_event_with_clean_status()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        await Publish(client, new
+        {
+            name = "Early NDJSON boom", method = "GET", route = "ndjson-early-boom",
+            connectionName = "Main", sql = "boom",
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/gridlet/pub/ndjson-early-boom");
+        request.Headers.Accept.ParseAdd("application/x-ndjson");
+        var invoke = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, invoke.StatusCode);
+        Assert.Equal("application/x-ndjson", invoke.Content.Headers.ContentType!.MediaType);
+        using var errorEvent = JsonDocument.Parse((await invoke.Content.ReadAsStringAsync()).Trim());
+        Assert.Equal("error", errorEvent.RootElement.GetProperty("type").GetString());
+        Assert.Equal(0, errorEvent.RootElement.GetProperty("rowCount").GetInt64());
+        Assert.Equal("kaboom", errorEvent.RootElement.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task Ndjson_failure_after_rows_emits_terminal_error_event()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        await Publish(client, new
+        {
+            name = "Midstream NDJSON boom", method = "GET", route = "ndjson-stream-boom",
+            connectionName = "Main", sql = "stream-boom",
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/gridlet/pub/ndjson-stream-boom");
+        request.Headers.Accept.ParseAdd("application/x-ndjson");
+        var invoke = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, invoke.StatusCode);
+        var lines = (await invoke.Content.ReadAsStringAsync())
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(2, lines.Length);
+
+        using var rowEvent = JsonDocument.Parse(lines[0]);
+        Assert.Equal("row", rowEvent.RootElement.GetProperty("type").GetString());
+
+        using var errorEvent = JsonDocument.Parse(lines[1]);
+        Assert.Equal("error", errorEvent.RootElement.GetProperty("type").GetString());
+        Assert.Equal(1, errorEvent.RootElement.GetProperty("rowCount").GetInt64());
+        Assert.Equal("mid-stream kaboom", errorEvent.RootElement.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task Unexpected_ndjson_failure_after_rows_is_sanitized()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        await Publish(client, new
+        {
+            name = "Unexpected stream", method = "GET", route = "unexpected-stream",
+            connectionName = "Main", sql = "stream-unexpected-boom",
+        });
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/gridlet/pub/unexpected-stream");
+        request.Headers.Accept.ParseAdd("application/x-ndjson");
+        var invoke = await client.SendAsync(request);
+        var body = await invoke.Content.ReadAsStringAsync();
+        var lines = body.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(HttpStatusCode.OK, invoke.StatusCode);
+        Assert.Equal(2, lines.Length);
+        using var errorEvent = JsonDocument.Parse(lines[1]);
+        Assert.Contains(
+            "unexpected server error",
+            errorEvent.RootElement.GetProperty("error").GetString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SECRET_PUBLISHED_SENTINEL", body, StringComparison.Ordinal);
+    }
+
     private static Task<(Microsoft.AspNetCore.Builder.WebApplication App, HttpClient Client)> StartWithMaxRows(int maxRows)
         => GridletTestHost.StartAsync(o =>
         {

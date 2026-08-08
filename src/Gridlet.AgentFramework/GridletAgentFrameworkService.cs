@@ -24,6 +24,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
     private readonly ConcurrentDictionary<string, CliConversation> cliConversations =
         new(StringComparer.Ordinal);
     private readonly SemaphoreSlim conversationCreationGate = new(1, 1);
+    private readonly CliRuntimeLimiter cliRuntimeLimiter;
     private readonly CancellationTokenSource cleanupCancellation = new();
     private readonly Task cleanupTask;
     private int disposeState;
@@ -38,6 +39,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         this.credentials = credentials;
         this.connectionResolver = connectionResolver;
         this.auditSink = auditSink;
+        cliRuntimeLimiter = new CliRuntimeLimiter(settings.MaxActiveConversations);
         cleanupTask = CleanupExpiredConversationsAsync(cleanupCancellation.Token);
     }
 
@@ -110,7 +112,9 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         if (cliConversations.TryRemove(
                 new KeyValuePair<string, CliConversation>(conversationId, conversation)))
         {
-            await conversation.DisposeAsync(cancellationToken);
+            // Once ownership has been removed from the dictionary, disposal must complete even if
+            // the HTTP close request is subsequently cancelled; otherwise the runtime is orphaned.
+            await conversation.DisposeAsync(CancellationToken.None);
         }
     }
 
@@ -142,6 +146,11 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         var completedNormally = false;
         try
         {
+            using var transientCliLease =
+                profile.Provider is GridletAgentProvider.Codex or GridletAgentProvider.ClaudeCode &&
+                cliConversation is null
+                    ? await cliRuntimeLimiter.AcquireAsync(cancellationToken)
+                    : null;
 
             var pendingToolEvents = new ConcurrentQueue<GridletAgentStreamEvent>();
             var databaseTools = new GridletDatabaseAgentTools(
@@ -244,7 +253,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
 
                 foreach (var functionResult in update.Contents.OfType<FunctionResultContent>())
                 {
-                    if (TryReadFailedCodexToolResult(functionResult, out var toolName, out var result))
+                    if (TryReadFailedToolResult(functionResult, out var toolName, out var result))
                     {
                         yield return new GridletAgentStreamEvent(
                             "tool-result", SerializeToolPayload(new { result, success = false }), toolName);
@@ -256,10 +265,15 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
                     yield return new GridletAgentStreamEvent("delta", update.Text);
                 }
 
-                while (pendingToolEvents.TryDequeue(out var toolEvent))
+                foreach (var toolEvent in DrainPendingToolEvents(pendingToolEvents))
                 {
                     yield return toolEvent;
                 }
+            }
+
+            foreach (var finalToolEvent in DrainPendingToolEvents(pendingToolEvents))
+            {
+                yield return finalToolEvent;
             }
 
             yield return new GridletAgentStreamEvent("completed");
@@ -328,8 +342,17 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
                                 "The maximum number of active agent conversations has been reached. " +
                                 "Close an existing Ask tab or wait for an inactive conversation to expire.");
                         }
-                        conversation = new CliConversation(
-                            request, profile, settings, instructions);
+                        var runtimeLease = await cliRuntimeLimiter.AcquireAsync(cancellationToken);
+                        try
+                        {
+                            conversation = new CliConversation(
+                                request, profile, settings, instructions, runtimeLease);
+                        }
+                        catch
+                        {
+                            runtimeLease.Dispose();
+                            throw;
+                        }
                         if (!cliConversations.TryAdd(request.ConversationId!, conversation))
                         {
                             await conversation.DisposeAsync(CancellationToken.None);
@@ -532,13 +555,30 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         return json.Length <= 8_000 ? json : string.Concat(json.AsSpan(0, 8_000), "… [truncated]");
     }
 
-    internal static bool TryReadFailedCodexToolResult(
+    internal static IEnumerable<GridletAgentStreamEvent> DrainPendingToolEvents(
+        ConcurrentQueue<GridletAgentStreamEvent> pendingToolEvents)
+    {
+        while (pendingToolEvents.TryDequeue(out var toolEvent))
+        {
+            yield return toolEvent;
+        }
+    }
+
+    internal static bool TryReadFailedToolResult(
         FunctionResultContent functionResult,
         out string? toolName,
         out string? result)
     {
         toolName = null;
         result = null;
+        if (functionResult.Result is AgentToolInvocationResult providerResult)
+        {
+            if (providerResult.Success) return false;
+            toolName = providerResult.ToolName;
+            result = providerResult.Result;
+            return true;
+        }
+
         if (functionResult.Result is not JsonElement item ||
             item.ValueKind != JsonValueKind.Object ||
             !item.TryGetProperty("type", out var type) ||
@@ -745,13 +785,16 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         private readonly string profileId;
         private readonly bool ownerIsAuthenticated;
         private readonly string? ownerSubject;
+        private readonly CliRuntimeLimiter.Lease runtimeLease;
         private long lastAccessedUtcTicks = DateTimeOffset.UtcNow.UtcTicks;
+        private int runtimeDisposed;
 
         public CliConversation(
             GridletAgentRequest request,
             GridletAgentProfileSettings profile,
             GridletAgentFrameworkSettings settings,
-            string instructions)
+            string instructions,
+            CliRuntimeLimiter.Lease runtimeLease)
         {
             connectionName = request.ConnectionName;
             database = request.Database;
@@ -759,6 +802,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
             profileId = profile.Id;
             ownerIsAuthenticated = request.User.IsAuthenticated;
             ownerSubject = request.User.Subject;
+            this.runtimeLease = runtimeLease;
             if (profile.Provider == GridletAgentProvider.Codex)
             {
                 CodexRuntime = new CodexAppServerRuntime(settings.CodexExecutablePath);
@@ -816,8 +860,24 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
             }
         }
 
-        public ValueTask DisposeRuntimeAsync() => CodexRuntime?.DisposeAsync() ??
-                                                  ClaudeRuntime?.DisposeAsync() ??
-                                                  ValueTask.CompletedTask;
+        public async ValueTask DisposeRuntimeAsync()
+        {
+            if (Interlocked.Exchange(ref runtimeDisposed, 1) != 0) return;
+            try
+            {
+                if (CodexRuntime is not null)
+                {
+                    await CodexRuntime.DisposeAsync();
+                }
+                else if (ClaudeRuntime is not null)
+                {
+                    await ClaudeRuntime.DisposeAsync();
+                }
+            }
+            finally
+            {
+                runtimeLease.Dispose();
+            }
+        }
     }
 }

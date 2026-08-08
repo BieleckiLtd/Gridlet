@@ -19,7 +19,10 @@ public static class SqliteIdentifier
                 $"Identifier '{name[..32]}...' exceeds the maximum length of {MaxIdentifierLength} characters.");
         }
 
-        return "[" + name.Replace("]", "]]", StringComparison.Ordinal) + "]";
+        // SQLite accepts square-bracket quoting for compatibility, but unlike SQL Server it has
+        // no escape sequence for a closing bracket inside an identifier. Double quotes are the
+        // native SQLite form and escape embedded quotes by doubling them.
+        return "\"" + name.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
     }
 
     public static string QuoteQualified(string schema, string name)

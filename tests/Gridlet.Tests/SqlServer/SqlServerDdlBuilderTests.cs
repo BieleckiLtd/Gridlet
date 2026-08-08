@@ -133,4 +133,26 @@ public class SqlServerDdlBuilderTests
             SqlServerDdlBuilder.BuildAlterSchemaOwner("sales", "dbo"));
         Assert.Equal("DROP SCHEMA [sales];", SqlServerDdlBuilder.BuildDropSchema("sales"));
     }
+
+    [Theory]
+    [InlineData("0)); DROP TABLE dbo.Victim; /*")]
+    [InlineData("1 -- comment")]
+    [InlineData("1 /* comment */")]
+    [InlineData("(1 + 2")]
+    [InlineData("1 + 2)")]
+    public void Rejects_non_expression_default_payloads(string expression)
+        => Assert.Throws<GridletValidationException>(() =>
+            SqlServerDdlBuilder.BuildAddColumn(
+                "dbo", "Widgets", new ColumnDesign("Value", "int", DefaultExpression: expression)));
+
+    [Fact]
+    public void Allows_balanced_nested_and_quoted_default_expressions()
+    {
+        var sql = SqlServerDdlBuilder.BuildAddColumn(
+            "dbo", "Widgets",
+            new ColumnDesign("Value", "nvarchar(100)",
+                DefaultExpression: "COALESCE(NULLIF('semi;--/*', ''), CONCAT([A]],B], 'x'))"));
+
+        Assert.Contains("COALESCE(NULLIF('semi;--/*', ''), CONCAT([A]],B], 'x'))", sql);
+    }
 }
