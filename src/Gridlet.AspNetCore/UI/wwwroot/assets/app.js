@@ -2410,7 +2410,7 @@
       syncControls();
     };
     const scrollMessages = () => { messages.scrollTop = messages.scrollHeight; };
-    const appendMessage = (role, content = '') => {
+    const appendMessage = (role, content = '', assistantLabel = 'Agent') => {
       welcome.remove();
       const body = h('div', { class: 'agent-message-content' });
       const error = h('div', { class: 'agent-message-error', hidden: '' });
@@ -2418,7 +2418,10 @@
         class: `agent-message agent-message-${role}`,
         'data-testid': `agent-message-${role}`,
       },
-        h('div', { class: 'agent-message-role', text: role === 'user' ? 'Me' : 'Agent' }),
+        h('div', {
+          class: 'agent-message-role',
+          text: role === 'user' ? 'Me' : assistantLabel,
+        }),
         role === 'assistant' ? null : body,
         error);
       messages.append(element);
@@ -2565,6 +2568,15 @@
         },
       };
     };
+    const appendModelMarker = (profile) => {
+      if (!conversation.length) return;
+      messages.append(h('div', {
+        class: 'agent-model-marker',
+        'data-testid': 'agent-model-marker',
+        text: `Now using ${profile.displayName} — ${profile.model}`,
+      }));
+      scrollMessages();
+    };
 
     const storeCredentialIfSupplied = async (profile, signal) => {
       let apiKey = apiKeyInput.value;
@@ -2617,12 +2629,13 @@
       let completed = false;
       let streamError = '';
       let assistantMessage = null;
+      const assistantLabel = `${profile.displayName} · ${profile.model}`;
       try {
         const handle = await storeCredentialIfSupplied(profile, controller.signal);
         const history = conversation.slice(-50).map((entry) => ({ ...entry }));
         composer.value = '';
         appendMessage('user', message);
-        assistantMessage = appendMessage('assistant');
+        assistantMessage = appendMessage('assistant', '', assistantLabel);
         status.textContent = '';
 
         await streamNdjson(urls.agentChat(connection, database, modeSelect.value), {
@@ -2689,7 +2702,7 @@
       } catch (err) {
         if (err.name === 'AbortError') status.textContent = 'Cancelled';
         else {
-          if (!assistantMessage) assistantMessage = appendMessage('assistant');
+          if (!assistantMessage) assistantMessage = appendMessage('assistant', '', assistantLabel);
           assistantMessage.setError(err.message);
           status.textContent = 'Failed';
         }
@@ -2708,6 +2721,7 @@
       apiKeyInput.value = '';
       discardCredential();
       refreshProfile();
+      appendModelMarker(selectedProfile());
     });
     modeSelect.addEventListener('change', resetConversation);
     effortSelect.addEventListener('change', syncControls);
