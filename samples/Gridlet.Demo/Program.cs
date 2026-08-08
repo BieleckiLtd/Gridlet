@@ -44,7 +44,10 @@ if (OperatingSystem.IsWindows())
 
 gridlet.AddAgentFramework(agents =>
     {
-        agents.AddOllama("local-qwen3.5-4b", new Uri("http://127.0.0.1:11434"), "qwen3.5:4b");
+        // Gridlet reads the loaded window from Ollama itself; this declaration is only the
+        // fallback for when the model is not currently resident.
+        agents.AddOllama("local-qwen3.5-4b", new Uri("http://127.0.0.1:11434"), "qwen3.5:4b")
+            .WithContextWindow(32_768);
         agents.AddOllama("local-qwen3.5-2b", new Uri("http://127.0.0.1:11434"), "qwen3.5:2b");
         agents.AddOllama("local-gemma4", new Uri("http://127.0.0.1:11434"), "gemma4:latest");
         agents.AddOllama("local-gemma4-12b", new Uri("http://127.0.0.1:11434"), "gemma4:12b");
