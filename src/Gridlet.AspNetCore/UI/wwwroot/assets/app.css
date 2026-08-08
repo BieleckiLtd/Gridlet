@@ -121,6 +121,7 @@ html, body {
 .brand-mark { width: 24px; height: 24px; object-fit: contain; }
 :root[data-theme="light"] .brand-mark { filter: invert(1); }
 
+.connection-pickers { display: flex; align-items: center; gap: clamp(6px, 1vw, 12px); min-width: 0; }
 .picker { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
 
 .picker-select { position: relative; color: var(--text); }
@@ -278,7 +279,7 @@ button.ghost { background: transparent; }
   66% { opacity: 1; }
   82%, 100% { opacity: 0; transform: translateX(470%) skewX(-18deg); }
 }
-.theme-switch { display: inline-flex; align-items: center; justify-content: center; width: 32px; padding-inline: 0; }
+.theme-switch { display: inline-flex; align-items: center; justify-content: center; width: 32px; min-width: 32px; padding-inline: 0; }
 .theme-icon {
   display: block;
   width: 17px;
@@ -1625,6 +1626,7 @@ td.cell-actions, th.cell-actions { white-space: nowrap; width: 1%; }
   align-items: center;
   justify-content: center;
   width: 32px;
+  min-width: 32px;
   height: 29px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1664,7 +1666,10 @@ td.cell-actions, th.cell-actions { white-space: nowrap; width: 1%; }
 .toolbar-more-menu .query-limit-label { justify-content: space-between; }
 .toolbar-more-menu .export-buttons { flex-direction: column; }
 .toolbar-more-menu .export-buttons button { width: 100%; text-align: left; }
-#topbar .toolbar-more-menu { min-width: 180px; }
+#topbar .toolbar-more-menu {
+  width: min(280px, calc(100vw - 20px));
+  min-width: min(280px, calc(100vw - 20px));
+}
 #topbar .toolbar-more-menu > button {
   display: flex;
   align-items: center;
@@ -1684,6 +1689,43 @@ td.cell-actions, th.cell-actions { white-space: nowrap; width: 1%; }
   padding: 5px 9px;
   border-bottom: 1px solid var(--border);
   font-size: 11.5px;
+}
+#topbar button { flex-shrink: 0; min-width: 32px; }
+#topbar .toolbar-more-menu > .connection-pickers {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  padding: 7px 9px 9px;
+  border-bottom: 1px solid var(--border);
+}
+#topbar .toolbar-more-menu > .connection-pickers .picker {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+}
+#topbar .toolbar-more-menu > .connection-pickers .picker-label { display: inline; }
+#topbar .toolbar-more-menu > .connection-pickers .picker-select,
+#topbar .toolbar-more-menu > .connection-pickers .select-trigger { width: 100%; min-width: 0; }
+#topbar .toolbar-more-menu > .connection-pickers .select-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#topbar .toolbar-more-menu > .connection-pickers .select-menu { width: 100%; max-width: 100%; min-width: 0; }
+#topbar .toolbar-more-menu > .connection-pickers .select-option {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 900px) {
+  #topbar > .toolbar-slot > .connection-pickers .picker-label { display: none; }
+}
+
+@media (max-width: 420px) {
+  #topbar { padding-inline: 10px; }
+  #topbar > .brand .brand-name { display: none; }
 }
 
 /* Author display rules above would otherwise defeat the UA [hidden] rule. */
