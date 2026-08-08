@@ -22,12 +22,14 @@
 <body>
   <div id="app">
     <header id="topbar">
-      <div class="brand"><img class="brand-mark" src="assets/icon_sm.png" alt="" />Gridlet</div>
-      <div class="picker"><span>Connection</span>
-        <select id="connection-select" aria-label="Connection"></select>
-      </div>
-      <div class="picker"><span>Database</span>
-        <select id="database-select" aria-label="Database"></select>
+      <div class="brand"><img class="brand-mark" src="assets/icon_sm.png" alt="" /><span class="brand-name">Gridlet</span></div>
+      <div class="connection-pickers" data-testid="connection-pickers" data-overflow-at="520">
+        <div class="picker"><span class="picker-label">Connection</span>
+          <select id="connection-select" aria-label="Connection"></select>
+        </div>
+        <div class="picker"><span class="picker-label">Database</span>
+          <select id="database-select" aria-label="Database"></select>
+        </div>
       </div>
       <button id="refresh-btn" class="ghost" title="Reload objects">⟳</button>
       <div class="spacer"></div>
@@ -49,7 +51,7 @@
       </button>
       <button id="ask-btn" class="ghost app-action" title="Talk with this database" data-testid="agent-open" hidden>
         <svg class="app-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <path d="M13.2 5.4A8 8 0 0 0 4.8 17L3 21l4.2-1.7A8 8 0 0 0 17 12"></path>
+          <path d="M17 12a7 7 0 0 1-9.8 6.4L3 20l1.6-3.3A7 7 0 0 1 10 5"></path>
           <path d="M19 1.5v6M16 4.5h6"></path>
           <path d="M14.2 7.2v4M12.2 9.2h4"></path>
         </svg>

@@ -86,20 +86,30 @@
       more.open = false;
       for (const record of records) record.slot.append(record.element);
       more.hidden = true;
-      if (fits()) return;
+      const forced = records.filter((record) => {
+        const breakpoint = Number(record.element.dataset.overflowAt);
+        return breakpoint && toolbar.clientWidth <= breakpoint;
+      });
+      if (!forced.length && fits()) return;
 
       more.hidden = false;
+      for (const record of forced) menu.append(record.element);
+      if (fits()) return;
       for (const record of records) {
+        if (forced.includes(record)) continue;
         menu.append(record.element);
         if (fits()) break;
       }
     };
 
     menu.addEventListener('click', (event) => {
-      if (event.target.closest('button')) more.open = false;
+      if (event.target.closest('button:not(.select-trigger)')) more.open = false;
     });
     more.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') { more.open = false; more.querySelector('summary').focus(); }
+    });
+    document.addEventListener('pointerdown', (event) => {
+      if (more.open && !more.contains(event.target)) more.open = false;
     });
     const observer = new ResizeObserver(update);
     observer.observe(toolbar);
@@ -107,7 +117,7 @@
       if (!child.classList.contains('toolbar-slot') && child !== more) observer.observe(child);
     }
     requestAnimationFrame(update);
-    return { refresh: () => requestAnimationFrame(update) };
+    return { more, refresh: () => requestAnimationFrame(update) };
   }
 
   // ---- theme ---------------------------------------------------------------
@@ -713,6 +723,7 @@
     setupThemedSelect($('#database-select'));
     navigationOverflow = setupOverflowToolbar($('#topbar'), [
       $('#version'), $('#about-btn'), $('#apis-btn'), $('#ask-btn'), $('#theme-btn'), $('#refresh-btn'),
+      $('.connection-pickers'), $('#new-query-btn'),
     ], 'More app actions');
     document.body.append(h('datalist', { id: 'gridlet-types' }));
 
@@ -2343,12 +2354,12 @@
       'aria-label': 'Thinking effort', 'data-testid': 'agent-effort',
     });
     const modeControl = h('label', { class: 'agent-composer-select agent-mode-control' },
-      h('span', { class: 'sr-only', text: 'Mode' }), modeSelect);
+      h('span', { class: 'agent-option-label', text: 'Mode' }), modeSelect);
     const providerControl = h('label', { class: 'agent-composer-select agent-provider-control' },
-      h('span', { class: 'sr-only', text: 'Model' }), providerSelect);
+      h('span', { class: 'agent-option-label', text: 'Model' }), providerSelect);
     const effortControl = h('label', {
       class: 'agent-composer-select agent-effort-control', hidden: '',
-    }, h('span', { class: 'sr-only', text: 'Effort' }), effortSelect);
+    }, h('span', { class: 'agent-option-label', text: 'Effort' }), effortSelect);
     const apiKeyInput = h('input', {
       type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
       maxlength: '8192', 'aria-label': 'Provider API key', 'data-testid': 'agent-api-key',
@@ -2412,11 +2423,16 @@
     const microphoneStand = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     microphoneStand.setAttribute('d', 'M5.5 11a6.5 6.5 0 0013 0M12 17.5V21M9 21h6');
     microphoneSvg.append(microphoneBody, microphoneStand);
+    const unsupportedDictationLabel =
+      'Dictation is not supported in this browser. Try a Chromium-based browser such as Edge or Chrome.';
     const dictationButton = h('button', {
-      class: 'agent-dictation-button', type: 'button', title: 'Start dictation',
-      'aria-label': 'Start dictation', 'aria-pressed': 'false',
-      'data-testid': 'agent-dictation', 'data-state': 'idle',
-      hidden: SpeechRecognitionApi ? null : '',
+      class: 'agent-dictation-button', type: 'button',
+      title: SpeechRecognitionApi ? 'Start dictation' : unsupportedDictationLabel,
+      'aria-label': SpeechRecognitionApi ? 'Start dictation' : unsupportedDictationLabel,
+      'aria-pressed': 'false',
+      'data-testid': 'agent-dictation',
+      'data-state': SpeechRecognitionApi ? 'idle' : 'unsupported',
+      disabled: SpeechRecognitionApi ? null : '',
     }, microphoneSvg);
     const privacySvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     privacySvg.setAttribute('class', 'agent-privacy-icon');
@@ -2439,7 +2455,9 @@
     }, privacySvg);
     const privacyControl = h('span', { class: 'agent-privacy-control' },
       privacyButton, privacyTooltip);
-    const composerOptions = h('span', { class: 'agent-composer-options' },
+    const composerOptions = h('span', {
+      class: 'agent-composer-options', 'data-overflow-at': '620',
+    },
       modeControl, providerControl, effortControl);
     setupThemedSelect(modeSelect);
     setupThemedSelect(providerSelect);
@@ -2451,13 +2469,20 @@
       class: 'sr-only agent-status', role: 'status', 'aria-live': 'polite',
       'aria-atomic': 'true', 'data-testid': 'agent-status', 'data-state': 'ready',
     }, statusAnnouncement);
+    const composeActions = h('div', { class: 'agent-compose-actions' },
+      status, privacyControl, h('span', { class: 'spacer' }), composerOptions,
+      dictationButton, actionButton);
     const composerShell = h('div', {
       class: 'agent-composer-shell', 'data-testid': 'agent-composer-shell',
       'aria-busy': 'false',
-    }, composer,
-      h('div', { class: 'agent-compose-actions' },
-        status, privacyControl, h('span', { class: 'spacer' }), composerOptions,
-        dictationButton, actionButton));
+    }, composer, composeActions);
+    const optionsIcon = composerIcon('agent-options-icon',
+      'M4 7h4m4 0h8M4 17h8m4 0h4M8 4v6M16 14v6');
+    const composerOverflow = setupOverflowToolbar(
+      composeActions, [composerOptions], 'Conversation options');
+    composerOverflow.more.classList.add('agent-composer-overflow');
+    composeActions.insertBefore(composerOverflow.more, dictationButton);
+    composerOverflow.more.querySelector('summary').replaceChildren(optionsIcon);
 
     let activeRequest = null;
     let recognition = null;
@@ -2499,12 +2524,22 @@
       dictationButton.title = label;
     };
 
+    // Browser speech services need a region-qualified tag such as 'en-GB'; a bare
+    // subtag like the document's 'en' matches no model and surfaces as a network error.
+    const dictationLanguage = () => {
+      const candidates = [
+        navigator.language,
+        ...(navigator.languages || []),
+        document.documentElement.lang,
+      ];
+      return candidates.find((tag) => /^[A-Za-z]{2,3}-[A-Za-z0-9]{2,}/.test(tag || '')) || 'en-US';
+    };
+
     const ensureRecognition = () => {
       if (recognition || !SpeechRecognitionApi) return recognition;
       recognition = new SpeechRecognitionApi();
       recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.lang = document.documentElement.lang || navigator.language || 'en-US';
       recognition.onstart = () => {
         dictationStarting = false;
         isDictating = true;
@@ -2528,9 +2563,12 @@
         dictationError = event.error || 'unknown';
         const errors = {
           'not-allowed': 'Microphone access was not allowed.',
-          'service-not-allowed': 'Speech recognition is not allowed in this browser.',
+          'service-not-allowed': 'Speech recognition is not allowed in this browser.'
+            + ' On Windows, enable Settings > Privacy & security > Speech > Online speech recognition.',
           'audio-capture': 'No microphone is available.',
-          network: 'Browser speech recognition could not connect.',
+          network: 'The browser could not reach its speech recognition service.'
+            + ' Dictation is processed online, so check that Windows Settings > Privacy & security >'
+            + ' Speech > Online speech recognition is on and that no proxy or firewall blocks it.',
           'no-speech': 'No speech was detected.',
         };
         if (dictationError !== 'aborted') toast(errors[dictationError] || 'Dictation could not start.');
@@ -2567,7 +2605,9 @@
       try {
         dictationStarting = true;
         updateDictationButton();
-        ensureRecognition()?.start();
+        const active = ensureRecognition();
+        if (active) active.lang = dictationLanguage();
+        active?.start();
       } catch {
         dictationStarting = false;
         updateDictationButton();
@@ -2618,7 +2658,7 @@
       actionButton.title = isBusy ? 'Cancel response' : 'Send message';
       sendIcon.toggleAttribute('hidden', isBusy);
       stopIcon.toggleAttribute('hidden', !isBusy);
-      dictationButton.disabled = isBusy;
+      dictationButton.disabled = isBusy || !SpeechRecognitionApi;
       modeSelect.disabled = Boolean(activeRequest);
       providerSelect.disabled = Boolean(activeRequest);
       effortSelect.disabled = Boolean(activeRequest);
@@ -2736,18 +2776,11 @@
       let activity = null;
       let currentAnswer = null;
 
-      const stopActivityAnimation = () => {
-        if (activity?.timer) {
-          clearInterval(activity.timer);
-          activity.timer = null;
-        }
-      };
-
       const finishActivity = () => {
         if (!activity?.startedAt) return;
-        stopActivityAnimation();
         const seconds = Math.max(1, Math.round((Date.now() - activity.startedAt) / 1000));
         activity.label.textContent = `Thought for ${seconds}s`;
+        activity.details.classList.remove('is-thinking');
         activity.details.open = false;
         activity.closed = true;
         activity = null;
@@ -2755,9 +2788,9 @@
 
       const ensureActivity = () => {
         if (activity && !activity.closed) return activity;
-        const label = h('span', { text: 'Thinking' });
+        const label = h('span', { text: 'Thinking…' });
         const activityBody = h('div', { class: 'agent-reasoning-body' });
-        const details = h('details', { class: 'agent-reasoning' },
+        const details = h('details', { class: 'agent-reasoning is-thinking' },
           h('summary', {}, label), activityBody);
         element.insertBefore(details, error);
         const nextActivity = {
@@ -2765,15 +2798,9 @@
           label,
           body: activityBody,
           startedAt: Date.now(),
-          frame: 0,
           currentReasoningEntry: null,
           closed: false,
-          timer: null,
         };
-        nextActivity.timer = setInterval(() => {
-          nextActivity.frame = (nextActivity.frame % 3) + 1;
-          nextActivity.label.textContent = `Thinking ${'.'.repeat(nextActivity.frame)}`;
-        }, 650);
         activity = nextActivity;
         return activity;
       };
@@ -2954,6 +2981,10 @@
         composer.value = '';
         resizeComposer();
         appendMessage('user', message);
+        // Keep every dispatched prompt in the provider-neutral transcript. A provider can fail
+        // before producing an answer, and a subsequently selected provider still needs the
+        // prompt that the user can see in this conversation.
+        conversation.push({ role: 'user', content: message });
         assistantMessage = appendMessage('assistant', '', assistantLabel);
         setStatus('streaming', '', `${profile.displayName} response is streaming.`);
 
@@ -3012,9 +3043,7 @@
         }
         else if (completed) {
           setStatus('complete', '', 'Agent response complete.');
-          conversation.push(
-            { role: 'user', content: message },
-            { role: 'assistant', content: assistantText });
+          conversation.push({ role: 'assistant', content: assistantText });
         } else {
           streamError = 'The response ended before the agent reported completion.';
           assistantMessage.setError(streamError);

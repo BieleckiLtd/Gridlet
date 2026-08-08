@@ -4,7 +4,8 @@ using Gridlet.Models;
 namespace Gridlet.Sqlite;
 
 /// <summary>The SQLite implementation of the Gridlet provider boundary.</summary>
-public sealed class SqliteGridletProvider : IGridletProvider, IGridletProviderMetadata
+public sealed class SqliteGridletProvider :
+    IGridletProvider, IGridletProviderMetadata, IGridletDatabaseSystemInfoProvider
 {
     public GridletProviderNames ProviderName => GridletProviderNames.Sqlite;
 
@@ -35,4 +36,12 @@ public sealed class SqliteGridletProvider : IGridletProvider, IGridletProviderMe
     public ITableWriteService Writes { get; } = new SqliteTableWriteService();
 
     public ITableDdlService Ddl { get; } = new SqliteTableDdlService();
+
+    public async Task<GridletDatabaseSystemInfo> GetDatabaseSystemInfoAsync(
+        GridletConnectionContext context,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        return new GridletDatabaseSystemInfo("SQLite", connection.ServerVersion);
+    }
 }

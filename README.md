@@ -49,6 +49,11 @@ capability sets separate:
 - **Design / Schema** mode can inspect objects, columns, indexes, relationships, and definitions.
   It can propose DDL in its answer, but it cannot apply it.
 
+Gridlet supplies the selected database technology and live engine version in the agent's system
+instructions, so responses use the correct SQL dialect and version-supported features instead of
+inferring the engine from schema details. Built-in SQL Server and SQLite providers report this
+metadata; third-party providers can implement `IGridletDatabaseSystemInfoProvider` to do the same.
+
 <p align="center">
   <img src="assets/screenshot-5.png" width="100%" alt="Gridlet Ask workspace showing a data conversation and generated SQL query" />
 </p>
@@ -400,14 +405,16 @@ tests/
   Gridlet.BrowserTests/  end-to-end browser tests for the embedded UI
   Gridlet.ConsumerCompileTest/  compile-time checks for the public consumer API
 samples/
-  Gridlet.Demo/          runnable demo against a local SQLite file
+  Gridlet.Demo/          runnable demo against SQLite and SQL Server LocalDB
 ```
 
 ## Demo
 
 `samples/Gridlet.Demo` is the runnable sample project. It creates and seeds a local
 `GridletSample.db` SQLite database on first run (customers/products/orders plus a view and an audit
-trigger), and mounts
+trigger). On Windows, it also creates a `GridletLocalDbSample` database in the `MSSQLLocalDB` SQL
+Server LocalDB instance, including multiple schemas, a view, trigger, stored procedure, and function.
+If LocalDB is not installed, the demo logs a warning and continues with SQLite only. It mounts
 Gridlet at `/gridlet` with anonymous access.
 It also registers an `OddSecond` ASP.NET Core authorization policy and includes a published endpoint
 definition in the sample `gridlet-store.json` for `GET /gridlet/pub/samples/odd-second`. The endpoint

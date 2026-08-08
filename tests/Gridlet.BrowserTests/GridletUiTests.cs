@@ -109,6 +109,10 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-label", "Stop dictation");
         Assert.True(await page.EvaluateAsync<bool>(
             "window.__fakeSpeechRecognition.continuous && window.__fakeSpeechRecognition.interimResults"));
+        // Speech services reject bare subtags such as the document's 'en', so the
+        // requested language must carry a region.
+        Assert.Matches("^[A-Za-z]{2,3}-[A-Za-z0-9]{2,}",
+            await page.EvaluateAsync<string>("window.__fakeSpeechRecognition.lang"));
 
         await page.EvaluateAsync("""
             () => {
@@ -129,6 +133,84 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await composer.FillAsync("Typed instead");
         await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-pressed", "false");
         Assert.True(await page.EvaluateAsync<bool>("window.__fakeSpeechRecognition.aborted"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Explains_dictation_when_the_browser_has_no_speech_recognition()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("""
+            delete window.SpeechRecognition;
+            delete window.webkitSpeechRecognition;
+            """);
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        var dictation = page.GetByTestId("agent-dictation");
+        await Assertions.Expect(dictation).ToBeVisibleAsync();
+        await Assertions.Expect(dictation).ToHaveAttributeAsync("data-state", "unsupported");
+        await Assertions.Expect(dictation).ToBeDisabledAsync();
+        await Assertions.Expect(dictation).ToHaveAttributeAsync(
+            "title", new Regex("not supported in this browser"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Narrow_composer_collapses_options_without_wrapping_or_squashing_icon_buttons()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("""
+            window.SpeechRecognition = class { start() {} stop() {} abort() {} };
+            """);
+        await page.SetViewportSizeAsync(800, 600);
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTestId("agent-open").ClickAsync();
+
+        var composer = page.GetByTestId("agent-composer-shell");
+        var options = composer.Locator(".agent-composer-options");
+        var optionsButton = composer.GetByRole(
+            AriaRole.Button, new() { Name = "Conversation options" });
+        await Assertions.Expect(optionsButton).ToBeVisibleAsync();
+        await Assertions.Expect(options).ToBeHiddenAsync();
+        var compactMetrics = await composer.EvaluateAsync<float[]>("""
+            element => {
+                const actionElement = element.querySelector('.agent-compose-actions');
+                const actions = actionElement.getBoundingClientRect();
+                const buttonWidths = ['.agent-privacy-button', '.agent-dictation-button',
+                    '.agent-composer-overflow > summary', '.agent-composer-submit']
+                    .map(selector => element.querySelector(selector).getBoundingClientRect().width);
+                return [actions.height, actions.width, actionElement.scrollWidth, ...buttonWidths];
+            }
+            """);
+        Assert.True(compactMetrics[0] < 50, $"Action row height was {compactMetrics[0]}px.");
+        Assert.True(compactMetrics[1] >= compactMetrics[2],
+            $"Action row width was {compactMetrics[1]}px with {compactMetrics[2]}px of content.");
+        Assert.All(compactMetrics.Skip(3), width => Assert.True(width >= 34,
+            $"Icon button width was {width}px."));
+
+        await optionsButton.ClickAsync();
+        await Assertions.Expect(options).ToBeVisibleAsync();
+        await Assertions.Expect(options.Locator(".agent-option-label")).ToHaveCountAsync(3);
+        var providerTrigger = options.Locator(".agent-provider-control .select-trigger");
+        await providerTrigger.ClickAsync();
+        await Assertions.Expect(options.GetByRole(
+            AriaRole.Listbox, new() { Name = "Agent model" })).ToBeVisibleAsync();
+        Assert.True(await page.EvaluateAsync<bool>("""
+            () => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+            """));
+        await page.GetByTestId("agent-messages").ClickAsync();
+        await Assertions.Expect(options).ToBeHiddenAsync();
+        await Assertions.Expect(composer.Locator(".agent-composer-overflow"))
+            .Not.ToHaveAttributeAsync("open", "");
+
+        await page.SetViewportSizeAsync(1400, 600);
+        await Assertions.Expect(optionsButton).ToBeHiddenAsync();
+        await Assertions.Expect(options).ToBeVisibleAsync();
+        Assert.True(await options.Locator(".agent-option-label").EvaluateAllAsync<bool>(
+            "labels => labels.every(label => getComputedStyle(label).display === 'none')"));
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -284,6 +366,36 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal(2, followUp.History.Count);
         Assert.Equal("First question", followUp.History[0].Content);
         Assert.Equal("Fake data response", followUp.History[1].Content);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Preserves_failed_prompt_when_switching_to_a_working_model()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var requestsBefore = fixture.Agent.Requests.Count;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
+        await page.GetByTestId("agent-composer").FillAsync("Fail during reasoning");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-status"))
+            .ToHaveAttributeAsync("data-state", "failed");
+
+        await page.GetByTestId("agent-provider").SelectOptionAsync("fake-remote");
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("Try again");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await ExpectAgentComplete(page);
+
+        Assert.Equal(requestsBefore + 2, fixture.Agent.Requests.Count);
+        var retry = fixture.Agent.Requests[^1];
+        Assert.Equal("fake-remote", retry.ProfileId);
+        var failedPrompt = Assert.Single(retry.History);
+        Assert.Equal("user", failedPrompt.Role);
+        Assert.Equal("Fail during reasoning", failedPrompt.Content);
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -499,6 +611,39 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var cancelledAssistant = page.GetByTestId("agent-message-assistant");
         await Assertions.Expect(cancelledAssistant.Locator(".agent-reasoning"))
             .ToContainTextAsync("Waiting on a deliberately slow provider.");
+        var thinking = cancelledAssistant.Locator(".agent-reasoning.is-thinking");
+        await Assertions.Expect(thinking.Locator("summary")).ToHaveTextAsync("Thinking…");
+        Assert.Equal("agent-thinking-sheen", await thinking.Locator("summary span")
+            .EvaluateAsync<string>("element => getComputedStyle(element).animationName"));
+        Assert.Equal("rgba(0, 0, 0, 0)", await thinking
+            .EvaluateAsync<string>("element => getComputedStyle(element).borderColor"));
+        Assert.Equal("rgba(0, 0, 0, 0)", await thinking
+            .EvaluateAsync<string>("element => getComputedStyle(element).backgroundColor"));
+        Assert.Equal("linear", await thinking.Locator("summary span")
+            .EvaluateAsync<string>("element => getComputedStyle(element).animationTimingFunction"));
+        Assert.Equal("none", await thinking.Locator("summary")
+            .EvaluateAsync<string>("element => getComputedStyle(element).textDecorationLine"));
+        Assert.Equal("4px", await thinking.Locator("summary")
+            .EvaluateAsync<string>("element => getComputedStyle(element, '::after').width"));
+        await thinking.Locator("summary").HoverAsync();
+        Assert.Equal("underline", await thinking.Locator("summary span")
+            .EvaluateAsync<string>("element => getComputedStyle(element).textDecorationLine"));
+        var collapsedThinkingLabel = await thinking.Locator("summary span").BoundingBoxAsync();
+        await thinking.Locator("summary").ClickAsync();
+        await Assertions.Expect(thinking).ToHaveAttributeAsync("open", "");
+        var expandedThinkingLabel = await thinking.Locator("summary span").BoundingBoxAsync();
+        Assert.NotNull(collapsedThinkingLabel);
+        Assert.NotNull(expandedThinkingLabel);
+        Assert.InRange(Math.Abs(expandedThinkingLabel.X - collapsedThinkingLabel.X), 0, 0.5f);
+        Assert.InRange(Math.Abs(expandedThinkingLabel.Y - collapsedThinkingLabel.Y), 0, 0.5f);
+        var reasoningPanelBounds = await thinking.BoundingBoxAsync();
+        var roleBounds = await cancelledAssistant.Locator(".agent-message-role").BoundingBoxAsync();
+        Assert.NotNull(reasoningPanelBounds);
+        Assert.NotNull(roleBounds);
+        Assert.True(reasoningPanelBounds.Y >= roleBounds.Y + roleBounds.Height,
+            "The expanded reasoning panel overlapped the agent heading.");
+        Assert.NotEqual("rgba(0, 0, 0, 0)", await thinking
+            .EvaluateAsync<string>("element => getComputedStyle(element).borderColor"));
         await page.GetByTestId("agent-cancel").ClickAsync();
 
         await Assertions.Expect(page.GetByTestId("agent-status"))
@@ -507,6 +652,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToHaveTextAsync("Response cancelled.");
         await Assertions.Expect(cancelledAssistant.Locator(".agent-reasoning > summary"))
             .ToContainTextAsync("Thought for");
+        await Assertions.Expect(cancelledAssistant.Locator(".agent-reasoning"))
+            .Not.ToHaveClassAsync(new Regex("is-thinking"));
         await Assertions.Expect(page.GetByTestId("agent-messages"))
             .ToHaveAttributeAsync("aria-busy", "false");
 
@@ -654,6 +801,69 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.Locator("#connection-select")).ToHaveValueAsync("SQLite");
         await Assertions.Expect(page.GetByRole(
             AriaRole.Button, new() { Name = "Connection: SQLite" })).ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Narrow_header_hides_picker_labels_then_collapses_pickers_into_app_menu()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.SetViewportSizeAsync(850, 600);
+        await page.GotoAsync("/gridlet/");
+
+        var pickers = page.GetByTestId("connection-pickers");
+        await Assertions.Expect(pickers).ToBeVisibleAsync();
+        Assert.True(await pickers.Locator(".picker-label").EvaluateAllAsync<bool>(
+            "labels => labels.every(label => getComputedStyle(label).display === 'none')"));
+
+        // At an intermediate width (including a 1366px window at 200% zoom), the picker
+        // container must not shrink underneath its fixed-width triggers and overlap actions.
+        await page.SetViewportSizeAsync(680, 600);
+        await page.WaitForFunctionAsync("""
+            () => {
+                const topbar = document.querySelector('#topbar').getBoundingClientRect();
+                const items = [...document.querySelectorAll(
+                    '#topbar > .brand, #topbar > .toolbar-slot > :not([hidden]), #topbar > .toolbar-more:not([hidden])')]
+                    .filter(item => item.getClientRects().length)
+                    .map(item => item.getBoundingClientRect())
+                    .sort((left, right) => left.left - right.left);
+                return document.documentElement.scrollWidth <= document.documentElement.clientWidth
+                    && items.every(item => item.left >= topbar.left && item.right <= topbar.right)
+                    && items.slice(1).every((item, index) => item.left >= items[index].right - 0.5);
+            }
+            """);
+
+        await page.SetViewportSizeAsync(360, 600);
+        var more = page.Locator("#topbar").GetByRole(
+            AriaRole.Button, new() { Name = "More app actions" });
+        await Assertions.Expect(more).ToBeVisibleAsync();
+        await Assertions.Expect(pickers).ToBeHiddenAsync();
+        Assert.True(await page.EvaluateAsync<bool>("""
+            () => {
+                const topbar = document.querySelector('#topbar').getBoundingClientRect();
+                const more = document.querySelector('#topbar .toolbar-more > summary').getBoundingClientRect();
+                return topbar.height < 60
+                    && more.width >= 32
+                    && document.documentElement.scrollWidth <= document.documentElement.clientWidth;
+            }
+            """));
+
+        await more.ClickAsync();
+        await Assertions.Expect(pickers).ToBeVisibleAsync();
+        Assert.True(await pickers.Locator(".picker-label").EvaluateAllAsync<bool>(
+            "labels => labels.every(label => getComputedStyle(label).display !== 'none')"));
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Button, new() { Name = "Connection: Main" })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Button, new() { Name = "Database: FakeDb" })).ToBeVisibleAsync();
+
+        await page.GetByRole(AriaRole.Button, new() { Name = "Connection: Main" }).ClickAsync();
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Listbox, new() { Name = "Connection" })).ToBeVisibleAsync();
+        Assert.True(await page.EvaluateAsync<bool>("""
+            () => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+            """));
         browserPage.AssertNoUnexpectedErrors();
     }
 

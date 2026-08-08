@@ -27,7 +27,8 @@
       ],
       "AuthorizationPolicy": null,
       "Enabled": true,
-      "UpdatedAtUtc": "2026-07-12T00:00:00+00:00"
+      "UpdatedAtUtc": "2026-07-12T00:00:00+00:00",
+      "MaxRows": null
     },
     {
       "Id": "sample-odd-second-endpoint",
@@ -36,11 +37,26 @@
       "Route": "samples/odd-second",
       "ConnectionName": "GridletSample.db",
       "Database": "main",
-      "Sql": "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS ExecutedAtUtc, 'OddSecond policy passed' AS Message;",
+      "Sql": "SELECT strftime(\u0027%Y-%m-%dT%H:%M:%fZ\u0027, \u0027now\u0027) AS ExecutedAtUtc, \u0027OddSecond policy passed\u0027 AS Message;",
       "Parameters": [],
       "AuthorizationPolicy": "OddSecond",
       "Enabled": true,
-      "UpdatedAtUtc": "2026-07-12T00:00:00+00:00"
+      "UpdatedAtUtc": "2026-07-12T00:00:00+00:00",
+      "MaxRows": null
+    },
+    {
+      "Id": "eaa782df509a464bb73d306af419bf35",
+      "Name": "sqlserver",
+      "Method": "GET",
+      "Route": "sqlserver",
+      "ConnectionName": "(localdb)\\MSSQLLocalDB",
+      "Database": "GridletLocalDbSample",
+      "Sql": "SELECT * FROM [sales].[vw_OrderSummary];",
+      "Parameters": [],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-08-08T14:14:18.0590862+00:00",
+      "MaxRows": null
     }
   ]
 }
