@@ -53,6 +53,33 @@ public sealed class SqliteTableDataService : ITableDataService
             }
         }
 
+        var rowIdOrdering = await GetRowIdOrderingAsync(
+            connection, definition, name, cancellationToken);
+        if (rowIdOrdering.Alias is not null)
+        {
+            orderByColumns.Add($"{SqliteIdentifier.Quote(rowIdOrdering.Alias)} ASC");
+        }
+        else if (rowIdOrdering.IsRowIdTable)
+        {
+            var orderedVisibleColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (sortColumn is not null)
+            {
+                orderedVisibleColumns.Add(sortColumn);
+            }
+            if (primaryKey is not null)
+            {
+                orderedVisibleColumns.UnionWith(primaryKey.Columns);
+            }
+
+            foreach (var column in definition.Columns)
+            {
+                if (orderedVisibleColumns.Add(column.Name))
+                {
+                    orderByColumns.Add($"{SqliteIdentifier.Quote(column.Name)} ASC");
+                }
+            }
+        }
+
         var orderBy = orderByColumns.Count == 0
             ? ""
             : $" ORDER BY {string.Join(", ", orderByColumns)}";
@@ -77,5 +104,31 @@ public sealed class SqliteTableDataService : ITableDataService
         }
 
         return new TableDataPage(columns, rows, request.Page, request.PageSize, totalRows);
+    }
+
+    private static async Task<(bool IsRowIdTable, string? Alias)> GetRowIdOrderingAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        TableDefinition definition,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        if (definition.Object.Type != DbObjectType.Table)
+        {
+            return (false, null);
+        }
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT sql FROM main.sqlite_schema WHERE type = 'table' AND name = @table;";
+        command.Parameters.AddWithValue("@table", table);
+        var createSql = Convert.ToString(await command.ExecuteScalarAsync(cancellationToken));
+        if (SqliteSqlInspection.ContainsKeywordSequence(createSql, "WITHOUT", "ROWID"))
+        {
+            return (false, null);
+        }
+
+        string[] aliases = ["rowid", "_rowid_", "oid"];
+        return (true, aliases.FirstOrDefault(alias => definition.Columns.All(column =>
+            !string.Equals(column.Name, alias, StringComparison.OrdinalIgnoreCase))));
     }
 }

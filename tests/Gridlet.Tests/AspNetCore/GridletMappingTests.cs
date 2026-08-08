@@ -88,6 +88,35 @@ public class GridletMappingTests
         Assert.Equal("PublishedConsumers", authorize.Policy);
     }
 
+    [Fact]
+    public async Task Published_mapping_does_not_initialize_optional_agent_service()
+    {
+        var (app, client) = await StartAsync(
+            MappingMode.Published,
+            options => options.Security.AllowAnonymous = true,
+            AddThrowingAgentService);
+        await using var _ = app;
+
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await client.GetAsync("/gridlet/pub/not-configured")).StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Full_and_api_mappings_still_validate_optional_agent_service(bool apiOnly)
+    {
+        await using var app = BuildApp(
+            options => options.Security.AllowAnonymous = true,
+            AddThrowingAgentService);
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            Map(app, apiOnly ? MappingMode.Api : MappingMode.Full));
+
+        Assert.Equal("Agent service was initialized.", exception.Message);
+    }
+
     private static RouteEndpoint GetPublishedEndpoint(WebApplication app)
         => ((IEndpointRouteBuilder)app).DataSources
             .SelectMany(source => source.Endpoints)
@@ -96,7 +125,19 @@ public class GridletMappingTests
 
     private static async Task<(WebApplication App, HttpClient Client)> StartAsync(
         MappingMode mode,
-        Action<GridletOptions>? configure = null)
+        Action<GridletOptions>? configure = null,
+        Action<IServiceCollection>? configureServices = null)
+    {
+        var app = BuildApp(configure, configureServices);
+        Map(app, mode);
+
+        await app.StartAsync();
+        return (app, app.GetTestClient());
+    }
+
+    private static WebApplication BuildApp(
+        Action<GridletOptions>? configure,
+        Action<IServiceCollection>? configureServices)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -109,9 +150,18 @@ public class GridletMappingTests
             configure?.Invoke(options);
         });
         builder.Services.AddSingleton<IGridletProvider, FakeGridletProvider>();
+        configureServices?.Invoke(builder.Services);
 
-        var app = builder.Build();
-        if (mode == MappingMode.Api)
+        return builder.Build();
+    }
+
+    private static void Map(WebApplication app, MappingMode mode)
+    {
+        if (mode == MappingMode.Full)
+        {
+            app.MapGridlet();
+        }
+        else if (mode == MappingMode.Api)
         {
             app.MapGridletApi();
         }
@@ -119,13 +169,15 @@ public class GridletMappingTests
         {
             app.MapGridletPublished();
         }
-
-        await app.StartAsync();
-        return (app, app.GetTestClient());
     }
+
+    private static void AddThrowingAgentService(IServiceCollection services)
+        => services.AddSingleton<IGridletAgentService>(_ =>
+            throw new InvalidOperationException("Agent service was initialized."));
 
     private enum MappingMode
     {
+        Full,
         Api,
         Published,
     }
