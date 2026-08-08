@@ -286,6 +286,7 @@ public sealed class GridletAgentProfileBuilder
     internal GridletCopilotReasoningEffort? CopilotReasoningEffort { get; private set; }
     internal GridletClaudeCodeEffort? ClaudeCodeEffort { get; private set; }
     internal bool AllowsReasoningEffortSelection { get; private set; }
+    internal int? ContextWindowTokens { get; private set; }
 
     /// <summary>Changes the safe display label exposed to Gridlet clients.</summary>
     public GridletAgentProfileBuilder WithDisplayName(string displayName)
@@ -381,6 +382,23 @@ public sealed class GridletAgentProfileBuilder
     }
 
     /// <summary>
+    /// Declares the model's context-window size so Gridlet can show context consumption for
+    /// providers that report token usage without a window size. A window reported by the provider
+    /// itself always wins.
+    /// </summary>
+    public GridletAgentProfileBuilder WithContextWindow(int tokens)
+    {
+        if (tokens is < 1 or > 100_000_000)
+        {
+            throw new GridletValidationException(
+                "The declared context window must be between 1 and 100,000,000 tokens.");
+        }
+
+        ContextWindowTokens = tokens;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the effort sent to Claude Code. When omitted, Claude Code uses the selected model's
     /// default.
     /// </summary>
@@ -462,7 +480,8 @@ public sealed class GridletAgentProfileBuilder
             ReasoningEffort,
             CopilotReasoningEffort,
             ClaudeCodeEffort,
-            AllowsReasoningEffortSelection);
+            AllowsReasoningEffortSelection,
+            ContextWindowTokens);
     }
 }
 
@@ -540,7 +559,8 @@ internal sealed record GridletAgentProfileSettings(
     GridletCodexReasoningEffort? ReasoningEffort,
     GridletCopilotReasoningEffort? CopilotReasoningEffort,
     GridletClaudeCodeEffort? ClaudeCodeEffort,
-    bool AllowsReasoningEffortSelection)
+    bool AllowsReasoningEffortSelection,
+    int? ContextWindowTokens = null)
 {
     public bool RequiresUserApiKey =>
         ServerApiKey is null &&
@@ -582,7 +602,8 @@ internal sealed record GridletAgentFrameworkSettings(
             profile.AllowsUserApiKey,
             profile.RequiresUserApiKey,
             GetReasoningEfforts(profile),
-            GetDefaultReasoningEffort(profile))).ToArray());
+            GetDefaultReasoningEffort(profile),
+            profile.ContextWindowTokens)).ToArray());
 
     public bool TryGetProfile(string id, out GridletAgentProfileSettings profile)
         => _profilesById.TryGetValue(id, out profile!);

@@ -139,6 +139,10 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
     private bool initialized;
     private bool disposed;
 
+    // Claude Code reports the model's context window only in the terminating `result` message.
+    // Retaining it lets later turns stream context consumption while the answer is still arriving.
+    private long? contextWindowTokens;
+
     public ClaudeCodeRuntime(
         string executablePath,
         string model,
@@ -175,6 +179,7 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
 
         var toolCallCount = 0;
         var refusedToolCalls = 0;
+        var requestUsage = new ClaudeRequestUsage();
         while (true)
         {
             using var message = await ReadMessageAsync(cancellationToken);
@@ -198,6 +203,18 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
                     isToolCall ? ++toolCallCount : toolCallCount,
                     cancellationToken);
                 foreach (var update in updates) yield return update;
+                continue;
+            }
+
+            if (type == "stream_event" &&
+                root.TryGetProperty("event", out var usageEvent) &&
+                usageEvent.ValueKind == JsonValueKind.Object &&
+                TryReadStreamUsage(usageEvent, requestUsage))
+            {
+                if (requestUsage.TryCreateUpdate(contextWindowTokens, out var usageUpdate))
+                {
+                    yield return usageUpdate;
+                }
                 continue;
             }
 
@@ -241,11 +258,120 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
                         $"Claude Code returned an error result: {error}");
                 }
 
+                contextWindowTokens = ReadContextWindow(root) ?? contextWindowTokens;
+                if (requestUsage.TryCreateUpdate(contextWindowTokens, out var finalUsage))
+                {
+                    yield return finalUsage;
+                }
+
                 HasCompletedTurn = true;
                 yield break;
             }
         }
     }
+
+    /// <summary>
+    /// Accumulates the usage Claude Code forwards from the model's own streaming events. The final
+    /// request of a turn carries the whole conversation, so its usage is the context occupancy.
+    /// </summary>
+    internal sealed class ClaudeRequestUsage
+    {
+        private long? input;
+        private long? cached;
+        private long? output;
+        private long lastReportedTotal = -1;
+        private long? lastReportedWindow;
+
+        public void SetRequestStart(long? inputTokens, long? cachedTokens, long? outputTokens)
+        {
+            // `message_start` begins a new request; earlier requests in the same turn are superseded.
+            input = inputTokens;
+            cached = cachedTokens;
+            output = outputTokens;
+        }
+
+        public void SetOutput(long? outputTokens)
+        {
+            if (outputTokens is not null) output = outputTokens;
+        }
+
+        public bool TryCreateUpdate(long? contextWindowTokens, out AgentResponseUpdate update)
+        {
+            update = null!;
+            var total = (input ?? 0) + (cached ?? 0) + (output ?? 0);
+            // The window arrives only with the terminating `result` message, after the counts have
+            // stopped changing, so learning it must publish an update of its own.
+            if (total <= 0 ||
+                (total == lastReportedTotal && contextWindowTokens == lastReportedWindow))
+            {
+                return false;
+            }
+
+            lastReportedTotal = total;
+            lastReportedWindow = contextWindowTokens;
+            update = new AgentResponseUpdate(ChatRole.Assistant, [GridletContextUsage.Create(
+                (input ?? 0) + (cached ?? 0), output, cached, total, contextWindowTokens)]);
+            return true;
+        }
+    }
+
+    internal static bool TryReadStreamUsage(JsonElement modelEvent, ClaudeRequestUsage usage)
+    {
+        var eventType = ReadString(modelEvent, "type");
+        if (eventType == "message_start")
+        {
+            if (!modelEvent.TryGetProperty("message", out var startMessage) ||
+                !startMessage.TryGetProperty("usage", out var startUsage))
+            {
+                return false;
+            }
+
+            usage.SetRequestStart(
+                ReadTokenCount(startUsage, "input_tokens"),
+                (ReadTokenCount(startUsage, "cache_read_input_tokens") ?? 0) +
+                (ReadTokenCount(startUsage, "cache_creation_input_tokens") ?? 0),
+                ReadTokenCount(startUsage, "output_tokens"));
+            return true;
+        }
+
+        if (eventType != "message_delta" ||
+            !modelEvent.TryGetProperty("usage", out var deltaUsage))
+        {
+            return false;
+        }
+
+        usage.SetOutput(ReadTokenCount(deltaUsage, "output_tokens"));
+        return true;
+    }
+
+    /// <summary>
+    /// Reads the largest context window Claude Code reports for the models used in a turn. The
+    /// result message keys usage by model id, and a turn may involve more than one model.
+    /// </summary>
+    internal static long? ReadContextWindow(JsonElement result)
+    {
+        if (!result.TryGetProperty("modelUsage", out var modelUsage) ||
+            modelUsage.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        long? window = null;
+        foreach (var model in modelUsage.EnumerateObject())
+        {
+            if (model.Value.ValueKind != JsonValueKind.Object) continue;
+            var value = ReadTokenCount(model.Value, "contextWindow");
+            if (value is > 0 && value > (window ?? 0)) window = value;
+        }
+        return window;
+    }
+
+    private static long? ReadTokenCount(JsonElement element, string propertyName)
+        => element.TryGetProperty(propertyName, out var value) &&
+           value.ValueKind == JsonValueKind.Number &&
+           value.TryGetInt64(out var count)
+            ? count
+            : null;
 
     private async Task SetEffortAsync(
         GridletClaudeCodeEffort? requestedEffort,
