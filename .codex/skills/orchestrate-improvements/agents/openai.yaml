@@ -1,0 +1,4 @@
+interface:
+  display_name: "Orchestrate Improvements"
+  short_description: "Run parallel audits and vetted improvement waves"
+  default_prompt: "Use $orchestrate-improvements to audit this codebase, implement only strong fixes without committing, peer-review the diff, and summarize the results."
