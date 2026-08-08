@@ -26,6 +26,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTestId("agent-composer").FillAsync("Summarize the customers");
         await page.GetByTestId("agent-send").ClickAsync();
 
+        await Assertions.Expect(page.GetByTestId("agent-message-user").Locator(".agent-message-role"))
+            .ToHaveTextAsync("Me");
         await Assertions.Expect(page.GetByTestId("agent-message-assistant"))
             .ToContainTextAsync("Fake data response");
         await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");

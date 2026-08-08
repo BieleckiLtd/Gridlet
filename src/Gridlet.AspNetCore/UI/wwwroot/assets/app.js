@@ -2418,7 +2418,7 @@
         class: `agent-message agent-message-${role}`,
         'data-testid': `agent-message-${role}`,
       },
-        h('div', { class: 'agent-message-role', text: role === 'user' ? 'You' : 'Agent' }),
+        h('div', { class: 'agent-message-role', text: role === 'user' ? 'Me' : 'Agent' }),
         role === 'assistant' ? null : body,
         error);
       messages.append(element);
