@@ -147,8 +147,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTestId("agent-composer").FillAsync("Follow-up question");
         await page.GetByTestId("agent-send").ClickAsync();
         await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
-        await Assertions.Expect(page.GetByTestId("agent-message-assistant").Last.Locator(".agent-message-role"))
-            .ToHaveTextAsync("Fake local model · fake-local-v1");
+        var responseRole = page.GetByTestId("agent-message-assistant").Last
+            .Locator(".agent-message-role");
+        await Assertions.Expect(responseRole.Locator(".agent-message-role-name"))
+            .ToHaveTextAsync("Agent");
+        await Assertions.Expect(responseRole.Locator(".agent-message-role-detail"))
+            .ToHaveTextAsync("- Fake local model · fake-local-v1");
 
         Assert.Equal(requestsBefore + 2, fixture.Agent.Requests.Count);
         var followUp = fixture.Agent.Requests[^1];

@@ -678,6 +678,12 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 .agent-message-user { margin-left: auto; align-items: flex-end; }
 .agent-message-assistant { width: min(82%, 900px); margin-right: auto; align-items: flex-start; }
 .agent-message-role { color: var(--muted); font-size: 10.5px; font-weight: 650; letter-spacing: .35px; text-transform: uppercase; }
+.agent-message-role-detail {
+  opacity: .68;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
 .agent-model-marker {
   display: flex;
   align-items: center;

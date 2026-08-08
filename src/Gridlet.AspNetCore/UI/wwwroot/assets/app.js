@@ -2418,10 +2418,11 @@
         class: `agent-message agent-message-${role}`,
         'data-testid': `agent-message-${role}`,
       },
-        h('div', {
-          class: 'agent-message-role',
-          text: role === 'user' ? 'Me' : assistantLabel,
-        }),
+        h('div', { class: 'agent-message-role' },
+          h('span', { class: 'agent-message-role-name', text: role === 'user' ? 'Me' : 'Agent' }),
+          role === 'assistant'
+            ? h('span', { class: 'agent-message-role-detail', text: ` - ${assistantLabel}` })
+            : null),
         role === 'assistant' ? null : body,
         error);
       messages.append(element);
