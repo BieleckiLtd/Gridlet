@@ -109,6 +109,10 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-label", "Stop dictation");
         Assert.True(await page.EvaluateAsync<bool>(
             "window.__fakeSpeechRecognition.continuous && window.__fakeSpeechRecognition.interimResults"));
+        // Speech services reject bare subtags such as the document's 'en', so the
+        // requested language must carry a region.
+        Assert.Matches("^[A-Za-z]{2,3}-[A-Za-z0-9]{2,}",
+            await page.EvaluateAsync<string>("window.__fakeSpeechRecognition.lang"));
 
         await page.EvaluateAsync("""
             () => {
@@ -129,6 +133,27 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await composer.FillAsync("Typed instead");
         await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-pressed", "false");
         Assert.True(await page.EvaluateAsync<bool>("window.__fakeSpeechRecognition.aborted"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Explains_dictation_when_the_browser_has_no_speech_recognition()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("""
+            delete window.SpeechRecognition;
+            delete window.webkitSpeechRecognition;
+            """);
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        var dictation = page.GetByTestId("agent-dictation");
+        await Assertions.Expect(dictation).ToBeVisibleAsync();
+        await Assertions.Expect(dictation).ToHaveAttributeAsync("data-state", "unsupported");
+        await Assertions.Expect(dictation).ToBeDisabledAsync();
+        await Assertions.Expect(dictation).ToHaveAttributeAsync(
+            "title", new Regex("not supported in this browser"));
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -176,6 +201,10 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.True(await page.EvaluateAsync<bool>("""
             () => document.documentElement.scrollWidth <= document.documentElement.clientWidth
             """));
+        await page.GetByTestId("agent-messages").ClickAsync();
+        await Assertions.Expect(options).ToBeHiddenAsync();
+        await Assertions.Expect(composer.Locator(".agent-composer-overflow"))
+            .Not.ToHaveAttributeAsync("open", "");
 
         await page.SetViewportSizeAsync(1400, 600);
         await Assertions.Expect(optionsButton).ToBeHiddenAsync();
@@ -582,6 +611,39 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var cancelledAssistant = page.GetByTestId("agent-message-assistant");
         await Assertions.Expect(cancelledAssistant.Locator(".agent-reasoning"))
             .ToContainTextAsync("Waiting on a deliberately slow provider.");
+        var thinking = cancelledAssistant.Locator(".agent-reasoning.is-thinking");
+        await Assertions.Expect(thinking.Locator("summary")).ToHaveTextAsync("Thinking…");
+        Assert.Equal("agent-thinking-sheen", await thinking.Locator("summary span")
+            .EvaluateAsync<string>("element => getComputedStyle(element).animationName"));
+        Assert.Equal("rgba(0, 0, 0, 0)", await thinking
+            .EvaluateAsync<string>("element => getComputedStyle(element).borderColor"));
+        Assert.Equal("rgba(0, 0, 0, 0)", await thinking
+            .EvaluateAsync<string>("element => getComputedStyle(element).backgroundColor"));
+        Assert.Equal("linear", await thinking.Locator("summary span")
+            .EvaluateAsync<string>("element => getComputedStyle(element).animationTimingFunction"));
+        Assert.Equal("none", await thinking.Locator("summary")
+            .EvaluateAsync<string>("element => getComputedStyle(element).textDecorationLine"));
+        Assert.Equal("4px", await thinking.Locator("summary")
+            .EvaluateAsync<string>("element => getComputedStyle(element, '::after').width"));
+        await thinking.Locator("summary").HoverAsync();
+        Assert.Equal("underline", await thinking.Locator("summary span")
+            .EvaluateAsync<string>("element => getComputedStyle(element).textDecorationLine"));
+        var collapsedThinkingLabel = await thinking.Locator("summary span").BoundingBoxAsync();
+        await thinking.Locator("summary").ClickAsync();
+        await Assertions.Expect(thinking).ToHaveAttributeAsync("open", "");
+        var expandedThinkingLabel = await thinking.Locator("summary span").BoundingBoxAsync();
+        Assert.NotNull(collapsedThinkingLabel);
+        Assert.NotNull(expandedThinkingLabel);
+        Assert.InRange(Math.Abs(expandedThinkingLabel.X - collapsedThinkingLabel.X), 0, 0.5f);
+        Assert.InRange(Math.Abs(expandedThinkingLabel.Y - collapsedThinkingLabel.Y), 0, 0.5f);
+        var reasoningPanelBounds = await thinking.BoundingBoxAsync();
+        var roleBounds = await cancelledAssistant.Locator(".agent-message-role").BoundingBoxAsync();
+        Assert.NotNull(reasoningPanelBounds);
+        Assert.NotNull(roleBounds);
+        Assert.True(reasoningPanelBounds.Y >= roleBounds.Y + roleBounds.Height,
+            "The expanded reasoning panel overlapped the agent heading.");
+        Assert.NotEqual("rgba(0, 0, 0, 0)", await thinking
+            .EvaluateAsync<string>("element => getComputedStyle(element).borderColor"));
         await page.GetByTestId("agent-cancel").ClickAsync();
 
         await Assertions.Expect(page.GetByTestId("agent-status"))
@@ -590,6 +652,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToHaveTextAsync("Response cancelled.");
         await Assertions.Expect(cancelledAssistant.Locator(".agent-reasoning > summary"))
             .ToContainTextAsync("Thought for");
+        await Assertions.Expect(cancelledAssistant.Locator(".agent-reasoning"))
+            .Not.ToHaveClassAsync(new Regex("is-thinking"));
         await Assertions.Expect(page.GetByTestId("agent-messages"))
             .ToHaveAttributeAsync("aria-busy", "false");
 
@@ -752,6 +816,23 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(pickers).ToBeVisibleAsync();
         Assert.True(await pickers.Locator(".picker-label").EvaluateAllAsync<bool>(
             "labels => labels.every(label => getComputedStyle(label).display === 'none')"));
+
+        // At an intermediate width (including a 1366px window at 200% zoom), the picker
+        // container must not shrink underneath its fixed-width triggers and overlap actions.
+        await page.SetViewportSizeAsync(680, 600);
+        await page.WaitForFunctionAsync("""
+            () => {
+                const topbar = document.querySelector('#topbar').getBoundingClientRect();
+                const items = [...document.querySelectorAll(
+                    '#topbar > .brand, #topbar > .toolbar-slot > :not([hidden]), #topbar > .toolbar-more:not([hidden])')]
+                    .filter(item => item.getClientRects().length)
+                    .map(item => item.getBoundingClientRect())
+                    .sort((left, right) => left.left - right.left);
+                return document.documentElement.scrollWidth <= document.documentElement.clientWidth
+                    && items.every(item => item.left >= topbar.left && item.right <= topbar.right)
+                    && items.slice(1).every((item, index) => item.left >= items[index].right - 0.5);
+            }
+            """);
 
         await page.SetViewportSizeAsync(360, 600);
         var more = page.Locator("#topbar").GetByRole(

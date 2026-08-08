@@ -34,3 +34,15 @@ public interface IGridletProviderMetadata
 {
     Models.GridletProviderCapabilities Capabilities { get; }
 }
+
+/// <summary>
+/// Optional provider metadata used to tell database agents which SQL dialect and engine version
+/// they are working with. Providers that do not implement this interface remain supported.
+/// </summary>
+public interface IGridletDatabaseSystemInfoProvider
+{
+    /// <summary>Returns non-secret information about the database engine for the target connection.</summary>
+    Task<Models.GridletDatabaseSystemInfo> GetDatabaseSystemInfoAsync(
+        Models.GridletConnectionContext context,
+        CancellationToken cancellationToken = default);
+}

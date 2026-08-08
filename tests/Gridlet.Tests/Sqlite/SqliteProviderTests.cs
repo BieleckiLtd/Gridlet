@@ -1,3 +1,4 @@
+using Gridlet.Abstractions;
 using Gridlet.Models;
 using Gridlet.Sqlite;
 using Microsoft.Data.Sqlite;
@@ -76,6 +77,18 @@ public sealed class SqliteProviderTests : IAsyncLifetime
         Assert.False(provider.Capabilities.SupportsClusteredPrimaryKeys);
         Assert.Contains("LIMIT 100", provider.Capabilities.SelectExample);
         Assert.Equal("Recreate", provider.Capabilities.ObjectEditMode);
+    }
+
+    [Fact]
+    public async Task Reports_sqlite_technology_and_engine_version()
+    {
+        var infoProvider = Assert.IsAssignableFrom<IGridletDatabaseSystemInfoProvider>(provider);
+
+        var info = await infoProvider.GetDatabaseSystemInfoAsync(context);
+
+        Assert.Equal("SQLite", info.Technology);
+        Assert.NotNull(info.Version);
+        Assert.Matches(@"^\d+\.\d+\.\d+", info.Version);
     }
 
     [Fact]

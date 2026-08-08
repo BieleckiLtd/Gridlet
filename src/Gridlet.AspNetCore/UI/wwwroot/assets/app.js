@@ -108,6 +108,9 @@
     more.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') { more.open = false; more.querySelector('summary').focus(); }
     });
+    document.addEventListener('pointerdown', (event) => {
+      if (more.open && !more.contains(event.target)) more.open = false;
+    });
     const observer = new ResizeObserver(update);
     observer.observe(toolbar);
     for (const child of toolbar.children) {
@@ -2420,11 +2423,16 @@
     const microphoneStand = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     microphoneStand.setAttribute('d', 'M5.5 11a6.5 6.5 0 0013 0M12 17.5V21M9 21h6');
     microphoneSvg.append(microphoneBody, microphoneStand);
+    const unsupportedDictationLabel =
+      'Dictation is not supported in this browser. Try a Chromium-based browser such as Edge or Chrome.';
     const dictationButton = h('button', {
-      class: 'agent-dictation-button', type: 'button', title: 'Start dictation',
-      'aria-label': 'Start dictation', 'aria-pressed': 'false',
-      'data-testid': 'agent-dictation', 'data-state': 'idle',
-      hidden: SpeechRecognitionApi ? null : '',
+      class: 'agent-dictation-button', type: 'button',
+      title: SpeechRecognitionApi ? 'Start dictation' : unsupportedDictationLabel,
+      'aria-label': SpeechRecognitionApi ? 'Start dictation' : unsupportedDictationLabel,
+      'aria-pressed': 'false',
+      'data-testid': 'agent-dictation',
+      'data-state': SpeechRecognitionApi ? 'idle' : 'unsupported',
+      disabled: SpeechRecognitionApi ? null : '',
     }, microphoneSvg);
     const privacySvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     privacySvg.setAttribute('class', 'agent-privacy-icon');
@@ -2516,12 +2524,22 @@
       dictationButton.title = label;
     };
 
+    // Browser speech services need a region-qualified tag such as 'en-GB'; a bare
+    // subtag like the document's 'en' matches no model and surfaces as a network error.
+    const dictationLanguage = () => {
+      const candidates = [
+        navigator.language,
+        ...(navigator.languages || []),
+        document.documentElement.lang,
+      ];
+      return candidates.find((tag) => /^[A-Za-z]{2,3}-[A-Za-z0-9]{2,}/.test(tag || '')) || 'en-US';
+    };
+
     const ensureRecognition = () => {
       if (recognition || !SpeechRecognitionApi) return recognition;
       recognition = new SpeechRecognitionApi();
       recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.lang = document.documentElement.lang || navigator.language || 'en-US';
       recognition.onstart = () => {
         dictationStarting = false;
         isDictating = true;
@@ -2545,9 +2563,12 @@
         dictationError = event.error || 'unknown';
         const errors = {
           'not-allowed': 'Microphone access was not allowed.',
-          'service-not-allowed': 'Speech recognition is not allowed in this browser.',
+          'service-not-allowed': 'Speech recognition is not allowed in this browser.'
+            + ' On Windows, enable Settings > Privacy & security > Speech > Online speech recognition.',
           'audio-capture': 'No microphone is available.',
-          network: 'Browser speech recognition could not connect.',
+          network: 'The browser could not reach its speech recognition service.'
+            + ' Dictation is processed online, so check that Windows Settings > Privacy & security >'
+            + ' Speech > Online speech recognition is on and that no proxy or firewall blocks it.',
           'no-speech': 'No speech was detected.',
         };
         if (dictationError !== 'aborted') toast(errors[dictationError] || 'Dictation could not start.');
@@ -2584,7 +2605,9 @@
       try {
         dictationStarting = true;
         updateDictationButton();
-        ensureRecognition()?.start();
+        const active = ensureRecognition();
+        if (active) active.lang = dictationLanguage();
+        active?.start();
       } catch {
         dictationStarting = false;
         updateDictationButton();
@@ -2635,7 +2658,7 @@
       actionButton.title = isBusy ? 'Cancel response' : 'Send message';
       sendIcon.toggleAttribute('hidden', isBusy);
       stopIcon.toggleAttribute('hidden', !isBusy);
-      dictationButton.disabled = isBusy;
+      dictationButton.disabled = isBusy || !SpeechRecognitionApi;
       modeSelect.disabled = Boolean(activeRequest);
       providerSelect.disabled = Boolean(activeRequest);
       effortSelect.disabled = Boolean(activeRequest);
@@ -2753,18 +2776,11 @@
       let activity = null;
       let currentAnswer = null;
 
-      const stopActivityAnimation = () => {
-        if (activity?.timer) {
-          clearInterval(activity.timer);
-          activity.timer = null;
-        }
-      };
-
       const finishActivity = () => {
         if (!activity?.startedAt) return;
-        stopActivityAnimation();
         const seconds = Math.max(1, Math.round((Date.now() - activity.startedAt) / 1000));
         activity.label.textContent = `Thought for ${seconds}s`;
+        activity.details.classList.remove('is-thinking');
         activity.details.open = false;
         activity.closed = true;
         activity = null;
@@ -2772,9 +2788,9 @@
 
       const ensureActivity = () => {
         if (activity && !activity.closed) return activity;
-        const label = h('span', { text: 'Thinking' });
+        const label = h('span', { text: 'Thinking…' });
         const activityBody = h('div', { class: 'agent-reasoning-body' });
-        const details = h('details', { class: 'agent-reasoning' },
+        const details = h('details', { class: 'agent-reasoning is-thinking' },
           h('summary', {}, label), activityBody);
         element.insertBefore(details, error);
         const nextActivity = {
@@ -2782,15 +2798,9 @@
           label,
           body: activityBody,
           startedAt: Date.now(),
-          frame: 0,
           currentReasoningEntry: null,
           closed: false,
-          timer: null,
         };
-        nextActivity.timer = setInterval(() => {
-          nextActivity.frame = (nextActivity.frame % 3) + 1;
-          nextActivity.label.textContent = `Thinking ${'.'.repeat(nextActivity.frame)}`;
-        }, 650);
         activity = nextActivity;
         return activity;
       };

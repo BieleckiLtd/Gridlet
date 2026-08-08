@@ -132,9 +132,11 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         EnsureModeAllowed(request.Mode, resolved.Context.Connection);
         var apiKey = ResolveApiKey(request, profile);
 
-        var instructions = request.Mode == GridletAgentMode.Schema
+        var baseInstructions = request.Mode == GridletAgentMode.Schema
             ? SchemaInstructions
             : DataInstructions;
+        var systemInfo = await GetDatabaseSystemInfoAsync(resolved, cancellationToken);
+        var instructions = CreateInstructions(baseInstructions, systemInfo);
         CliConversation? cliConversation = null;
         if (profile.Provider is GridletAgentProvider.Codex or GridletAgentProvider.ClaudeCode &&
             request.ConversationId is not null)
@@ -292,6 +294,66 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
                     await cliConversation.DisposeAsync(CancellationToken.None);
                 }
             }
+        }
+    }
+
+    internal static string CreateInstructions(
+        string baseInstructions,
+        GridletDatabaseSystemInfo systemInfo)
+    {
+        var technology = NormalizeSystemInfoValue(systemInfo.Technology, "unknown");
+        var version = string.IsNullOrWhiteSpace(systemInfo.Version)
+            ? "not available"
+            : NormalizeSystemInfoValue(systemInfo.Version, "not available");
+        return string.Concat(
+            baseInstructions,
+            "\nDatabase environment (application-supplied facts):\n",
+            "- Technology: ", technology, "\n",
+            "- Version: ", version, "\n",
+            "Use the SQL dialect and features supported by this technology and version.\n");
+    }
+
+    private static string NormalizeSystemInfoValue(string? value, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return fallback;
+
+        const int maxLength = 256;
+        var normalized = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
+    }
+
+    private static async Task<GridletDatabaseSystemInfo> GetDatabaseSystemInfoAsync(
+        ResolvedConnection resolved,
+        CancellationToken cancellationToken)
+    {
+        var technology = resolved.Provider.ProviderName switch
+        {
+            GridletProviderNames.SqlServer => "Microsoft SQL Server",
+            GridletProviderNames.Sqlite => "SQLite",
+            _ => resolved.Provider.ProviderName.ToString(),
+        };
+
+        if (resolved.Provider is not IGridletDatabaseSystemInfoProvider infoProvider)
+        {
+            return new GridletDatabaseSystemInfo(technology);
+        }
+
+        try
+        {
+            var info = await infoProvider.GetDatabaseSystemInfoAsync(
+                resolved.Context, cancellationToken);
+            return string.IsNullOrWhiteSpace(info.Technology)
+                ? new GridletDatabaseSystemInfo(technology, info.Version)
+                : info;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Engine/version context improves model accuracy but must not make chat unavailable.
+            return new GridletDatabaseSystemInfo(technology);
         }
     }
 

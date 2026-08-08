@@ -121,7 +121,13 @@ html, body {
 .brand-mark { width: 24px; height: 24px; object-fit: contain; }
 :root[data-theme="light"] .brand-mark { filter: invert(1); }
 
-.connection-pickers { display: flex; align-items: center; gap: clamp(6px, 1vw, 12px); min-width: 0; }
+.connection-pickers {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: clamp(6px, 1vw, 12px);
+  min-width: 0;
+}
 .picker { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
 
 .picker-select { position: relative; color: var(--text); }
@@ -828,22 +834,70 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 }
 .agent-table tr:last-child td { border-bottom: 0; }
 .agent-reasoning {
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
   padding: 6px 9px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: 7px;
-  background: var(--panel);
+  background: transparent;
   color: var(--muted);
   font-size: 12px;
 }
 .agent-reasoning summary {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
+  color: var(--agent-detail);
   cursor: pointer;
+  list-style: none;
   user-select: none;
 }
-.agent-reasoning[open] {
-  width: 100%;
+.agent-reasoning summary::-webkit-details-marker { display: none; }
+.agent-reasoning summary::after {
+  content: '';
+  width: 4px;
+  height: 4px;
+  flex: 0 0 auto;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 140ms ease;
 }
+.agent-reasoning summary:hover {
+  color: var(--accent);
+}
+.agent-reasoning summary:hover span {
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-underline-offset: 3px;
+}
+.agent-reasoning summary:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.agent-reasoning.is-thinking > summary span {
+  color: transparent;
+  background: linear-gradient(105deg,
+    var(--agent-detail) 0%,
+    var(--agent-detail) 43%,
+    var(--text) 49%,
+    var(--accent) 50%,
+    var(--text) 51%,
+    var(--agent-detail) 57%,
+    var(--agent-detail) 100%);
+  background-position: 150% 50%;
+  background-size: 400% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: agent-thinking-sheen 1.8s linear infinite;
+}
+.agent-reasoning[open] {
+  border-color: var(--border);
+  background: var(--panel);
+}
+.agent-reasoning[open] > summary::after { transform: rotate(45deg); }
 .agent-reasoning-body {
   margin-top: 7px;
   padding-top: 7px;
@@ -901,6 +955,10 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 }
 .agent-json code {
   font: inherit;
+}
+@keyframes agent-thinking-sheen {
+  from { background-position: 150% 50%; }
+  to { background-position: -50% 50%; }
 }
 .agent-message-error {
   padding: 7px 9px;
@@ -1108,6 +1166,14 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 .agent-dictation-button:focus-visible {
   border-color: var(--border);
   color: var(--text);
+}
+.agent-dictation-button[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.agent-dictation-button[disabled]:hover {
+  border-color: transparent;
+  color: var(--muted);
 }
 .agent-dictation-button.is-listening {
   border-color: color-mix(in srgb, var(--danger) 55%, transparent);
@@ -1458,6 +1524,11 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 
 @media (prefers-reduced-motion: reduce) {
   #ask-btn::after { animation: none; }
+  .agent-reasoning.is-thinking > summary span {
+    color: var(--accent);
+    background: none;
+    animation: none;
+  }
   .agent-composer-shell[aria-busy="true"] { animation: none; }
   .agent-dictation-button.is-listening::after { animation: none; }
   .toast, .toast.dismissing { animation-duration: 1ms; }

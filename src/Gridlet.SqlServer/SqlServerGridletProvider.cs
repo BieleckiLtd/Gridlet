@@ -4,7 +4,8 @@ using Gridlet.Models;
 namespace Gridlet.SqlServer;
 
 /// <summary>The SQL Server implementation of the Gridlet provider boundary.</summary>
-public sealed class SqlServerGridletProvider : IGridletProvider, IGridletProviderMetadata
+public sealed class SqlServerGridletProvider :
+    IGridletProvider, IGridletProviderMetadata, IGridletDatabaseSystemInfoProvider
 {
     public GridletProviderNames ProviderName => GridletProviderNames.SqlServer;
 
@@ -36,4 +37,12 @@ public sealed class SqlServerGridletProvider : IGridletProvider, IGridletProvide
     public ITableWriteService Writes { get; } = new SqlServerTableWriteService();
 
     public ITableDdlService Ddl { get; } = new SqlServerTableDdlService();
+
+    public async Task<GridletDatabaseSystemInfo> GetDatabaseSystemInfoAsync(
+        GridletConnectionContext context,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        return new GridletDatabaseSystemInfo("Microsoft SQL Server", connection.ServerVersion);
+    }
 }

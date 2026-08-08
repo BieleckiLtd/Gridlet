@@ -36,6 +36,9 @@ public sealed record GridletAgentUserContext(
 /// <summary>An opaque, user-bound reference to an API key held only in server memory.</summary>
 public sealed record GridletAgentCredential(string Handle, DateTimeOffset ExpiresAt);
 
+/// <summary>Non-secret database-engine facts supplied to a database agent.</summary>
+public sealed record GridletDatabaseSystemInfo(string Technology, string? Version = null);
+
 /// <summary>A provider-neutral request passed to the configured database agent service.</summary>
 public sealed record GridletAgentRequest(
     string ConnectionName,
