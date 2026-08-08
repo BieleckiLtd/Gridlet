@@ -7,7 +7,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddAuthorizationPolicies();
 
-builder.Services
+var gridlet = builder.Services
     .AddGridlet(options =>
     {
         // Demo only.
@@ -27,8 +27,22 @@ builder.Services
             c.AllowAgentSchemaAccess = true;
             c.AllowAgentDataAccess = true;
             c.AllowAgentDataWithPrimaryConnection = true;
-        })
-    .AddAgentFramework(agents =>
+        });
+
+if (OperatingSystem.IsWindows())
+{
+    gridlet.AddSqlServer(
+        builder.Configuration,
+        "SqlServerLocalDb",
+        c =>
+        {
+            c.AllowAgentSchemaAccess = true;
+            c.AllowAgentDataAccess = true;
+            c.AllowAgentDataWithPrimaryConnection = true;
+        });
+}
+
+gridlet.AddAgentFramework(agents =>
     {
         agents.AddOllama("local-qwen3.5-4b", new Uri("http://127.0.0.1:11434"), "qwen3.5:4b");
         agents.AddOllama("local-qwen3.5-2b", new Uri("http://127.0.0.1:11434"), "qwen3.5:2b");
@@ -55,10 +69,26 @@ builder.Services
 var app = builder.Build();
 
 // Demo only.
-var connectionString = app.Services.GetRequiredService<IOptions<GridletOptions>>()
-    .Value.Connections.Single(connection => connection.ProviderName == GridletProviderNames.Sqlite)
+var options = app.Services.GetRequiredService<IOptions<GridletOptions>>().Value;
+var sqliteConnectionString = options.Connections
+    .Single(connection => connection.ProviderName == GridletProviderNames.Sqlite)
     .ConnectionString;
-await SampleDatabase.EnsureAsync(connectionString, app.Logger, app.Lifetime.ApplicationStopping);
+await SampleDatabase.EnsureAsync(sqliteConnectionString, app.Logger, app.Lifetime.ApplicationStopping);
+
+var localDbConnection = options.Connections
+    .SingleOrDefault(connection => connection.ProviderName == GridletProviderNames.SqlServer);
+if (localDbConnection is not null)
+{
+    var initialized = await SqlServerSampleDatabase.TryEnsureAsync(
+        localDbConnection.ConnectionString,
+        app.Logger,
+        app.Lifetime.ApplicationStopping);
+    if (!initialized)
+    {
+        // Keep the cross-platform demo usable on Windows machines without the LocalDB workload.
+        options.Connections.Remove(localDbConnection);
+    }
+}
 
 app.MapGet("/", () => Results.Redirect("/gridlet"));
 app.MapGridlet();

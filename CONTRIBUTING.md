@@ -18,6 +18,24 @@ dotnet build --no-restore --configuration Release
 dotnet test --no-build --configuration Release
 ```
 
+Repository agent assets have one canonical home in `.agents`. The first
+`dotnet build` automatically creates the appropriate local aliases, whether or
+not you use a coding agent: directory junctions on Windows and symbolic links
+on macOS/Linux. You can also initialize or verify them manually:
+
+```pwsh
+# Windows (creates directory junctions)
+pwsh -NoProfile -File ./scripts/Initialize-AgentTooling.ps1
+```
+
+```sh
+# macOS/Linux (creates symbolic links)
+sh ./scripts/Initialize-AgentTooling.sh
+```
+
+Both scripts are idempotent and refuse to replace conflicting paths. CI relies
+on the same MSBuild hook, keeping the Linux path tested on every build.
+
 Browser tests also require Chromium. CI installs it with:
 
 ```pwsh

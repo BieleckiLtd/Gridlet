@@ -17,6 +17,10 @@ _UpgradeReport_Files/
 !.vscode/launch.json
 !.vscode/tasks.json
 
+## Local AI tooling
+.claude/
+.codex/
+
 ## OS
 Thumbs.db
 .DS_Store
