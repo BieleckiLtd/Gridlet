@@ -1,0 +1,68 @@
+name: Promotion policy
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  promotion-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the dev branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [[ "$HEAD_REF" != "dev" ]]; then
+            echo "Only the dev branch may be promoted to main. Received: $HEAD_REF" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Validate release version
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          function Read-Version([string]$content) {
+            [xml]$props = $content
+            return $props.SelectSingleNode('/Project/PropertyGroup/Version').InnerText.Trim()
+          }
+
+          $headVersion = Read-Version (Get-Content Directory.Build.props -Raw)
+          $baseVersion = Read-Version (git show "$env:BASE_SHA`:Directory.Build.props")
+
+          if ($headVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Promotion version '$headVersion' must be stable SemVer (X.Y.Z)."
+          }
+          if ([version]$headVersion -le [version]$baseVersion) {
+            throw "Promotion must increase the version above $baseVersion; found $headVersion."
+          }
+          if (git tag --list "v$headVersion") {
+            throw "Tag v$headVersion already exists."
+          }
+
+          $packageUrl = "https://api.nuget.org/v3-flatcontainer/gridlet.core/$($headVersion.ToLowerInvariant())/gridlet.core.$($headVersion.ToLowerInvariant()).nupkg"
+          try {
+            $response = Invoke-WebRequest -Uri $packageUrl -Method Head -SkipHttpErrorCheck
+            if ($response.StatusCode -eq 200) {
+              throw "Gridlet.Core $headVersion is already published to NuGet."
+            }
+            if ($response.StatusCode -ne 404) {
+              throw "NuGet returned unexpected status $($response.StatusCode) for $packageUrl."
+            }
+          }
+          catch {
+            throw "Unable to prove Gridlet.Core $headVersion is unpublished: $($_.Exception.Message)"
+          }
+
+          "Promotion approved: dev -> main will release Gridlet $headVersion."
