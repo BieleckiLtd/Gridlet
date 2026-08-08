@@ -24,6 +24,9 @@ public sealed class GridletOptions
     /// <summary>Persistence for saved queries and published endpoints.</summary>
     public GridletStorageOptions Storage { get; set; } = new();
 
+    /// <summary>Privacy controls for the default structured audit logger.</summary>
+    public GridletAuditOptions Audit { get; set; } = new();
+
     /// <summary>
     /// Adds a database connection to Gridlet's allow-list.
     /// </summary>

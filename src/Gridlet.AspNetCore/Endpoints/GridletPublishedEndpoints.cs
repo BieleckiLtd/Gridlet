@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using static Gridlet.AspNetCore.GridletEndpointHelpers;
 
@@ -23,6 +24,8 @@ namespace Gridlet.AspNetCore;
 /// </summary>
 internal static class GridletPublishedEndpoints
 {
+    private const string UnexpectedErrorMessage = "An unexpected server error occurred.";
+
     public static void Map(RouteGroupBuilder group)
     {
         group.MapMethods("/pub/{**route}", ["GET", "POST", "PUT", "PATCH", "DELETE"], Invoke)
@@ -36,9 +39,11 @@ internal static class GridletPublishedEndpoints
         IGridletConnectionResolver resolver,
         IOptionsMonitor<GridletOptions> options,
         IGridletAuditSink audit,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
+        var useNdjson = AcceptsNdjson(httpContext.Request);
 
         PublishedEndpoint endpoint;
         ResolvedConnection resolved;
@@ -53,8 +58,8 @@ internal static class GridletPublishedEndpoints
             var found = await store.FindAsync(httpContext.Request.Method, route.Trim('/'), cancellationToken);
             if (found is null || !found.Enabled)
             {
-                await WriteResultAsync(httpContext,
-                    Results.NotFound(new GridletErrorResponse($"No published endpoint at '{route}'.")));
+                await WriteErrorAsync(httpContext, StatusCodes.Status404NotFound,
+                    $"No published endpoint at '{route}'.", useNdjson, cancellationToken);
                 return;
             }
 
@@ -68,8 +73,9 @@ internal static class GridletPublishedEndpoints
                 var decision = await authorization.AuthorizeAsync(httpContext.User, endpoint.AuthorizationPolicy);
                 if (!decision.Succeeded)
                 {
-                    await WriteResultAsync(httpContext,
-                        Forbidden($"This endpoint requires the '{endpoint.AuthorizationPolicy}' policy."));
+                    await WriteErrorAsync(httpContext, StatusCodes.Status403Forbidden,
+                        $"This endpoint requires the '{endpoint.AuthorizationPolicy}' policy.",
+                        useNdjson, cancellationToken);
                     return;
                 }
             }
@@ -85,15 +91,16 @@ internal static class GridletPublishedEndpoints
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            await WriteResultAsync(httpContext, MapError(ex));
+            await WriteMappedErrorAsync(
+                httpContext, ex, useNdjson, loggerFactory, cancellationToken);
             return;
         }
 
-        // Stream the first result set as { rows: [...], rowCount }. Only one batch of rows is buffered
-        // at a time, so server memory stays bounded regardless of result-set size. rowCount is only
-        // known once every row has streamed, so it trails the rows array. Published endpoints are
-        // uncapped by default, so there is no truncation flag to report.
-        httpContext.Response.ContentType = "application/json; charset=utf-8";
+        // JSON remains the default response. Callers can explicitly request NDJSON for simple
+        // line-by-line consumption of large results and stable terminal completion/error events.
+        httpContext.Response.ContentType = useNdjson
+            ? "application/x-ndjson; charset=utf-8"
+            : "application/json; charset=utf-8";
         string[]? columnNames = null;
         var openedBody = false;
         var firstRow = true;
@@ -109,22 +116,37 @@ internal static class GridletPublishedEndpoints
                 {
                     case "resultSet" when streamEvent.ResultSetIndex == 0 && streamEvent.Columns is not null:
                         columnNames = ResolveColumnNames(streamEvent.Columns);
-                        await httpContext.Response.WriteAsync("{\"rows\":[", cancellationToken);
-                        openedBody = true;
+                        if (!useNdjson)
+                        {
+                            await httpContext.Response.WriteAsync("{\"rows\":[", cancellationToken);
+                            openedBody = true;
+                        }
                         break;
 
                     case "rows" when streamEvent.ResultSetIndex == 0 && columnNames is not null && streamEvent.Rows is not null:
                         foreach (var row in streamEvent.Rows)
                         {
-                            if (!firstRow)
+                            var record = ToRecord(columnNames, row);
+                            if (useNdjson)
                             {
-                                await httpContext.Response.WriteAsync(",", cancellationToken);
+                                await WriteNdjsonEventAsync(
+                                    httpContext,
+                                    new PublishedRowEvent("row", record),
+                                    cancellationToken);
+                            }
+                            else
+                            {
+                                if (!firstRow)
+                                {
+                                    await httpContext.Response.WriteAsync(",", cancellationToken);
+                                }
+
+                                firstRow = false;
+                                await JsonSerializer.SerializeAsync(
+                                    httpContext.Response.Body, record,
+                                    JsonSerializerOptions.Web, cancellationToken);
                             }
 
-                            firstRow = false;
-                            await JsonSerializer.SerializeAsync(
-                                httpContext.Response.Body, ToRecord(columnNames, row),
-                                JsonSerializerOptions.Web, cancellationToken);
                             rowCount++;
                         }
 
@@ -137,7 +159,14 @@ internal static class GridletPublishedEndpoints
                 }
             }
 
-            if (openedBody)
+            if (useNdjson)
+            {
+                await WriteNdjsonEventAsync(
+                    httpContext,
+                    new PublishedCompletedEvent("completed", rowCount, recordsAffected),
+                    cancellationToken);
+            }
+            else if (openedBody)
             {
                 await httpContext.Response.WriteAsync(
                     $"],\"rowCount\":{rowCount}}}", cancellationToken);
@@ -165,13 +194,26 @@ internal static class GridletPublishedEndpoints
 
             if (!httpContext.Response.HasStarted)
             {
-                await WriteResultAsync(httpContext, MapError(ex));
+                await WriteMappedErrorAsync(
+                    httpContext, ex, useNdjson, loggerFactory, cancellationToken);
                 return;
             }
 
-            // The 200 status and some rows are already on the wire, so the status cannot change.
-            // Close the JSON with an "error" marker consumers can detect alongside the partial rows.
-            await TryCloseWithErrorAsync(httpContext, openedBody, rowCount, ex.Message);
+            var clientMessage = ClientErrorMessage(ex);
+            LogUnexpectedError(loggerFactory, ex);
+
+            if (useNdjson)
+            {
+                // The 200 status and previous rows are already on the wire. A terminal error event
+                // keeps the NDJSON valid and lets streaming consumers reject the partial result.
+                await TryWriteNdjsonErrorAsync(httpContext, rowCount, clientMessage);
+            }
+            else
+            {
+                // The 200 status and some rows are already on the wire, so the status cannot change.
+                // Close the JSON with an "error" marker consumers can detect alongside the partial rows.
+                await TryCloseWithErrorAsync(httpContext, openedBody, rowCount, clientMessage);
+            }
         }
     }
 
@@ -183,11 +225,112 @@ internal static class GridletPublishedEndpoints
                 => Results.NotFound(new GridletErrorResponse(ex.Message)),
             GridletValidationException or GridletQueryException
                 => Results.BadRequest(new GridletErrorResponse(ex.Message)),
-            _ => Results.Json(new GridletErrorResponse(ex.Message), statusCode: StatusCodes.Status500InternalServerError),
+            _ => Results.Json(
+                new GridletErrorResponse(UnexpectedErrorMessage),
+                statusCode: StatusCodes.Status500InternalServerError),
         };
+
+    private static int MapErrorStatusCode(Exception ex)
+        => ex switch
+        {
+            GridletUnknownConnectionException or GridletObjectNotFoundException
+                => StatusCodes.Status404NotFound,
+            GridletValidationException or GridletQueryException
+                => StatusCodes.Status400BadRequest,
+            _ => StatusCodes.Status500InternalServerError,
+        };
+
+    private static Task WriteMappedErrorAsync(
+        HttpContext httpContext,
+        Exception exception,
+        bool useNdjson,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        LogUnexpectedError(loggerFactory, exception);
+        return useNdjson
+            ? WriteErrorAsync(
+                httpContext,
+                MapErrorStatusCode(exception),
+                ClientErrorMessage(exception),
+                useNdjson,
+                cancellationToken)
+            : WriteResultAsync(httpContext, MapError(exception));
+    }
+
+    private static string ClientErrorMessage(Exception exception)
+        => IsExpectedError(exception) ? exception.Message : UnexpectedErrorMessage;
+
+    private static bool IsExpectedError(Exception exception)
+        => exception is GridletUnknownConnectionException or GridletObjectNotFoundException or
+            GridletValidationException or GridletQueryException;
+
+    private static void LogUnexpectedError(ILoggerFactory loggerFactory, Exception exception)
+    {
+        if (IsExpectedError(exception)) return;
+
+        loggerFactory.CreateLogger("Gridlet.AspNetCore.PublishedEndpoints")
+            .LogError(exception, "Unexpected published endpoint failure.");
+    }
+
+    private static async Task WriteErrorAsync(
+        HttpContext httpContext,
+        int statusCode,
+        string message,
+        bool useNdjson,
+        CancellationToken cancellationToken)
+    {
+        if (!useNdjson)
+        {
+            await WriteResultAsync(
+                httpContext,
+                Results.Json(new GridletErrorResponse(message), statusCode: statusCode));
+            return;
+        }
+
+        httpContext.Response.StatusCode = statusCode;
+        httpContext.Response.ContentType = "application/x-ndjson; charset=utf-8";
+        await WriteNdjsonEventAsync(
+            httpContext,
+            new PublishedErrorEvent("error", 0, message),
+            cancellationToken);
+        await httpContext.Response.Body.FlushAsync(cancellationToken);
+    }
 
     private static Task WriteResultAsync(HttpContext httpContext, IResult result)
         => result.ExecuteAsync(httpContext);
+
+    private static async Task WriteNdjsonEventAsync<T>(
+        HttpContext httpContext,
+        T streamEvent,
+        CancellationToken cancellationToken)
+    {
+        await JsonSerializer.SerializeAsync(
+            httpContext.Response.Body,
+            streamEvent,
+            JsonSerializerOptions.Web,
+            cancellationToken);
+        await httpContext.Response.WriteAsync("\n", cancellationToken);
+    }
+
+    private static async Task TryWriteNdjsonErrorAsync(
+        HttpContext httpContext,
+        long rowCount,
+        string message)
+    {
+        try
+        {
+            await WriteNdjsonEventAsync(
+                httpContext,
+                new PublishedErrorEvent("error", rowCount, message),
+                CancellationToken.None);
+            await httpContext.Response.Body.FlushAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
+        {
+            // The client disconnected between the provider failure and this terminal event.
+        }
+    }
 
     /// <summary>Best-effort close of an already-streaming response with an in-body error marker.</summary>
     private static async Task TryCloseWithErrorAsync(HttpContext httpContext, bool openedBody, long rowCount, string message)
@@ -205,6 +348,42 @@ internal static class GridletPublishedEndpoints
         {
             // The client disconnected between the failure and this write.
         }
+    }
+
+    private static bool AcceptsNdjson(HttpRequest request)
+    {
+        foreach (var headerValue in request.Headers.Accept)
+        {
+            foreach (var candidate in headerValue?.Split(',') ?? [])
+            {
+                var parts = candidate.Split(';', StringSplitOptions.TrimEntries);
+                if (!parts[0].Equals("application/x-ndjson", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var quality = 1m;
+                foreach (var parameter in parts.Skip(1))
+                {
+                    if (parameter.StartsWith("q=", StringComparison.OrdinalIgnoreCase) &&
+                        decimal.TryParse(
+                            parameter.AsSpan(2),
+                            NumberStyles.Number,
+                            CultureInfo.InvariantCulture,
+                            out var parsedQuality))
+                    {
+                        quality = parsedQuality;
+                    }
+                }
+
+                if (quality > 0)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Binds declared parameters from the query string (GET) or JSON body (write methods). Missing optional parameters become NULL.</summary>
@@ -320,4 +499,18 @@ internal static class GridletPublishedEndpoints
 
         return item;
     }
+
+    private sealed record PublishedRowEvent(
+        string Type,
+        IReadOnlyDictionary<string, object?> Row);
+
+    private sealed record PublishedCompletedEvent(
+        string Type,
+        long RowCount,
+        int RecordsAffected);
+
+    private sealed record PublishedErrorEvent(
+        string Type,
+        long RowCount,
+        string Error);
 }

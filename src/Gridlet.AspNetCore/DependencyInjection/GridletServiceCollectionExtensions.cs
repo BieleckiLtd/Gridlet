@@ -1,6 +1,7 @@
 using Gridlet;
 using Gridlet.Abstractions;
 using Gridlet.AspNetCore.Storage;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
 // ReSharper disable once CheckNamespace — conventional namespace for DI extensions.
@@ -8,6 +9,27 @@ namespace Microsoft.Extensions.DependencyInjection;
 
 public static class GridletServiceCollectionExtensions
 {
+    /// <summary>
+    /// Adds Gridlet to the host and binds its options from <paramref name="configurationSection"/>.
+    /// Provider implementations must still be registered explicitly by chaining methods such as
+    /// <c>AddSqlServer()</c> or <c>AddSqlite()</c>.
+    /// </summary>
+    /// <param name="services">The host application's service collection.</param>
+    /// <param name="configurationSection">
+    /// Configuration section containing connections, security, limits, storage, and audit options.
+    /// </param>
+    /// <returns>A builder used to chain provider registrations.</returns>
+    public static GridletBuilder AddGridletFromConfiguration(
+        this IServiceCollection services,
+        IConfigurationSection configurationSection)
+    {
+        ArgumentNullException.ThrowIfNull(configurationSection);
+
+        var builder = services.AddGridlet();
+        services.Configure<GridletOptions>(configurationSection);
+        return builder;
+    }
+
     /// <summary>
     /// Adds Gridlet to the host. Chain a provider registration afterwards, e.g.
     /// <c>services.AddGridlet(o =&gt; o.AddConnection("Default", cs, GridletProviderNames.SqlServer)).AddSqlServer();</c>
