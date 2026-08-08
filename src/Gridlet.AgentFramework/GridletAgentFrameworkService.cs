@@ -247,7 +247,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
                     if (TryReadFailedCodexToolResult(functionResult, out var toolName, out var result))
                     {
                         yield return new GridletAgentStreamEvent(
-                            "tool-result", SerializeToolPayload(new { result }), toolName);
+                            "tool-result", SerializeToolPayload(new { result, success = false }), toolName);
                     }
                 }
 

@@ -805,6 +805,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   user-select: none;
 }
 .agent-tool-result { border-left: 3px solid var(--ok); }
+.agent-tool-result-failed { border-left-color: var(--danger); }
 .agent-tool-call { border-left: 3px solid var(--accent); }
 .agent-json {
   max-width: min(760px, 70vw);

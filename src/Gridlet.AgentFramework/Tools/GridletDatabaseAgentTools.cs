@@ -214,7 +214,9 @@ internal sealed class GridletDatabaseAgentTools(
     }
 
     private static bool IsRecoverableToolException(Exception exception)
-        => exception is GridletValidationException or GridletQueryException;
+        => exception is GridletValidationException
+            or GridletQueryException
+            or GridletObjectNotFoundException;
 
     private ValueTask WriteAuditAsync(
         string actionName,

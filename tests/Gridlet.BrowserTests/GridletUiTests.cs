@@ -30,7 +30,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToHaveTextAsync("Me");
         await Assertions.Expect(page.GetByTestId("agent-message-assistant"))
             .ToContainTextAsync("Fake data response");
-        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+        await ExpectAgentComplete(page);
         Assert.Equal(credentialsBefore + 1, fixture.Agent.StoredCredentials.Count);
         Assert.Equal(requestsBefore + 1, fixture.Agent.Requests.Count);
         Assert.Equal("Summarize the customers", fixture.Agent.Requests[^1].Message);
@@ -56,6 +56,34 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task New_ask_tabs_inherit_the_last_used_model_and_reasoning_effort()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        var activePanel = page.Locator("#panels .agent-panel:not([hidden])");
+        await activePanel.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        activePanel = page.Locator("#panels .agent-panel:not([hidden])");
+        await Assertions.Expect(activePanel.GetByTestId("agent-provider"))
+            .ToHaveValueAsync("fake-local");
+
+        await activePanel.GetByTestId("agent-provider").SelectOptionAsync("fake-remote");
+        await activePanel.GetByTestId("agent-effort").SelectOptionAsync("high");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        activePanel = page.Locator("#panels .agent-panel:not([hidden])");
+        await Assertions.Expect(activePanel.GetByTestId("agent-provider"))
+            .ToHaveValueAsync("fake-remote");
+        await Assertions.Expect(activePanel.GetByTestId("agent-effort"))
+            .ToHaveValueAsync("high");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Reuses_one_provider_conversation_per_ask_tab_and_closes_it_with_the_tab()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -68,11 +96,11 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
         await page.GetByTestId("agent-composer").FillAsync("First question");
         await page.GetByTestId("agent-send").ClickAsync();
-        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+        await ExpectAgentComplete(page);
 
         await page.GetByTestId("agent-composer").FillAsync("Second question");
         await page.GetByTestId("agent-send").ClickAsync();
-        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+        await ExpectAgentComplete(page);
 
         Assert.Equal(requestsBefore + 2, fixture.Agent.Requests.Count);
         var firstConversationId = fixture.Agent.Requests[^2].ConversationId;
@@ -105,12 +133,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
         await page.GetByTestId("agent-composer").FillAsync("First question");
         await page.GetByTestId("agent-send").ClickAsync();
-        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+        await ExpectAgentComplete(page);
 
         await page.GetByTestId("agent-effort").SelectOptionAsync("high");
         await page.GetByTestId("agent-composer").FillAsync("Second question");
         await page.GetByTestId("agent-send").ClickAsync();
-        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+        await ExpectAgentComplete(page);
 
         Assert.Equal(requestsBefore + 2, fixture.Agent.Requests.Count);
         var first = fixture.Agent.Requests[^2];
@@ -134,7 +162,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
         await page.GetByTestId("agent-composer").FillAsync("First question");
         await page.GetByTestId("agent-send").ClickAsync();
-        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+        await ExpectAgentComplete(page);
 
         await page.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
         await Assertions.Expect(page.GetByTestId("agent-model-marker"))
@@ -146,7 +174,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await page.GetByTestId("agent-composer").FillAsync("Follow-up question");
         await page.GetByTestId("agent-send").ClickAsync();
-        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+        await ExpectAgentComplete(page);
         var responseRole = page.GetByTestId("agent-message-assistant").Last
             .Locator(".agent-message-role");
         await Assertions.Expect(responseRole.Locator(".agent-message-role-name"))
@@ -194,14 +222,86 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToContainTextAsync("Calling describe_table");
         await Assertions.Expect(assistant.Locator(".agent-tool-result"))
             .ToContainTextAsync("Result from describe_table");
+        await Assertions.Expect(assistant.Locator(".agent-tool-result-failed"))
+            .ToHaveCountAsync(0);
         await Assertions.Expect(assistant.Locator("strong"))
             .ToHaveTextAsync("Explanation of the join logic:");
         await Assertions.Expect(assistant.Locator(".agent-table")).ToBeVisibleAsync();
         await Assertions.Expect(assistant.Locator(".agent-table th").Nth(0)).ToHaveTextAsync("Step");
         await Assertions.Expect(assistant.Locator(".agent-table code").Nth(0)).ToHaveTextAsync("Orders");
-        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveTextAsync("Complete");
+        await ExpectAgentComplete(page);
         browserPage.AssertNoUnexpectedErrors();
     }
+
+    [Fact]
+    public async Task Renders_failed_tool_results_in_red()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("Show markdown failed tool");
+        await page.GetByTestId("agent-send").ClickAsync();
+
+        await page.GetByTestId("agent-message-assistant")
+            .Locator(".agent-reasoning > summary").ClickAsync();
+        var failedResult = page.GetByTestId("agent-message-assistant")
+            .Locator(".agent-tool-result-failed");
+        await Assertions.Expect(failedResult).ToBeVisibleAsync();
+        Assert.True(await failedResult.EvaluateAsync<bool>(
+            "element => { " +
+            "const probe = document.createElement('span'); " +
+            "probe.style.color = 'var(--danger)'; document.body.append(probe); " +
+            "const matches = getComputedStyle(element).borderLeftColor === getComputedStyle(probe).color; " +
+            "probe.remove(); return matches; }"));
+        await Assertions.Expect(failedResult).ToContainTextAsync("GridletQueryException");
+        await ExpectAgentComplete(page);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Restores_chat_scroll_position_after_opening_a_query_tab()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.SetViewportSizeAsync(1000, 560);
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("Show markdown join logic");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await ExpectAgentComplete(page);
+
+        var messages = page.GetByTestId("agent-messages");
+        await messages.EvaluateAsync("""
+            element => {
+                const filler = document.createElement('div');
+                filler.style.height = '1200px';
+                element.append(filler);
+                element.scrollTop = 640;
+            }
+            """);
+        var openQuery = page.GetByTestId("agent-open-query").First;
+        await openQuery.ScrollIntoViewIfNeededAsync();
+        var before = await messages.EvaluateAsync<int>("element => element.scrollTop");
+        Assert.True(before > 0);
+
+        await openQuery.DispatchEventAsync("click");
+        await page.Locator("#tabbar .tab").Filter(new() { HasText = "Ask — FakeDb" }).ClickAsync();
+        await Assertions.Expect(messages).ToBeVisibleAsync();
+        await page.WaitForTimeoutAsync(50);
+
+        var after = await messages.EvaluateAsync<int>("element => element.scrollTop");
+        Assert.InRange(after, before - 1, before + 1);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    private static Task ExpectAgentComplete(IPage page) =>
+        Assertions.Expect(page.GetByTestId("agent-status"))
+            .ToHaveAttributeAsync("data-state", "complete");
 
     [Fact]
     public async Task Theme_follows_system_and_persists_an_explicit_choice()

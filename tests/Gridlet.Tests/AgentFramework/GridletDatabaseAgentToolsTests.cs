@@ -33,6 +33,24 @@ public sealed class GridletDatabaseAgentToolsTests
         Assert.DoesNotContain("Customers", missingSchemaResult?.ToString(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Missing_database_object_is_returned_as_a_recoverable_tool_error()
+    {
+        var function = CreateTools()
+            .Create(GridletAgentMode.Data)
+            .OfType<AIFunction>()
+            .Single(tool => tool.Name == "describe_table");
+
+        var result = await function.InvokeAsync(new AIFunctionArguments
+        {
+            ["schema"] = "dbo",
+            ["name"] = "Missing",
+        });
+
+        Assert.Contains("GridletObjectNotFoundException", result?.ToString(), StringComparison.Ordinal);
+        Assert.Contains("\"recoverable\":true", result?.ToString(), StringComparison.Ordinal);
+    }
+
     private static GridletDatabaseAgentTools CreateTools()
     {
         var connection = new GridletConnectionOptions

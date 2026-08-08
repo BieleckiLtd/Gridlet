@@ -78,7 +78,9 @@ public sealed class FakeGridletProvider :
 
     public Task<TableDefinition> GetTableDefinitionAsync(
         GridletConnectionContext context, string schema, string name, CancellationToken cancellationToken = default)
-        => Task.FromResult(new TableDefinition(
+        => name == "Missing"
+            ? Task.FromException<TableDefinition>(new GridletObjectNotFoundException($"{schema}.{name}"))
+            : Task.FromResult(new TableDefinition(
             new DbObjectInfo(schema, name, DbObjectType.Table),
             [
                 new ColumnInfo("Id", "int", false, true, false, name != "NoKeys", null, 0),

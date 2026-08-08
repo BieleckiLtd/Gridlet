@@ -507,6 +507,10 @@
     tabs: [],
     activeTabId: null,
     nextTabId: 1,
+    agentPreferences: {
+      profileId: null,
+      reasoningEffort: null,
+    },
   };
 
   let queryCounter = 1;
@@ -1107,13 +1111,14 @@
   // ---- tabs -------------------------------------------------------------------
 
   function addTab(tab) {
+    const active = state.tabs.find((candidate) => candidate.id === state.activeTabId);
     const activate = () => {
+      active?.onDeactivate?.();
       state.tabs.push(tab);
       state.activeTabId = tab.id;
       renderTabs();
       return true;
     };
-    const active = state.tabs.find((candidate) => candidate.id === state.activeTabId);
     if (!active?.hasUnsavedDefinition && !active?.isRunning) return activate();
     return canLeaveTab(active).then((canLeave) => canLeave ? activate() : false);
   }
@@ -1156,6 +1161,7 @@
     if (id === state.activeTabId) return true;
     const active = state.tabs.find((tab) => tab.id === state.activeTabId);
     if (!await canLeaveTab(active)) return false;
+    active?.onDeactivate?.();
     state.activeTabId = id;
     renderTabs();
     return true;
@@ -1206,6 +1212,7 @@
       active.loaded = true;
       active.load();
     }
+    active?.onActivate?.();
   }
 
   // ---- object tabs (tables, views, procedures, functions, triggers) -------------
@@ -2165,6 +2172,23 @@
     return h('pre', { class: 'agent-json' }, code);
   }
 
+  const agentToolResultFailed = (content) => {
+    const failed = (value, depth = 0) => {
+      if (depth > 3) return false;
+      if (typeof value === 'string') {
+        try { return failed(JSON.parse(value), depth + 1); }
+        catch { return false; }
+      }
+      if (!value || typeof value !== 'object') return false;
+      if ((value.error !== undefined && value.error !== null && value.error !== false && value.error !== '')
+          || value.isError === true
+          || value.is_error === true
+          || value.success === false) return true;
+      return failed(value.result, depth + 1);
+    };
+    return failed(content);
+  };
+
   function renderAgentContent(host, content) {
     host.replaceChildren();
     const fenced = /```([^\r\n`]*)\r?\n([\s\S]*?)(?:```|$)/g;
@@ -2298,6 +2322,10 @@
       value: profile.id,
       text: `${profile.displayName} — ${profile.model}`,
     })));
+    const preferredProfileId = profiles.some((profile) => profile.id === state.agentPreferences.profileId)
+      ? state.agentPreferences.profileId
+      : profiles[0].id;
+    providerSelect.value = preferredProfileId;
     const effortSelect = h('select', {
       'aria-label': 'Thinking effort', 'data-testid': 'agent-effort',
     });
@@ -2337,6 +2365,7 @@
     });
     const status = h('span', {
       class: 'agent-status muted', text: 'Ready', 'data-testid': 'agent-status',
+      'data-state': 'ready',
     });
 
     let activeRequest = null;
@@ -2344,6 +2373,7 @@
     let credentialProfileId = null;
     let conversation = [];
     let conversationId = crypto.randomUUID();
+    let messageScrollTop = 0;
 
     const closeProviderConversation = () => {
       const closingId = conversationId;
@@ -2357,6 +2387,7 @@
       conversation = [];
       messages.replaceChildren(welcome);
       status.textContent = 'Ready';
+      status.dataset.state = 'ready';
     };
     const removeCredential = (handle) => {
       if (handle) void api(urls.agentCredentials(), {
@@ -2381,7 +2412,7 @@
       effortSelect.disabled = Boolean(activeRequest);
       apiKeyInput.disabled = Boolean(activeRequest);
     };
-    const refreshProfile = () => {
+    const refreshProfile = (preferredEffort = null) => {
       const profile = selectedProfile();
       const efforts = profile?.reasoningEfforts || [];
       const effortLabels = {
@@ -2392,8 +2423,10 @@
       })));
       effortControl.hidden = !efforts.length;
       if (efforts.length) {
-        effortSelect.value = efforts.includes(profile.defaultReasoningEffort)
-          ? profile.defaultReasoningEffort : efforts[0];
+        effortSelect.value = efforts.includes(preferredEffort)
+          ? preferredEffort
+          : efforts.includes(profile.defaultReasoningEffort)
+            ? profile.defaultReasoningEffort : efforts[0];
       }
       const acceptsKey = Boolean(profile?.allowsUserApiKey || profile?.requiresUserApiKey);
       apiKeyField.hidden = !acceptsKey;
@@ -2409,7 +2442,14 @@
       disclosure.textContent = destination;
       syncControls();
     };
-    const scrollMessages = () => { messages.scrollTop = messages.scrollHeight; };
+    const rememberAgentPreferences = () => {
+      state.agentPreferences.profileId = selectedProfile()?.id || null;
+      state.agentPreferences.reasoningEffort = effortControl.hidden ? null : effortSelect.value || null;
+    };
+    const scrollMessages = () => {
+      messages.scrollTop = messages.scrollHeight;
+      messageScrollTop = messages.scrollTop;
+    };
     const appendMessage = (role, content = '', assistantLabel = 'Agent') => {
       welcome.remove();
       const body = h('div', { class: 'agent-message-content' });
@@ -2559,7 +2599,9 @@
         addToolCall: (name, payload) => appendToolEvent(
           `Calling ${name || 'tool'}`, payload, 'agent-tool-call'),
         addToolResult: (name, payload) => appendToolEvent(
-          `Result from ${name || 'tool'}`, payload, 'agent-tool-result'),
+          `Result from ${name || 'tool'}`,
+          payload,
+          `agent-tool-result${agentToolResultFailed(payload) ? ' agent-tool-result-failed' : ''}`),
         finishReasoning: finishActivity,
         setError: (value) => {
           stopActivityAnimation();
@@ -2623,6 +2665,7 @@
       activeRequest = controller;
       tab.isRunning = true;
       status.textContent = 'Connecting…';
+      status.dataset.state = 'connecting';
       syncControls();
 
       let assistantText = '';
@@ -2638,6 +2681,7 @@
         appendMessage('user', message);
         assistantMessage = appendMessage('assistant', '', assistantLabel);
         status.textContent = '';
+        status.dataset.state = 'streaming';
 
         await streamNdjson(urls.agentChat(connection, database, modeSelect.value), {
           method: 'POST',
@@ -2680,18 +2724,24 @@
             streamError = text || 'The agent could not complete the request.';
             assistantMessage.setError(streamError);
             status.textContent = 'Failed';
+            status.dataset.state = 'failed';
           } else if (type === 'completed') {
             assistantMessage.finishReasoning();
             completed = true;
-            status.textContent = 'Complete';
+            status.textContent = '';
+            status.dataset.state = 'complete';
           }
         });
 
         // Some compatible providers end their stream after one `assistant` event.
         if (!completed && assistantText && !streamError) completed = true;
-        if (streamError) status.textContent = 'Failed';
+        if (streamError) {
+          status.textContent = 'Failed';
+          status.dataset.state = 'failed';
+        }
         else if (completed) {
-          status.textContent = 'Complete';
+          status.textContent = '';
+          status.dataset.state = 'complete';
           conversation.push(
             { role: 'user', content: message },
             { role: 'assistant', content: assistantText });
@@ -2699,13 +2749,18 @@
           streamError = 'The response ended before the agent reported completion.';
           assistantMessage.setError(streamError);
           status.textContent = 'Failed';
+          status.dataset.state = 'failed';
         }
       } catch (err) {
-        if (err.name === 'AbortError') status.textContent = 'Cancelled';
+        if (err.name === 'AbortError') {
+          status.textContent = 'Cancelled';
+          status.dataset.state = 'cancelled';
+        }
         else {
           if (!assistantMessage) assistantMessage = appendMessage('assistant', '', assistantLabel);
           assistantMessage.setError(err.message);
           status.textContent = 'Failed';
+          status.dataset.state = 'failed';
         }
       } finally {
         if (activeRequest === controller) {
@@ -2722,10 +2777,14 @@
       apiKeyInput.value = '';
       discardCredential();
       refreshProfile();
+      rememberAgentPreferences();
       appendModelMarker(selectedProfile());
     });
     modeSelect.addEventListener('change', resetConversation);
-    effortSelect.addEventListener('change', syncControls);
+    effortSelect.addEventListener('change', () => {
+      rememberAgentPreferences();
+      syncControls();
+    });
     composer.addEventListener('input', syncControls);
     apiKeyInput.addEventListener('input', syncControls);
     composer.addEventListener('keydown', (event) => {
@@ -2754,6 +2813,13 @@
           ], () => resolve(decision));
       });
     };
+    tab.onDeactivate = () => {
+      messageScrollTop = messages.scrollTop;
+    };
+    tab.onActivate = () => requestAnimationFrame(() => {
+      messages.scrollTop = messageScrollTop;
+      rememberAgentPreferences();
+    });
     tab.onClose = () => {
       activeRequest?.abort();
       discardCredential();
@@ -2779,7 +2845,10 @@
         h('div', { class: 'agent-compose-actions' },
           status, h('span', { class: 'spacer' }), cancelButton, sendButton)));
 
-    refreshProfile();
+    refreshProfile(state.agentPreferences.profileId === preferredProfileId
+      ? state.agentPreferences.reasoningEffort
+      : null);
+    rememberAgentPreferences();
     addTab(tab);
     composer.focus();
   }

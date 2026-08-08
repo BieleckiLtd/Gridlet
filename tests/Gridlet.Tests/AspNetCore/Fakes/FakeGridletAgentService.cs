@@ -97,7 +97,9 @@ public sealed class FakeGridletAgentService : IGridletAgentService
                 "describe_table");
             yield return new GridletAgentStreamEvent(
                 "tool-result",
-                """{"result":{"columns":["orderId","customerId"]}}""",
+                request.Message.Contains("failed tool", StringComparison.OrdinalIgnoreCase)
+                    ? """{"result":"{\"error\":{\"code\":\"GridletQueryException\",\"message\":\"SQLite Error 1: 'no such table: missing_table'.\",\"recoverable\":true}}"}"""
+                    : """{"result":{"columns":["orderId","customerId"]}}""",
                 "describe_table");
             yield return new GridletAgentStreamEvent(
                 "content",
@@ -108,6 +110,11 @@ public sealed class FakeGridletAgentService : IGridletAgentService
                 |------|---------------------------|---------|
                 | 1. | `Orders` + `OrderLines`.orderId | Get line items for each order |
                 | 2. | `OrderLines` + `Products`.productId | Map products to their names |
+
+                ```sql
+                SELECT o.orderId
+                FROM Orders AS o;
+                ```
                 """,
                 "assistant");
             yield return new GridletAgentStreamEvent("completed");
