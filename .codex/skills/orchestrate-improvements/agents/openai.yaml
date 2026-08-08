@@ -1,4 +1,4 @@
 interface:
   display_name: "Orchestrate Improvements"
-  short_description: "Run parallel audits and vetted improvement waves"
-  default_prompt: "Use $orchestrate-improvements to audit this codebase, implement only strong fixes without committing, peer-review the diff, and summarize the results."
+  short_description: "Isolate, review, and integrate parallel improvements"
+  default_prompt: "Use $orchestrate-improvements to audit this codebase, implement strong fixes in isolated worktrees without committing, review and integrate them, clean the worktrees, and summarize the results."
