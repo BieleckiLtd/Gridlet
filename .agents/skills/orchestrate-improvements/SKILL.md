@@ -11,11 +11,12 @@ Run a disciplined codebase improvement exercise. Optimize for verified value, no
 
 1. Record the user's target, time window, focus areas, and mutation limits.
 2. Treat "do not commit" as also forbidding staging, pushing, tagging, and pull requests.
-3. Record the original worktree's resolved path, current branch, HEAD, and `git status --short`. This is the integration target; do not let implementation agents work in it.
-4. Inspect repository instructions, recent history, and the project structure.
-5. Preserve pre-existing changes. Do not assign work that overlaps them. If an improvement depends on uncommitted baseline changes, defer it or obtain direction instead of copying user changes into temporary worktrees.
-6. Run the broadest practical baseline test suite and record exact counts.
-7. If the user requests persistence until a terminal condition, use the available goal or continuation mechanism.
+3. If commits or pull requests are authorized, follow the authorship rule in `AGENTS.md`: never attribute an AI agent as author, co-author, or contributor, and require the same of every implementation agent.
+4. Record the original worktree's resolved path, current branch, HEAD, and `git status --short`. This is the integration target; do not let implementation agents work in it.
+5. Inspect repository instructions, recent history, and the project structure.
+6. Preserve pre-existing changes. Do not assign work that overlaps them. If an improvement depends on uncommitted baseline changes, defer it or obtain direction instead of copying user changes into temporary worktrees.
+7. Run the broadest practical baseline test suite and record exact counts.
+8. If the user requests persistence until a terminal condition, use the available goal or continuation mechanism.
 
 ## Audit in parallel
 
