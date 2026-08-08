@@ -6,15 +6,26 @@ copies under `.codex/` or `.claude/`.
 
 ## Local setup
 
-After cloning the repository, initialize the local tool aliases:
+After cloning the repository, initialize the local tool aliases for your
+platform.
+
+Windows:
 
 ```pwsh
 pwsh -NoProfile -File ./scripts/Initialize-AgentTooling.ps1
 ```
 
-On Windows, the script creates directory junctions from `.codex` and `.claude`
-to `.agents`. On other platforms it creates symbolic links. It is idempotent
-and refuses to overwrite a real directory or a link to another location.
+macOS or Linux:
+
+```sh
+sh ./scripts/Initialize-AgentTooling.sh
+```
+
+The Windows script creates directory junctions from `.codex` and `.claude` to
+`.agents`; the POSIX script creates symbolic links. Both are idempotent and
+refuse to overwrite a real directory or a link to another location. CI runs
+the POSIX bootstrap before every build, so the Unix path is continuously
+validated even when contributors work without coding agents.
 
 Codex reads this file directly. Claude reads `CLAUDE.md`, which imports this
 file, and discovers the same skills through its `.claude` alias.

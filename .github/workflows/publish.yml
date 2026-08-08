@@ -24,6 +24,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Initialize agent tooling aliases
+        run: sh scripts/Initialize-AgentTooling.sh
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x

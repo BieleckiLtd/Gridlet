@@ -18,6 +18,22 @@ dotnet build --no-restore --configuration Release
 dotnet test --no-build --configuration Release
 ```
 
+Repository agent assets have one canonical home in `.agents`. If you use Codex
+or Claude locally, initialize the tool aliases after cloning:
+
+```pwsh
+# Windows (creates directory junctions)
+pwsh -NoProfile -File ./scripts/Initialize-AgentTooling.ps1
+```
+
+```sh
+# macOS/Linux (creates symbolic links)
+sh ./scripts/Initialize-AgentTooling.sh
+```
+
+This setup is optional for developers who do not use coding agents. CI runs
+the Linux bootstrap on every build to keep the cross-platform path tested.
+
 Browser tests also require Chromium. CI installs it with:
 
 ```pwsh
