@@ -19,7 +19,8 @@ public sealed record GridletAgentProfileInfo(
     bool AllowsUserApiKey,
     bool RequiresUserApiKey,
     IReadOnlyList<string>? ReasoningEfforts = null,
-    string? DefaultReasoningEffort = null);
+    string? DefaultReasoningEffort = null,
+    int? ContextWindowTokens = null);
 
 /// <summary>Browser-visible agent availability and provider information.</summary>
 public sealed record GridletAgentInfo(IReadOnlyList<GridletAgentProfileInfo> Profiles);
@@ -51,6 +52,18 @@ public sealed record GridletAgentRequest(
     GridletAgentUserContext User,
     string? ConversationId = null,
     string? ReasoningEffort = null);
+
+/// <summary>
+/// Context-window consumption reported by a provider for one conversation. Providers that do not
+/// report token usage never produce this information, and a provider that reports usage without a
+/// window size leaves <see cref="ContextWindowTokens"/> unset.
+/// </summary>
+public sealed record GridletAgentContextUsage(
+    long UsedTokens,
+    long? ContextWindowTokens = null,
+    long? InputTokens = null,
+    long? CachedInputTokens = null,
+    long? OutputTokens = null);
 
 /// <summary>A progressive event emitted by a database-agent response.</summary>
 public sealed record GridletAgentStreamEvent(

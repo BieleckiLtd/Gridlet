@@ -274,6 +274,13 @@ internal sealed class CodexAppServerAgent(
                     }
                 }
             }
+            else if (method == "thread/tokenUsage/updated")
+            {
+                if (TryCreateUsageUpdate(root, out var usageUpdate))
+                {
+                    yield return usageUpdate;
+                }
+            }
             else if (method == "error")
             {
                 turnError = ReadErrorMessage(root);
@@ -298,6 +305,47 @@ internal sealed class CodexAppServerAgent(
             }
         }
     }
+
+    /// <summary>
+    /// Reads a <c>thread/tokenUsage/updated</c> notification. Codex reports the accumulated turn
+    /// usage plus the most recent request's usage; the latter is what currently occupies the
+    /// model's context window.
+    /// </summary>
+    internal static bool TryCreateUsageUpdate(
+        JsonElement notification,
+        out AgentResponseUpdate update)
+    {
+        update = null!;
+        if (!notification.TryGetProperty("params", out var parameters) ||
+            parameters.ValueKind != JsonValueKind.Object ||
+            !parameters.TryGetProperty("tokenUsage", out var usage) ||
+            usage.ValueKind != JsonValueKind.Object ||
+            !usage.TryGetProperty("last", out var last) ||
+            last.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        var input = ReadTokenCount(last, "inputTokens");
+        var output = ReadTokenCount(last, "outputTokens");
+        var total = ReadTokenCount(last, "totalTokens");
+        if (total is null && input is null && output is null) return false;
+
+        update = new AgentResponseUpdate(ChatRole.Assistant, [GridletContextUsage.Create(
+            input,
+            output,
+            ReadTokenCount(last, "cachedInputTokens"),
+            total,
+            ReadTokenCount(usage, "modelContextWindow"))]);
+        return true;
+    }
+
+    private static long? ReadTokenCount(JsonElement element, string propertyName)
+        => element.TryGetProperty(propertyName, out var value) &&
+           value.ValueKind == JsonValueKind.Number &&
+           value.TryGetInt64(out var count)
+            ? count
+            : null;
 
     private static TextReasoningContent CreateReasoningContent(string text, string kind)
         => new(text) { RawRepresentation = new CodexReasoningEvent(kind) };

@@ -5,6 +5,7 @@ using Gridlet.Abstractions;
 using Gridlet.Auditing;
 using Gridlet.Models;
 using GitHub.Copilot;
+using Microsoft.Agents.AI.GitHub.Copilot;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OllamaSharp;
@@ -25,6 +26,8 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         new(StringComparer.Ordinal);
     private readonly SemaphoreSlim conversationCreationGate = new(1, 1);
     private readonly CliRuntimeLimiter cliRuntimeLimiter;
+    private readonly OllamaContextWindowProbe ollamaContextWindows = new();
+    private readonly CopilotContextUsageReader copilotContextUsage = new();
     private readonly CancellationTokenSource cleanupCancellation = new();
     private readonly Task cleanupTask;
     private int disposeState;
@@ -220,11 +223,17 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
 
             var messages = CreateMessages(request);
             var observedCalls = new HashSet<string>(StringComparer.Ordinal);
+            var contextWindowTokens = await ResolveContextWindowAsync(profile, cancellationToken);
+            // Copilot exposes context usage only for a named session, so the turn gets an explicit
+            // one. It starts empty, which keeps the existing per-turn session behavior.
+            var copilotSession = profile.Provider == GridletAgentProvider.GitHubCopilot
+                ? await agent.CreateSessionAsync(cancellationToken)
+                : null;
             yield return new GridletAgentStreamEvent("started");
 
             await foreach (var update in agent.RunStreamingAsync(
                                messages,
-                               session: cliConversation?.CodexAgentSession,
+                               session: cliConversation?.CodexAgentSession ?? copilotSession,
                                cancellationToken: cancellationToken))
             {
                 foreach (var functionCall in update.Contents.OfType<FunctionCallContent>())
@@ -262,6 +271,17 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
                     }
                 }
 
+                foreach (var usage in update.Contents.OfType<UsageContent>())
+                {
+                    var contextUsage = GridletContextUsage.TryCreateContextUsage(
+                        usage.Details, contextWindowTokens);
+                    if (contextUsage is not null)
+                    {
+                        yield return new GridletAgentStreamEvent(
+                            "usage", SerializeToolPayload(contextUsage));
+                    }
+                }
+
                 if (!string.IsNullOrEmpty(update.Text))
                 {
                     yield return new GridletAgentStreamEvent("delta", update.Text);
@@ -276,6 +296,17 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
             foreach (var finalToolEvent in DrainPendingToolEvents(pendingToolEvents))
             {
                 yield return finalToolEvent;
+            }
+
+            if (copilotSession is GitHubCopilotAgentSession { SessionId: { } copilotSessionId })
+            {
+                var copilotUsage = await copilotContextUsage.TryReadAsync(
+                    copilotClient!, copilotSessionId, profile.Model, cancellationToken);
+                if (copilotUsage is not null)
+                {
+                    yield return new GridletAgentStreamEvent(
+                        "usage", SerializeToolPayload(copilotUsage));
+                }
             }
 
             yield return new GridletAgentStreamEvent("completed");
@@ -379,6 +410,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         }
         conversationCreationGate.Dispose();
         cleanupCancellation.Dispose();
+        ollamaContextWindows.Dispose();
     }
 
     public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -597,6 +629,25 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Resolves the context window used when a provider reports token usage without one. A running
+    /// Ollama server knows the window it actually loaded the model with, which is more reliable
+    /// than any host declaration; every other provider falls back to the configured value.
+    /// </summary>
+    private async Task<int?> ResolveContextWindowAsync(
+        GridletAgentProfileSettings profile,
+        CancellationToken cancellationToken)
+    {
+        if (profile.Provider != GridletAgentProvider.Ollama || profile.Endpoint is null)
+        {
+            return profile.ContextWindowTokens;
+        }
+
+        var loaded = await ollamaContextWindows.TryGetContextWindowAsync(
+            profile.Endpoint, profile.Model, cancellationToken);
+        return loaded ?? profile.ContextWindowTokens;
     }
 
     private static List<ChatMessage> CreateMessages(GridletAgentRequest request)
