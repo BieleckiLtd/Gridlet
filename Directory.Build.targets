@@ -1,0 +1,12 @@
+<Project>
+
+  <Target Name="InitializeAgentToolingAliases"
+          BeforeTargets="PrepareForBuild"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(MSBuildProjectName)' == 'Gridlet.Core'">
+    <Exec Condition="$([MSBuild]::IsOSPlatform('Windows'))"
+          Command="powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)scripts\Initialize-AgentTooling.ps1&quot;" />
+    <Exec Condition="!$([MSBuild]::IsOSPlatform('Windows'))"
+          Command="sh &quot;$(MSBuildThisFileDirectory)scripts/Initialize-AgentTooling.sh&quot;" />
+  </Target>
+
+</Project>
