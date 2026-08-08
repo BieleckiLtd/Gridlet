@@ -190,6 +190,36 @@ public sealed class BrowserGridletAgentService : IGridletAgentService
             yield break;
         }
 
+        if (request.Message.Contains("report unsized context usage", StringComparison.OrdinalIgnoreCase))
+        {
+            Requests.Add(request);
+            yield return new GridletAgentStreamEvent("started");
+            yield return new GridletAgentStreamEvent(
+                "usage",
+                System.Text.Json.JsonSerializer.Serialize(
+                    new GridletAgentContextUsage(12_500),
+                    new System.Text.Json.JsonSerializerOptions(
+                        System.Text.Json.JsonSerializerDefaults.Web)));
+            yield return new GridletAgentStreamEvent("content", "Usage reported without a window.");
+            yield return new GridletAgentStreamEvent("completed");
+            yield break;
+        }
+
+        if (request.Message.Contains("report context usage", StringComparison.OrdinalIgnoreCase))
+        {
+            Requests.Add(request);
+            yield return new GridletAgentStreamEvent("started");
+            yield return new GridletAgentStreamEvent(
+                "usage",
+                System.Text.Json.JsonSerializer.Serialize(
+                    new GridletAgentContextUsage(48_000, 64_000, 44_000, 30_000, 4_000),
+                    new System.Text.Json.JsonSerializerOptions(
+                        System.Text.Json.JsonSerializerDefaults.Web)));
+            yield return new GridletAgentStreamEvent("content", "Usage reported.");
+            yield return new GridletAgentStreamEvent("completed");
+            yield break;
+        }
+
         if (request.Message.Contains("fail during reasoning", StringComparison.OrdinalIgnoreCase))
         {
             Requests.Add(request);

@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
@@ -294,6 +295,49 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         Assert.Equal(closesBefore + 1, fixture.Agent.ClosedConversations.Count);
         Assert.Equal(firstConversationId, fixture.Agent.ClosedConversations[^1].ConversationId);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Shows_context_consumption_around_the_send_button_only_when_reported()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        var gauge = page.GetByTestId("agent-context-gauge");
+        var tooltip = page.GetByTestId("agent-context-tooltip");
+        await Assertions.Expect(gauge).ToHaveAttributeAsync("data-context", "unknown");
+        Assert.False(await page.Locator(".agent-context-ring").IsVisibleAsync());
+
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("Please report context usage");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await ExpectAgentComplete(page);
+
+        // 48k of a 64k window is 75%, the first level Gridlet calls out.
+        await Assertions.Expect(gauge).ToHaveAttributeAsync("data-context", "high");
+        await Assertions.Expect(tooltip).ToContainTextAsync("48k of 64k tokens (75%)");
+        await Assertions.Expect(tooltip).ToContainTextAsync("cached 30k");
+        var ring = page.Locator(".agent-context-ring-value");
+        var length = await ring.EvaluateAsync<double>("element => element.getTotalLength()");
+        var offset = await ring.EvaluateAsync<double>(
+            "element => Number(element.getAttribute('stroke-dashoffset'))");
+        Assert.InRange(1 - (offset / length), 0.74, 0.76);
+
+        await page.GetByTestId("agent-send").HoverAsync();
+        await Assertions.Expect(tooltip).ToBeVisibleAsync();
+
+        // Usage without a window must read as a plain token count, never as a proportion.
+        // Counts at or above 10k are rounded to whole thousands, so 12,500 reads as "13k".
+        await page.GetByTestId("agent-composer").FillAsync("Please report unsized context usage");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await ExpectAgentComplete(page);
+
+        await Assertions.Expect(gauge).ToHaveAttributeAsync("data-context", "unsized");
+        await Assertions.Expect(tooltip).ToHaveTextAsync(
+            "Context used: 13k tokens. This model's context window was not reported.");
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -1205,6 +1249,91 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
         Assert.Equal(sql, fixture.Provider.LastQuerySql);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Switching_connection_keeps_tabs_open_and_bound_to_their_own_database()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT 1 AS Answer");
+
+        var queryRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/query", StringComparison.Ordinal))
+            {
+                queryRequests.Add(request.Url);
+            }
+        };
+
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
+        await Assertions.Expect(page.Locator("#connection-select")).ToHaveValueAsync("SQLite");
+
+        // The tab survives the switch and shows the connection it still runs on.
+        var tab = page.Locator("#tabbar .tab");
+        await Assertions.Expect(tab).ToHaveCountAsync(1);
+        await Assertions.Expect(tab.GetByTestId("tab-scope")).ToHaveTextAsync("Main / FakeDb");
+
+        var panel = ActivePanel(page);
+        await panel.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+
+        Assert.All(queryRequests, url => Assert.Contains("/connections/Main/databases/FakeDb/query", url));
+        Assert.NotEmpty(queryRequests);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Opens_each_published_endpoint_in_its_own_request_tab()
+    {
+        using var client = new HttpClient { BaseAddress = fixture.BaseAddress };
+        foreach (var name in new[] { "Tab one", "Tab two" })
+        {
+            using var publish = await client.PostAsJsonAsync("/gridlet/api/published", new
+            {
+                name,
+                method = "GET",
+                route = name.Replace(' ', '-').ToLowerInvariant(),
+                connectionName = "Main",
+                database = "FakeDb",
+                sql = "SELECT 42",
+            });
+            publish.EnsureSuccessStatusCode();
+        }
+
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.Locator("#apis-btn").ClickAsync();
+
+        var rows = page.Locator("#panels tr");
+        var tabs = page.Locator("#tabbar .tab");
+        var apisTab = tabs.Filter(new() { HasText = "Published APIs" });
+        await rows.Filter(new() { HasText = "Tab one" }).GetByTestId("open-api-request").ClickAsync();
+        await apisTab.ClickAsync();
+        await rows.Filter(new() { HasText = "Tab two" }).GetByTestId("open-api-request").ClickAsync();
+
+        // Both requests stay open next to the endpoint list instead of replacing each other.
+        await Assertions.Expect(tabs).ToHaveCountAsync(3);
+        await Assertions.Expect(tabs.Filter(new() { HasText = "Tab one" })).ToHaveCountAsync(1);
+        await Assertions.Expect(tabs.Filter(new() { HasText = "Tab two" })).ToHaveCountAsync(1);
+        await Assertions.Expect(ActivePanel(page).Locator(".api-preview-address"))
+            .ToHaveValueAsync(new Regex("/gridlet/pub/tab-two$"));
+
+        // Re-opening the same endpoint focuses its tab rather than adding another.
+        await apisTab.ClickAsync();
+        await rows.Filter(new() { HasText = "Tab one" }).GetByTestId("open-api-request").ClickAsync();
+        await Assertions.Expect(tabs).ToHaveCountAsync(3);
+        await Assertions.Expect(ActivePanel(page).Locator(".api-preview-address"))
+            .ToHaveValueAsync(new Regex("/gridlet/pub/tab-one$"));
+
+        // An empty request tab is always available for ad-hoc calls.
+        await apisTab.ClickAsync();
+        await page.GetByTestId("new-api-request").ClickAsync();
+        await Assertions.Expect(tabs).ToHaveCountAsync(4);
+        await Assertions.Expect(ActivePanel(page).Locator(".api-preview-address")).ToHaveValueAsync("");
         browserPage.AssertNoUnexpectedErrors();
     }
 

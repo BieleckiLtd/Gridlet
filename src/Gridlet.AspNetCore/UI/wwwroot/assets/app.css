@@ -10,6 +10,7 @@
   --accent: #4f8cff;
   --accent-dim: #2b4d8f;
   --danger: #e5534b;
+  --warning: #e0a33e;
   --ok: #4fbf78;
   --scroll-thumb: #465064;
   --scroll-thumb-hover: #59657c;
@@ -54,6 +55,7 @@
   --accent: #2563c7;
   --accent-dim: #d7e5fb;
   --danger: #c9342f;
+  --warning: #a86616;
   --ok: #1f7a43;
   --scroll-thumb: #aab4c3;
   --scroll-thumb-hover: #8e9aaa;
@@ -417,6 +419,7 @@ button.ghost { background: transparent; }
 .badge-S { background: #3b355e; color: #b9a9ff; }
 .badge-Q { background: #263244; color: #9db9e4; }
 .badge-A { background: #23484c; color: #78d4d1; }
+.badge-H { background: #234a3f; color: #74d4b0; }
 
 :root[data-theme="light"] .badge-T { background: #dcefe3; color: #23663c; }
 :root[data-theme="light"] .badge-V { background: #dce8fa; color: #285b9f; }
@@ -426,6 +429,7 @@ button.ghost { background: transparent; }
 :root[data-theme="light"] .badge-S { background: #e6e0f5; color: #594692; }
 :root[data-theme="light"] .badge-Q { background: #e1e8f1; color: #405a7d; }
 :root[data-theme="light"] .badge-A { background: #d9eeee; color: #286a6d; }
+:root[data-theme="light"] .badge-H { background: #d8efe6; color: #1f6650; }
 
 /* ---- content / tabs ---- */
 #content { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; overflow: hidden; }
@@ -451,6 +455,19 @@ button.ghost { background: transparent; }
 }
 
 .tab.active { background: var(--bg); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
+
+/* Marks a tab still bound to a connection or database the header no longer shows. */
+.tab-scope {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 11px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .tab-close {
   border: none;
@@ -1196,6 +1213,71 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+.agent-composer-submit-control {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+.agent-context-ring {
+  position: absolute;
+  inset: -4px;
+  width: 44px;
+  height: 44px;
+  pointer-events: none;
+  transform: rotate(-90deg);
+}
+.agent-context-ring circle {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.agent-context-ring-track { stroke: var(--border); }
+.agent-context-ring-value {
+  stroke: var(--accent);
+  transition: stroke-dashoffset 220ms ease, stroke 220ms ease;
+}
+/* No provider-reported usage: the gauge is not drawn at all. */
+.agent-composer-submit-control[data-context="unknown"] .agent-context-ring { display: none; }
+/* Usage without a known window: show occupancy without implying a proportion. */
+.agent-composer-submit-control[data-context="unsized"] .agent-context-ring-value {
+  stroke: var(--muted);
+  opacity: 0.7;
+}
+.agent-composer-submit-control[data-context="high"] .agent-context-ring-value { stroke: var(--warning); }
+.agent-composer-submit-control[data-context="critical"] .agent-context-ring-value { stroke: var(--danger); }
+.agent-context-tooltip {
+  position: absolute;
+  z-index: 30;
+  right: 0;
+  bottom: calc(100% + 10px);
+  width: max-content;
+  max-width: min(320px, calc(100vw - 48px));
+  padding: 9px 10px;
+  visibility: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--code-popup);
+  box-shadow: 0 8px 24px var(--shadow);
+  color: var(--text);
+  font-size: 11.5px;
+  line-height: 1.45;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+}
+.agent-composer-submit-control:hover .agent-context-tooltip,
+.agent-composer-submit-control:focus-within .agent-context-tooltip {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0);
+}
+.agent-composer-submit-control[data-context="unknown"] .agent-context-tooltip { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .agent-context-ring-value { transition: none; }
 }
 .agent-composer-submit {
   display: inline-flex;

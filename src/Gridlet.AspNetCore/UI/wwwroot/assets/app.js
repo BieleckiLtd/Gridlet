@@ -453,10 +453,10 @@
     if (pending.trim()) onEvent(JSON.parse(pending));
   }
 
-  async function executeSql(sql) {
+  async function executeSql(sql, scope = state) {
     let errorMessage = null;
     let completed = false;
-    await streamNdjson(urls.query(), {
+    await streamNdjson(urlsFor(scope).query(), {
       method: 'POST',
       body: JSON.stringify({ sql }),
     }, (event) => {
@@ -468,39 +468,45 @@
   }
 
   const enc = encodeURIComponent;
-  const objBase = (s, n) =>
-    `api/connections/${enc(state.connection)}/databases/${enc(state.database)}/objects/${enc(s)}/${enc(n)}`;
-  const urls = {
-    meta: () => 'api/meta',
-    databases: (c) => `api/connections/${enc(c)}/databases`,
-    objects: () => `api/connections/${enc(state.connection)}/databases/${enc(state.database)}/objects`,
-    schemas: () => `api/connections/${enc(state.connection)}/databases/${enc(state.database)}/schemas`,
-    schema: (s) => `api/connections/${enc(state.connection)}/databases/${enc(state.database)}/schemas/${enc(s)}`,
-    data: (s, n, q) => `${objBase(s, n)}/data?${q}`,
-    dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
-    structure: (s, n) => `${objBase(s, n)}/structure`,
-    definition: (s, n) => `${objBase(s, n)}/definition`,
-    query: () => `api/connections/${enc(state.connection)}/databases/${enc(state.database)}/query`,
-    rows: (s, n) => `${objBase(s, n)}/rows`,
-    rowsUpdate: (s, n) => `${objBase(s, n)}/rows/update`,
-    rowsDelete: (s, n) => `${objBase(s, n)}/rows/delete`,
-    createTable: () => `api/connections/${enc(state.connection)}/databases/${enc(state.database)}/tables`,
-    columns: (s, n) => `${objBase(s, n)}/columns`,
-    column: (s, n, col) => `${objBase(s, n)}/columns/${enc(col)}`,
-    primaryKey: (s, n) => `${objBase(s, n)}/primary-key`,
-    foreignKeys: (s, n) => `${objBase(s, n)}/foreign-keys`,
-    constraint: (s, n, constraint) => `${objBase(s, n)}/constraints/${enc(constraint)}`,
-    dropObject: (s, n, type) => `${objBase(s, n)}?type=${enc(type)}`,
-    queries: () => 'api/queries',
-    savedQuery: (id) => `api/queries/${enc(id)}`,
-    published: () => 'api/published',
-    publishedOne: (id) => `api/published/${enc(id)}`,
-    agentCredential: (profileId) => `api/agents/${enc(profileId)}/credentials`,
-    agentCredentials: () => 'api/agents/credentials',
-    agentConversation: (conversationId) => `api/agents/conversations/${enc(conversationId)}`,
-    agentChat: (connection, database, mode) =>
-      `api/connections/${enc(connection)}/databases/${enc(database)}/agents/${enc(mode)}/chat`,
-  };
+
+  // Every database-bound URL is built from an explicit { connection, database }
+  // scope. Tabs bind their own scope when they open, so changing the header
+  // pickers never retargets a tab that is already on screen.
+  function urlsFor(scope) {
+    const dbBase = () => `api/connections/${enc(scope.connection)}/databases/${enc(scope.database)}`;
+    const objBase = (s, n) => `${dbBase()}/objects/${enc(s)}/${enc(n)}`;
+    return {
+      meta: () => 'api/meta',
+      databases: (c) => `api/connections/${enc(c)}/databases`,
+      objects: () => `${dbBase()}/objects`,
+      schemas: () => `${dbBase()}/schemas`,
+      schema: (s) => `${dbBase()}/schemas/${enc(s)}`,
+      data: (s, n, q) => `${objBase(s, n)}/data?${q}`,
+      dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
+      structure: (s, n) => `${objBase(s, n)}/structure`,
+      definition: (s, n) => `${objBase(s, n)}/definition`,
+      query: () => `${dbBase()}/query`,
+      rows: (s, n) => `${objBase(s, n)}/rows`,
+      rowsUpdate: (s, n) => `${objBase(s, n)}/rows/update`,
+      rowsDelete: (s, n) => `${objBase(s, n)}/rows/delete`,
+      createTable: () => `${dbBase()}/tables`,
+      columns: (s, n) => `${objBase(s, n)}/columns`,
+      column: (s, n, col) => `${objBase(s, n)}/columns/${enc(col)}`,
+      primaryKey: (s, n) => `${objBase(s, n)}/primary-key`,
+      foreignKeys: (s, n) => `${objBase(s, n)}/foreign-keys`,
+      constraint: (s, n, constraint) => `${objBase(s, n)}/constraints/${enc(constraint)}`,
+      dropObject: (s, n, type) => `${objBase(s, n)}?type=${enc(type)}`,
+      queries: () => 'api/queries',
+      savedQuery: (id) => `api/queries/${enc(id)}`,
+      published: () => 'api/published',
+      publishedOne: (id) => `api/published/${enc(id)}`,
+      agentCredential: (profileId) => `api/agents/${enc(profileId)}/credentials`,
+      agentCredentials: () => 'api/agents/credentials',
+      agentConversation: (conversationId) => `api/agents/conversations/${enc(conversationId)}`,
+      agentChat: (connection, database, mode) =>
+        `api/connections/${enc(connection)}/databases/${enc(database)}/agents/${enc(mode)}/chat`,
+    };
+  }
 
   const post = (url, body) => api(url, { method: 'POST', body: JSON.stringify(body) });
   const put = (url, body) => api(url, { method: 'PUT', body: JSON.stringify(body) });
@@ -514,6 +520,7 @@
     database: null,
     objects: [],
     schemas: [],
+    objectsByScope: new Map(),
     structures: new Map(),
     tabs: [],
     activeTabId: null,
@@ -527,8 +534,31 @@
   let queryCounter = 1;
   let navigationOverflow = null;
 
-  const currentConn = () =>
-    (state.meta && state.meta.connections.find((c) => c.name === state.connection)) || {};
+  // `state` is the scope of the header pickers, so these URLs follow them.
+  const urls = urlsFor(state);
+
+  // ---- connection / database scopes ------------------------------------------
+  // A scope is { connection, database }. Tabs capture one when they open and use
+  // it for every request they make afterwards.
+
+  const scopeOf = () => ({ connection: state.connection, database: state.database });
+  const scopeKey = (scope) => `${scope.connection} ${scope.database}`;
+  const sameScope = (a, b) => a.connection === b.connection && a.database === b.database;
+  // Tabs without a scope (published APIs, API requests) are never out of context.
+  const isCurrentScope = (scope) => !scope || sameScope(scope, state);
+  const scopeLabel = (scope) => scope.connection === state.connection
+    ? scope.database
+    : `${scope.connection} / ${scope.database}`;
+  const scopeTitle = (scope) => `${scope.connection} / ${scope.database}`;
+  const objectsFor = (scope) => (sameScope(scope, state)
+    ? state.objects
+    : state.objectsByScope.get(scopeKey(scope)) || []);
+  // Only the sidebar's own scope can refresh the tree.
+  const refreshObjects = (scope) => (isCurrentScope(scope) ? loadObjects() : Promise.resolve());
+
+  const connectionFor = (scope) =>
+    (state.meta && state.meta.connections.find((c) => c.name === scope.connection)) || {};
+  const currentConn = () => connectionFor(state);
   const allowedAgentModes = (connection = currentConn()) => [
     ...(connection.allowAgentDataAccess ? [{ id: 'data', label: 'Data' }] : []),
     ...(connection.allowAgentSchemaAccess ? [{ id: 'schema', label: 'Design / Schema' }] : []),
@@ -551,7 +581,8 @@
     createTriggerExample: 'CREATE TRIGGER dbo.NewTrigger ON dbo.SomeTable AFTER INSERT AS SELECT 1;',
     objectEditMode: 'Alter',
   };
-  const currentCapabilities = () => currentConn().capabilities || DEFAULT_CAPABILITIES;
+  const capabilitiesFor = (scope) => connectionFor(scope).capabilities || DEFAULT_CAPABILITIES;
+  const currentCapabilities = () => capabilitiesFor(state);
 
   function refreshTypeSuggestions() {
     const list = $('#gridlet-types');
@@ -562,22 +593,24 @@
   const SQL_KEYWORDS = (`ADD ALL ALTER AND ANY AS ASC AUTHORIZATION BACKUP BEGIN BETWEEN BREAK BROWSE BULK BY CASCADE CASE CHECK CHECKPOINT CLOSE CLUSTERED COALESCE COLLATE COLUMN COMMIT COMPUTE CONSTRAINT CONTAINS CONTINUE CONVERT CREATE CROSS CURRENT CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER CURSOR DATABASE DBCC DEALLOCATE DECLARE DEFAULT DELETE DENY DESC DISK DISTINCT DISTRIBUTED DOUBLE DROP DUMP ELSE END ERRLVL ESCAPE EXCEPT EXEC EXECUTE EXISTS EXIT EXTERNAL FETCH FILE FILLFACTOR FOR FOREIGN FREETEXT FROM FULL FUNCTION GOTO GRANT GROUP HAVING HOLDLOCK IDENTITY IDENTITYCOL IF IN INDEX INNER INSERT INTERSECT INTO IS JOIN KEY KILL LEFT LIKE LINENO LOAD MERGE NATIONAL NOCHECK NONCLUSTERED NOT NULL NULLIF OF OFF OFFSETS ON OPEN OPENDATASOURCE OPENQUERY OPENROWSET OPENXML OPTION OR ORDER OUTER OVER PERCENT PIVOT PLAN PRECISION PRIMARY PRINT PROC PROCEDURE PUBLIC RAISERROR READ READTEXT RECONFIGURE REFERENCES REPLICATION RESTORE RESTRICT RETURN REVERT REVOKE RIGHT ROLLBACK ROWCOUNT ROWGUIDCOL RULE SAVE SCHEMA SECURITYAUDIT SELECT SEMANTICKEYPHRASETABLE SEMANTICSIMILARITYDETAILSTABLE SEMANTICSIMILARITYTABLE SESSION_USER SET SETUSER SHUTDOWN SOME STATISTICS SYSTEM_USER TABLE TABLESAMPLE TEXTSIZE THEN TO TOP TRAN TRANSACTION TRIGGER TRUNCATE TRY_CONVERT TSEQUAL UNION UNIQUE UNPIVOT UPDATE UPDATETEXT USE USER VALUES VARYING VIEW WAITFOR WHEN WHERE WHILE WITH WITHIN GROUP WRITETEXT`).split(/\s+/);
   const SQL_FUNCTIONS = (`ABS AVG CAST CONCAT COUNT DATEADD DATEDIFF DATENAME DATEPART FORMAT GETDATE ISNULL LEN LOWER LTRIM MAX MIN NEWID OBJECT_ID REPLACE ROUND RTRIM SCOPE_IDENTITY STRING_AGG SUBSTRING SUM SYSDATETIME UPPER`).split(/\s+/);
 
-  function sqlSuggestions() {
-    const objects = state.objects.flatMap((o) => [
+  function sqlSuggestions(scope = state) {
+    const known = objectsFor(scope);
+    const objects = known.flatMap((o) => [
       `${o.schema}.${o.name}`,
       `[${o.schema.replaceAll(']', ']]')}].[${o.name.replaceAll(']', ']]')}]`,
       o.name,
     ]);
-    const schemas = state.objects.map((o) => o.schema + '.');
+    const schemas = known.map((o) => o.schema + '.');
     return [...new Set([...objects, ...schemas, ...SQL_KEYWORDS, ...SQL_FUNCTIONS])];
   }
 
   const unquoteSqlIdentifier = (value) => value.replace(/^\[|\]$/g, '').replaceAll(']]', ']');
 
-  async function aliasColumnSuggestions(sql, prefix) {
+  async function aliasColumnSuggestions(sql, prefix, scope = state) {
     if (!prefix.endsWith('.')) return [];
+    const known = objectsFor(scope);
     const qualifier = unquoteSqlIdentifier(prefix.slice(0, -1));
-    if (!qualifier || state.objects.some((o) => o.schema.toLowerCase() === qualifier.toLowerCase())) return [];
+    if (!qualifier || known.some((o) => o.schema.toLowerCase() === qualifier.toLowerCase())) return [];
 
     const identifier = '(?:\\[[^\\]]+\\]|[A-Za-z_][\\w$#@]*)';
     const sourcePattern = new RegExp(`\\b(?:FROM|JOIN)\\s+(${identifier})(?:\\s*\\.\\s*(${identifier}))?\\s+(?:AS\\s+)?(${identifier})`, 'gi');
@@ -585,18 +618,18 @@
     for (const match of sql.matchAll(sourcePattern)) {
       const alias = unquoteSqlIdentifier(match[3]);
       if (alias.toLowerCase() !== qualifier.toLowerCase()) continue;
-      const schema = match[2] ? unquoteSqlIdentifier(match[1]) : currentCapabilities().defaultSchema;
+      const schema = match[2] ? unquoteSqlIdentifier(match[1]) : capabilitiesFor(scope).defaultSchema;
       const name = unquoteSqlIdentifier(match[2] || match[1]);
-      object = state.objects.find((o) => o.schema.toLowerCase() === schema.toLowerCase() && o.name.toLowerCase() === name.toLowerCase());
+      object = known.find((o) => o.schema.toLowerCase() === schema.toLowerCase() && o.name.toLowerCase() === name.toLowerCase());
       if (object) break;
     }
     if (!object || !['Table', 'View'].includes(object.type)) return [];
 
-    const key = `${object.schema}.${object.name}`.toLowerCase();
+    const key = `${scopeKey(scope)} ${object.schema}.${object.name}`.toLowerCase();
     let structure = state.structures.get(key);
     if (!structure) {
       try {
-        structure = await api(urls.structure(object.schema, object.name));
+        structure = await api(urlsFor(scope).structure(object.schema, object.name));
         state.structures.set(key, structure);
       } catch { return []; }
     }
@@ -644,6 +677,7 @@
   }
 
   function createSqlEditor(initialValue = '', placeholder = '', options = {}) {
+    const scope = options.scope || state;
     const lines = h('div', { class: 'sql-lines', 'aria-hidden': 'true' });
     const highlight = h('pre', { class: 'sql-highlight', 'aria-hidden': 'true' });
     const input = h('textarea', {
@@ -675,9 +709,9 @@
       const request = ++completionRequest;
       const prefix = sqlCompletionPrefix(input.value, input.selectionStart);
       if (!force && prefix.length < 2) { hideCompletion(); return; }
-      const columns = await aliasColumnSuggestions(input.value, prefix);
+      const columns = await aliasColumnSuggestions(input.value, prefix, scope);
       if (request !== completionRequest || prefix !== sqlCompletionPrefix(input.value, input.selectionStart)) return;
-      matches = [...columns, ...sqlSuggestions().filter((x) => x.toLowerCase().startsWith(prefix.toLowerCase()))]
+      matches = [...columns, ...sqlSuggestions(scope).filter((x) => x.toLowerCase().startsWith(prefix.toLowerCase()))]
         .filter((x, i, all) => x.toLowerCase() !== prefix.toLowerCase() && all.findIndex((y) => y.toLowerCase() === x.toLowerCase()) === i)
         .slice(0, 10);
       selected = 0;
@@ -775,16 +809,14 @@
     }
   }
 
-  async function selectConnection(name, skipTabGuard = false) {
-    if (!skipTabGuard && !await closeAllTabs()) {
-      $('#connection-select').value = state.connection || '';
-      $('#connection-select').themedSelectSync();
-      return;
-    }
+  async function selectConnection(name) {
+    // Open tabs keep working against the connection they were opened on, so
+    // switching here only retargets the sidebar and anything opened from now on.
     state.connection = name;
     state.database = null;
     refreshAgentAvailability();
     refreshTypeSuggestions();
+    renderTabBar();
     let databases;
     try {
       databases = await api(urls.databases(name));
@@ -810,36 +842,40 @@
     const first = databases.find((database) => configuredDefault
       && database.name.toLowerCase() === configuredDefault.toLowerCase())
       || user[0] || system[0];
-    if (first) await selectDatabase(first.name, true);
+    if (first) await selectDatabase(first.name);
   }
 
-  async function selectDatabase(name, skipTabGuard = false) {
-    if (!skipTabGuard && !await closeAllTabs()) {
-      $('#database-select').value = state.database || '';
-      $('#database-select').themedSelectSync();
-      return;
-    }
+  async function selectDatabase(name) {
     state.database = name;
     refreshAgentAvailability();
     state.structures.clear();
     $('#database-select').value = name;
     $('#database-select').themedSelectSync();
+    renderTabBar();
     await loadObjects();
   }
 
   async function loadObjects() {
+    const scope = scopeOf();
+    const scopedUrls = urlsFor(scope);
+    let objects = [];
+    let schemas = [];
     try {
-      if (currentCapabilities().supportsSchemas) {
-        [state.objects, state.schemas] = await Promise.all([api(urls.objects()), api(urls.schemas())]);
+      if (capabilitiesFor(scope).supportsSchemas) {
+        [objects, schemas] = await Promise.all([api(scopedUrls.objects()), api(scopedUrls.schemas())]);
       } else {
-        state.objects = await api(urls.objects());
-        state.schemas = [];
+        objects = await api(scopedUrls.objects());
       }
     } catch (err) {
-      state.objects = [];
-      state.schemas = [];
+      objects = [];
+      schemas = [];
       toast('Failed to list objects: ' + err.message);
     }
+    // Tabs on other scopes complete their suggestions from this cache.
+    state.objectsByScope.set(scopeKey(scope), objects);
+    if (!sameScope(scope, state)) return;
+    state.objects = objects;
+    state.schemas = schemas;
     renderTree();
   }
 
@@ -1079,34 +1115,40 @@
     }, 'Delete schema');
   }
 
-  function displayName(o) {
-    return currentCapabilities().supportsSchemas ? o.schema + '.' + o.name : o.name;
+  function displayName(o, scope = state) {
+    return capabilitiesFor(scope).supportsSchemas ? o.schema + '.' + o.name : o.name;
   }
 
   const sqlName = (o) => `[${o.schema.replaceAll(']', ']]')}].[${o.name.replaceAll(']', ']]')}]`;
 
-  function objectQuerySql(o) {
+  function objectQuerySql(o, scope = state) {
     if (o.type === 'StoredProcedure') return `EXEC ${sqlName(o)};`;
     if (o.type === 'ScalarFunction') return `SELECT ${sqlName(o)}(/* arguments */);`;
     if (o.type === 'Table' || o.type === 'View') {
-      return currentCapabilities().selectExample.replace('{object}', sqlName(o));
+      return capabilitiesFor(scope).selectExample.replace('{object}', sqlName(o));
     }
     return `SELECT * FROM ${sqlName(o)}(/* arguments */);`;
   }
 
-  const useInQueryButton = (o) => currentConn().allowSqlExecution && o.type !== 'Trigger' ? h('button', {
-    onclick: () => openQueryTab(objectQuerySql(o), `Use ${o.name}`),
-  }, 'Use in query') : null;
+  const useInQueryButton = (o, scope = state) =>
+    connectionFor(scope).allowSqlExecution && o.type !== 'Trigger' ? h('button', {
+      onclick: () => openQueryTab(objectQuerySql(o, scope), `Use ${o.name}`, scope),
+    }, 'Use in query') : null;
 
-  function deleteObject(o) {
+  const objectTabKey = (o, scope) => `${scopeKey(scope)} ${o.type}:${o.schema}.${o.name}`;
+
+  function deleteObject(o, scope = state) {
+    const target = { connection: scope.connection, database: scope.database };
     const kind = o.type === 'StoredProcedure' ? 'procedure' : o.type.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
-    confirmModal(`Delete ${kind}`, `Delete ${kind} ${displayName(o)}? This cannot be undone.`, async () => {
-      await del(urls.dropObject(o.schema, o.name, o.type));
-      const tab = state.tabs.find((candidate) => candidate.key === `${o.type}:${o.schema}.${o.name}`);
-      if (tab) closeTab(tab.id);
-      await loadObjects();
-      toast(`${displayName(o)} deleted.`, false);
-    }, `Delete ${kind}`);
+    const name = displayName(o, target);
+    confirmModal(`Delete ${kind}`,
+      `Delete ${kind} ${name} on ${scopeTitle(target)}? This cannot be undone.`, async () => {
+        await del(urlsFor(target).dropObject(o.schema, o.name, o.type));
+        const tab = state.tabs.find((candidate) => candidate.key === objectTabKey(o, target));
+        if (tab) closeTab(tab.id);
+        await refreshObjects(target);
+        toast(`${name} deleted.`, false);
+      }, `Delete ${kind}`);
   }
 
   function objectContextItems(o) {
@@ -1179,7 +1221,7 @@
     return true;
   }
 
-  function renderTabs() {
+  function renderTabBar() {
     $('#tabbar').replaceChildren(...state.tabs.map((tab) =>
       h('div', {
         class: 'tab' + (tab.id === state.activeTabId ? ' active' : ''),
@@ -1197,19 +1239,31 @@
             renderTabs();
           } },
           { label: 'Close all tabs', action: () => closeAllTabs() },
-          ...(tab.object && currentConn().allowDdl ? [
+          ...(tab.object && connectionFor(tab.scope).allowDdl ? [
             { separator: true },
-            { label: `Delete ${tab.object.type === 'View' ? 'view' : 'object'}…`, danger: true, action: () => deleteObject(tab.object) },
+            { label: `Delete ${tab.object.type === 'View' ? 'view' : 'object'}…`, danger: true, action: () => deleteObject(tab.object, tab.scope) },
           ] : []),
         ]),
       },
         h('span', { class: 'badge badge-' + tab.badge, text: tab.badge }),
         h('span', { class: 'tab-title', text: tab.title }),
+        // Tabs left behind by a connection or database switch say where they run.
+        isCurrentScope(tab.scope) ? null
+          : h('span', {
+            class: 'tab-scope',
+            'data-testid': 'tab-scope',
+            title: `Runs on ${scopeTitle(tab.scope)}`,
+            text: scopeLabel(tab.scope),
+          }),
         h('button', {
           class: 'tab-close',
           title: 'Close tab',
           onclick: (e) => { e.stopPropagation(); closeTab(tab.id); },
         }, '×'))));
+  }
+
+  function renderTabs() {
+    renderTabBar();
 
     const panels = $('#panels');
     panels.replaceChildren(...state.tabs.map((t) => t.panel));
@@ -1229,8 +1283,8 @@
 
   // ---- object tabs (tables, views, procedures, functions, triggers) -------------
 
-  function openObjectTab(o) {
-    const key = `${o.type}:${o.schema}.${o.name}`;
+  function openObjectTab(o, scope = scopeOf()) {
+    const key = objectTabKey(o, scope);
     const existing = state.tabs.find((t) => t.key === key);
     if (existing) {
       setActiveTab(existing.id);
@@ -1245,8 +1299,9 @@
     const tab = {
       id: state.nextTabId++,
       key,
+      scope,
       badge,
-      title: displayName(o),
+      title: displayName(o, scope),
       panel: h('div', { class: 'panel' }),
       loaded: false,
       load: () => {},
@@ -1272,6 +1327,12 @@
   }
 
   function buildDataObjectTab(tab, o) {
+    // Everything below is deliberately bound to the tab's own connection and
+    // database; the shadowed names never fall back to the header pickers.
+    const scope = tab.scope;
+    const urls = urlsFor(scope);
+    const currentConn = () => connectionFor(scope);
+    const currentCapabilities = () => capabilitiesFor(scope);
     const grid = { sort: null, dir: 'asc' };
     const views = ['Data', 'Structure', 'Definition'];
     const viewBar = h('div', { class: 'viewbar' });
@@ -1300,7 +1361,7 @@
           onclick: () => switchView(v),
         })));
       const deleteViewButton = o.type === 'View' && currentConn().allowDdl ? h('button', {
-          class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o),
+          class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
         }) : null;
       actionBar.replaceChildren();
       viewBar.replaceChildren(viewSwitcher);
@@ -1384,16 +1445,16 @@
           ? h('button', { onclick: () => openRowEditor(table, data.columns, structure, null, null, columnIndex) }, '＋ Row')
           : null,
         cancel,
-        useInQueryButton(o),
+        useInQueryButton(o, scope),
         h('span', { class: 'spacer' }),
         exportButtons(data.columns, data.rows, o.name,
           currentConn().allowSqlExecution
-            ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o) }
+            ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope }
             : null),
         h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
         status,
         o.type === 'View' && currentConn().allowDdl ? h('button', {
-          class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o),
+          class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
         }) : null,
       ].filter(Boolean));
       body.replaceChildren(scroll);
@@ -1603,7 +1664,7 @@
         canDesign && !s.indexes.some((x) => x.isPrimaryKey)
           ? h('button', { onclick: () => openPrimaryKeyDialog() }, '＋ Primary key') : null,
         canDesign ? h('button', { onclick: () => openForeignKeyDialog() }, '＋ Foreign key') : null,
-        useInQueryButton(o),
+        useInQueryButton(o, scope),
         h('span', { class: 'spacer' }),
         canDesign ? h('button', {
           class: 'danger',
@@ -1612,10 +1673,10 @@
               await del(urls.dropObject(o.schema, o.name, o.type));
               toast(`Table ${tab.title} dropped.`, false);
               closeTab(tab.id);
-              loadObjects();
+              refreshObjects(scope);
             }, 'Drop table'),
         }, 'Drop table…') : (o.type === 'View' && currentConn().allowDdl ? h('button', {
-          class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o),
+          class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
         }) : null),
       ].filter(Boolean));
 
@@ -1747,7 +1808,7 @@
 
       const openForeignKeyDialog = () => {
         const name = h('input', { type: 'text', value: `FK_${o.name}_` });
-        const tableSelect = h('select', {}, state.objects.filter((candidate) => candidate.type === 'Table')
+        const tableSelect = h('select', {}, objectsFor(scope).filter((candidate) => candidate.type === 'Table')
           .map((candidate) => h('option', {
             value: `${candidate.schema}\u0000${candidate.name}`,
             text: `${candidate.schema}.${candidate.name}`,
@@ -1894,39 +1955,43 @@
   }
 
   async function renderTableDefinition(body, o, tab, toolbar = null) {
+    const scope = tab?.scope || state;
     body.replaceChildren(h('div', { class: 'loading', text: 'Loading…' }));
     let response;
-    try { response = await api(urls.definition(o.schema, o.name)); }
+    try { response = await api(urlsFor(scope).definition(o.schema, o.name)); }
     catch (err) { body.replaceChildren(errorBox(err.message)); return; }
 
     const currentDefinition = response.definition || '-- definition unavailable --';
     const editor = createSqlEditor(currentDefinition, '', {
       label: `${o.name} definition`,
       testId: 'table-definition-editor',
+      scope,
     });
-    if (toolbar && currentConn().allowSqlExecution) toolbar.append(useInQueryButton(o));
+    if (toolbar && connectionFor(scope).allowSqlExecution) toolbar.append(useInQueryButton(o, scope));
     body.replaceChildren(editor);
   }
 
   async function renderObjectDefinition(body, o, tab, toolbar = null) {
+    const scope = tab?.scope || state;
     body.replaceChildren(h('div', { class: 'loading', text: 'Loading…' }));
     let response;
     try {
-      response = await api(urls.definition(o.schema, o.name));
+      response = await api(urlsFor(scope).definition(o.schema, o.name));
     } catch (err) {
       body.replaceChildren(errorBox(err.message));
       return;
     }
     const definition = response.definition || '-- definition unavailable --';
-    const canExecute = currentConn().allowSqlExecution;
-    const canEdit = currentConn().allowDdl && canExecute;
+    const canExecute = connectionFor(scope).allowSqlExecution;
+    const canEdit = connectionFor(scope).allowDdl && canExecute;
     if (!canEdit) {
-      const useButton = canExecute ? useInQueryButton(o) : null;
+      const useButton = canExecute ? useInQueryButton(o, scope) : null;
       if (toolbar && useButton) toolbar.append(useButton);
       const editor = createSqlEditor(definition, '', {
         readOnly: true,
         label: `${o.name} definition`,
         testId: 'object-definition-editor',
+        scope,
       });
       body.replaceChildren(...[
         toolbar ? null : (useButton ? h('div', { class: 'inline-form' },
@@ -1936,11 +2001,11 @@
       return;
     }
 
-    const recreatesObject = currentCapabilities().objectEditMode === 'Recreate';
+    const recreatesObject = capabilitiesFor(scope).objectEditMode === 'Recreate';
     const editableDefinition = recreatesObject
       ? definition
       : definition.replace(/^\s*CREATE\s+(?:OR\s+ALTER\s+)?/i, 'ALTER ');
-    const editor = createSqlEditor(editableDefinition);
+    const editor = createSqlEditor(editableDefinition, '', { scope });
     let appliedDefinition = editor.value;
     const error = h('div', { class: 'inline-error', hidden: '' });
     const save = h('button', { class: 'primary', text: 'Execute' });
@@ -1955,11 +2020,11 @@
           const createSql = editor.value.trim().replace(/;?\s*$/, ';');
           sql = `BEGIN IMMEDIATE;\nDROP ${dropType} IF EXISTS ${sqlName(o)};\n${createSql}\nCOMMIT;`;
         }
-        await executeSql(sql);
+        await executeSql(sql, scope);
         appliedDefinition = editor.value;
         tab.hasUnsavedDefinition = false;
         toast(`${tab ? tab.title : o.name} updated.`, false);
-        await loadObjects();
+        await refreshObjects(scope);
         return true;
       } catch (err) {
         error.textContent = err.message;
@@ -1996,7 +2061,7 @@
           ], () => resolve(decision));
       });
     };
-    const useButton = useInQueryButton(o);
+    const useButton = useInQueryButton(o, scope);
     if (toolbar) {
       if (useButton) toolbar.append(useButton);
       toolbar.append(save);
@@ -2006,9 +2071,9 @@
       editor, error));
   }
 
-  function openNewSchemaObject(type) {
-    if (!state.database) { toast('Select a database first.'); return; }
-    const capabilities = currentCapabilities();
+  function openNewSchemaObject(type, scope = scopeOf()) {
+    if (!scope.database) { toast('Select a database first.'); return; }
+    const capabilities = capabilitiesFor(scope);
     const schemaPrefix = capabilities.supportsSchemas
       ? capabilities.defaultSchema
       : `[${capabilities.defaultSchema.replaceAll(']', ']]')}]`;
@@ -2019,13 +2084,13 @@
       Trigger: ['New trigger', capabilities.createTriggerExample],
     };
     const template = templates[type];
-    openQueryTab(template[1], template[0]);
+    openQueryTab(template[1], template[0], scope);
   }
 
   // ---- table designer -----------------------------------------------------------
 
-  function openTableDesignerTab() {
-    const capabilities = currentCapabilities();
+  function openTableDesignerTab(scope = scopeOf()) {
+    const capabilities = capabilitiesFor(scope);
     const schemaInput = h('input', {
       type: 'text', value: capabilities.defaultSchema, class: 'designer-name', 'data-testid': 'table-schema',
       'aria-label': 'Table schema',
@@ -2083,6 +2148,7 @@
     const tab = {
       id: state.nextTabId++,
       key: null,
+      scope,
       badge: 'T',
       title: 'New table',
       loaded: true,
@@ -2110,15 +2176,15 @@
       if (!design.name) { toast('Give the table a name.'); return; }
       if (!design.columns.length) { toast('Add at least one column.'); return; }
       try {
-        await post(urls.createTable(), design);
+        await post(urlsFor(scope).createTable(), design);
       } catch (err) {
         toast('Create failed: ' + err.message);
         return;
       }
       toast(`Table ${design.schema}.${design.name} created.`, false);
       closeTab(tab.id);
-      await loadObjects();
-      openObjectTab({ schema: design.schema, name: design.name, type: 'Table' });
+      await refreshObjects(scope);
+      openObjectTab({ schema: design.schema, name: design.name, type: 'Table' }, scope);
     };
 
     tab.panel = h('div', { class: 'panel query-panel' },
@@ -2146,6 +2212,19 @@
       if (typeof value === 'string') return value;
     }
     return '';
+  };
+
+  // Structured agent events carry their payload as JSON in the same `content` field the textual
+  // events use.
+  const agentEventPayload = (event) => {
+    const content = agentEventText(event);
+    if (!content) return null;
+    try {
+      const payload = JSON.parse(content);
+      return payload && typeof payload === 'object' ? payload : null;
+    } catch {
+      return null;
+    }
   };
 
   const formatAgentToolPayload = (content) => {
@@ -2201,7 +2280,7 @@
     return failed(content);
   };
 
-  function renderAgentContent(host, content) {
+  function renderAgentContent(host, content, scope = state) {
     host.replaceChildren();
     const fenced = /```([^\r\n`]*)\r?\n([\s\S]*?)(?:```|$)/g;
     let cursor = 0;
@@ -2235,7 +2314,7 @@
           isSql ? h('button', {
             class: 'mini-btn', text: 'Open in Query', title: 'Open this SQL in a query tab',
             'data-testid': 'agent-open-query',
-            onclick: () => openQueryTab(code.trim(), 'Agent SQL'),
+            onclick: () => openQueryTab(code.trim(), 'Agent SQL', scope),
           }) : null),
         h('pre', {}, h('code', { text: code })));
       host.append(codeBlock);
@@ -2323,10 +2402,10 @@
     return fragment;
   }
 
-  function openAgentTab() {
+  function openAgentTab(scope = scopeOf()) {
     const profiles = state.meta?.agent?.profiles || [];
-    const modes = allowedAgentModes();
-    if (!state.database) {
+    const modes = allowedAgentModes(connectionFor(scope));
+    if (!scope.database) {
       toast('Select a database first.');
       return;
     }
@@ -2335,8 +2414,8 @@
       return;
     }
 
-    const connection = state.connection;
-    const database = state.database;
+    const connection = scope.connection;
+    const database = scope.database;
     const modeSelect = h('select', {
       'aria-label': 'Agent mode', 'data-testid': 'agent-mode',
     }, modes.map((mode) => h('option', { value: mode.id, text: mode.label })));
@@ -2408,6 +2487,33 @@
       class: 'primary agent-composer-submit', type: 'button', title: 'Send message',
       'aria-label': 'Send message', 'data-testid': 'agent-send',
     }, sendIcon, stopIcon);
+    // Context-window gauge drawn around the send button. It stays hidden until a provider reports
+    // token usage, because several providers never report any.
+    const contextRingRadius = 20;
+    const contextRingLength = 2 * Math.PI * contextRingRadius;
+    const contextRingCircle = (className) => {
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circle.setAttribute('class', className);
+      circle.setAttribute('cx', '22');
+      circle.setAttribute('cy', '22');
+      circle.setAttribute('r', String(contextRingRadius));
+      return circle;
+    };
+    const contextRingSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    contextRingSvg.setAttribute('class', 'agent-context-ring');
+    contextRingSvg.setAttribute('viewBox', '0 0 44 44');
+    contextRingSvg.setAttribute('aria-hidden', 'true');
+    contextRingSvg.setAttribute('focusable', 'false');
+    const contextRingTrack = contextRingCircle('agent-context-ring-track');
+    const contextRingValue = contextRingCircle('agent-context-ring-value');
+    contextRingValue.setAttribute('stroke-dasharray', String(contextRingLength));
+    contextRingValue.setAttribute('stroke-dashoffset', String(contextRingLength));
+    contextRingSvg.append(contextRingTrack, contextRingValue);
+    const contextTooltipId = `agent-context-tooltip-${crypto.randomUUID()}`;
+    const contextTooltip = h('span', {
+      class: 'agent-context-tooltip', id: contextTooltipId, role: 'tooltip',
+      'data-testid': 'agent-context-tooltip',
+    });
     const SpeechRecognitionApi = window.SpeechRecognition || window.webkitSpeechRecognition;
     const microphoneSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     microphoneSvg.setAttribute('class', 'agent-dictation-icon');
@@ -2469,9 +2575,13 @@
       class: 'sr-only agent-status', role: 'status', 'aria-live': 'polite',
       'aria-atomic': 'true', 'data-testid': 'agent-status', 'data-state': 'ready',
     }, statusAnnouncement);
+    const submitControl = h('span', {
+      class: 'agent-composer-submit-control', 'data-testid': 'agent-context-gauge',
+      'data-context': 'unknown',
+    }, contextRingSvg, actionButton, contextTooltip);
     const composeActions = h('div', { class: 'agent-compose-actions' },
       status, privacyControl, h('span', { class: 'spacer' }), composerOptions,
-      dictationButton, actionButton);
+      dictationButton, submitControl);
     const composerShell = h('div', {
       class: 'agent-composer-shell', 'data-testid': 'agent-composer-shell',
       'aria-busy': 'false',
@@ -2498,6 +2608,48 @@
     let conversationId = crypto.randomUUID();
     let messageScrollTop = 0;
     let followMessages = true;
+    let contextUsage = null;
+
+    const formatTokens = (tokens) => (tokens >= 1000
+      ? `${(tokens / 1000).toFixed(tokens >= 10000 ? 0 : 1)}k`
+      : String(tokens));
+    const renderContextUsage = () => {
+      const profile = selectedProfile();
+      const windowTokens = contextUsage?.contextWindowTokens || profile?.contextWindowTokens || 0;
+      if (!contextUsage) {
+        submitControl.dataset.context = 'unknown';
+        contextRingValue.setAttribute('stroke-dashoffset', String(contextRingLength));
+        contextTooltip.textContent = profile
+          ? `${profile.displayName} has not reported context usage for this conversation.`
+          : 'Context usage is not available.';
+        actionButton.removeAttribute('aria-describedby');
+        return;
+      }
+
+      const used = contextUsage.usedTokens;
+      const ratio = windowTokens > 0 ? Math.min(used / windowTokens, 1) : 0;
+      submitControl.dataset.context = windowTokens > 0
+        ? (ratio >= 0.9 ? 'critical' : ratio >= 0.75 ? 'high' : 'normal')
+        : 'unsized';
+      contextRingValue.setAttribute(
+        'stroke-dashoffset', String(contextRingLength * (1 - (windowTokens > 0 ? ratio : 1))));
+      const detail = [
+        contextUsage.inputTokens ? `input ${formatTokens(contextUsage.inputTokens)}` : null,
+        contextUsage.cachedInputTokens ? `cached ${formatTokens(contextUsage.cachedInputTokens)}` : null,
+        contextUsage.outputTokens ? `output ${formatTokens(contextUsage.outputTokens)}` : null,
+      ].filter(Boolean).join(' · ');
+      const headline = windowTokens > 0
+        ? `Context used: ${formatTokens(used)} of ${formatTokens(windowTokens)} tokens (${Math.round(ratio * 100)}%).`
+        : `Context used: ${formatTokens(used)} tokens. This model's context window was not reported.`;
+      contextTooltip.textContent = detail ? `${headline} ${detail}.` : headline;
+      actionButton.setAttribute('aria-describedby', contextTooltipId);
+    };
+    const setContextUsage = (usage) => {
+      contextUsage = usage && Number.isFinite(usage.usedTokens) && usage.usedTokens > 0
+        ? usage
+        : null;
+      renderContextUsage();
+    };
 
     const setStatus = (stateName, visibleText, announcement = visibleText) => {
       status.dataset.state = stateName;
@@ -2629,6 +2781,7 @@
       messages.setAttribute('aria-busy', 'false');
       followMessages = true;
       messageScrollTop = 0;
+      setContextUsage(null);
       setStatus('ready', '', '');
     };
     const removeCredential = (handle) => {
@@ -2699,6 +2852,7 @@
       privacyControl.classList.toggle('local', Boolean(profile?.isLocal));
       privacyControl.classList.toggle('external', !profile?.isLocal);
       privacyTooltip.textContent = `${privacyText}${dictationPrivacy}`;
+      renderContextUsage();
       syncControls();
     };
     const rememberAgentPreferences = () => {
@@ -2812,7 +2966,7 @@
           element.insertBefore(currentAnswer.element, error);
         }
         currentAnswer.value += delta;
-        renderAgentContent(currentAnswer.element, currentAnswer.value);
+        renderAgentContent(currentAnswer.element, currentAnswer.value, scope);
       };
 
       const appendToolEvent = (title, payload, className) => {
@@ -2848,7 +3002,8 @@
         currentActivity.currentReasoningEntry.value += delta;
         renderAgentContent(
           currentActivity.currentReasoningEntry.content,
-          currentActivity.currentReasoningEntry.value);
+          currentActivity.currentReasoningEntry.value,
+          scope);
         scrollMessages();
       };
 
@@ -2944,6 +3099,7 @@
     const tab = {
       id: state.nextTabId++,
       key: null,
+      scope,
       badge: 'A',
       title: `Ask — ${database}`,
       loaded: true,
@@ -3025,6 +3181,8 @@
             assistantMessage.finishReasoning();
             assistantText = text.startsWith(assistantText) ? text : assistantText + text;
             assistantMessage.setContent(assistantText);
+          } else if (type === 'usage') {
+            setContextUsage(agentEventPayload(event));
           } else if (type === 'error') {
             streamError = text || 'The agent could not complete the request.';
             assistantMessage.setError(streamError);
@@ -3074,6 +3232,8 @@
       void closeProviderConversation();
       apiKeyInput.value = '';
       discardCredential();
+      // A different provider carries its own context; the previous provider's gauge is meaningless.
+      setContextUsage(null);
       refreshProfile();
       rememberAgentPreferences();
       appendModelMarker(selectedProfile());
@@ -3150,15 +3310,18 @@
 
   // ---- query tabs -----------------------------------------------------------------
 
-  function openQueryTab(initialSql = '', initialTitle = null) {
-    if (!state.database) {
+  function openQueryTab(initialSql = '', initialTitle = null, scope = scopeOf()) {
+    if (!scope.database) {
       toast('Select a database first.');
       return;
     }
 
-    const exampleObject = `[${currentCapabilities().defaultSchema.replaceAll(']', ']]')}].[SomeTable]`;
+    // The tab runs against this connection and database for its whole life.
+    const urls = urlsFor(scope);
+    const capabilities = capabilitiesFor(scope);
+    const exampleObject = `[${capabilities.defaultSchema.replaceAll(']', ']]')}].[SomeTable]`;
     const editor = createSqlEditor(initialSql,
-      currentCapabilities().selectExample.replace('{object}', exampleObject));
+      capabilities.selectExample.replace('{object}', exampleObject), { scope });
     const results = h('div', { class: 'query-results', 'data-testid': 'query-results' });
     const status = h('span', { class: 'muted', 'data-testid': 'query-status' });
     const runButton = h('button', {
@@ -3188,7 +3351,7 @@
     const refreshSaved = async (selectId = null) => {
       try {
         const all = await api(urls.queries());
-        savedQueries = all.filter((q) => q.connectionName === state.connection);
+        savedQueries = all.filter((q) => q.connectionName === scope.connection);
       } catch {
         savedQueries = [];
       }
@@ -3230,8 +3393,8 @@
               const saved = await post(urls.queries(), {
                 id: overwrite ? selected.id : null,
                 name,
-                connectionName: state.connection,
-                database: state.database,
+                connectionName: scope.connection,
+                database: scope.database,
                 sql,
               });
               close();
@@ -3261,6 +3424,7 @@
     const tab = {
       id: state.nextTabId++,
       key: null,
+      scope,
       badge: 'Q',
       title: initialTitle || 'SQL ' + queryCounter++,
       loaded: true,
@@ -3315,7 +3479,7 @@
             + (event.truncated ? ' — truncated at the configured limit' : '');
           const controls = exportButtons(set.columns, set.rows,
             `${tab.title}-result${event.resultSetIndex + 1}`,
-            { sql: editor.value.trim(), name: tab.title.startsWith('Query ') ? '' : tab.title });
+            { sql: editor.value.trim(), name: tab.title.startsWith('Query ') ? '' : tab.title, scope });
           set.exports.replaceWith(controls);
           set.exports = controls;
           setupOverflowToolbar(set.meta, [controls], 'More result actions');
@@ -3340,7 +3504,7 @@
           method: 'POST', body: JSON.stringify({ sql, maxRows: Number(maxRowsInput.value) }), signal: controller.signal,
         }, addEvent);
         if (completedSuccessfully && /\b(?:CREATE(?:\s+OR\s+ALTER)?|ALTER|DROP)\s+(?:VIEW|TABLE|PROCEDURE|PROC|FUNCTION|SCHEMA)\b/i.test(sql)) {
-          await loadObjects();
+          await refreshObjects(scope);
         }
       } catch (err) {
         if (err.name === 'AbortError') status.textContent = 'Cancelled';
@@ -3455,7 +3619,7 @@
     });
   }
 
-  function openPublishDialog(sql, suggestedName) {
+  function openPublishDialog(sql, suggestedName, scope = scopeOf()) {
     const nameInput = h('input', {
       type: 'text', value: suggestedName || '', 'data-testid': 'publish-name',
       'aria-label': 'Endpoint name',
@@ -3504,8 +3668,8 @@
               name: nameInput.value.trim(),
               method: methodSelect.value,
               route: routeInput.value.trim(),
-              connectionName: state.connection,
-              database: state.database,
+              connectionName: scope.connection,
+              database: scope.database,
               sql,
               parameters: parameters.map((p) => ({
                 name: p.name, required: p.required.checked, type: p.type.value,
@@ -3865,6 +4029,7 @@
     return {
       element,
       focus: () => address.focus(),
+      abort: () => controller?.abort(),
       setRequest: (endpoint) => {
         method.value = endpoint.method;
         const baseUrl = new URL('pub/' + endpoint.route, document.baseURI).href;
@@ -3886,6 +4051,34 @@
     };
   }
 
+  // Each request lives in its own tab, so several endpoints can stay open side by side.
+  function openApiPreviewTab(endpoint = null) {
+    const key = endpoint ? `api-preview:${endpoint.id}` : null;
+    const existing = key && state.tabs.find((t) => t.key === key);
+    if (existing) {
+      setActiveTab(existing.id);
+      existing.preview.focus();
+      return;
+    }
+
+    const preview = createApiPreview();
+    const tab = {
+      id: state.nextTabId++,
+      key,
+      badge: 'H',
+      title: endpoint ? endpoint.name : 'API request',
+      preview,
+      panel: h('div', { class: 'panel' },
+        h('div', { class: 'panel-body api-preview-body' }, preview.element)),
+      loaded: true,
+      load: () => {},
+      onClose: () => preview.abort(),
+    };
+    if (endpoint) preview.setRequest(endpoint);
+    addTab(tab);
+    preview.focus();
+  }
+
   function openApisTab() {
     const existing = state.tabs.find((t) => t.key === 'published-apis');
     if (existing) {
@@ -3895,20 +4088,6 @@
     }
 
     const body = h('div', { class: 'panel-body' });
-    const preview = createApiPreview();
-    const previewBody = h('div', { class: 'panel-body api-preview-body', hidden: '' }, preview.element);
-    const endpointsButton = h('button', { class: 'view-btn active', text: 'Endpoints' });
-    const previewButton = h('button', { class: 'view-btn', text: 'Preview' });
-    const showView = (name) => {
-      const showPreview = name === 'preview';
-      body.hidden = showPreview;
-      previewBody.hidden = !showPreview;
-      endpointsButton.classList.toggle('active', !showPreview);
-      previewButton.classList.toggle('active', showPreview);
-      if (showPreview) preview.focus();
-    };
-    endpointsButton.addEventListener('click', () => showView('endpoints'));
-    previewButton.addEventListener('click', () => showView('preview'));
     const tab = {
       id: state.nextTabId++,
       key: 'published-apis',
@@ -3916,9 +4095,13 @@
       title: 'Published APIs',
       panel: h('div', { class: 'panel' },
         h('div', { class: 'viewbar' },
-          h('div', { class: 'view-switcher', role: 'tablist', 'aria-label': 'Published API views' },
-            endpointsButton, previewButton)),
-        body, previewBody),
+          h('span', { class: 'spacer' }),
+          h('button', {
+            'data-testid': 'new-api-request',
+            title: 'Open an empty request in a new tab',
+            onclick: () => openApiPreviewTab(),
+          }, 'New request')),
+        body),
       loaded: false,
       load: () => {},
     };
@@ -4005,8 +4188,9 @@
             h('td', { text: e.enabled ? 'yes' : 'no' }),
             h('td', { class: 'cell-actions' },
               h('button', {
-                class: 'mini-btn', title: 'Open in preview',
-                onclick: () => { preview.setRequest(e); showView('preview'); },
+                class: 'mini-btn', title: 'Open this endpoint in a request tab',
+                'data-testid': 'open-api-request',
+                onclick: () => openApiPreviewTab(e),
               }, '▶'),
               h('button', { class: 'mini-btn', title: 'Edit endpoint inline', onclick: () => editEndpoint(e) }, '✎'),
               h('button', {
@@ -4259,7 +4443,7 @@
       }, 'JSON'),
       apiDefinition ? h('button', {
         class: 'ghost', title: 'Publish as an API endpoint', 'data-testid': 'publish-api',
-        onclick: () => openPublishDialog(apiDefinition.sql, apiDefinition.name),
+        onclick: () => openPublishDialog(apiDefinition.sql, apiDefinition.name, apiDefinition.scope),
       }, 'API') : null);
   }
 

@@ -97,8 +97,10 @@ builder.Services
         agents.AddAnthropic("claude", "claude-sonnet-4-5")
             .AllowUserApiKeys();
 
+        // Optional: the fallback window for when the model is not resident in Ollama.
         agents.AddOllama(
-            "local", new Uri("http://127.0.0.1:11434"), "qwen3:4b");
+                "local", new Uri("http://127.0.0.1:11434"), "qwen3:4b")
+            .WithContextWindow(32_768);
     });
 ```
 
@@ -310,6 +312,37 @@ host-controlled profiles through `AddCodex`, `AddClaudeCode`, `AddGitHubCopilot`
 `AllowUserApiKeys`; subscription-backed Codex, Claude Code, and GitHub Copilot profiles reject both because
 authentication belongs exclusively to the local CLI runtime. `AsLocal` controls the safe locality
 metadata exposed for OpenAI-compatible profiles.
+
+### Context-window gauge
+
+When a provider reports token usage, the Ask composer draws a ring around the send button showing how
+much of the model's context window the conversation occupies, with the token breakdown in a tooltip on
+hover. Providers differ in what they report:
+
+| Provider | Tokens used | Context-window size | Arrives |
+| --- | --- | --- | --- |
+| Codex | `thread/tokenUsage/updated`, the most recent request's usage | `modelContextWindow` | While streaming |
+| Claude Code | Usage forwarded from the model's own streaming events | `modelUsage.contextWindow` | While streaming; the window from the first completed turn onward |
+| GitHub Copilot | Session metadata `contextInfo.totalTokens` | The model's `max_prompt_tokens` | End of turn |
+| Ollama | `prompt_eval_count` / `eval_count` | The window the server actually loaded the model with, read from `/api/ps` | End of response |
+| OpenAI, Anthropic, OpenAI-compatible | Endpoint-reported usage, when returned | Not reported — declare it | End of response |
+
+Ollama never reports a window with a response, and the effective window is the runtime `num_ctx` rather
+than the model's trained maximum, so Gridlet asks the running server which window the model is loaded
+with. If the model is not resident, the declared value is used instead.
+
+Copilot pushes `session.usage_info` only to the owner of the live session, which the Agent Framework
+adapter keeps to itself, so Gridlet reads the same numbers from the session's metadata API once the turn
+ends. The denominator is the model's prompt budget rather than its full window, because the remainder is
+reserved for the model's own output.
+
+`WithContextWindow` lets the host declare a window for providers that report usage without one. Any
+window discovered from the provider wins over the declaration. With usage but no window, the ring stays
+neutral and the tooltip reports the token count alone; with no usage at all the ring is not drawn. The
+gauge reflects the current conversation only and resets when the conversation or model changes.
+
+Reading usage never fails a turn: if a probe cannot reach Ollama, or Copilot cannot supply metadata, the
+answer is unaffected and the gauge simply stays as it was.
 
 The agent's `list_database_objects` catalog tool accepts optional schema, case-insensitive name-text,
 and object-type filters. This lets the model narrow large catalogs before requesting table details
