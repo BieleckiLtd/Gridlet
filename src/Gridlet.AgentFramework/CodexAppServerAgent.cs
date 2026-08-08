@@ -292,7 +292,8 @@ internal sealed class CodexAppServerAgent(
                               error.TryGetProperty("message", out var errorMessage)
                     ? errorMessage.GetString()
                     : null;
-                throw new GridletAgentException(
+                throw new AgentProviderRuntimeException(
+                    "Codex could not complete the turn.",
                     turnError ?? $"The Codex turn ended with status '{status}'.");
             }
         }
@@ -560,7 +561,7 @@ internal sealed class CodexAppServerClient : IAsyncDisposable
     private readonly Process _process;
     private readonly StreamWriter _input;
     private readonly StreamReader _output;
-    private readonly Task<string> _stderr;
+    private readonly BoundedTextTail _stderr;
     private readonly SemaphoreSlim _initializationLock = new(1, 1);
     private long _nextId;
     private bool _ready;
@@ -570,7 +571,7 @@ internal sealed class CodexAppServerClient : IAsyncDisposable
         _process = process;
         _input = process.StandardInput;
         _output = process.StandardOutput;
-        _stderr = process.StandardError.ReadToEndAsync();
+        _stderr = BoundedTextTail.Capture(process.StandardError);
     }
 
     public static Task<CodexAppServerClient> StartAsync(
@@ -614,9 +615,10 @@ internal sealed class CodexAppServerClient : IAsyncDisposable
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            throw new GridletAgentException(
-                $"Could not start the local Codex CLI using '{executablePath}'. " +
-                $"Install Codex or configure CodexExecutablePath. {exception.Message}");
+            throw new AgentProviderRuntimeException(
+                "The local Codex runtime could not be started.",
+                $"Could not start Codex using configured executable '{executablePath}'.",
+                exception);
         }
     }
 
@@ -726,7 +728,9 @@ internal sealed class CodexAppServerClient : IAsyncDisposable
                 var text = error.TryGetProperty("message", out var messageElement)
                     ? messageElement.GetString()
                     : error.GetRawText();
-                throw new GridletAgentException($"Codex app-server rejected '{method}': {text}");
+                throw new AgentProviderRuntimeException(
+                    "Codex rejected a runtime request.",
+                    $"Codex app-server rejected '{method}': {text}");
             }
             return root.GetProperty("result").Clone();
         }
@@ -749,35 +753,65 @@ internal sealed class CodexAppServerClient : IAsyncDisposable
             }
             catch (JsonException exception)
             {
-                throw new GridletAgentException(
-                    $"Codex app-server wrote an invalid JSON-RPC message. {exception.Message}");
+                throw new AgentProviderRuntimeException(
+                    "Codex returned an invalid streaming response.",
+                    "Codex app-server wrote invalid JSON-RPC output.",
+                    exception);
             }
         }
 
         await _process.WaitForExitAsync(cancellationToken);
-        var stderr = await _stderr;
-        throw new GridletAgentException(
-            $"Codex app-server exited unexpectedly with code {_process.ExitCode}. " +
-            (string.IsNullOrWhiteSpace(stderr) ? string.Empty : stderr.Trim()));
+        await _stderr.Completion;
+        var stderr = _stderr.GetTail().Trim();
+        throw new AgentProviderRuntimeException(
+            "Codex exited unexpectedly.",
+            $"Codex app-server exited with code {_process.ExitCode}. " +
+            (string.IsNullOrWhiteSpace(stderr) ? "No stderr was captured." : stderr));
     }
 
     public async ValueTask DisposeAsync()
     {
+        var exited = false;
         try
         {
             _input.Close();
-            if (!_process.HasExited)
-            {
-                _process.Kill(entireProcessTree: true);
-            }
-            await _process.WaitForExitAsync();
+        }
+        catch (Exception exception) when (
+            exception is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            // Continue with the kill attempt even if stdin was already closed or broken.
+        }
+        var canWaitForExit = true;
+        try
+        {
+            if (!_process.HasExited) _process.Kill(entireProcessTree: true);
         }
         catch (InvalidOperationException)
         {
-            // The process exited between the checks above.
+            // The process exited between the check and kill request.
+        }
+        catch (Exception exception) when (
+            exception is System.ComponentModel.Win32Exception or NotSupportedException)
+        {
+            // Do not wait forever when the host rejected the kill request.
+            canWaitForExit = false;
+        }
+        try
+        {
+            if (canWaitForExit)
+            {
+                await _process.WaitForExitAsync();
+                exited = true;
+            }
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // The process handle is no longer available.
         }
         finally
         {
+            if (exited) await _stderr.Completion;
             _initializationLock.Dispose();
             _process.Dispose();
         }

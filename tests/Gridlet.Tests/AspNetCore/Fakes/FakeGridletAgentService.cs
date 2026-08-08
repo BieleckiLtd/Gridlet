@@ -41,6 +41,8 @@ public sealed class FakeGridletAgentService : IGridletAgentService
 
     public Exception? CredentialException { get; set; }
 
+    public Exception? ChatException { get; set; }
+
     public Task<GridletAgentCredential> StoreCredentialAsync(
         string profileId,
         string apiKey,
@@ -70,6 +72,7 @@ public sealed class FakeGridletAgentService : IGridletAgentService
     {
         Requests.Add(request);
         cancellationToken.ThrowIfCancellationRequested();
+        if (ChatException is not null) throw ChatException;
         await Task.Yield();
 
         yield return new GridletAgentStreamEvent("started");

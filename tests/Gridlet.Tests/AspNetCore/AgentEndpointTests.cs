@@ -4,6 +4,7 @@ using System.Security.Claims;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Gridlet.Abstractions;
+using Gridlet.AgentFramework;
 using Gridlet.Models;
 using Gridlet.Tests.AspNetCore.Fakes;
 using Microsoft.AspNetCore.Authentication;
@@ -90,6 +91,40 @@ public class AgentEndpointTests
         Assert.Equal(HttpStatusCode.BadGateway, failed.StatusCode);
         Assert.DoesNotContain(secret, body, StringComparison.Ordinal);
         Assert.Contains("could not be completed", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Provider_runtime_diagnostics_are_logged_only_and_return_a_safe_502()
+    {
+        const string sensitivePath = "C:\\private-host\\codex.exe";
+        const string sensitiveStderr = "stderr TOKEN=must-not-leak";
+        var agent = new FakeGridletAgentService
+        {
+            ChatException = new AgentProviderRuntimeException(
+                "Codex exited unexpectedly.",
+                $"Executable: {sensitivePath}; {sensitiveStderr}"),
+        };
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name, connection =>
+                {
+                    connection.AllowAgentDataAccess = true;
+                    connection.AllowAgentDataWithPrimaryConnection = true;
+                });
+                options.Security.AllowAnonymous = true;
+            },
+            services => services.AddSingleton<IGridletAgentService>(agent));
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync(DataChat, ValidChatBody());
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Contains("provider could not complete", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(sensitivePath, body, StringComparison.Ordinal);
+        Assert.DoesNotContain(sensitiveStderr, body, StringComparison.Ordinal);
+        Assert.DoesNotContain("Codex exited unexpectedly", body, StringComparison.Ordinal);
     }
 
     [Fact]

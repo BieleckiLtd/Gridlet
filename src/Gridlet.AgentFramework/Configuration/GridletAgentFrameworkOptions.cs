@@ -11,6 +11,12 @@ public sealed class GridletAgentFrameworkOptions
     /// <summary>How long a browser-supplied API key remains available in process memory.</summary>
     public TimeSpan CredentialLifetime { get; set; } = TimeSpan.FromMinutes(30);
 
+    /// <summary>Maximum number of browser-supplied API keys retained by this application instance.</summary>
+    public int MaxEphemeralCredentials { get; set; } = 512;
+
+    /// <summary>Maximum number of browser-supplied API keys retained for one authenticated or anonymous owner.</summary>
+    public int MaxEphemeralCredentialsPerOwner { get; set; } = 8;
+
     /// <summary>
     /// How long an inactive browser conversation may retain a subscription-backed CLI session.
     /// Closing the Ask tab releases it immediately.
@@ -156,6 +162,12 @@ public sealed class GridletAgentFrameworkOptions
     {
         ValidateRange(CredentialLifetime > TimeSpan.Zero && CredentialLifetime <= TimeSpan.FromDays(1),
             nameof(CredentialLifetime), "greater than zero and no more than one day");
+        ValidateRange(MaxEphemeralCredentials is >= 1 and <= 100_000,
+            nameof(MaxEphemeralCredentials), "between 1 and 100,000");
+        ValidateRange(MaxEphemeralCredentialsPerOwner >= 1 &&
+                      MaxEphemeralCredentialsPerOwner <= MaxEphemeralCredentials,
+            nameof(MaxEphemeralCredentialsPerOwner),
+            $"between 1 and {nameof(MaxEphemeralCredentials)}");
         ValidateRange(ConversationIdleTimeout >= TimeSpan.FromMinutes(1) &&
                       ConversationIdleTimeout <= TimeSpan.FromDays(1),
             nameof(ConversationIdleTimeout), "between one minute and one day");
@@ -230,7 +242,9 @@ public sealed class GridletAgentFrameworkOptions
             CodexExecutablePath,
             ClaudeExecutablePath,
             CopilotExecutablePath,
-            new ReadOnlyCollection<GridletAgentProfileSettings>(profiles));
+            new ReadOnlyCollection<GridletAgentProfileSettings>(profiles),
+            MaxEphemeralCredentials,
+            MaxEphemeralCredentialsPerOwner);
     }
 
     private static void ValidateRange(bool valid, string name, string expected)
@@ -552,7 +566,9 @@ internal sealed record GridletAgentFrameworkSettings(
     string CodexExecutablePath,
     string ClaudeExecutablePath,
     string CopilotExecutablePath,
-    IReadOnlyList<GridletAgentProfileSettings> Profiles)
+    IReadOnlyList<GridletAgentProfileSettings> Profiles,
+    int MaxEphemeralCredentials = 512,
+    int MaxEphemeralCredentialsPerOwner = 8)
 {
     private readonly IReadOnlyDictionary<string, GridletAgentProfileSettings> _profilesById =
         Profiles.ToDictionary(profile => profile.Id, StringComparer.OrdinalIgnoreCase);

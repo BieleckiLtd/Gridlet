@@ -135,7 +135,7 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
     private Process? process;
     private StreamWriter? input;
     private StreamReader? output;
-    private Task<string>? stderr;
+    private BoundedTextTail? stderr;
     private bool initialized;
     private bool disposed;
 
@@ -236,7 +236,9 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
                 if (isError)
                 {
                     var error = ReadResultError(root);
-                    throw new GridletAgentException($"Claude Code could not complete the turn. {error}");
+                    throw new AgentProviderRuntimeException(
+                        "Claude Code could not complete the turn.",
+                        $"Claude Code returned an error result: {error}");
                 }
 
                 HasCompletedTurn = true;
@@ -273,8 +275,9 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
             if (root.TryGetProperty("is_error", out var isError) &&
                 isError.ValueKind == JsonValueKind.True)
             {
-                throw new GridletAgentException(
-                    $"Claude Code could not change reasoning effort. {ReadResultError(root)}");
+                throw new AgentProviderRuntimeException(
+                    "Claude Code could not change reasoning effort.",
+                    $"Claude Code rejected the effort command: {ReadResultError(root)}");
             }
             currentEffort = requestedEffort;
             return;
@@ -333,7 +336,8 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
                 if (response.TryGetProperty("subtype", out var subtype) &&
                     subtype.GetString() == "error")
                 {
-                    throw new GridletAgentException(
+                    throw new AgentProviderRuntimeException(
+                        "Claude Code could not initialize its local runtime.",
                         $"Claude Code rejected initialization: {ReadString(response, "error")}");
                 }
                 if (allowsEffortSelection && !SupportsEffortCommand(response))
@@ -481,18 +485,21 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
 
         if (maxToolIterations is int limit && toolCallNumber > limit)
         {
-            return McpToolResult(
+            return FailedMcpToolResult(
                 id,
+                callId,
+                toolName,
                 $"Gridlet's limit of {limit} tool calls was reached. Do not call another tool; " +
-                "finish the response using the information already collected.",
-                isError: true);
+                    "finish the response using the information already collected.",
+                updates);
         }
 
         var tool = tools.FirstOrDefault(candidate =>
             string.Equals(candidate.Name, toolName, StringComparison.Ordinal));
         if (tool is null)
         {
-            return McpToolResult(id, "The requested tool is not available.", isError: true);
+            return FailedMcpToolResult(
+                id, callId, toolName, "The requested tool is not available.", updates);
         }
 
         try
@@ -503,8 +510,31 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            return McpToolResult(id, $"Tool execution failed: {exception.Message}", isError: true);
+            return FailedMcpToolResult(
+                id,
+                callId,
+                toolName,
+                $"Tool execution failed: {exception.Message}",
+                updates,
+                reportedMessage: "Tool execution failed.");
         }
+    }
+
+    private static object FailedMcpToolResult(
+        JsonElement id,
+        string callId,
+        string? toolName,
+        string message,
+        ICollection<AgentResponseUpdate> updates,
+        string? reportedMessage = null)
+    {
+        updates.Add(new AgentResponseUpdate(
+            ChatRole.Assistant,
+            [new FunctionResultContent(
+                callId,
+                new AgentToolInvocationResult(
+                    toolName, Success: false, Result: reportedMessage ?? message))]));
+        return McpToolResult(id, message, isError: true);
     }
 
     private static object McpToolResult(JsonElement id, string text, bool isError) => new
@@ -577,13 +607,14 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
                 "The process API did not return a Claude Code process.");
             input = process.StandardInput;
             output = process.StandardOutput;
-            stderr = process.StandardError.ReadToEndAsync();
+            stderr = BoundedTextTail.Capture(process.StandardError);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            throw new GridletAgentException(
-                $"Could not start the local Claude Code CLI using '{executablePath}'. " +
-                $"Install Claude Code or configure ClaudeExecutablePath. {exception.Message}");
+            throw new AgentProviderRuntimeException(
+                "The local Claude Code runtime could not be started.",
+                $"Could not start Claude Code using configured executable '{executablePath}'.",
+                exception);
         }
     }
 
@@ -618,15 +649,20 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
             }
             catch (JsonException exception)
             {
-                throw new GridletAgentException(
-                    $"Claude Code wrote an invalid streaming message. {exception.Message}");
+                throw new AgentProviderRuntimeException(
+                    "Claude Code returned an invalid streaming response.",
+                    "Claude Code wrote invalid stream-json output.",
+                    exception);
             }
         }
 
         await process!.WaitForExitAsync(cancellationToken);
-        var error = stderr is null ? string.Empty : await stderr;
-        throw new GridletAgentException(
-            $"Claude Code exited unexpectedly with code {process.ExitCode}. {error.Trim()}");
+        if (stderr is not null) await stderr.Completion;
+        var error = stderr?.GetTail().Trim() ?? string.Empty;
+        throw new AgentProviderRuntimeException(
+            "Claude Code exited unexpectedly.",
+            $"Claude Code exited with code {process.ExitCode}. " +
+            (string.IsNullOrWhiteSpace(error) ? "No stderr was captured." : error));
     }
 
     private async Task SendAsync(object message, CancellationToken cancellationToken)
@@ -679,18 +715,47 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
         disposed = true;
         if (process is null) return;
 
+        var exited = false;
         try
         {
             input?.Close();
+        }
+        catch (Exception exception) when (
+            exception is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            // Continue with the kill attempt even if stdin was already closed or broken.
+        }
+        var canWaitForExit = true;
+        try
+        {
             if (!process.HasExited) process.Kill(entireProcessTree: true);
-            await process.WaitForExitAsync();
         }
         catch (InvalidOperationException)
         {
-            // The process exited between the checks above.
+            // The process exited between the check and kill request.
+        }
+        catch (Exception exception) when (
+            exception is System.ComponentModel.Win32Exception or NotSupportedException)
+        {
+            // Do not wait forever when the host rejected the kill request.
+            canWaitForExit = false;
+        }
+        try
+        {
+            if (canWaitForExit)
+            {
+                await process.WaitForExitAsync();
+                exited = true;
+            }
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // The process handle is no longer available.
         }
         finally
         {
+            if (exited && stderr is not null) await stderr.Completion;
             process.Dispose();
         }
     }
