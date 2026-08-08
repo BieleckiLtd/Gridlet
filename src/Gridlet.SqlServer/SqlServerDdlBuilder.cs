@@ -132,7 +132,7 @@ public static partial class SqlServerDdlBuilder
 
     public static string BuildAddDefault(string schema, string table, string columnName, string expression)
         => $"ALTER TABLE {SqlServerIdentifier.QuoteQualified(schema, table)} ADD CONSTRAINT " +
-           $"{SqlServerIdentifier.Quote($"DF_{table}_{columnName}")} DEFAULT ({RequireExpression(expression, "default")}) FOR {SqlServerIdentifier.Quote(columnName)};";
+           $"{SqlServerIdentifier.Quote($"DF_{table}_{columnName}")} DEFAULT ({SqlServerExpressionSafety.RequireSingleExpression(expression, "default")}) FOR {SqlServerIdentifier.Quote(columnName)};";
 
     public static string BuildAddPrimaryKey(string schema, string table, PrimaryKeyDesign primaryKey)
     {
@@ -187,7 +187,7 @@ public static partial class SqlServerDdlBuilder
                 throw new GridletValidationException("A computed column cannot also be an identity, default, or primary-key column.");
             }
 
-            return $"{SqlServerIdentifier.Quote(column.Name)} AS ({RequireExpression(column.ComputedExpression, "computed")})" +
+            return $"{SqlServerIdentifier.Quote(column.Name)} AS ({SqlServerExpressionSafety.RequireSingleExpression(column.ComputedExpression, "computed")})" +
                    (column.IsPersisted ? " PERSISTED" : "");
         }
 
@@ -198,16 +198,11 @@ public static partial class SqlServerDdlBuilder
 
         if (includeDefault && !string.IsNullOrWhiteSpace(column.DefaultExpression))
         {
-            definition += $" DEFAULT ({column.DefaultExpression})";
+            definition += $" DEFAULT ({SqlServerExpressionSafety.RequireSingleExpression(column.DefaultExpression, "default")})";
         }
 
         return definition;
     }
-
-    private static string RequireExpression(string? expression, string kind)
-        => string.IsNullOrWhiteSpace(expression)
-            ? throw new GridletValidationException($"A {kind} expression is required.")
-            : expression.Trim();
 
     private static string NormalizeReferentialAction(string? action)
     {

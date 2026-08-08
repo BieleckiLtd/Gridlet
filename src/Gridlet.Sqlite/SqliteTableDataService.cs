@@ -31,10 +31,31 @@ public sealed class SqliteTableDataService : ITableDataService
         var totalRows = Convert.ToInt64(await countCommand.ExecuteScalarAsync(cancellationToken));
 
         await using var command = connection.CreateCommand();
-        var orderBy = sortColumn is null
+        var orderByColumns = new List<string>();
+        if (sortColumn is not null)
+        {
+            orderByColumns.Add(
+                $"{SqliteIdentifier.Quote(sortColumn)} " +
+                (request.SortDirection == SortDirection.Descending ? "DESC" : "ASC"));
+        }
+
+        var primaryKey = definition.Indexes.FirstOrDefault(index => index.IsPrimaryKey);
+        if (primaryKey is not null)
+        {
+            foreach (var primaryKeyColumn in primaryKey.Columns)
+            {
+                if (string.Equals(primaryKeyColumn, sortColumn, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                orderByColumns.Add($"{SqliteIdentifier.Quote(primaryKeyColumn)} ASC");
+            }
+        }
+
+        var orderBy = orderByColumns.Count == 0
             ? ""
-            : $" ORDER BY {SqliteIdentifier.Quote(sortColumn)} " +
-              (request.SortDirection == SortDirection.Descending ? "DESC" : "ASC");
+            : $" ORDER BY {string.Join(", ", orderByColumns)}";
         command.CommandText = $"SELECT * FROM {qualifiedName}{orderBy} LIMIT @pageSize OFFSET @offset;";
         command.Parameters.AddWithValue("@pageSize", request.PageSize);
         command.Parameters.AddWithValue("@offset", (long)(request.Page - 1) * request.PageSize);

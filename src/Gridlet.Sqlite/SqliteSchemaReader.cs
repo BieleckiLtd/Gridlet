@@ -103,11 +103,11 @@ public sealed class SqliteSchemaReader : ISchemaReader
         }
 
         var singlePrimaryKey = rawColumns.Count(c => c.PkOrdinal > 0) == 1;
-        var hasAutoincrement = createSql?.Contains("AUTOINCREMENT", StringComparison.OrdinalIgnoreCase) == true;
         var columns = rawColumns.Select((column, ordinal) =>
         {
             var isComputed = column.Hidden is 2 or 3;
-            var isIdentity = hasAutoincrement && singlePrimaryKey && column.PkOrdinal > 0 &&
+            var isIdentity = singlePrimaryKey && column.PkOrdinal > 0 &&
+                             SqliteSqlInspection.HasAutoincrementColumn(createSql, column.Name) &&
                              string.Equals(column.Type.Trim(), "INTEGER", StringComparison.OrdinalIgnoreCase);
             return new ColumnInfo(
                 column.Name,

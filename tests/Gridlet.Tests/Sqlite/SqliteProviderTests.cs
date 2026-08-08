@@ -257,4 +257,213 @@ public sealed class SqliteProviderTests : IAsyncLifetime
         await Assert.ThrowsAsync<GridletValidationException>(() =>
             provider.Schema.GetTableDefinitionAsync(context, "other", "Customers"));
     }
+
+    [Fact]
+    public async Task Rebuilding_a_parent_table_does_not_cascade_delete_child_rows()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE RebuildParents (Id INTEGER PRIMARY KEY, Label TEXT);
+            CREATE TABLE RebuildChildren (
+                Id INTEGER PRIMARY KEY,
+                ParentId INTEGER NOT NULL REFERENCES RebuildParents(Id) ON DELETE CASCADE
+            );
+            INSERT INTO RebuildParents VALUES (1, 'before');
+            INSERT INTO RebuildChildren VALUES (1, 1);
+            """,
+            new QueryRequestOptions(10, 30));
+
+        await provider.Ddl.AlterColumnAsync(context, "main", "RebuildParents", "Label",
+            new ColumnDesign("Description", "TEXT"));
+
+        var result = await provider.Query.ExecuteAsync(context,
+            "SELECT COUNT(*) FROM RebuildChildren;", new QueryRequestOptions(10, 30));
+        Assert.Equal(1L, Assert.Single(Assert.Single(result.ResultSets).Rows)[0]);
+
+        // The connection-level pragma is restored after the rebuild.
+        await Assert.ThrowsAsync<GridletQueryException>(() => provider.Query.ExecuteAsync(context,
+            "INSERT INTO RebuildChildren VALUES (2, 999);", new QueryRequestOptions(10, 30)));
+    }
+
+    [Fact]
+    public async Task Refuses_rebuilds_that_would_drop_table_constraints_or_options()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE Guarded (
+                Id INTEGER PRIMARY KEY,
+                Value INTEGER CHECK (Value > 0)
+            ) STRICT;
+            CREATE TABLE Compact (
+                Code TEXT PRIMARY KEY,
+                Value TEXT
+            ) WITHOUT ROWID;
+            """,
+            new QueryRequestOptions(10, 30));
+
+        var guarded = await Assert.ThrowsAsync<GridletValidationException>(() =>
+            provider.Ddl.AlterColumnAsync(context, "main", "Guarded", "Value",
+                new ColumnDesign("RenamedValue", "INTEGER")));
+        Assert.Contains("CHECK", guarded.Message);
+        Assert.Contains("STRICT", guarded.Message);
+
+        var compact = await Assert.ThrowsAsync<GridletValidationException>(() =>
+            provider.Ddl.AlterColumnAsync(context, "main", "Compact", "Value",
+                new ColumnDesign("RenamedValue", "TEXT")));
+        Assert.Contains("WITHOUT ROWID", compact.Message);
+
+        Assert.Contains("CHECK", await provider.Schema.GetObjectDefinitionAsync(context, "main", "Guarded"));
+        Assert.Contains("WITHOUT ROWID", await provider.Schema.GetObjectDefinitionAsync(context, "main", "Compact"));
+    }
+
+    [Fact]
+    public async Task Refuses_rebuilds_that_would_change_index_direction_or_collation()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE IndexedValues (Id INTEGER PRIMARY KEY, Name TEXT, Other TEXT);
+            CREATE INDEX IX_IndexedValues_Name ON IndexedValues (Name COLLATE NOCASE DESC);
+            """,
+            new QueryRequestOptions(10, 30));
+
+        var exception = await Assert.ThrowsAsync<GridletValidationException>(() =>
+            provider.Ddl.AlterColumnAsync(context, "main", "IndexedValues", "Other",
+                new ColumnDesign("Description", "TEXT")));
+
+        Assert.Contains("IX_IndexedValues_Name", exception.Message);
+        var definition = await provider.Schema.GetObjectDefinitionAsync(context, "main", "IndexedValues");
+        Assert.Contains("Other", definition);
+    }
+
+    [Fact]
+    public async Task Autoincrement_text_outside_the_primary_key_does_not_create_an_identity()
+    {
+        await provider.Query.ExecuteAsync(context,
+            "CREATE TABLE AutoText (Id INTEGER PRIMARY KEY, Note TEXT DEFAULT ('AUTOINCREMENT'));",
+            new QueryRequestOptions(10, 30));
+
+        var before = await provider.Schema.GetTableDefinitionAsync(context, "main", "AutoText");
+        Assert.False(before.Columns.Single(column => column.Name == "Id").IsIdentity);
+        await provider.Writes.InsertRowAsync(context, "main", "AutoText",
+            new Dictionary<string, object?> { ["Id"] = 42L, ["Note"] = "explicit" });
+
+        await provider.Ddl.AlterColumnAsync(context, "main", "AutoText", "Note",
+            new ColumnDesign("Description", "TEXT", DefaultExpression: "'AUTOINCREMENT'"));
+
+        var after = await provider.Schema.GetTableDefinitionAsync(context, "main", "AutoText");
+        Assert.False(after.Columns.Single(column => column.Name == "Id").IsIdentity);
+        Assert.DoesNotContain("PRIMARY KEY AUTOINCREMENT",
+            await provider.Schema.GetObjectDefinitionAsync(context, "main", "AutoText"),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Handles_sqlite_identifiers_containing_brackets_and_quotes()
+    {
+        const string table = "odd]\"name";
+        await provider.Query.ExecuteAsync(context,
+            "CREATE TABLE \"odd]\"\"name\" (\"Id\" INTEGER PRIMARY KEY, \"Value\" TEXT);",
+            new QueryRequestOptions(10, 30));
+
+        await provider.Writes.InsertRowAsync(context, "main", table,
+            new Dictionary<string, object?> { ["Id"] = 1L, ["Value"] = "works" });
+        var page = await provider.Data.GetPageAsync(
+            context, "main", table, new TableDataRequest(1, 10));
+
+        Assert.Equal("works", Assert.Single(page.Rows)[1]);
+    }
+
+    [Fact]
+    public async Task Streaming_database_errors_are_translated_to_gridlet_query_errors()
+    {
+        await Assert.ThrowsAsync<GridletQueryException>(async () =>
+        {
+            await foreach (var _ in provider.Query.StreamAsync(context,
+                "SELECT 1; SELECT * FROM __gridlet_missing_table__;",
+                new QueryRequestOptions(10, 30)))
+            {
+            }
+        });
+    }
+
+    [Fact]
+    public async Task Rebuild_restores_an_initially_disabled_foreign_key_pragma()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"gridlet-foreign-keys-off-{Guid.NewGuid():N}.db");
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            ForeignKeys = false,
+        }.ToString();
+
+        try
+        {
+            await using var connection = new SqliteConnection(connectionString);
+            await connection.OpenAsync();
+            await using (var create = connection.CreateCommand())
+            {
+                create.CommandText = "CREATE TABLE DisabledForeignKeys (Id INTEGER PRIMARY KEY, Name TEXT);";
+                await create.ExecuteNonQueryAsync();
+            }
+
+            Assert.Equal(0L, await ReadForeignKeyPragmaAsync(connection));
+            var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(
+                connection, "DisabledForeignKeys", CancellationToken.None);
+            await SqliteTableDdlService.RebuildTableAsync(
+                connection,
+                definition,
+                [
+                    new ColumnDesign("Id", "INTEGER", IsNullable: false, IsPrimaryKey: true),
+                    new ColumnDesign("Description", "TEXT"),
+                ],
+                [],
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Description"] = "Name",
+                },
+                CancellationToken.None);
+
+            Assert.Equal(0L, await ReadForeignKeyPragmaAsync(connection));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Rebuild_ignores_unrelated_preexisting_foreign_key_violations()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE OrphanParents (Id INTEGER PRIMARY KEY);
+            CREATE TABLE OrphanChildren (
+                Id INTEGER PRIMARY KEY,
+                ParentId INTEGER NOT NULL REFERENCES OrphanParents(Id)
+            );
+            CREATE TABLE UnrelatedRebuild (Id INTEGER PRIMARY KEY, Name TEXT);
+            INSERT INTO UnrelatedRebuild VALUES (1, 'before');
+            PRAGMA foreign_keys = OFF;
+            INSERT INTO OrphanChildren VALUES (1, 999);
+            PRAGMA foreign_keys = ON;
+            """,
+            new QueryRequestOptions(10, 30));
+
+        await provider.Ddl.AlterColumnAsync(context, "main", "UnrelatedRebuild", "Name",
+            new ColumnDesign("Description", "TEXT"));
+
+        var result = await provider.Query.ExecuteAsync(context,
+            "PRAGMA foreign_key_check;", new QueryRequestOptions(10, 30));
+        var violation = Assert.Single(Assert.Single(result.ResultSets).Rows);
+        Assert.Equal("OrphanChildren", violation[0]);
+        Assert.Equal("OrphanParents", violation[2]);
+    }
+
+    private static async Task<long> ReadForeignKeyPragmaAsync(SqliteConnection connection)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA foreign_keys;";
+        return Convert.ToInt64(await command.ExecuteScalarAsync());
+    }
 }

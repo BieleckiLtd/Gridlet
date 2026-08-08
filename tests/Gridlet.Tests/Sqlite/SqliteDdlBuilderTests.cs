@@ -35,11 +35,11 @@ public sealed class SqliteDdlBuilderTests
             [new ForeignKeyDesign("FK_Orders_Customers", "main", "Customers",
                 [new ForeignKeyColumnPair("CustomerId", "Id")], OnDelete: "CASCADE")]);
 
-        Assert.Contains("CREATE TABLE [main].[Orders]", sql);
-        Assert.Contains("[Id] INTEGER PRIMARY KEY AUTOINCREMENT", sql);
-        Assert.Contains("[Status] TEXT NOT NULL DEFAULT ('new')", sql);
-        Assert.Contains("CONSTRAINT [FK_Orders_Customers] FOREIGN KEY ([CustomerId])", sql);
-        Assert.Contains("REFERENCES [Customers] ([Id]) ON DELETE CASCADE", sql);
+        Assert.Contains("CREATE TABLE \"main\".\"Orders\"", sql);
+        Assert.Contains("\"Id\" INTEGER PRIMARY KEY AUTOINCREMENT", sql);
+        Assert.Contains("\"Status\" TEXT NOT NULL DEFAULT ('new')", sql);
+        Assert.Contains("CONSTRAINT \"FK_Orders_Customers\" FOREIGN KEY (\"CustomerId\")", sql);
+        Assert.Contains("REFERENCES \"Customers\" (\"Id\") ON DELETE CASCADE", sql);
     }
 
     [Fact]
@@ -56,6 +56,34 @@ public sealed class SqliteDdlBuilderTests
     [Fact]
     public void Builds_drop_trigger()
         => Assert.Equal(
-            "DROP TRIGGER [main].[AuditWidgets];",
+            "DROP TRIGGER \"main\".\"AuditWidgets\";",
             SqliteDdlBuilder.BuildDropObject("main", "AuditWidgets", DbObjectType.Trigger));
+
+    [Fact]
+    public void Double_quotes_identifiers_and_escapes_embedded_quotes()
+    {
+        Assert.Equal("\"a]b\"", SqliteIdentifier.Quote("a]b"));
+        Assert.Equal("\"a\"\"b\"", SqliteIdentifier.Quote("a\"b"));
+    }
+
+    [Theory]
+    [InlineData("0)); DROP TABLE victim; /*")]
+    [InlineData("1 -- comment")]
+    [InlineData("1 /* comment */")]
+    [InlineData("(1 + 2")]
+    [InlineData("1 + 2)")]
+    public void Rejects_non_expression_default_payloads(string expression)
+        => Assert.Throws<GridletValidationException>(() =>
+            SqliteDdlBuilder.BuildAddColumn(
+                "main", "Widgets", new ColumnDesign("Value", "INTEGER", DefaultExpression: expression)));
+
+    [Fact]
+    public void Allows_balanced_nested_and_quoted_default_expressions()
+    {
+        var sql = SqliteDdlBuilder.BuildAddColumn(
+            "main", "Widgets",
+            new ColumnDesign("Value", "TEXT", DefaultExpression: "COALESCE(NULLIF('semi;--/*', ''), (1 + 2))"));
+
+        Assert.Contains("COALESCE(NULLIF('semi;--/*', ''), (1 + 2))", sql);
+    }
 }

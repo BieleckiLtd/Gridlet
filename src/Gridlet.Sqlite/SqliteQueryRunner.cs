@@ -71,16 +71,7 @@ public sealed class SqliteQueryRunner : IQueryRunner
         await using var command = CreateCommand(connection, sql, options, parameters);
 
         yield return new QueryStreamEvent("started");
-        System.Data.Common.DbDataReader reader;
-        try
-        {
-            reader = await command.ExecuteReaderAsync(cancellationToken);
-        }
-        catch (SqliteException ex)
-        {
-            await RollbackActiveTransactionAsync(connection);
-            throw new GridletQueryException(ex.Message, ex);
-        }
+        var reader = await ExecuteReaderAsync(command, connection, cancellationToken);
 
         await using (reader)
         {
@@ -88,11 +79,12 @@ public sealed class SqliteQueryRunner : IQueryRunner
             do
             {
                 if (reader.FieldCount == 0) continue;
-                yield return new QueryStreamEvent("resultSet", resultSetIndex, ReadColumns(reader));
+                yield return new QueryStreamEvent(
+                    "resultSet", resultSetIndex, await ReadColumnsAsync(reader, connection));
                 var batch = new List<object?[]>(BatchSize);
                 var rowCount = 0;
                 var truncated = false;
-                while (await reader.ReadAsync(cancellationToken))
+                while (await ReadAsync(reader, connection, cancellationToken))
                 {
                     if (options.MaxRowsPerResultSet > 0 && rowCount >= options.MaxRowsPerResultSet)
                     {
@@ -100,7 +92,7 @@ public sealed class SqliteQueryRunner : IQueryRunner
                         break;
                     }
 
-                    batch.Add(ReadRow(reader));
+                    batch.Add(await ReadRowAsync(reader, connection));
                     rowCount++;
                     if (batch.Count == BatchSize)
                     {
@@ -117,7 +109,7 @@ public sealed class SqliteQueryRunner : IQueryRunner
                 yield return new QueryStreamEvent("resultSetCompleted", resultSetIndex, Truncated: truncated);
                 resultSetIndex++;
             }
-            while (await reader.NextResultAsync(cancellationToken));
+            while (await NextResultAsync(reader, connection, cancellationToken));
 
             stopwatch.Stop();
             yield return new QueryStreamEvent(
@@ -159,6 +151,84 @@ public sealed class SqliteQueryRunner : IQueryRunner
         }
 
         return row;
+    }
+
+    private static async Task<System.Data.Common.DbDataReader> ExecuteReaderAsync(
+        SqliteCommand command,
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await command.ExecuteReaderAsync(cancellationToken);
+        }
+        catch (SqliteException ex)
+        {
+            await RollbackActiveTransactionAsync(connection);
+            throw new GridletQueryException(ex.Message, ex);
+        }
+    }
+
+    private static async Task<bool> ReadAsync(
+        System.Data.Common.DbDataReader reader,
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await reader.ReadAsync(cancellationToken);
+        }
+        catch (SqliteException ex)
+        {
+            await RollbackActiveTransactionAsync(connection);
+            throw new GridletQueryException(ex.Message, ex);
+        }
+    }
+
+    private static async Task<bool> NextResultAsync(
+        System.Data.Common.DbDataReader reader,
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await reader.NextResultAsync(cancellationToken);
+        }
+        catch (SqliteException ex)
+        {
+            await RollbackActiveTransactionAsync(connection);
+            throw new GridletQueryException(ex.Message, ex);
+        }
+    }
+
+    private static async Task<ResultColumn[]> ReadColumnsAsync(
+        System.Data.Common.DbDataReader reader,
+        SqliteConnection connection)
+    {
+        try
+        {
+            return ReadColumns(reader);
+        }
+        catch (SqliteException ex)
+        {
+            await RollbackActiveTransactionAsync(connection);
+            throw new GridletQueryException(ex.Message, ex);
+        }
+    }
+
+    private static async Task<object?[]> ReadRowAsync(
+        System.Data.Common.DbDataReader reader,
+        SqliteConnection connection)
+    {
+        try
+        {
+            return ReadRow(reader);
+        }
+        catch (SqliteException ex)
+        {
+            await RollbackActiveTransactionAsync(connection);
+            throw new GridletQueryException(ex.Message, ex);
+        }
     }
 
     private static void ValidateSql(string sql)

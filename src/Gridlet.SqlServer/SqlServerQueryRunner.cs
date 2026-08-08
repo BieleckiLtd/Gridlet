@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using Gridlet.Abstractions;
 using Gridlet.Models;
 using Microsoft.Data.SqlClient;
@@ -110,7 +111,7 @@ public sealed class SqlServerQueryRunner : IQueryRunner
         }
 
         var stopwatch = Stopwatch.StartNew();
-        var messages = new Queue<string>();
+        var messages = new ConcurrentQueue<string>();
         await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
         connection.InfoMessage += (_, e) =>
         {
@@ -127,7 +128,7 @@ public sealed class SqlServerQueryRunner : IQueryRunner
         }
 
         yield return new QueryStreamEvent("started");
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await using var reader = await ExecuteReaderAsync(command, cancellationToken);
         var resultSetIndex = 0;
         do
         {
@@ -139,11 +140,10 @@ public sealed class SqlServerQueryRunner : IQueryRunner
             var batch = new List<object?[]>(BatchSize);
             var rowCount = 0;
             var truncated = false;
-            while (await reader.ReadAsync(cancellationToken))
+            while (await ReadAsync(reader, cancellationToken))
             {
                 if (options.MaxRowsPerResultSet > 0 && rowCount >= options.MaxRowsPerResultSet) { truncated = true; break; }
-                var row = new object?[reader.FieldCount];
-                for (var i = 0; i < reader.FieldCount; i++) row[i] = SqlServerValues.Materialize(reader.GetValue(i));
+                var row = ReadRow(reader);
                 batch.Add(row);
                 rowCount++;
                 if (batch.Count == BatchSize)
@@ -157,10 +157,66 @@ public sealed class SqlServerQueryRunner : IQueryRunner
             yield return new QueryStreamEvent("resultSetCompleted", resultSetIndex, Truncated: truncated);
             resultSetIndex++;
         }
-        while (await reader.NextResultAsync(cancellationToken));
+        while (await NextResultAsync(reader, cancellationToken));
 
         while (messages.TryDequeue(out var message)) yield return new QueryStreamEvent("message", Message: message);
         stopwatch.Stop();
         yield return new QueryStreamEvent("completed", RecordsAffected: reader.RecordsAffected, DurationMs: stopwatch.ElapsedMilliseconds);
+    }
+
+    private static async Task<SqlDataReader> ExecuteReaderAsync(
+        SqlCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await command.ExecuteReaderAsync(cancellationToken);
+        }
+        catch (SqlException ex)
+        {
+            throw new GridletQueryException(ex.Message, ex);
+        }
+    }
+
+    private static async Task<bool> ReadAsync(SqlDataReader reader, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await reader.ReadAsync(cancellationToken);
+        }
+        catch (SqlException ex)
+        {
+            throw new GridletQueryException(ex.Message, ex);
+        }
+    }
+
+    private static async Task<bool> NextResultAsync(SqlDataReader reader, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await reader.NextResultAsync(cancellationToken);
+        }
+        catch (SqlException ex)
+        {
+            throw new GridletQueryException(ex.Message, ex);
+        }
+    }
+
+    private static object?[] ReadRow(SqlDataReader reader)
+    {
+        try
+        {
+            var row = new object?[reader.FieldCount];
+            for (var i = 0; i < reader.FieldCount; i++)
+            {
+                row[i] = SqlServerValues.Materialize(reader.GetValue(i));
+            }
+
+            return row;
+        }
+        catch (SqlException ex)
+        {
+            throw new GridletQueryException(ex.Message, ex);
+        }
     }
 }

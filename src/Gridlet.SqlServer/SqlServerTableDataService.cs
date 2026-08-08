@@ -19,16 +19,35 @@ public sealed class SqlServerTableDataService : ITableDataService
         // Validate the object exists and the sort column is a real column before any
         // identifier reaches dynamic SQL.
         var columnNames = new List<string>();
+        var primaryKeyColumns = new List<(string Name, int KeyOrdinal)>();
         await using (var columnsCommand = connection.CreateCommand())
         {
             columnsCommand.CommandText =
-                "SELECT c.name FROM sys.columns c WHERE c.object_id = OBJECT_ID(@name) ORDER BY c.column_id;";
+                """
+                SELECT c.name, CONVERT(int, ISNULL(pk.key_ordinal, 0))
+                FROM sys.columns c
+                LEFT JOIN (
+                    SELECT ic.object_id, ic.column_id, ic.key_ordinal
+                    FROM sys.indexes i
+                    JOIN sys.index_columns ic
+                      ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+                    WHERE i.is_primary_key = 1 AND ic.key_ordinal > 0
+                ) pk ON pk.object_id = c.object_id AND pk.column_id = c.column_id
+                WHERE c.object_id = OBJECT_ID(@name)
+                ORDER BY c.column_id;
+                """;
             columnsCommand.Parameters.AddWithValue("@name", qualifiedName);
 
             await using var columnsReader = await columnsCommand.ExecuteReaderAsync(cancellationToken);
             while (await columnsReader.ReadAsync(cancellationToken))
             {
-                columnNames.Add(columnsReader.GetString(0));
+                var columnName = columnsReader.GetString(0);
+                columnNames.Add(columnName);
+                var keyOrdinal = columnsReader.GetInt32(1);
+                if (keyOrdinal > 0)
+                {
+                    primaryKeyColumns.Add((columnName, keyOrdinal));
+                }
             }
         }
 
@@ -54,7 +73,12 @@ public sealed class SqlServerTableDataService : ITableDataService
         }
 
         await using var command = connection.CreateCommand();
-        command.CommandText = SqlServerSqlBuilder.BuildPageSql(schema, name, sortColumn, request.SortDirection);
+        command.CommandText = SqlServerSqlBuilder.BuildPageSql(
+            schema,
+            name,
+            sortColumn,
+            request.SortDirection,
+            primaryKeyColumns.OrderBy(column => column.KeyOrdinal).Select(column => column.Name).ToArray());
         command.Parameters.AddWithValue("@Offset", (long)(request.Page - 1) * request.PageSize);
         command.Parameters.AddWithValue("@PageSize", request.PageSize);
 
