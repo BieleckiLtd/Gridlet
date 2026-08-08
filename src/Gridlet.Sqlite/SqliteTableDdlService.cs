@@ -241,6 +241,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         var keyName = primaryKeyName ?? definition.Indexes.FirstOrDefault(i => i.IsPrimaryKey)?.Name;
         var tempDesign = new TableDesign(schema, tempTable, columns);
         var createSql = SqliteDdlBuilder.BuildCreateTable(tempDesign, keyName, foreignKeys);
+        var preserveAutoincrementSequence =
+            definition.Columns.Any(column => column.IsIdentity) &&
+            columns.Any(column => column.IsIdentity);
 
         await EnsureTableCanBeRebuiltAsync(connection, schema, table, cancellationToken);
         var unsupportedIndexes = await LoadUnsupportedIndexNamesAsync(connection, table, cancellationToken);
@@ -285,6 +288,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
             await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
             try
             {
+                var originalSequence = preserveAutoincrementSequence
+                    ? await LoadSequenceAsync(connection, transaction, table, cancellationToken)
+                    : null;
                 await ExecuteAsync(connection, transaction, createSql, cancellationToken);
 
                 var copiedColumns = columns.Where(c => string.IsNullOrWhiteSpace(c.ComputedExpression))
@@ -307,6 +313,12 @@ public sealed class SqliteTableDdlService : ITableDdlService
                 await ExecuteAsync(connection, transaction,
                     $"ALTER TABLE {SqliteIdentifier.QuoteQualified(schema, tempTable)} RENAME TO {SqliteIdentifier.Quote(table)};",
                     cancellationToken);
+
+                if (originalSequence is not null)
+                {
+                    await RestoreSequenceAsync(
+                        connection, transaction, table, originalSequence.Value, cancellationToken);
+                }
 
                 foreach (var index in indexes)
                 {
@@ -419,6 +431,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
         if (SqliteSqlInspection.ContainsKeyword(source, "STRICT")) unsupported.Add("STRICT tables");
         if (SqliteSqlInspection.ContainsKeywordSequence(source, "WITHOUT", "ROWID")) unsupported.Add("WITHOUT ROWID tables");
         if (SqliteSqlInspection.ContainsKeyword(source, "COLLATE")) unsupported.Add("column collations");
+        if (SqliteSqlInspection.ContainsKeywordSequence(source, "ON", "CONFLICT")) unsupported.Add("ON CONFLICT policies");
 
         if (unsupported.Count > 0)
         {
@@ -493,6 +506,50 @@ public sealed class SqliteTableDdlService : ITableDdlService
         await using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA foreign_keys;";
         return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)) != 0;
+    }
+
+    private static async Task<long?> LoadSequenceAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT seq FROM main.sqlite_sequence WHERE name = @table;";
+        command.Parameters.AddWithValue("@table", table);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? null : Convert.ToInt64(result);
+    }
+
+    private static async Task RestoreSequenceAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string table,
+        long originalSequence,
+        CancellationToken cancellationToken)
+    {
+        await using var update = connection.CreateCommand();
+        update.Transaction = transaction;
+        update.CommandText =
+            """
+            UPDATE main.sqlite_sequence
+            SET seq = CASE WHEN seq IS NULL OR seq < @sequence THEN @sequence ELSE seq END
+            WHERE name = @table;
+            """;
+        update.Parameters.AddWithValue("@table", table);
+        update.Parameters.AddWithValue("@sequence", originalSequence);
+        if (await update.ExecuteNonQueryAsync(cancellationToken) > 0)
+        {
+            return;
+        }
+
+        await using var insert = connection.CreateCommand();
+        insert.Transaction = transaction;
+        insert.CommandText = "INSERT INTO main.sqlite_sequence (name, seq) VALUES (@table, @sequence);";
+        insert.Parameters.AddWithValue("@table", table);
+        insert.Parameters.AddWithValue("@sequence", originalSequence);
+        await insert.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task<TableDefinition> RequireTableAsync(

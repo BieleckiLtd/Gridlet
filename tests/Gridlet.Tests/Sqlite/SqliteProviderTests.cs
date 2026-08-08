@@ -286,6 +286,34 @@ public sealed class SqliteProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Rebuild_preserves_the_high_water_mark_for_autoincrement_tables()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE SequenceItems (
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                Name TEXT NOT NULL
+            );
+            INSERT INTO SequenceItems (Name) VALUES ('kept');
+            INSERT INTO SequenceItems (Id, Name) VALUES (100, 'removed');
+            DELETE FROM SequenceItems WHERE Id = 100;
+            """,
+            new QueryRequestOptions(10, 30));
+
+        await provider.Ddl.AlterColumnAsync(context, "main", "SequenceItems", "Name",
+            new ColumnDesign("Description", "TEXT", IsNullable: false));
+        await provider.Query.ExecuteAsync(context,
+            "INSERT INTO SequenceItems (Description) VALUES ('after rebuild');",
+            new QueryRequestOptions(10, 30));
+
+        var result = await provider.Query.ExecuteAsync(context,
+            "SELECT Id FROM SequenceItems WHERE Description = 'after rebuild';",
+            new QueryRequestOptions(10, 30));
+
+        Assert.Equal(101L, Assert.Single(Assert.Single(result.ResultSets).Rows)[0]);
+    }
+
+    [Fact]
     public async Task Refuses_rebuilds_that_would_drop_table_constraints_or_options()
     {
         await provider.Query.ExecuteAsync(context,
@@ -314,6 +342,38 @@ public sealed class SqliteProviderTests : IAsyncLifetime
 
         Assert.Contains("CHECK", await provider.Schema.GetObjectDefinitionAsync(context, "main", "Guarded"));
         Assert.Contains("WITHOUT ROWID", await provider.Schema.GetObjectDefinitionAsync(context, "main", "Compact"));
+    }
+
+    [Fact]
+    public async Task Refuses_rebuilds_that_would_drop_on_conflict_policies()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE ConflictItems (
+                Id INTEGER PRIMARY KEY,
+                Code TEXT UNIQUE ON CONFLICT IGNORE,
+                Description TEXT
+            );
+            INSERT INTO ConflictItems VALUES (1, 'same', 'first');
+            INSERT INTO ConflictItems VALUES (2, 'same', 'ignored before rebuild');
+            """,
+            new QueryRequestOptions(10, 30));
+        var originalSql = await provider.Schema.GetObjectDefinitionAsync(
+            context, "main", "ConflictItems");
+
+        var exception = await Assert.ThrowsAsync<GridletValidationException>(() =>
+            provider.Ddl.AlterColumnAsync(context, "main", "ConflictItems", "Description",
+                new ColumnDesign("Details", "TEXT")));
+
+        Assert.Contains("ON CONFLICT", exception.Message);
+        Assert.Equal(originalSql,
+            await provider.Schema.GetObjectDefinitionAsync(context, "main", "ConflictItems"));
+        await provider.Query.ExecuteAsync(context,
+            "INSERT INTO ConflictItems VALUES (3, 'same', 'ignored after refusal');",
+            new QueryRequestOptions(10, 30));
+        var result = await provider.Query.ExecuteAsync(context,
+            "SELECT COUNT(*) FROM ConflictItems;", new QueryRequestOptions(10, 30));
+        Assert.Equal(1L, Assert.Single(Assert.Single(result.ResultSets).Rows)[0]);
     }
 
     [Fact]

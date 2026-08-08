@@ -25,7 +25,8 @@ public static class GridletEndpointRouteBuilderExtensions
         this IEndpointRouteBuilder endpoints,
         string pattern = "/gridlet")
     {
-        var (group, options, normalizedPattern) = CreateGroup(endpoints, pattern);
+        var (group, options, normalizedPattern) = CreateGroup(
+            endpoints, pattern, validateAgentService: true);
 
         GridletUiEndpoints.Map(group, normalizedPattern);
         GridletApiEndpoints.Map(group.MapGroup("/api"), options);
@@ -45,7 +46,8 @@ public static class GridletEndpointRouteBuilderExtensions
         this IEndpointRouteBuilder endpoints,
         string pattern = "/gridlet")
     {
-        var (group, options, _) = CreateGroup(endpoints, pattern);
+        var (group, options, _) = CreateGroup(
+            endpoints, pattern, validateAgentService: true);
 
         GridletApiEndpoints.Map(group.MapGroup("/api"), options);
         GridletPublishedEndpoints.Map(group);
@@ -65,7 +67,8 @@ public static class GridletEndpointRouteBuilderExtensions
         this IEndpointRouteBuilder endpoints,
         string pattern = "/gridlet")
     {
-        var (group, _, _) = CreateGroup(endpoints, pattern);
+        var (group, _, _) = CreateGroup(
+            endpoints, pattern, validateAgentService: false);
 
         GridletPublishedEndpoints.Map(group);
 
@@ -74,7 +77,8 @@ public static class GridletEndpointRouteBuilderExtensions
 
     private static (RouteGroupBuilder Group, GridletOptions Options, string Pattern) CreateGroup(
         IEndpointRouteBuilder endpoints,
-        string pattern)
+        string pattern,
+        bool validateAgentService)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
         pattern = "/" + pattern.Trim('/');
@@ -94,9 +98,12 @@ public static class GridletEndpointRouteBuilderExtensions
                 providerValidation.Failures);
         }
 
-        // The agent integration is optional, but when present its provider profiles should also
-        // fail fast during endpoint mapping rather than on the first chat request.
-        _ = endpoints.ServiceProvider.GetService<IGridletAgentService>()?.Info;
+        if (validateAgentService)
+        {
+            // Mappings that expose agent endpoints fail fast on invalid provider profiles. The
+            // published-only runtime has no agent surface and deliberately avoids initializing it.
+            _ = endpoints.ServiceProvider.GetService<IGridletAgentService>()?.Info;
+        }
 
         var group = endpoints.MapGroup(pattern);
 
