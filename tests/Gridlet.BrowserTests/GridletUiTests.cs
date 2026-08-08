@@ -288,6 +288,36 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Preserves_failed_prompt_when_switching_to_a_working_model()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var requestsBefore = fixture.Agent.Requests.Count;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
+        await page.GetByTestId("agent-composer").FillAsync("Fail during reasoning");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-status"))
+            .ToHaveAttributeAsync("data-state", "failed");
+
+        await page.GetByTestId("agent-provider").SelectOptionAsync("fake-remote");
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("Try again");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await ExpectAgentComplete(page);
+
+        Assert.Equal(requestsBefore + 2, fixture.Agent.Requests.Count);
+        var retry = fixture.Agent.Requests[^1];
+        Assert.Equal("fake-remote", retry.ProfileId);
+        var failedPrompt = Assert.Single(retry.History);
+        Assert.Equal("user", failedPrompt.Role);
+        Assert.Equal("Fail during reasoning", failedPrompt.Content);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Renders_agent_reasoning_and_markdown_tables()
     {
         await using var browserPage = await fixture.NewPageAsync();

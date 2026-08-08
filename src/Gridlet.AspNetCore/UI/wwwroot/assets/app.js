@@ -2954,6 +2954,10 @@
         composer.value = '';
         resizeComposer();
         appendMessage('user', message);
+        // Keep every dispatched prompt in the provider-neutral transcript. A provider can fail
+        // before producing an answer, and a subsequently selected provider still needs the
+        // prompt that the user can see in this conversation.
+        conversation.push({ role: 'user', content: message });
         assistantMessage = appendMessage('assistant', '', assistantLabel);
         setStatus('streaming', '', `${profile.displayName} response is streaming.`);
 
@@ -3012,9 +3016,7 @@
         }
         else if (completed) {
           setStatus('complete', '', 'Agent response complete.');
-          conversation.push(
-            { role: 'user', content: message },
-            { role: 'assistant', content: assistantText });
+          conversation.push({ role: 'assistant', content: assistantText });
         } else {
           streamError = 'The response ended before the agent reported completion.';
           assistantMessage.setError(streamError);
