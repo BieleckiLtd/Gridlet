@@ -23,7 +23,7 @@ public sealed class BrowserAppFixture : IAsyncLifetime
 
     public FakeGridletProvider Provider { get; } = new();
 
-    public FakeGridletAgentService Agent { get; } = new();
+    public BrowserGridletAgentService Agent { get; } = new();
 
     private IGridletProvider SqliteUiProvider => new BrowserSqliteProvider(Provider);
 
@@ -129,6 +129,88 @@ internal sealed class BrowserSqliteProvider(FakeGridletProvider inner) : IGridle
     public ITableWriteService Writes => inner.Writes;
 
     public ITableDdlService Ddl => inner.Ddl;
+}
+
+public sealed class BrowserGridletAgentService : IGridletAgentService
+{
+    private readonly FakeGridletAgentService inner = new();
+
+    public GridletAgentInfo Info => inner.Info;
+
+    public List<GridletAgentRequest> Requests => inner.Requests;
+
+    public List<(string ProfileId, string ApiKey, GridletAgentUserContext User)> StoredCredentials =>
+        inner.StoredCredentials;
+
+    public List<(string ConversationId, GridletAgentUserContext User)> ClosedConversations =>
+        inner.ClosedConversations;
+
+    public Task<GridletAgentCredential> StoreCredentialAsync(
+        string profileId,
+        string apiKey,
+        GridletAgentUserContext user,
+        CancellationToken cancellationToken = default) =>
+        inner.StoreCredentialAsync(profileId, apiKey, user, cancellationToken);
+
+    public Task RemoveCredentialAsync(
+        string credentialHandle,
+        GridletAgentUserContext user,
+        CancellationToken cancellationToken = default) =>
+        inner.RemoveCredentialAsync(credentialHandle, user, cancellationToken);
+
+    public async IAsyncEnumerable<GridletAgentStreamEvent> ChatAsync(
+        GridletAgentRequest request,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (request.Message.Contains("slow streaming scroll", StringComparison.OrdinalIgnoreCase))
+        {
+            Requests.Add(request);
+            yield return new GridletAgentStreamEvent("started");
+            yield return new GridletAgentStreamEvent(
+                "content",
+                string.Join('\n', Enumerable.Range(1, 100).Select(index =>
+                    $"Initial streamed line {index:000}: enough content to make the conversation scroll.")));
+            await Task.Delay(300, cancellationToken);
+            yield return new GridletAgentStreamEvent(
+                "content",
+                "\nA later streamed chunk must not move a reader who scrolled upward.");
+            await Task.Delay(100, cancellationToken);
+            yield return new GridletAgentStreamEvent("completed");
+            yield break;
+        }
+
+        if (request.Message.Contains("slow cancellation", StringComparison.OrdinalIgnoreCase))
+        {
+            Requests.Add(request);
+            yield return new GridletAgentStreamEvent("started");
+            yield return new GridletAgentStreamEvent("reasoning", "Waiting on a deliberately slow provider.");
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            yield return new GridletAgentStreamEvent("content", "This response should have been cancelled.");
+            yield return new GridletAgentStreamEvent("completed");
+            yield break;
+        }
+
+        if (request.Message.Contains("fail during reasoning", StringComparison.OrdinalIgnoreCase))
+        {
+            Requests.Add(request);
+            yield return new GridletAgentStreamEvent("started");
+            yield return new GridletAgentStreamEvent("reasoning", "The provider is about to fail.");
+            await Task.Delay(20, cancellationToken);
+            yield return new GridletAgentStreamEvent("error", "Deliberate streamed failure.");
+            yield break;
+        }
+
+        await foreach (var agentEvent in inner.ChatAsync(request, cancellationToken))
+        {
+            yield return agentEvent;
+        }
+    }
+
+    public Task CloseConversationAsync(
+        string conversationId,
+        GridletAgentUserContext user,
+        CancellationToken cancellationToken = default) =>
+        inner.CloseConversationAsync(conversationId, user, cancellationToken);
 }
 
 public sealed class BrowserTestPage : IAsyncDisposable

@@ -250,6 +250,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var failedResult = page.GetByTestId("agent-message-assistant")
             .Locator(".agent-tool-result-failed");
         await Assertions.Expect(failedResult).ToBeVisibleAsync();
+        await Assertions.Expect(failedResult)
+            .ToContainTextAsync("Failed result from describe_table");
         Assert.True(await failedResult.EvaluateAsync<bool>(
             "element => { " +
             "const probe = document.createElement('span'); " +
@@ -258,6 +260,169 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             "probe.remove(); return matches; }"));
         await Assertions.Expect(failedResult).ToContainTextAsync("GridletQueryException");
         await ExpectAgentComplete(page);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Copies_agent_responses_and_fenced_code_and_keeps_model_detail_accessible()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("Show markdown join logic");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await ExpectAgentComplete(page);
+
+        var assistant = page.GetByTestId("agent-message-assistant");
+        await assistant.GetByRole(AriaRole.Button, new() { Name = "Copy agent response" })
+            .ClickAsync();
+        var responseClipboard = await page.EvaluateAsync<string>("navigator.clipboard.readText()");
+        Assert.Contains("**Explanation of the join logic:**", responseClipboard);
+        Assert.Contains("```sql", responseClipboard);
+
+        await assistant.GetByRole(AriaRole.Button, new() { Name = "Copy sql block" })
+            .ClickAsync();
+        var codeClipboard = await page.EvaluateAsync<string>("navigator.clipboard.readText()");
+        Assert.Equal(
+            "SELECT o.orderId\nFROM Orders AS o;",
+            codeClipboard.Trim().Replace("\r\n", "\n", StringComparison.Ordinal));
+
+        var detail = assistant.Locator(".agent-message-role-detail");
+        var contrastRatios = await detail.EvaluateAsync<double[]>("""
+            element => {
+                const channel = value => {
+                    value /= 255;
+                    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+                };
+                const luminance = color => {
+                    const [red, green, blue] = color.match(/\d+/g).slice(0, 3).map(Number);
+                    return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue);
+                };
+                const ratio = (foreground, background) => {
+                    const values = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+                    return (values[0] + 0.05) / (values[1] + 0.05);
+                };
+                const root = document.documentElement;
+                const messages = element.closest('.agent-messages');
+                return ['dark', 'light'].map(theme => {
+                    root.dataset.theme = theme;
+                    return ratio(getComputedStyle(element).color, getComputedStyle(messages).backgroundColor);
+                });
+            }
+            """);
+        Assert.All(contrastRatios, ratio => Assert.True(ratio >= 4.5, $"Contrast was {ratio:F2}:1."));
+        await Assertions.Expect(detail).ToHaveCSSAsync("font-weight", "400");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Streaming_follows_the_bottom_until_the_reader_scrolls_up()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.SetViewportSizeAsync(1000, 560);
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
+        var messages = page.GetByTestId("agent-messages");
+        var status = page.GetByTestId("agent-status");
+        await Assertions.Expect(messages).ToHaveAttributeAsync("aria-live", "off");
+        await Assertions.Expect(messages).ToHaveAttributeAsync("aria-busy", "false");
+        await Assertions.Expect(status).ToHaveAttributeAsync("role", "status");
+        await Assertions.Expect(status).ToHaveAttributeAsync("aria-atomic", "true");
+
+        await page.GetByTestId("agent-composer").FillAsync("Slow streaming scroll");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await Assertions.Expect(messages).ToHaveAttributeAsync("aria-busy", "true");
+        await Assertions.Expect(page.GetByTestId("agent-message-assistant"))
+            .ToContainTextAsync("Initial streamed line 100");
+        var followedPosition = await messages.EvaluateAsync<int>("element => element.scrollTop");
+        Assert.True(followedPosition > 0);
+
+        await messages.EvaluateAsync("element => { element.scrollTop = 0; }");
+        await page.WaitForTimeoutAsync(50);
+        await Assertions.Expect(page.GetByTestId("agent-message-assistant"))
+            .ToContainTextAsync("A later streamed chunk");
+        await ExpectAgentComplete(page);
+
+        Assert.InRange(await messages.EvaluateAsync<int>("element => element.scrollTop"), 0, 1);
+        await Assertions.Expect(messages).ToHaveAttributeAsync("aria-busy", "false");
+        await Assertions.Expect(status.Locator(".agent-status-announcement"))
+            .ToHaveTextAsync("Agent response complete.");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Cancelled_and_failed_turns_finalize_reasoning_and_leave_a_transcript_annotation()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
+        await page.GetByTestId("agent-composer").FillAsync("Slow cancellation");
+        await page.GetByTestId("agent-send").ClickAsync();
+        var cancelledAssistant = page.GetByTestId("agent-message-assistant");
+        await Assertions.Expect(cancelledAssistant.Locator(".agent-reasoning"))
+            .ToContainTextAsync("Waiting on a deliberately slow provider.");
+        await page.GetByTestId("agent-cancel").ClickAsync();
+
+        await Assertions.Expect(page.GetByTestId("agent-status"))
+            .ToHaveAttributeAsync("data-state", "cancelled");
+        await Assertions.Expect(cancelledAssistant.Locator(".agent-message-error"))
+            .ToHaveTextAsync("Response cancelled.");
+        await Assertions.Expect(cancelledAssistant.Locator(".agent-reasoning > summary"))
+            .ToContainTextAsync("Thought for");
+        await Assertions.Expect(page.GetByTestId("agent-messages"))
+            .ToHaveAttributeAsync("aria-busy", "false");
+
+        await page.GetByTestId("agent-composer").FillAsync("Fail during reasoning");
+        await page.GetByTestId("agent-send").ClickAsync();
+        var failedAssistant = page.GetByTestId("agent-message-assistant").Last;
+        await Assertions.Expect(page.GetByTestId("agent-status"))
+            .ToHaveAttributeAsync("data-state", "failed");
+        await Assertions.Expect(failedAssistant.Locator(".agent-message-error"))
+            .ToHaveTextAsync("Deliberate streamed failure.");
+        await Assertions.Expect(failedAssistant.Locator(".agent-reasoning > summary"))
+            .ToContainTextAsync("Thought for");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Composer_keyboard_respects_required_credentials_and_ime_composition()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var requestsBefore = fixture.Agent.Requests.Count;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        var composer = page.GetByTestId("agent-composer");
+        await composer.FillAsync("Do not send without a key");
+        await composer.PressAsync("Enter");
+        await page.WaitForTimeoutAsync(100);
+        Assert.Equal(requestsBefore, fixture.Agent.Requests.Count);
+        await Assertions.Expect(page.GetByTestId("agent-api-key")).ToBeFocusedAsync();
+
+        await page.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
+        await composer.EvaluateAsync("""
+            element => element.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Enter', bubbles: true, cancelable: true, isComposing: true
+            }))
+            """);
+        await page.WaitForTimeoutAsync(100);
+        Assert.Equal(requestsBefore, fixture.Agent.Requests.Count);
+        await Assertions.Expect(composer).ToHaveValueAsync("Do not send without a key");
+
+        await composer.PressAsync("Enter");
+        await ExpectAgentComplete(page);
+        Assert.Equal(requestsBefore + 1, fixture.Agent.Requests.Count);
         browserPage.AssertNoUnexpectedErrors();
     }
 
