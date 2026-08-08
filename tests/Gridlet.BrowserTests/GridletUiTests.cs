@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 using Xunit;
 
@@ -17,13 +18,56 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GotoAsync("/gridlet/");
 
         await page.GetByTestId("agent-open").ClickAsync();
-        await Assertions.Expect(page.GetByTestId("agent-scope"))
-            .ToContainTextAsync("Main / FakeDb");
-        await Assertions.Expect(page.GetByTestId("agent-disclosure"))
-            .ToContainTextAsync("external provider");
+        var composerShell = page.GetByTestId("agent-composer-shell");
+        await Assertions.Expect(composerShell).ToHaveAttributeAsync("aria-busy", "false");
+        await Assertions.Expect(composerShell.GetByTestId("agent-cancel")).ToHaveCountAsync(0);
+        await Assertions.Expect(composerShell.GetByTestId("agent-send")).ToHaveCountAsync(1);
+        await Assertions.Expect(composerShell.GetByTestId("agent-send"))
+            .ToHaveAttributeAsync("aria-label", "Send message");
+        await Assertions.Expect(page.GetByTestId("agent-status")).ToHaveClassAsync(new Regex("sr-only"));
+        var composer = page.GetByTestId("agent-composer");
+        Assert.Equal("none", await composer.EvaluateAsync<string>(
+            "element => getComputedStyle(element).resize"));
+        var compactHeight = await composer.EvaluateAsync<int>("element => element.offsetHeight");
+        await composer.FillAsync(string.Join('\n', Enumerable.Repeat("A longer prompt line", 30)));
+        var expandedHeight = await composer.EvaluateAsync<int>("element => element.offsetHeight");
+        Assert.True(expandedHeight > compactHeight);
+        Assert.InRange(expandedHeight, 1, 180);
+        Assert.Equal("auto", await composer.EvaluateAsync<string>(
+            "element => getComputedStyle(element).overflowY"));
+        await Assertions.Expect(page.Locator(".agent-header")).ToHaveCountAsync(0);
+        await Assertions.Expect(composerShell.GetByTestId("agent-mode")).ToHaveCountAsync(1);
+        await Assertions.Expect(composerShell.GetByTestId("agent-provider")).ToHaveCountAsync(1);
+        await composerShell.GetByTestId("agent-mode").SelectOptionAsync("schema");
+        var modeTrigger = composerShell.Locator(".agent-mode-control .select-trigger");
+        await Assertions.Expect(modeTrigger).ToContainTextAsync("Design / Schema");
+        Assert.True(await modeTrigger.EvaluateAsync<bool>(
+            "element => element.scrollWidth <= element.clientWidth"));
+        await composerShell.GetByTestId("agent-mode").SelectOptionAsync("data");
+        var providerControl = composerShell.Locator(".agent-provider-control");
+        var providerTrigger = providerControl.Locator(".select-trigger");
+        var providerMenu = providerControl.Locator(".select-menu");
+        await Assertions.Expect(providerTrigger).ToBeVisibleAsync();
+        await providerTrigger.ClickAsync();
+        await Assertions.Expect(providerMenu).ToBeVisibleAsync();
+        Assert.Equal(
+            await composerShell.EvaluateAsync<string>("element => getComputedStyle(element).backgroundColor"),
+            await providerMenu.EvaluateAsync<string>("element => getComputedStyle(element).backgroundColor"));
+        var triggerBounds = await providerTrigger.BoundingBoxAsync();
+        var menuBounds = await providerMenu.BoundingBoxAsync();
+        Assert.NotNull(triggerBounds);
+        Assert.NotNull(menuBounds);
+        Assert.True(menuBounds.Y + menuBounds.Height <= triggerBounds.Y + 1);
+        await providerTrigger.ClickAsync();
+        var privacy = composerShell.GetByTestId("agent-privacy");
+        var privacyTooltip = composerShell.GetByTestId("agent-privacy-tooltip");
+        await Assertions.Expect(privacyTooltip).ToContainTextAsync("Main / FakeDb");
+        await Assertions.Expect(privacyTooltip).ToContainTextAsync("external provider");
+        await privacy.HoverAsync();
+        await Assertions.Expect(privacyTooltip).ToBeVisibleAsync();
 
         await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
-        await page.GetByTestId("agent-composer").FillAsync("Summarize the customers");
+        await composer.FillAsync("Summarize the customers");
         await page.GetByTestId("agent-send").ClickAsync();
 
         await Assertions.Expect(page.GetByTestId("agent-message-user").Locator(".agent-message-role"))
@@ -34,6 +78,57 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal(credentialsBefore + 1, fixture.Agent.StoredCredentials.Count);
         Assert.Equal(requestsBefore + 1, fixture.Agent.Requests.Count);
         Assert.Equal("Summarize the customers", fixture.Agent.Requests[^1].Message);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Dictates_into_the_composer_with_browser_speech_recognition()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("""
+            class FakeSpeechRecognition {
+                constructor() { window.__fakeSpeechRecognition = this; }
+                start() { this.onstart?.(); }
+                stop() { this.stopped = true; this.onend?.(); }
+                abort() { this.aborted = true; this.onerror?.({ error: 'aborted' }); this.onend?.(); }
+            }
+            window.SpeechRecognition = FakeSpeechRecognition;
+            """);
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        var composer = page.GetByTestId("agent-composer");
+        var dictation = page.GetByTestId("agent-dictation");
+        await Assertions.Expect(dictation).ToBeVisibleAsync();
+        await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-pressed", "false");
+        await composer.FillAsync("Please");
+
+        await dictation.ClickAsync();
+        await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-pressed", "true");
+        await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-label", "Stop dictation");
+        Assert.True(await page.EvaluateAsync<bool>(
+            "window.__fakeSpeechRecognition.continuous && window.__fakeSpeechRecognition.interimResults"));
+
+        await page.EvaluateAsync("""
+            () => {
+                const result = [{ transcript: 'list the recent orders' }];
+                result.isFinal = false;
+                window.__fakeSpeechRecognition.onresult({ results: [result] });
+            }
+            """);
+        await Assertions.Expect(composer).ToHaveValueAsync("Please list the recent orders");
+        await Assertions.Expect(page.GetByTestId("agent-privacy-tooltip"))
+            .ToContainTextAsync("browser speech recognition service");
+
+        await dictation.ClickAsync();
+        await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-pressed", "false");
+        await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-label", "Start dictation");
+
+        await dictation.ClickAsync();
+        await composer.FillAsync("Typed instead");
+        await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-pressed", "false");
+        Assert.True(await page.EvaluateAsync<bool>("window.__fakeSpeechRecognition.aborted"));
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -222,6 +317,10 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToContainTextAsync("Calling describe_table");
         await Assertions.Expect(assistant.Locator(".agent-tool-result"))
             .ToContainTextAsync("Result from describe_table");
+        Assert.Equal("0px", await assistant.Locator(".agent-tool-call")
+            .EvaluateAsync<string>("element => getComputedStyle(element).borderRadius"));
+        Assert.Equal("0px", await assistant.Locator(".agent-tool-result")
+            .EvaluateAsync<string>("element => getComputedStyle(element).borderRadius"));
         await Assertions.Expect(assistant.Locator(".agent-tool-result-failed"))
             .ToHaveCountAsync(0);
         await Assertions.Expect(assistant.Locator("strong"))
@@ -277,7 +376,23 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTestId("agent-send").ClickAsync();
         await ExpectAgentComplete(page);
 
+        var user = page.GetByTestId("agent-message-user");
         var assistant = page.GetByTestId("agent-message-assistant");
+        foreach (var message in new[] { user, assistant })
+        {
+            var time = message.Locator(".agent-message-time");
+            await Assertions.Expect(time).ToHaveAttributeAsync("datetime", new Regex("^\\d{4}-\\d{2}-\\d{2}T"));
+            await Assertions.Expect(time).ToHaveTextAsync(new Regex("\\d"));
+            Assert.Equal("0", await message.Locator(".agent-message-footer")
+                .EvaluateAsync<string>("element => getComputedStyle(element).opacity"));
+        }
+
+        await user.HoverAsync();
+        await Assertions.Expect(user.Locator(".agent-message-footer")).ToHaveCSSAsync("opacity", "1");
+        await user.GetByRole(AriaRole.Button, new() { Name = "Copy your message" }).ClickAsync();
+        Assert.Equal("Show markdown join logic", await page.EvaluateAsync<string>("navigator.clipboard.readText()"));
+
+        await assistant.HoverAsync();
         await assistant.GetByRole(AriaRole.Button, new() { Name = "Copy agent response" })
             .ClickAsync();
         var responseClipboard = await page.EvaluateAsync<string>("navigator.clipboard.readText()");
@@ -331,14 +446,23 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
         var messages = page.GetByTestId("agent-messages");
         var status = page.GetByTestId("agent-status");
+        var composerShell = page.GetByTestId("agent-composer-shell");
         await Assertions.Expect(messages).ToHaveAttributeAsync("aria-live", "off");
         await Assertions.Expect(messages).ToHaveAttributeAsync("aria-busy", "false");
+        await Assertions.Expect(composerShell).ToHaveAttributeAsync("aria-busy", "false");
         await Assertions.Expect(status).ToHaveAttributeAsync("role", "status");
         await Assertions.Expect(status).ToHaveAttributeAsync("aria-atomic", "true");
 
         await page.GetByTestId("agent-composer").FillAsync("Slow streaming scroll");
         await page.GetByTestId("agent-send").ClickAsync();
         await Assertions.Expect(messages).ToHaveAttributeAsync("aria-busy", "true");
+        await Assertions.Expect(composerShell).ToHaveAttributeAsync("aria-busy", "true");
+        await Assertions.Expect(composerShell.GetByTestId("agent-cancel")).ToHaveCountAsync(1);
+        await Assertions.Expect(composerShell.GetByTestId("agent-send")).ToHaveCountAsync(0);
+        await Assertions.Expect(composerShell.GetByTestId("agent-cancel"))
+            .ToHaveAttributeAsync("aria-label", "Cancel response");
+        Assert.Equal("agent-composer-outline-spin", await composerShell.EvaluateAsync<string>(
+            "element => getComputedStyle(element).animationName"));
         await Assertions.Expect(page.GetByTestId("agent-message-assistant"))
             .ToContainTextAsync("Initial streamed line 100");
         var followedPosition = await messages.EvaluateAsync<int>("element => element.scrollTop");
@@ -352,6 +476,10 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         Assert.InRange(await messages.EvaluateAsync<int>("element => element.scrollTop"), 0, 1);
         await Assertions.Expect(messages).ToHaveAttributeAsync("aria-busy", "false");
+        await Assertions.Expect(composerShell).ToHaveAttributeAsync("aria-busy", "false");
+        await Assertions.Expect(composerShell.GetByTestId("agent-send")).ToHaveCountAsync(1);
+        await Assertions.Expect(composerShell.GetByTestId("agent-send"))
+            .ToHaveAttributeAsync("aria-label", "Send message");
         await Assertions.Expect(status.Locator(".agent-status-announcement"))
             .ToHaveTextAsync("Agent response complete.");
         browserPage.AssertNoUnexpectedErrors();

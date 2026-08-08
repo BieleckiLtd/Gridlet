@@ -205,6 +205,7 @@
       value.textContent = select.selectedOptions[0]?.textContent || '—';
       button.disabled = select.disabled || !select.options.length;
       button.setAttribute('aria-label', `${select.getAttribute('aria-label') || 'Select'}: ${value.textContent}`);
+      button.title = value.textContent;
       render();
     };
 
@@ -2341,8 +2342,13 @@
     const effortSelect = h('select', {
       'aria-label': 'Thinking effort', 'data-testid': 'agent-effort',
     });
-    const effortControl = h('label', { class: 'agent-control agent-effort-control', hidden: '' },
-      h('span', { text: 'Effort' }), effortSelect);
+    const modeControl = h('label', { class: 'agent-composer-select agent-mode-control' },
+      h('span', { class: 'sr-only', text: 'Mode' }), modeSelect);
+    const providerControl = h('label', { class: 'agent-composer-select agent-provider-control' },
+      h('span', { class: 'sr-only', text: 'Model' }), providerSelect);
+    const effortControl = h('label', {
+      class: 'agent-composer-select agent-effort-control', hidden: '',
+    }, h('span', { class: 'sr-only', text: 'Effort' }), effortSelect);
     const apiKeyInput = h('input', {
       type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
       maxlength: '8192', 'aria-label': 'Provider API key', 'data-testid': 'agent-api-key',
@@ -2353,9 +2359,6 @@
         class: 'agent-field-note muted',
         text: 'Exchanged for an ephemeral handle; never saved in browser storage.',
       }));
-    const disclosure = h('div', {
-      class: 'agent-disclosure', 'data-testid': 'agent-disclosure', role: 'note',
-    });
     const messages = h('div', {
       class: 'agent-messages', role: 'log', 'aria-live': 'off', 'aria-busy': 'false',
       'aria-label': 'Database conversation', 'data-testid': 'agent-messages',
@@ -2365,26 +2368,105 @@
       h('span', { text: 'Data mode answers from permitted database data. Design / Schema mode helps inspect and reason about structure.' }));
     messages.append(welcome);
     const composer = h('textarea', {
-      class: 'agent-composer', rows: '3', maxlength: '20000',
+      class: 'agent-composer', rows: '1', maxlength: '20000',
       placeholder: 'Ask a question about this database…', 'aria-label': 'Message',
       'data-testid': 'agent-composer',
     });
-    const sendButton = h('button', {
-      class: 'primary', text: 'Send', 'data-testid': 'agent-send',
+    const composerIcon = (className, pathData = null) => {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('class', `agent-composer-submit-icon ${className}`);
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.setAttribute('focusable', 'false');
+      const shape = document.createElementNS('http://www.w3.org/2000/svg', pathData ? 'path' : 'rect');
+      if (pathData) shape.setAttribute('d', pathData);
+      else {
+        shape.setAttribute('x', '7');
+        shape.setAttribute('y', '7');
+        shape.setAttribute('width', '10');
+        shape.setAttribute('height', '10');
+        shape.setAttribute('rx', '1');
+      }
+      svg.append(shape);
+      return svg;
+    };
+    const sendIcon = composerIcon('agent-composer-send-icon', 'M12 19V5M6 11l6-6 6 6');
+    const stopIcon = composerIcon('agent-composer-stop-icon');
+    stopIcon.setAttribute('hidden', '');
+    const actionButton = h('button', {
+      class: 'primary agent-composer-submit', type: 'button', title: 'Send message',
+      'aria-label': 'Send message', 'data-testid': 'agent-send',
+    }, sendIcon, stopIcon);
+    const SpeechRecognitionApi = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const microphoneSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    microphoneSvg.setAttribute('class', 'agent-dictation-icon');
+    microphoneSvg.setAttribute('viewBox', '0 0 24 24');
+    microphoneSvg.setAttribute('aria-hidden', 'true');
+    microphoneSvg.setAttribute('focusable', 'false');
+    const microphoneBody = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    microphoneBody.setAttribute('x', '9');
+    microphoneBody.setAttribute('y', '3');
+    microphoneBody.setAttribute('width', '6');
+    microphoneBody.setAttribute('height', '11');
+    microphoneBody.setAttribute('rx', '3');
+    const microphoneStand = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    microphoneStand.setAttribute('d', 'M5.5 11a6.5 6.5 0 0013 0M12 17.5V21M9 21h6');
+    microphoneSvg.append(microphoneBody, microphoneStand);
+    const dictationButton = h('button', {
+      class: 'agent-dictation-button', type: 'button', title: 'Start dictation',
+      'aria-label': 'Start dictation', 'aria-pressed': 'false',
+      'data-testid': 'agent-dictation', 'data-state': 'idle',
+      hidden: SpeechRecognitionApi ? null : '',
+    }, microphoneSvg);
+    const privacySvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    privacySvg.setAttribute('class', 'agent-privacy-icon');
+    privacySvg.setAttribute('viewBox', '0 0 24 24');
+    privacySvg.setAttribute('aria-hidden', 'true');
+    privacySvg.setAttribute('focusable', 'false');
+    const privacyShield = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    privacyShield.setAttribute('d', 'M12 3l7 3v5c0 4.8-2.8 8.2-7 10-4.2-1.8-7-5.2-7-10V6l7-3z');
+    const privacyMark = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    privacyMark.setAttribute('d', 'M12 8v5m0 3h.01');
+    privacySvg.append(privacyShield, privacyMark);
+    const privacyTooltipId = `agent-privacy-tooltip-${crypto.randomUUID()}`;
+    const privacyTooltip = h('span', {
+      class: 'agent-privacy-tooltip', id: privacyTooltipId, role: 'tooltip',
+      'data-testid': 'agent-privacy-tooltip',
     });
-    const cancelButton = h('button', {
-      text: 'Cancel', disabled: '', 'data-testid': 'agent-cancel',
-    });
-    const statusVisible = h('span', { text: 'Ready', 'aria-hidden': 'true' });
+    const privacyButton = h('button', {
+      class: 'agent-privacy-button', type: 'button', 'aria-label': 'Privacy and data scope',
+      'aria-describedby': privacyTooltipId, 'data-testid': 'agent-privacy',
+    }, privacySvg);
+    const privacyControl = h('span', { class: 'agent-privacy-control' },
+      privacyButton, privacyTooltip);
+    const composerOptions = h('span', { class: 'agent-composer-options' },
+      modeControl, providerControl, effortControl);
+    setupThemedSelect(modeSelect);
+    setupThemedSelect(providerSelect);
+    setupThemedSelect(effortSelect);
     const statusAnnouncement = h('span', {
-      class: 'sr-only agent-status-announcement', text: 'Ready',
+      class: 'agent-status-announcement', text: '',
     });
     const status = h('span', {
-      class: 'agent-status muted', role: 'status', 'aria-live': 'polite',
+      class: 'sr-only agent-status', role: 'status', 'aria-live': 'polite',
       'aria-atomic': 'true', 'data-testid': 'agent-status', 'data-state': 'ready',
-    }, statusVisible, statusAnnouncement);
+    }, statusAnnouncement);
+    const composerShell = h('div', {
+      class: 'agent-composer-shell', 'data-testid': 'agent-composer-shell',
+      'aria-busy': 'false',
+    }, composer,
+      h('div', { class: 'agent-compose-actions' },
+        status, privacyControl, h('span', { class: 'spacer' }), composerOptions,
+        dictationButton, actionButton));
 
     let activeRequest = null;
+    let recognition = null;
+    let isDictating = false;
+    let dictationStarting = false;
+    let applyingDictation = false;
+    let dictationBase = '';
+    let dictationSeparator = '';
+    let dictationError = '';
     let credentialHandle = null;
     let credentialProfileId = null;
     let conversation = [];
@@ -2394,8 +2476,103 @@
 
     const setStatus = (stateName, visibleText, announcement = visibleText) => {
       status.dataset.state = stateName;
-      statusVisible.textContent = visibleText;
       statusAnnouncement.textContent = announcement;
+    };
+
+    const resizeComposer = () => {
+      composer.style.height = 'auto';
+      const styles = getComputedStyle(composer);
+      const minHeight = Number.parseFloat(styles.minHeight) || 46;
+      const maxHeight = Number.parseFloat(styles.maxHeight) || 180;
+      const contentHeight = composer.scrollHeight;
+      composer.style.height = `${Math.min(maxHeight, Math.max(minHeight, contentHeight))}px`;
+      composer.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
+    };
+
+    const updateDictationButton = () => {
+      const isActive = isDictating || dictationStarting;
+      dictationButton.classList.toggle('is-listening', isActive);
+      dictationButton.dataset.state = isActive ? 'listening' : 'idle';
+      dictationButton.setAttribute('aria-pressed', String(isActive));
+      const label = isActive ? 'Stop dictation' : 'Start dictation';
+      dictationButton.setAttribute('aria-label', label);
+      dictationButton.title = label;
+    };
+
+    const ensureRecognition = () => {
+      if (recognition || !SpeechRecognitionApi) return recognition;
+      recognition = new SpeechRecognitionApi();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = document.documentElement.lang || navigator.language || 'en-US';
+      recognition.onstart = () => {
+        dictationStarting = false;
+        isDictating = true;
+        dictationError = '';
+        updateDictationButton();
+        statusAnnouncement.textContent = 'Dictation started.';
+      };
+      recognition.onresult = (event) => {
+        let transcript = '';
+        for (let index = 0; index < event.results.length; index += 1) {
+          transcript += event.results[index][0]?.transcript || '';
+        }
+        applyingDictation = true;
+        composer.value = `${dictationBase}${dictationSeparator}${transcript.trimStart()}`
+          .slice(0, Number(composer.maxLength));
+        applyingDictation = false;
+        resizeComposer();
+        syncControls();
+      };
+      recognition.onerror = (event) => {
+        dictationError = event.error || 'unknown';
+        const errors = {
+          'not-allowed': 'Microphone access was not allowed.',
+          'service-not-allowed': 'Speech recognition is not allowed in this browser.',
+          'audio-capture': 'No microphone is available.',
+          network: 'Browser speech recognition could not connect.',
+          'no-speech': 'No speech was detected.',
+        };
+        if (dictationError !== 'aborted') toast(errors[dictationError] || 'Dictation could not start.');
+      };
+      recognition.onend = () => {
+        dictationStarting = false;
+        isDictating = false;
+        updateDictationButton();
+        statusAnnouncement.textContent = dictationError && dictationError !== 'aborted'
+          ? 'Dictation ended with an error.'
+          : 'Dictation stopped.';
+        if (state.activeTabId === tab.id && !activeRequest) composer.focus();
+      };
+      return recognition;
+    };
+
+    const stopDictation = (abort = false) => {
+      if (!recognition || (!isDictating && !dictationStarting)) return;
+      try {
+        if (abort) recognition.abort();
+        else recognition.stop();
+      } catch { /* recognition already stopped */ }
+    };
+
+    const toggleDictation = () => {
+      if (!SpeechRecognitionApi || activeRequest) return;
+      if (isDictating || dictationStarting) {
+        stopDictation();
+        return;
+      }
+      dictationBase = composer.value;
+      dictationSeparator = dictationBase && !/\s$/.test(dictationBase) ? ' ' : '';
+      dictationError = '';
+      try {
+        dictationStarting = true;
+        updateDictationButton();
+        ensureRecognition()?.start();
+      } catch {
+        dictationStarting = false;
+        updateDictationButton();
+        toast('Dictation is already starting.');
+      }
     };
 
     const closeProviderConversation = () => {
@@ -2412,7 +2589,7 @@
       messages.setAttribute('aria-busy', 'false');
       followMessages = true;
       messageScrollTop = 0;
-      setStatus('ready', 'Ready');
+      setStatus('ready', '', '');
     };
     const removeCredential = (handle) => {
       if (handle) void api(urls.agentCredentials(), {
@@ -2432,8 +2609,16 @@
       !activeRequest && composer.value.trim() && selectedProfile()
       && hasRequiredCredential());
     const syncControls = () => {
-      sendButton.disabled = !canSend();
-      cancelButton.disabled = !activeRequest;
+      const isBusy = Boolean(activeRequest);
+      composerShell.setAttribute('aria-busy', isBusy ? 'true' : 'false');
+      actionButton.disabled = isBusy ? false : !canSend();
+      actionButton.classList.toggle('is-cancel', isBusy);
+      actionButton.dataset.testid = isBusy ? 'agent-cancel' : 'agent-send';
+      actionButton.setAttribute('aria-label', isBusy ? 'Cancel response' : 'Send message');
+      actionButton.title = isBusy ? 'Cancel response' : 'Send message';
+      sendIcon.toggleAttribute('hidden', isBusy);
+      stopIcon.toggleAttribute('hidden', !isBusy);
+      dictationButton.disabled = isBusy;
       modeSelect.disabled = Boolean(activeRequest);
       providerSelect.disabled = Boolean(activeRequest);
       effortSelect.disabled = Boolean(activeRequest);
@@ -2464,9 +2649,16 @@
       const destination = profile?.isLocal
         ? `${profile.displayName} is configured as a local provider. Questions and permitted database context are sent to its local endpoint.`
         : `${profile.displayName} is an external provider. Questions and permitted database context are sent to that provider.`;
-      disclosure.classList.toggle('local', Boolean(profile?.isLocal));
-      disclosure.classList.toggle('external', !profile?.isLocal);
-      disclosure.textContent = destination;
+      const credentialPrivacy = acceptsKey
+        ? ' API keys are exchanged for ephemeral server handles and are not stored in browser storage.'
+        : '';
+      const privacyText = `This conversation is scoped to ${connection} / ${database}. ${destination}${credentialPrivacy}`;
+      const dictationPrivacy = SpeechRecognitionApi
+        ? ' Dictation is handled by the browser speech recognition service and may send audio to the browser vendor.'
+        : '';
+      privacyControl.classList.toggle('local', Boolean(profile?.isLocal));
+      privacyControl.classList.toggle('external', !profile?.isLocal);
+      privacyTooltip.textContent = `${privacyText}${dictationPrivacy}`;
       syncControls();
     };
     const rememberAgentPreferences = () => {
@@ -2487,20 +2679,43 @@
     const appendMessage = (role, content = '', assistantLabel = 'Agent') => {
       welcome.remove();
       let lastReasoningValue = '';
-      let lastContentValue = '';
-      const copyResponse = role === 'assistant' ? h('button', {
-        class: 'agent-copy-response', text: 'Copy response', title: 'Copy this response',
-        'aria-label': 'Copy agent response', hidden: '',
+      let lastContentValue = role === 'user' ? content : '';
+      const copyIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      copyIcon.setAttribute('class', 'agent-message-copy-icon');
+      copyIcon.setAttribute('viewBox', '0 0 24 24');
+      copyIcon.setAttribute('aria-hidden', 'true');
+      copyIcon.setAttribute('focusable', 'false');
+      const copyBack = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      copyBack.setAttribute('x', '8');
+      copyBack.setAttribute('y', '8');
+      copyBack.setAttribute('width', '11');
+      copyBack.setAttribute('height', '11');
+      copyBack.setAttribute('rx', '1.5');
+      const copyFront = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      copyFront.setAttribute('d', 'M16 8V6.5A1.5 1.5 0 0014.5 5h-9A1.5 1.5 0 004 6.5v9A1.5 1.5 0 005.5 17H8');
+      copyIcon.append(copyBack, copyFront);
+      const copyMessage = h('button', {
+        class: 'agent-message-copy', type: 'button',
+        title: role === 'user' ? 'Copy your message' : 'Copy this response',
+        'aria-label': role === 'user' ? 'Copy your message' : 'Copy agent response',
         onclick: async () => {
           if (!lastContentValue) return;
           try {
             await navigator.clipboard.writeText(lastContentValue);
-            toast('Response copied.', false);
+            toast(role === 'user' ? 'Message copied.' : 'Response copied.', false);
           } catch {
             toast('Copy failed — clipboard unavailable.');
           }
         },
-      }) : null;
+      }, copyIcon);
+      copyMessage.hidden = !lastContentValue;
+      const createdAt = new Date();
+      const messageFooter = h('div', {
+        class: 'agent-message-footer', 'data-testid': 'agent-message-footer',
+      }, h('time', {
+        class: 'agent-message-time', datetime: createdAt.toISOString(),
+        text: createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      }), copyMessage);
       const body = h('div', { class: 'agent-message-content' });
       const error = h('div', { class: 'agent-message-error', hidden: '' });
       const element = h('article', {
@@ -2511,10 +2726,10 @@
           h('span', { class: 'agent-message-role-name', text: role === 'user' ? 'Me' : 'Agent' }),
           role === 'assistant'
             ? h('span', { class: 'agent-message-role-detail', text: ` - ${assistantLabel}` })
-            : null,
-          copyResponse),
+            : null),
         role === 'assistant' ? null : body,
-        error);
+        error,
+        messageFooter);
       messages.append(element);
       if (role !== 'assistant') body.textContent = content;
       scrollMessages(role === 'user');
@@ -2612,7 +2827,7 @@
 
       if (role === 'assistant' && content) {
         lastContentValue = content;
-        copyResponse.hidden = false;
+        copyMessage.hidden = false;
         appendAnswerDelta(content);
       }
 
@@ -2623,7 +2838,7 @@
             ? value.slice(lastContentValue.length)
             : value;
           lastContentValue = value;
-          copyResponse.hidden = !value;
+          copyMessage.hidden = !value;
           appendAnswerDelta(delta);
           scrollMessages();
         },
@@ -2710,6 +2925,7 @@
     };
 
     const send = async () => {
+      stopDictation();
       const message = composer.value.trim();
       const profile = selectedProfile();
       if (!message || !profile || activeRequest) return;
@@ -2736,6 +2952,7 @@
         const handle = await storeCredentialIfSupplied(profile, controller.signal);
         const history = conversation.slice(-50).map((entry) => ({ ...entry }));
         composer.value = '';
+        resizeComposer();
         appendMessage('user', message);
         assistantMessage = appendMessage('assistant', '', assistantLabel);
         setStatus('streaming', '', `${profile.displayName} response is streaming.`);
@@ -2837,7 +3054,11 @@
       rememberAgentPreferences();
       syncControls();
     });
-    composer.addEventListener('input', syncControls);
+    composer.addEventListener('input', () => {
+      if (isDictating && !applyingDictation) stopDictation(true);
+      resizeComposer();
+      syncControls();
+    });
     apiKeyInput.addEventListener('input', syncControls);
     composer.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
@@ -2845,8 +3066,11 @@
         send();
       }
     });
-    sendButton.addEventListener('click', send);
-    cancelButton.addEventListener('click', () => activeRequest?.abort());
+    actionButton.addEventListener('click', () => {
+      if (activeRequest) activeRequest.abort();
+      else void send();
+    });
+    dictationButton.addEventListener('click', toggleDictation);
 
     tab.beforeLeave = () => {
       if (!tab.isRunning) return Promise.resolve(true);
@@ -2866,6 +3090,7 @@
       });
     };
     tab.onDeactivate = () => {
+      stopDictation();
       messageScrollTop = messages.scrollTop;
     };
     tab.onActivate = () => requestAnimationFrame(() => {
@@ -2873,6 +3098,7 @@
       rememberAgentPreferences();
     });
     tab.onClose = () => {
+      stopDictation(true);
       activeRequest?.abort();
       discardCredential();
       conversation = [];
@@ -2880,28 +3106,16 @@
     };
 
     tab.panel = h('div', { class: 'panel agent-panel', 'data-testid': 'agent-panel' },
-      h('div', { class: 'agent-header' },
-        h('div', { class: 'agent-scope', 'data-testid': 'agent-scope' },
-          h('span', { class: 'muted', text: 'Conversation is locked to' }),
-          h('strong', { text: `${connection} / ${database}` })),
-        h('div', { class: 'agent-selectors' },
-          h('label', { class: 'agent-control' }, h('span', { text: 'Mode' }), modeSelect),
-          h('label', { class: 'agent-control agent-provider-control' },
-            h('span', { text: 'Model' }), providerSelect),
-          effortControl),
-        apiKeyField,
-        disclosure),
       messages,
       h('div', { class: 'agent-compose-area' },
-        composer,
-        h('div', { class: 'agent-compose-actions' },
-          status, h('span', { class: 'spacer' }), cancelButton, sendButton)));
+        apiKeyField, composerShell));
 
     refreshProfile(state.agentPreferences.profileId === preferredProfileId
       ? state.agentPreferences.reasoningEffort
       : null);
     rememberAgentPreferences();
     addTab(tab);
+    requestAnimationFrame(resizeComposer);
     composer.focus();
   }
 
