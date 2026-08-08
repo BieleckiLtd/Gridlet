@@ -22,12 +22,14 @@
 <body>
   <div id="app">
     <header id="topbar">
-      <div class="brand"><img class="brand-mark" src="assets/icon_sm.png" alt="" />Gridlet</div>
-      <div class="picker"><span>Connection</span>
-        <select id="connection-select" aria-label="Connection"></select>
-      </div>
-      <div class="picker"><span>Database</span>
-        <select id="database-select" aria-label="Database"></select>
+      <div class="brand"><img class="brand-mark" src="assets/icon_sm.png" alt="" /><span class="brand-name">Gridlet</span></div>
+      <div class="connection-pickers" data-testid="connection-pickers" data-overflow-at="520">
+        <div class="picker"><span class="picker-label">Connection</span>
+          <select id="connection-select" aria-label="Connection"></select>
+        </div>
+        <div class="picker"><span class="picker-label">Database</span>
+          <select id="database-select" aria-label="Database"></select>
+        </div>
       </div>
       <button id="refresh-btn" class="ghost" title="Reload objects">⟳</button>
       <div class="spacer"></div>

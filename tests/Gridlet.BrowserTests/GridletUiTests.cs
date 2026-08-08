@@ -688,6 +688,52 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Narrow_header_hides_picker_labels_then_collapses_pickers_into_app_menu()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.SetViewportSizeAsync(850, 600);
+        await page.GotoAsync("/gridlet/");
+
+        var pickers = page.GetByTestId("connection-pickers");
+        await Assertions.Expect(pickers).ToBeVisibleAsync();
+        Assert.True(await pickers.Locator(".picker-label").EvaluateAllAsync<bool>(
+            "labels => labels.every(label => getComputedStyle(label).display === 'none')"));
+
+        await page.SetViewportSizeAsync(360, 600);
+        var more = page.Locator("#topbar").GetByRole(
+            AriaRole.Button, new() { Name = "More app actions" });
+        await Assertions.Expect(more).ToBeVisibleAsync();
+        await Assertions.Expect(pickers).ToBeHiddenAsync();
+        Assert.True(await page.EvaluateAsync<bool>("""
+            () => {
+                const topbar = document.querySelector('#topbar').getBoundingClientRect();
+                const more = document.querySelector('#topbar .toolbar-more > summary').getBoundingClientRect();
+                return topbar.height < 60
+                    && more.width >= 32
+                    && document.documentElement.scrollWidth <= document.documentElement.clientWidth;
+            }
+            """));
+
+        await more.ClickAsync();
+        await Assertions.Expect(pickers).ToBeVisibleAsync();
+        Assert.True(await pickers.Locator(".picker-label").EvaluateAllAsync<bool>(
+            "labels => labels.every(label => getComputedStyle(label).display !== 'none')"));
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Button, new() { Name = "Connection: Main" })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Button, new() { Name = "Database: FakeDb" })).ToBeVisibleAsync();
+
+        await page.GetByRole(AriaRole.Button, new() { Name = "Connection: Main" }).ClickAsync();
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Listbox, new() { Name = "Connection" })).ToBeVisibleAsync();
+        Assert.True(await page.EvaluateAsync<bool>("""
+            () => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+            """));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Boots_and_streams_table_data()
     {
         await using var browserPage = await fixture.NewPageAsync();

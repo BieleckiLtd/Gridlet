@@ -86,17 +86,24 @@
       more.open = false;
       for (const record of records) record.slot.append(record.element);
       more.hidden = true;
-      if (fits()) return;
+      const forced = records.filter((record) => {
+        const breakpoint = Number(record.element.dataset.overflowAt);
+        return breakpoint && toolbar.clientWidth <= breakpoint;
+      });
+      if (!forced.length && fits()) return;
 
       more.hidden = false;
+      for (const record of forced) menu.append(record.element);
+      if (fits()) return;
       for (const record of records) {
+        if (forced.includes(record)) continue;
         menu.append(record.element);
         if (fits()) break;
       }
     };
 
     menu.addEventListener('click', (event) => {
-      if (event.target.closest('button')) more.open = false;
+      if (event.target.closest('button:not(.select-trigger)')) more.open = false;
     });
     more.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') { more.open = false; more.querySelector('summary').focus(); }
@@ -713,6 +720,7 @@
     setupThemedSelect($('#database-select'));
     navigationOverflow = setupOverflowToolbar($('#topbar'), [
       $('#version'), $('#about-btn'), $('#apis-btn'), $('#ask-btn'), $('#theme-btn'), $('#refresh-btn'),
+      $('.connection-pickers'), $('#new-query-btn'),
     ], 'More app actions');
     document.body.append(h('datalist', { id: 'gridlet-types' }));
 
