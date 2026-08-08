@@ -133,6 +133,59 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Narrow_composer_collapses_options_without_wrapping_or_squashing_icon_buttons()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("""
+            window.SpeechRecognition = class { start() {} stop() {} abort() {} };
+            """);
+        await page.SetViewportSizeAsync(800, 600);
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTestId("agent-open").ClickAsync();
+
+        var composer = page.GetByTestId("agent-composer-shell");
+        var options = composer.Locator(".agent-composer-options");
+        var optionsButton = composer.GetByRole(
+            AriaRole.Button, new() { Name = "Conversation options" });
+        await Assertions.Expect(optionsButton).ToBeVisibleAsync();
+        await Assertions.Expect(options).ToBeHiddenAsync();
+        var compactMetrics = await composer.EvaluateAsync<float[]>("""
+            element => {
+                const actionElement = element.querySelector('.agent-compose-actions');
+                const actions = actionElement.getBoundingClientRect();
+                const buttonWidths = ['.agent-privacy-button', '.agent-dictation-button',
+                    '.agent-composer-overflow > summary', '.agent-composer-submit']
+                    .map(selector => element.querySelector(selector).getBoundingClientRect().width);
+                return [actions.height, actions.width, actionElement.scrollWidth, ...buttonWidths];
+            }
+            """);
+        Assert.True(compactMetrics[0] < 50, $"Action row height was {compactMetrics[0]}px.");
+        Assert.True(compactMetrics[1] >= compactMetrics[2],
+            $"Action row width was {compactMetrics[1]}px with {compactMetrics[2]}px of content.");
+        Assert.All(compactMetrics.Skip(3), width => Assert.True(width >= 34,
+            $"Icon button width was {width}px."));
+
+        await optionsButton.ClickAsync();
+        await Assertions.Expect(options).ToBeVisibleAsync();
+        await Assertions.Expect(options.Locator(".agent-option-label")).ToHaveCountAsync(3);
+        var providerTrigger = options.Locator(".agent-provider-control .select-trigger");
+        await providerTrigger.ClickAsync();
+        await Assertions.Expect(options.GetByRole(
+            AriaRole.Listbox, new() { Name = "Agent model" })).ToBeVisibleAsync();
+        Assert.True(await page.EvaluateAsync<bool>("""
+            () => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+            """));
+
+        await page.SetViewportSizeAsync(1400, 600);
+        await Assertions.Expect(optionsButton).ToBeHiddenAsync();
+        await Assertions.Expect(options).ToBeVisibleAsync();
+        Assert.True(await options.Locator(".agent-option-label").EvaluateAllAsync<bool>(
+            "labels => labels.every(label => getComputedStyle(label).display === 'none')"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Opens_each_ask_click_as_a_new_conversation_tab()
     {
         await using var browserPage = await fixture.NewPageAsync();

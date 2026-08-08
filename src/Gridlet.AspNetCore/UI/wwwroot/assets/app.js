@@ -114,7 +114,7 @@
       if (!child.classList.contains('toolbar-slot') && child !== more) observer.observe(child);
     }
     requestAnimationFrame(update);
-    return { refresh: () => requestAnimationFrame(update) };
+    return { more, refresh: () => requestAnimationFrame(update) };
   }
 
   // ---- theme ---------------------------------------------------------------
@@ -2351,12 +2351,12 @@
       'aria-label': 'Thinking effort', 'data-testid': 'agent-effort',
     });
     const modeControl = h('label', { class: 'agent-composer-select agent-mode-control' },
-      h('span', { class: 'sr-only', text: 'Mode' }), modeSelect);
+      h('span', { class: 'agent-option-label', text: 'Mode' }), modeSelect);
     const providerControl = h('label', { class: 'agent-composer-select agent-provider-control' },
-      h('span', { class: 'sr-only', text: 'Model' }), providerSelect);
+      h('span', { class: 'agent-option-label', text: 'Model' }), providerSelect);
     const effortControl = h('label', {
       class: 'agent-composer-select agent-effort-control', hidden: '',
-    }, h('span', { class: 'sr-only', text: 'Effort' }), effortSelect);
+    }, h('span', { class: 'agent-option-label', text: 'Effort' }), effortSelect);
     const apiKeyInput = h('input', {
       type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
       maxlength: '8192', 'aria-label': 'Provider API key', 'data-testid': 'agent-api-key',
@@ -2447,7 +2447,9 @@
     }, privacySvg);
     const privacyControl = h('span', { class: 'agent-privacy-control' },
       privacyButton, privacyTooltip);
-    const composerOptions = h('span', { class: 'agent-composer-options' },
+    const composerOptions = h('span', {
+      class: 'agent-composer-options', 'data-overflow-at': '620',
+    },
       modeControl, providerControl, effortControl);
     setupThemedSelect(modeSelect);
     setupThemedSelect(providerSelect);
@@ -2459,13 +2461,20 @@
       class: 'sr-only agent-status', role: 'status', 'aria-live': 'polite',
       'aria-atomic': 'true', 'data-testid': 'agent-status', 'data-state': 'ready',
     }, statusAnnouncement);
+    const composeActions = h('div', { class: 'agent-compose-actions' },
+      status, privacyControl, h('span', { class: 'spacer' }), composerOptions,
+      dictationButton, actionButton);
     const composerShell = h('div', {
       class: 'agent-composer-shell', 'data-testid': 'agent-composer-shell',
       'aria-busy': 'false',
-    }, composer,
-      h('div', { class: 'agent-compose-actions' },
-        status, privacyControl, h('span', { class: 'spacer' }), composerOptions,
-        dictationButton, actionButton));
+    }, composer, composeActions);
+    const optionsIcon = composerIcon('agent-options-icon',
+      'M4 7h4m4 0h8M4 17h8m4 0h4M8 4v6M16 14v6');
+    const composerOverflow = setupOverflowToolbar(
+      composeActions, [composerOptions], 'Conversation options');
+    composerOverflow.more.classList.add('agent-composer-overflow');
+    composeActions.insertBefore(composerOverflow.more, dictationButton);
+    composerOverflow.more.querySelector('summary').replaceChildren(optionsIcon);
 
     let activeRequest = null;
     let recognition = null;
