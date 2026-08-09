@@ -6,6 +6,12 @@ namespace Gridlet.Tests.SqlServer;
 
 public sealed class SqlServerRoutineScriptBuilderTests
 {
+    /// <summary>
+    /// Scripts always break lines with \n. The expected text below is normalised to it, so the
+    /// assertion holds however git materialised this file - CRLF on a Windows checkout, LF on CI.
+    /// </summary>
+    private const string Newline = "\n";
+
     private static readonly DbObjectInfo Procedure =
         new("dbo", "UpdateCustomer", DbObjectType.StoredProcedure);
 
@@ -37,7 +43,7 @@ public sealed class SqlServerRoutineScriptBuilderTests
             DECLARE @out_RowsChanged int;
             EXEC @ReturnValue = [dbo].[UpdateCustomer] @Id = 7, @Name = N'O''Hara', @RowsChanged = @out_RowsChanged OUTPUT;
             SELECT @ReturnValue AS [Return value], @out_RowsChanged AS [@RowsChanged];
-            """,
+            """.ReplaceLineEndings(Newline),
             script);
     }
 
@@ -197,9 +203,21 @@ public sealed class SqlServerRoutineScriptBuilderTests
             DECLARE @ReturnValue int;
             EXEC @ReturnValue = [dbo].[RefreshOrders];
             SELECT @ReturnValue AS [Return value];
-            """,
+            """.ReplaceLineEndings(Newline),
             script);
     }
+
+    /// <summary>
+    /// SQL Server reports a function's return value as a parameter with no name of its own, and
+    /// whether that arrives as an empty string or as no value at all is the engine's business, not
+    /// something the reader should depend on.
+    /// </summary>
+    [Theory]
+    [InlineData(null, "@ReturnValue")]
+    [InlineData("", "@ReturnValue")]
+    [InlineData("@Id", "@Id")]
+    public void A_parameter_with_no_name_of_its_own_is_the_return_value(string? name, string expected)
+        => Assert.Equal(expected, SqlServerSchemaReader.ParameterName(name));
 
     [Fact]
     public void A_table_or_view_cannot_be_called()

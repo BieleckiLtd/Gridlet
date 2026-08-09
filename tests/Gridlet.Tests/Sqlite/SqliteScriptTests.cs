@@ -7,6 +7,12 @@ namespace Gridlet.Tests.Sqlite;
 
 public sealed class SqliteScriptTests : IAsyncLifetime
 {
+    /// <summary>
+    /// Scripts always break lines with \n. The expected text below is normalised to it, so the
+    /// assertion holds however git materialised this file - CRLF on a Windows checkout, LF on CI.
+    /// </summary>
+    private const string Newline = "\n";
+
     private readonly string databasePath = Path.Combine(Path.GetTempPath(), $"gridlet-script-{Guid.NewGuid():N}.db");
     private readonly SqliteGridletProvider provider = new();
     private GridletConnectionContext context = null!;
@@ -62,7 +68,7 @@ public sealed class SqliteScriptTests : IAsyncLifetime
             """
             INSERT INTO "main"."Customers" ("Id", "Name", "Balance", "Photo") VALUES (1, 'O''Hara', 12.5, X'AB01');
             INSERT INTO "main"."Customers" ("Id", "Name", "Balance", "Photo") VALUES (2, 'Ada', NULL, NULL);
-            """,
+            """.ReplaceLineEndings(Newline),
             script);
 
         // Round-trip: the script rebuilds the same rows in an empty copy of the table.

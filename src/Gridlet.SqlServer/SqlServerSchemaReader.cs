@@ -575,7 +575,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 : SqlServerDataTypeFormatter.Format(
                     reader.GetString(1), reader.GetInt16(2), reader.GetByte(3), reader.GetByte(4));
             parameters.Add(new RoutineParameterInfo(
-                Name: string.IsNullOrEmpty(reader.GetString(0)) ? "@ReturnValue" : reader.GetString(0),
+                Name: ParameterName(reader.IsDBNull(0) ? null : reader.GetString(0)),
                 DataType: typeName,
                 Ordinal: parameterId,
                 IsOutput: reader.GetBoolean(6) && parameterId > 0,
@@ -588,6 +588,14 @@ public sealed class SqlServerSchemaReader : ISchemaReader
 
         return new RoutineDefinition(routine, parameters);
     }
+
+    /// <summary>
+    /// Names the return-value row of a function, which SQL Server reports with no name of its own.
+    /// Both an empty name and a missing one are treated the same way, so the caller does not depend
+    /// on which the engine returns.
+    /// </summary>
+    internal static string ParameterName(string? name)
+        => string.IsNullOrEmpty(name) ? "@ReturnValue" : name;
 
     /// <inheritdoc />
     public string BuildRoutineExecuteScript(

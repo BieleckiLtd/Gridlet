@@ -6,6 +6,12 @@ namespace Gridlet.Tests.SqlServer;
 
 public sealed class SqlServerInsertScriptBuilderTests
 {
+    /// <summary>
+    /// Scripts always break lines with \n. The expected text below is normalised to it, so the
+    /// assertion holds however git materialised this file - CRLF on a Windows checkout, LF on CI.
+    /// </summary>
+    private const string Newline = "\n";
+
     private static TableDefinition Table(params ColumnInfo[] columns)
         => new(new DbObjectInfo("dbo", "Customers", DbObjectType.Table), columns, [], []);
 
@@ -31,7 +37,7 @@ public sealed class SqlServerInsertScriptBuilderTests
             INSERT INTO [dbo].[Customers] ([Id], [Name], [Notes]) VALUES (1, N'O''Hara', NULL);
             INSERT INTO [dbo].[Customers] ([Id], [Name], [Notes]) VALUES (2, N'Ada', 'note');
             SET IDENTITY_INSERT [dbo].[Customers] OFF;
-            """,
+            """.ReplaceLineEndings(Newline),
             script);
     }
 
