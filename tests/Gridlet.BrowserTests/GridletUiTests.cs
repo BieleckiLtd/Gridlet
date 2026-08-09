@@ -1983,6 +1983,64 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
 
+    /// <summary>
+    /// A pinned session is the only way an explicit transaction survives from one execution to the
+    /// next, so the toolbar has to show whether one is open and let the person end it.
+    /// </summary>
+    [Fact]
+    public async Task Runs_a_transaction_across_executions_in_a_pinned_session()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT 42");
+        var panel = ActivePanel(page);
+        var state = panel.GetByTestId("session-state");
+
+        await panel.GetByTestId("session-toggle").ClickAsync();
+        await Assertions.Expect(state).ToHaveTextAsync("session - no transaction");
+        await Assertions.Expect(panel.GetByTestId("transaction-commit")).ToBeDisabledAsync();
+
+        await panel.GetByTestId("transaction-begin").ClickAsync();
+        await Assertions.Expect(state).ToHaveTextAsync("transaction open");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("query-status")).Not.ToHaveTextAsync("Running…");
+
+        // The transaction is still open after the execution: that is the whole point of a session.
+        await Assertions.Expect(state).ToHaveTextAsync("transaction open");
+        Assert.Contains("session.query SELECT 42", fixture.Provider.Calls);
+
+        await panel.GetByTestId("transaction-commit").ClickAsync();
+        await Assertions.Expect(state).ToHaveTextAsync("session - no transaction");
+        Assert.Contains("session.commit", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Closing_a_tab_with_an_open_transaction_asks_first_and_rolls_back()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT 42");
+        var panel = ActivePanel(page);
+        await panel.GetByTestId("session-toggle").ClickAsync();
+        await panel.GetByTestId("transaction-begin").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("session-state")).ToHaveTextAsync("transaction open");
+
+        await page.Locator("#tabbar .tab.active .tab-close").ClickAsync();
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Transaction still open" });
+        await Assertions.Expect(dialog).ToBeVisibleAsync();
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Keep tab open", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#tabbar .tab")).ToHaveCountAsync(1);
+
+        await page.Locator("#tabbar .tab.active .tab-close").ClickAsync();
+        await page.GetByRole(AriaRole.Dialog, new() { Name = "Transaction still open" })
+            .GetByRole(AriaRole.Button, new() { Name = "Roll back and close", Exact = true }).ClickAsync();
+
+        await Assertions.Expect(page.Locator("#tabbar .tab")).ToHaveCountAsync(0);
+        Assert.Contains("session.rollback", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     private static async Task OpenQueryAsync(IPage page, string sql)
     {
         await page.GotoAsync("/gridlet/");

@@ -496,6 +496,10 @@
       structure: (s, n) => `${objBase(s, n)}/structure`,
       definition: (s, n) => `${objBase(s, n)}/definition`,
       query: () => `${dbBase()}/query`,
+      sessions: () => `${dbBase()}/sessions`,
+      session: (id) => `api/sessions/${enc(id)}`,
+      sessionQuery: (id) => `api/sessions/${enc(id)}/query`,
+      sessionTransaction: (id) => `api/sessions/${enc(id)}/transaction`,
       rows: (s, n) => `${objBase(s, n)}/rows`,
       rowsUpdate: (s, n) => `${objBase(s, n)}/rows/update`,
       rowsDelete: (s, n) => `${objBase(s, n)}/rows/delete`,
@@ -1265,6 +1269,13 @@
     return !tab?.beforeLeave || await tab.beforeLeave();
   }
 
+  // Closing a tab is more final than switching away from it: a tab may hold state, such as a
+  // pinned session's open transaction, that survives a switch but not a close.
+  async function canCloseTab(tab) {
+    if (!await canLeaveTab(tab)) return false;
+    return !tab?.beforeClose || await tab.beforeClose();
+  }
+
   function disposeTab(tab) {
     try {
       const cleanup = tab?.onClose?.();
@@ -1275,7 +1286,7 @@
   async function closeTab(id, skipTabGuard = false) {
     const index = state.tabs.findIndex((t) => t.id === id);
     if (index < 0) return false;
-    if (!skipTabGuard && !await canLeaveTab(state.tabs[index])) return false;
+    if (!skipTabGuard && !await canCloseTab(state.tabs[index])) return false;
     const [closed] = state.tabs.splice(index, 1);
     disposeTab(closed);
     if (state.activeTabId === id) {
@@ -1286,7 +1297,7 @@
   }
 
   async function closeAllTabs() {
-    for (const tab of state.tabs) if (!await canLeaveTab(tab)) return false;
+    for (const tab of state.tabs) if (!await canCloseTab(tab)) return false;
     const closed = state.tabs;
     state.tabs = [];
     state.activeTabId = null;
@@ -1314,7 +1325,7 @@
           { label: 'Close', action: () => closeTab(tab.id) },
           { label: 'Close other tabs', action: async () => {
             for (const candidate of state.tabs) {
-              if (candidate.id !== tab.id && !await canLeaveTab(candidate)) return;
+              if (candidate.id !== tab.id && !await canCloseTab(candidate)) return;
             }
             const closed = state.tabs.filter((candidate) => candidate.id !== tab.id);
             state.tabs = state.tabs.filter((candidate) => candidate.id === tab.id);
@@ -4523,6 +4534,101 @@
     let selectedSavedId = null;
     let activeQuery = null;
 
+    // ---- pinned session -----------------------------------------------------------------
+    // Without one, every execution gets its own connection and an explicit transaction is
+    // rolled back the moment the statement ends. With one, BEGIN, the statements after it, and
+    // COMMIT or ROLLBACK are the same unit of work, and its state is on screen throughout.
+
+    let session = null;
+    const sessionToggle = h('button', {
+      text: 'Session', title: 'Keep one connection open so a transaction spans executions',
+      'data-testid': 'session-toggle', 'aria-pressed': 'false',
+    });
+    const sessionState = h('span', { class: 'muted session-state', 'data-testid': 'session-state' });
+    const txButton = (label, command, testId) => h('button', {
+      text: label, 'data-testid': testId, hidden: '',
+      onclick: () => runTransactionCommand(command),
+    });
+    const beginButton = txButton('Begin', 'begin', 'transaction-begin');
+    const commitButton = txButton('Commit', 'commit', 'transaction-commit');
+    const rollbackButton = txButton('Rollback', 'rollback', 'transaction-rollback');
+
+    const renderSession = () => {
+      const open = Boolean(session);
+      const inTransaction = open && session.transaction && session.transaction.isOpen;
+      sessionToggle.setAttribute('aria-pressed', String(open));
+      sessionToggle.classList.toggle('active', open);
+      for (const button of [beginButton, commitButton, rollbackButton]) button.hidden = !open;
+      beginButton.disabled = inTransaction;
+      commitButton.disabled = !inTransaction || session.transaction.isUncommittable;
+      rollbackButton.disabled = !inTransaction;
+      sessionState.textContent = !open
+        ? ''
+        : inTransaction
+          ? (session.transaction.isUncommittable
+            ? 'transaction open - can only be rolled back'
+            : `transaction open${session.transaction.depth > 1 ? ` (depth ${session.transaction.depth})` : ''}`)
+          : 'session - no transaction';
+      sessionState.classList.toggle('transaction-open', Boolean(inTransaction));
+    };
+
+    const refreshSession = async () => {
+      if (!session) return;
+      try {
+        session = await api(urls.session(session.id));
+      } catch (err) {
+        // The session is gone (closed elsewhere, or timed out); fall back to plain execution.
+        session = null;
+        toast(err.message);
+      }
+      renderSession();
+    };
+
+    const runTransactionCommand = async (command) => {
+      if (!session) return;
+      try {
+        session = await post(urls.sessionTransaction(session.id), { command });
+        toast(command === 'begin' ? 'Transaction started.' : `Transaction ${command}ted.`, false);
+      } catch (err) {
+        toast(err.message);
+        await refreshSession();
+        return;
+      }
+      renderSession();
+    };
+
+    const closeSession = async ({ silent = false } = {}) => {
+      const closing = session;
+      session = null;
+      renderSession();
+      if (!closing) return;
+      try {
+        await del(urls.session(closing.id));
+        if (!silent) toast('Session closed. Any open transaction was rolled back.', false);
+      } catch { /* already gone on the server */ }
+    };
+
+    sessionToggle.addEventListener('click', async () => {
+      if (session) {
+        if (session.transaction?.isOpen) {
+          confirmModal('Close session',
+            'This session has an open transaction. Closing it rolls the transaction back.',
+            () => closeSession(), 'Close session');
+          return;
+        }
+        await closeSession();
+        return;
+      }
+
+      try {
+        session = await post(urls.sessions(), {});
+        renderSession();
+        toast('Session open. Statements now share one connection.', false);
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+
     const refreshSaved = async (selectId = null) => {
       try {
         const all = await api(urls.queries());
@@ -4679,7 +4785,7 @@
       };
 
       try {
-        await streamNdjson(urls.query(), {
+        await streamNdjson(session ? urls.sessionQuery(session.id) : urls.query(), {
           method: 'POST', body: JSON.stringify({ sql, maxRows: Number(maxRowsInput.value) }), signal: controller.signal,
         }, addEvent);
         if (completedSuccessfully && /\b(?:CREATE(?:\s+OR\s+ALTER)?|ALTER|DROP)\s+(?:VIEW|TABLE|PROCEDURE|PROC|FUNCTION|SCHEMA)\b/i.test(sql)) {
@@ -4689,6 +4795,8 @@
         if (err.name === 'AbortError') status.textContent = 'Cancelled';
         else { results.append(errorBox(err.message)); status.textContent = 'Failed'; }
       } finally {
+        // The statement may have been BEGIN or COMMIT itself, so the state is re-read either way.
+        await refreshSession();
         clearInterval(timer);
         if (activeQuery === controller) {
           activeQuery = null;
@@ -4701,6 +4809,22 @@
 
     runButton.addEventListener('click', run);
     cancelButton.addEventListener('click', () => activeQuery?.abort());
+
+    // Closing the tab ends the session, so an unfinished transaction is rolled back now rather
+    // than left holding locks until it times out.
+    tab.onClose = () => closeSession({ silent: true });
+
+    tab.beforeClose = () => {
+      if (!session?.transaction?.isOpen) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        let decision = false;
+        modal('Transaction still open',
+          h('p', { text: `${tab.title} has an open transaction. Closing the tab rolls it back; nothing it changed will be kept.` }), [
+          { label: 'Keep tab open', onClick: (close) => close() },
+          { label: 'Roll back and close', danger: true, onClick: (close) => { decision = true; close(); } },
+        ], () => resolve(decision));
+      });
+    };
 
     tab.beforeLeave = () => {
       if (!tab.isRunning) return Promise.resolve(true);
@@ -4725,15 +4849,23 @@
 
     const savedActions = h('span', { class: 'toolbar-group saved-query-actions' },
       h('span', { class: 'toolbar-divider' }), savedSelect, saveButton, deleteButton);
+    const sessionActions = capabilities.supportsSessions && currentConn().allowSqlExecution
+      ? h('span', { class: 'toolbar-group session-actions' },
+        h('span', { class: 'toolbar-divider' }),
+        sessionToggle, beginButton, commitButton, rollbackButton, sessionState)
+      : null;
     const limitActions = h('span', { class: 'toolbar-group' },
       h('label', { class: 'query-limit-label', title: maxRowsInput.title }, 'Row cap ', maxRowsInput));
     const queryToolbar = h('div', { class: 'query-toolbar', 'data-testid': 'query-toolbar' },
         runButton, cancelButton,
         savedActions,
+        sessionActions,
         h('span', { class: 'spacer' }),
         limitActions,
         status);
-    setupOverflowToolbar(queryToolbar, [savedActions, limitActions], 'More query actions');
+    setupOverflowToolbar(
+      queryToolbar, [savedActions, sessionActions, limitActions].filter(Boolean), 'More query actions');
+    renderSession();
     tab.panel = h('div', { class: 'panel query-panel' },
       resizableQueryEditor(editor),
       results,

@@ -89,6 +89,10 @@ public sealed record ObjectDefinitionResponse(string? Definition);
 
 public sealed record QueryRequestBody(string? Sql, int? MaxRows = null);
 
+/// <summary>Body for a transaction control request on a pinned session.</summary>
+/// <param name="Command">One of <c>begin</c>, <c>commit</c> or <c>rollback</c>.</param>
+public sealed record SessionTransactionRequest(string? Command);
+
 public sealed record AgentCredentialRequestBody(string? ApiKey);
 
 public sealed record AgentCredentialResponse(string Handle, DateTimeOffset ExpiresAt);

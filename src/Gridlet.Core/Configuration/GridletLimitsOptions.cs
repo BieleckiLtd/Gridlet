@@ -33,4 +33,17 @@ public sealed class GridletLimitsOptions
     /// <c>30</c> and must be at least <c>1</c>.
     /// </summary>
     public int CommandTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// How many pinned query sessions may be open at once across this Gridlet. Each one holds a
+    /// database connection, and an open transaction on it can hold locks, so the count is capped.
+    /// Defaults to <c>4</c> and must be at least <c>1</c>.
+    /// </summary>
+    public int MaxQuerySessions { get; set; } = 4;
+
+    /// <summary>
+    /// How long a pinned query session may sit idle before Gridlet rolls back its transaction and
+    /// closes it. Defaults to <c>15</c> minutes and must be at least <c>1</c>.
+    /// </summary>
+    public int QuerySessionIdleTimeoutMinutes { get; set; } = 15;
 }

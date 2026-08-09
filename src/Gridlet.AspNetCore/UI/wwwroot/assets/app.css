@@ -2232,6 +2232,9 @@ td.cell-actions, th.cell-actions { white-space: nowrap; width: 1%; }
 .result-meta { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .toolbar-slot { display: contents; }
 .toolbar-group { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.session-actions button.active { border-color: var(--accent); color: var(--text); }
+.session-state { font-size: 11.5px; }
+.session-state.transaction-open { color: var(--warning); font-weight: 600; }
 .toolbar-more { position: relative; flex: 0 0 auto; }
 .toolbar-more > summary {
   display: flex;

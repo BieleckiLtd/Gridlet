@@ -8,6 +8,15 @@ connection has SQL execution enabled.
   host, not in the browser, so they are shared by everyone who can reach that Gridlet.
 - A saved query is also the starting point for publishing an HTTP endpoint.
 
+- **Sessions and transactions.** Each execution normally gets its own connection, so a `BEGIN
+  TRAN` is discarded the moment the statement ends. The `Session` button in the query toolbar pins
+  one connection to that tab: `BEGIN`, the statements after it, and the final `COMMIT` or
+  `ROLLBACK` are then one unit of work, and the toolbar says whether a transaction is open. This is
+  the way to preview a change before keeping it — run the `UPDATE`, look at the rows, then commit or
+  roll back. Buttons for begin, commit and rollback sit beside the toggle, and typing the statements
+  works the same way. A session ends when the person closes it or the tab, or after it has been
+  idle for the configured timeout; ending it always rolls back rather than commits.
+
 Write queries that are bounded by construction: select the columns actually needed, filter in
 SQL rather than in the grid, and prefer aggregates when the question is about totals rather
 than individual rows.

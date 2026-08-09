@@ -97,4 +97,34 @@ public class GridletAuthorizationTests
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
         Assert.Equal(HttpStatusCode.OK, authenticated.StatusCode);
     }
+
+    /// <summary>
+    /// A session holds an open connection and possibly an uncommitted transaction, so it must not be
+    /// reachable by anybody except the person who opened it.
+    /// </summary>
+    [Fact]
+    public async Task A_query_session_is_reachable_only_by_the_user_who_opened_it()
+    {
+        var (app, client) = await StartSecuredAsync();
+        await using var _ = app;
+
+        client.DefaultRequestHeaders.Add("X-Test-User", "ada@example.com");
+        var opened = await client.PostAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/sessions", null);
+        opened.EnsureSuccessStatusCode();
+        var id = System.Text.Json.JsonDocument.Parse(await opened.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("id").GetString();
+
+        var owner = await client.GetAsync($"/gridlet/api/sessions/{id}");
+        client.DefaultRequestHeaders.Remove("X-Test-User");
+        client.DefaultRequestHeaders.Add("X-Test-User", "grace@example.com");
+        var stranger = await client.GetAsync($"/gridlet/api/sessions/{id}");
+        var strangerList = await client.GetStringAsync("/gridlet/api/sessions");
+        var strangerClose = await client.DeleteAsync($"/gridlet/api/sessions/{id}");
+
+        Assert.Equal(HttpStatusCode.OK, owner.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, stranger.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, strangerClose.StatusCode);
+        Assert.Equal("[]", strangerList);
+    }
 }

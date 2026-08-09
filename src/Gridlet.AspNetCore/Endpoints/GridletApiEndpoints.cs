@@ -60,6 +60,7 @@ internal static partial class GridletApiEndpoints
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/structure", GetObjectStructure);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/definition", GetObjectDefinition);
         api.MapPost("/connections/{connection}/databases/{database}/query", ExecuteQuery);
+        MapSessions(api);
 
         // Optional Microsoft Agent Framework integration. The routes stay dormant when no
         // IGridletAgentService has been registered by the host.
@@ -941,14 +942,34 @@ internal static partial class GridletApiEndpoints
         var limits = options.CurrentValue.Limits;
         var maxRows = Math.Clamp(body.MaxRows ?? limits.MaxQueryResultRows, 1, limits.MaxQueryResultRows);
         var sql = body.Sql ?? "";
+        await WriteQueryStreamAsync(
+            httpContext, audit, loggerFactory, connection, database, sql,
+            token => resolved.Provider.Query.StreamAsync(
+                resolved.Context, sql,
+                new QueryRequestOptions(maxRows, limits.CommandTimeoutSeconds),
+                parameters: null, token),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Writes a query's events to the response as NDJSON, audits the execution, and reports failures
+    /// either as a status code (before the response starts) or as a final <c>error</c> event.
+    /// </summary>
+    private static async Task WriteQueryStreamAsync(
+        HttpContext httpContext,
+        IGridletAuditSink audit,
+        ILoggerFactory loggerFactory,
+        string connection,
+        string? database,
+        string sql,
+        Func<CancellationToken, IAsyncEnumerable<QueryStreamEvent>> stream,
+        CancellationToken cancellationToken)
+    {
         var stopwatch = Stopwatch.StartNew();
         httpContext.Response.ContentType = "application/x-ndjson; charset=utf-8";
         try
         {
-            await foreach (var queryEvent in resolved.Provider.Query.StreamAsync(
-                resolved.Context, sql,
-                new QueryRequestOptions(maxRows, limits.CommandTimeoutSeconds),
-                parameters: null, cancellationToken))
+            await foreach (var queryEvent in stream(cancellationToken))
             {
                 await JsonSerializer.SerializeAsync(httpContext.Response.Body, queryEvent,
                     JsonSerializerOptions.Web, cancellationToken);
@@ -975,7 +996,9 @@ internal static partial class GridletApiEndpoints
             {
                 var statusCode = ex switch
                 {
-                    GridletUnknownConnectionException or GridletObjectNotFoundException => StatusCodes.Status404NotFound,
+                    GridletUnknownConnectionException or GridletObjectNotFoundException
+                        or GridletSessionNotFoundException => StatusCodes.Status404NotFound,
+                    GridletSessionBusyException => StatusCodes.Status409Conflict,
                     GridletValidationException or GridletQueryException => StatusCodes.Status400BadRequest,
                     _ => StatusCodes.Status500InternalServerError,
                 };
@@ -993,7 +1016,8 @@ internal static partial class GridletApiEndpoints
                 return;
             }
             var isExpected = ex is GridletValidationException or GridletQueryException or
-                GridletUnknownConnectionException or GridletObjectNotFoundException;
+                GridletUnknownConnectionException or GridletObjectNotFoundException or
+                GridletSessionNotFoundException or GridletSessionBusyException;
             var streamedMessage = isExpected ? ex.Message : UnexpectedErrorMessage;
             if (!isExpected)
             {

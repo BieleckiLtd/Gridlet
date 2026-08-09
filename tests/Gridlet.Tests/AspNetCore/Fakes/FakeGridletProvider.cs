@@ -1,3 +1,4 @@
+using System.Data.Common;
 using Gridlet.Abstractions;
 using Gridlet.Models;
 
@@ -6,7 +7,7 @@ namespace Gridlet.Tests.AspNetCore.Fakes;
 /// <summary>An in-memory provider so endpoint behaviour can be tested without a database.</summary>
 public sealed class FakeGridletProvider :
     IGridletProvider, IGridletProviderMetadata, ISchemaReader, ITableDataService, IQueryRunner,
-    ITableWriteService, ITableDdlService
+    IQuerySessionRunner, ITableWriteService, ITableDdlService
 {
     public const GridletProviderNames Name = GridletProviderNames.SqlServer;
 
@@ -37,7 +38,8 @@ public sealed class FakeGridletProvider :
         ObjectEditMode: "Alter",
         SupportsCheckConstraints: true,
         SupportsUniqueConstraints: true,
-        SupportsIndexes: true);
+        SupportsIndexes: true,
+        SupportsSessions: true);
 
     public ISchemaReader Schema => this;
 
@@ -156,6 +158,85 @@ public sealed class FakeGridletProvider :
                 TotalRows: 2,
                 RowIdentity: name == "NoKeys" ? null : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
                 RowKeys: name == "NoKeys" ? null : [[1], [2]]));
+
+    // ---- pinned sessions ----
+    //
+    // The connection is a stand-in that only tracks open/closed, which is all Gridlet's session
+    // handling asks of it. The transaction depth is counted here, so a session's state behaves the
+    // way a database's would without needing one.
+
+    /// <summary>Transaction depth per session connection, so state survives across calls.</summary>
+    private readonly Dictionary<DbConnection, int> transactionDepths = [];
+
+    public Task<DbConnection> OpenSessionAsync(
+        GridletConnectionContext context, CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"session.open {context.ConnectionName}/{context.Database}");
+        DbConnection connection = new FakeSessionConnection();
+        connection.Open();
+        transactionDepths[connection] = 0;
+        return Task.FromResult(connection);
+    }
+
+    public IAsyncEnumerable<QueryStreamEvent> StreamAsync(
+        DbConnection connection, string sql, QueryRequestOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"session.query {sql}");
+        return StreamAsync(
+            new GridletConnectionContext(new GridletConnectionOptions { Name = "Session" }, null),
+            sql, options, parameters: null, cancellationToken);
+    }
+
+    public Task<TransactionStatus> GetTransactionStatusAsync(
+        DbConnection connection, CancellationToken cancellationToken = default)
+        => Task.FromResult(Status(transactionDepths.GetValueOrDefault(connection)));
+
+    public Task<TransactionStatus> RunTransactionCommandAsync(
+        DbConnection connection, TransactionCommand command, CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"session.{command.ToString().ToLowerInvariant()}");
+        var depth = transactionDepths.GetValueOrDefault(connection);
+        if (command != TransactionCommand.Begin && depth == 0)
+        {
+            throw new GridletQueryException("There is no transaction to end.");
+        }
+
+        depth = command == TransactionCommand.Begin ? depth + 1 : depth - 1;
+        transactionDepths[connection] = depth;
+        return Task.FromResult(Status(depth));
+    }
+
+    private static TransactionStatus Status(int depth)
+        => depth > 0 ? new TransactionStatus(true, depth) : TransactionStatus.None;
+
+    /// <summary>A connection that is only ever asked whether it is open, and then closed.</summary>
+    private sealed class FakeSessionConnection : DbConnection
+    {
+        private System.Data.ConnectionState state = System.Data.ConnectionState.Closed;
+
+        [System.Diagnostics.CodeAnalysis.AllowNull]
+        public override string ConnectionString { get; set; } = "fake";
+
+        public override string Database => "FakeDb";
+
+        public override string DataSource => "fake";
+
+        public override string ServerVersion => "1.0";
+
+        public override System.Data.ConnectionState State => state;
+
+        public override void ChangeDatabase(string databaseName) => throw new NotSupportedException();
+
+        public override void Close() => state = System.Data.ConnectionState.Closed;
+
+        public override void Open() => state = System.Data.ConnectionState.Open;
+
+        protected override DbTransaction BeginDbTransaction(System.Data.IsolationLevel isolationLevel)
+            => throw new NotSupportedException();
+
+        protected override DbCommand CreateDbCommand() => throw new NotSupportedException();
+    }
 
     // ---- queries ----
 
