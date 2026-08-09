@@ -61,6 +61,7 @@ internal static partial class GridletApiEndpoints
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/definition", GetObjectDefinition);
         api.MapPost("/connections/{connection}/databases/{database}/query", ExecuteQuery);
         MapSessions(api);
+        MapRoutines(api);
 
         // Optional Microsoft Agent Framework integration. The routes stay dormant when no
         // IGridletAgentService has been registered by the host.

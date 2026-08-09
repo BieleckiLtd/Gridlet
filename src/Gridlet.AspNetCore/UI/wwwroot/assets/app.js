@@ -495,6 +495,8 @@
       dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
       structure: (s, n) => `${objBase(s, n)}/structure`,
       definition: (s, n) => `${objBase(s, n)}/definition`,
+      routine: (s, n) => `${objBase(s, n)}/routine`,
+      routineScript: (s, n) => `${objBase(s, n)}/routine/script`,
       query: () => `${dbBase()}/query`,
       sessions: () => `${dbBase()}/sessions`,
       session: (id) => `api/sessions/${enc(id)}`,
@@ -1223,6 +1225,87 @@
       onclick: () => openQueryTab(objectQuerySql(o, scope), `Use ${o.name}`, scope),
     }, 'Use in query') : null;
 
+  const isRoutine = (o) =>
+    ['StoredProcedure', 'ScalarFunction', 'TableValuedFunction'].includes(o?.type);
+
+  const executeRoutineButton = (o, scope = state) =>
+    isRoutine(o) && connectionFor(scope).allowSqlExecution ? h('button', {
+      class: 'primary', 'data-testid': 'execute-routine', title: 'Call this routine with arguments',
+      onclick: () => openRoutineExecuteDialog(o, scope),
+    }, 'Execute…') : null;
+
+  // Filling in arguments and reading back what came out is the part a text stub cannot do. The
+  // dialog collects the values; the server turns them into a script, which is what actually runs -
+  // so the call is visible, editable and repeatable rather than hidden inside the tool.
+  async function openRoutineExecuteDialog(o, scope = state) {
+    let routine;
+    try {
+      routine = await api(urlsFor(scope).routine(o.schema, o.name));
+    } catch (err) {
+      toast(err.message);
+      return;
+    }
+
+    const parameters = routine.parameters.filter((p) => !p.isReturnValue);
+    const rows = parameters.map((parameter) => {
+      const input = h('input', {
+        type: 'text', 'aria-label': `${parameter.name} value`,
+        placeholder: parameter.isTableType ? '@TableVariable' : parameter.dataType,
+      });
+      const mode = h('select', { 'aria-label': `${parameter.name} argument` },
+        h('option', { value: 'value', text: parameter.isTableType ? 'SQL expression' : 'Value' }),
+        parameter.isTableType ? null : h('option', { value: 'null', text: 'NULL' }),
+        h('option', { value: 'omit', text: parameter.isOutput ? 'Leave unset' : 'Omit (use default)' }));
+      mode.value = parameter.isOutput || parameter.isTableType ? 'omit' : 'value';
+      const syncMode = () => { input.disabled = mode.value !== 'value'; };
+      mode.addEventListener('change', syncMode);
+      syncMode();
+      return { parameter, input, mode };
+    });
+
+    const form = h('div', { class: 'form-grid routine-parameters' });
+    if (!rows.length) {
+      form.append(h('p', { class: 'muted', text: 'This routine takes no parameters.' }));
+    }
+    for (const row of rows) {
+      form.append(
+        h('label', { class: 'field-label' },
+          row.parameter.name,
+          h('span', { class: 'muted', text: ` ${row.parameter.dataType}` }),
+          row.parameter.isOutput ? h('span', { class: 'badge', text: 'OUT' }) : null),
+        h('div', { class: 'field-input routine-parameter' }, row.mode, row.input));
+    }
+
+    const buildArguments = () => {
+      const args = {};
+      for (const { parameter, input, mode } of rows) {
+        if (mode.value === 'omit') continue;
+        args[parameter.name] = mode.value === 'null'
+          ? { isNull: true }
+          : { value: input.value, isRawSql: parameter.isTableType };
+      }
+      return args;
+    };
+
+    const script = async (autoRun, close, showError) => {
+      try {
+        const built = await post(urlsFor(scope).routineScript(o.schema, o.name),
+          { arguments: buildArguments() });
+        close();
+        openQueryTab(built.sql, `Execute ${o.name}`, scope, { autoRun });
+      } catch (err) {
+        showError(err.message);
+      }
+    };
+
+    modal(`Execute ${displayName(o, scope)}`, form, [
+      { label: 'Cancel', onClick: (close) => close() },
+      { label: 'Script only', onClick: (close, showError) => script(false, close, showError) },
+      { label: 'Execute', primary: true, onClick: (close, showError) => script(true, close, showError) },
+    ]);
+    rows[0]?.input?.focus();
+  }
+
   const objectTabKey = (o, scope) => `${scopeKey(scope)} ${o.type}:${o.schema}.${o.name}`;
 
   function deleteObject(o, scope = state) {
@@ -1243,6 +1326,9 @@
     const items = [{ label: 'Open', action: () => openObjectTab(o) }];
     if (o.type === 'Table' || o.type === 'View') {
       items.push({ label: 'Query data', action: () => openQueryTab(objectQuerySql(o), displayName(o)) });
+    }
+    if (isRoutine(o) && currentConn().allowSqlExecution) {
+      items.push({ label: 'Execute…', action: () => openRoutineExecuteDialog(o) });
     }
     if (currentConn().allowDdl && canDropObject(o)) {
       items.push({ separator: true }, { label: `Delete ${o.type === 'View' ? 'view' : 'object'}…`, danger: true, action: () => deleteObject(o) });
@@ -2355,7 +2441,11 @@
     const canEdit = connectionFor(scope).allowDdl && canExecute && canDesignObject(o);
     if (!canEdit) {
       const useButton = canExecute ? useInQueryButton(o, scope) : null;
-      if (toolbar && useButton) toolbar.append(useButton);
+      const executeButton = executeRoutineButton(o, scope);
+      if (toolbar) {
+        if (useButton) toolbar.append(useButton);
+        if (executeButton) toolbar.append(executeButton);
+      }
       const editor = createSqlEditor(definition, '', {
         readOnly: true,
         label: `${o.name} definition`,
@@ -2363,8 +2453,8 @@
         scope,
       });
       body.replaceChildren(...[
-        toolbar ? null : (useButton ? h('div', { class: 'inline-form' },
-          h('span', { class: 'spacer' }), useButton) : null),
+        toolbar || !(useButton || executeButton) ? null : h('div', { class: 'inline-form' },
+          h('span', { class: 'spacer' }), useButton, executeButton),
         h('div', { class: 'definition-section definition-readonly' }, editor),
       ].filter(Boolean));
       return;
@@ -2431,12 +2521,15 @@
       });
     };
     const useButton = useInQueryButton(o, scope);
+    const executeButton = executeRoutineButton(o, scope);
     if (toolbar) {
       if (useButton) toolbar.append(useButton);
+      if (executeButton) toolbar.append(executeButton);
       toolbar.append(save);
     }
     body.replaceChildren(h('div', { class: 'inline-editor' },
-      toolbar ? null : h('div', { class: 'inline-form' }, h('span', { class: 'spacer' }), useButton, save),
+      toolbar ? null : h('div', { class: 'inline-form' },
+        h('span', { class: 'spacer' }), useButton, executeButton, save),
       editor, error));
   }
 
@@ -4496,7 +4589,7 @@
 
   // ---- query tabs -----------------------------------------------------------------
 
-  function openQueryTab(initialSql = '', initialTitle = null, scope = scopeOf()) {
+  function openQueryTab(initialSql = '', initialTitle = null, scope = scopeOf(), { autoRun = false } = {}) {
     if (!scope.database) {
       toast('Select a database first.');
       return;
@@ -4874,6 +4967,7 @@
     addTab(tab);
     refreshSaved();
     editor.focus();
+    if (autoRun) run();
   }
 
   // ---- publishing -----------------------------------------------------------------

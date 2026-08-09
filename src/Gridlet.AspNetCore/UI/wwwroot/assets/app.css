@@ -2098,6 +2098,8 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 
 .field-label { color: var(--muted); font-size: 12.5px; display: flex; flex-direction: column; }
 .field-input { display: flex; align-items: center; gap: 10px; }
+.routine-parameter select { flex: 0 0 auto; }
+.routine-parameters .field-label .badge { margin-left: 6px; }
 .field-input input[type="text"] { flex: 1; }
 .null-toggle { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .param-list { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

@@ -87,6 +87,22 @@ public sealed record TableStructureResponse(
 
 public sealed record ObjectDefinitionResponse(string? Definition);
 
+/// <summary>The parameters a stored procedure or function is called with.</summary>
+public sealed record RoutineDefinitionResponse(
+    DbObjectDto Object,
+    IReadOnlyList<RoutineParameterInfo> Parameters);
+
+/// <summary>Body for scripting a call: one entry per parameter the caller supplies a value for.</summary>
+public sealed record RoutineScriptRequest(Dictionary<string, RoutineArgumentBody>? Arguments);
+
+/// <param name="Value">The value as typed, quoted for the parameter's type unless <paramref name="IsRawSql"/>.</param>
+/// <param name="IsNull">Pass NULL explicitly, which is not the same as omitting the argument.</param>
+/// <param name="IsRawSql">Place the value in the script as written, for types a text box cannot express.</param>
+public sealed record RoutineArgumentBody(string? Value, bool IsNull = false, bool IsRawSql = false);
+
+/// <summary>A script that calls a routine, ready for the query editor.</summary>
+public sealed record RoutineScriptResponse(string Sql);
+
 public sealed record QueryRequestBody(string? Sql, int? MaxRows = null);
 
 /// <summary>Body for a transaction control request on a pinned session.</summary>

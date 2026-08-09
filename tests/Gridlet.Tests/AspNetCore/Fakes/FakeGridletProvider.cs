@@ -136,6 +136,41 @@ public sealed class FakeGridletProvider :
             ? $"CREATE TRIGGER {schema}.{name} ON {schema}.Customers AFTER INSERT AS SELECT 1;"
             : $"CREATE VIEW {schema}.{name} AS SELECT 1 AS One;");
 
+    // ---- routines ----
+
+    public Task<RoutineDefinition> GetRoutineDefinitionAsync(
+        GridletConnectionContext context, string schema, string name,
+        CancellationToken cancellationToken = default)
+        => name switch
+        {
+            "RefreshOrders" => Task.FromResult(new RoutineDefinition(
+                new DbObjectInfo(schema, name, DbObjectType.StoredProcedure),
+                [
+                    new RoutineParameterInfo("@ReturnValue", "int", 0, IsOutput: true, IsReturnValue: true),
+                    new RoutineParameterInfo("@Since", "datetime2(7)", 1),
+                    new RoutineParameterInfo("@RowsChanged", "int", 2, IsOutput: true),
+                ])),
+            "OrderCount" => Task.FromResult(new RoutineDefinition(
+                new DbObjectInfo(schema, name, DbObjectType.ScalarFunction),
+                [
+                    new RoutineParameterInfo("@ReturnValue", "int", 0, IsReturnValue: true),
+                    new RoutineParameterInfo("@CustomerId", "int", 1),
+                ])),
+            _ => Task.FromException<RoutineDefinition>(
+                new GridletValidationException($"{schema}.{name} is not a stored procedure or function.")),
+        };
+
+    /// <summary>A stand-in script: enough to prove the arguments reached the provider.</summary>
+    public string BuildRoutineExecuteScript(
+        RoutineDefinition routine, IReadOnlyDictionary<string, RoutineArgument> arguments)
+    {
+        var rendered = arguments
+            .OrderBy(argument => argument.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(argument => $"{argument.Key} = {(argument.Value.IsNull ? "NULL" : argument.Value.Value)}");
+        Calls.Add($"script {routine.Object.Schema}.{routine.Object.Name} ({string.Join(", ", rendered)})");
+        return $"EXEC {routine.Object.Schema}.{routine.Object.Name} {string.Join(", ", rendered)};";
+    }
+
     // ---- data ----
 
     public Task<TableDataPage> GetPageAsync(

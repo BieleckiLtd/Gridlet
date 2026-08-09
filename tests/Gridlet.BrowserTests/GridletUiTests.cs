@@ -1984,6 +1984,38 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
 
     /// <summary>
+    /// A procedure used to open as the bare text <c>EXEC dbo.Proc;</c>. It now offers a form for its
+    /// arguments, and what runs is a script the person can see and keep.
+    /// </summary>
+    [Fact]
+    public async Task Executes_a_stored_procedure_with_arguments()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("summary").Filter(new() { HasText = "Stored procedures" }).ClickAsync();
+        await page.GetByTitle("dbo.RefreshOrders").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByTestId("execute-routine").ClickAsync();
+
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Execute dbo.RefreshOrders" });
+        await Assertions.Expect(dialog).ToBeVisibleAsync();
+        // The return value is not something to fill in, and the output parameter starts unset.
+        await Assertions.Expect(dialog.GetByLabel("@ReturnValue value")).ToHaveCountAsync(0);
+        await Assertions.Expect(dialog.GetByLabel("@RowsChanged argument")).ToHaveValueAsync("omit");
+        await dialog.GetByLabel("@Since value").FillAsync("2026-01-01");
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Execute", Exact = true }).ClickAsync();
+
+        var queryPanel = ActivePanel(page);
+        await Assertions.Expect(queryPanel.GetByTestId("sql-editor"))
+            .ToHaveValueAsync("EXEC dbo.RefreshOrders @Since = 2026-01-01;");
+        await Assertions.Expect(queryPanel.GetByTestId("query-status")).ToContainTextAsync("ms");
+        Assert.Contains("script dbo.RefreshOrders (@Since = 2026-01-01)", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// A pinned session is the only way an explicit transaction survives from one execution to the
     /// next, so the toolbar has to show whether one is open and let the person end it.
     /// </summary>

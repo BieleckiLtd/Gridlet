@@ -212,6 +212,48 @@ public static class RowIdentityKinds
     public const string RowId = "rowId";
 }
 
+/// <summary>One parameter of a stored procedure or function.</summary>
+/// <param name="Name">The parameter name as the engine declares it, including any leading marker.</param>
+/// <param name="DataType">The declared type, formatted for display and for a DECLARE statement.</param>
+/// <param name="Ordinal">The one-based position, or 0 for a return value.</param>
+/// <param name="IsOutput">Whether the caller gets a value back through this parameter.</param>
+/// <param name="IsReturnValue">Whether this is the routine's return value rather than a parameter.</param>
+/// <param name="HasDefault">Whether the routine supplies a default when the argument is omitted.</param>
+/// <param name="DefaultDefinition">The default value, where the engine exposes it.</param>
+/// <param name="IsReadOnly">Whether the parameter is READONLY, as table-valued parameters must be.</param>
+/// <param name="IsTableType">
+/// Whether the parameter takes a table type. Such a parameter cannot be filled in from a simple
+/// value, so callers offer it as something to script rather than something to type.
+/// </param>
+public sealed record RoutineParameterInfo(
+    string Name,
+    string DataType,
+    int Ordinal,
+    bool IsOutput = false,
+    bool IsReturnValue = false,
+    bool HasDefault = false,
+    string? DefaultDefinition = null,
+    bool IsReadOnly = false,
+    bool IsTableType = false);
+
+/// <summary>A stored procedure or function and the parameters it is called with.</summary>
+public sealed record RoutineDefinition(
+    DbObjectInfo Object,
+    IReadOnlyList<RoutineParameterInfo> Parameters);
+
+/// <summary>One argument supplied for a call to a routine.</summary>
+/// <param name="Value">
+/// The value as typed by the person, to be quoted for the parameter's declared type. Ignored when
+/// <paramref name="IsNull"/> or <paramref name="IsRawSql"/> apply.
+/// </param>
+/// <param name="IsNull">Whether the argument is explicitly NULL.</param>
+/// <param name="IsRawSql">
+/// Whether <paramref name="Value"/> is already a SQL expression and should be placed in the script
+/// as written. This is the escape hatch for types a text box cannot express, such as a table-valued
+/// parameter variable.
+/// </param>
+public sealed record RoutineArgument(string? Value, bool IsNull = false, bool IsRawSql = false);
+
 /// <summary>One column pairing within a foreign key.</summary>
 public sealed record ForeignKeyColumnPair(string Column, string ReferencedColumn);
 

@@ -25,6 +25,11 @@ Other object-management routes:
   exposes the same creation route when supported.
 - Open a table's Structure view to add or drop columns, primary keys, and foreign keys.
 - Use the table designer to create a table with its columns and constraints in one operation.
+- Open a stored procedure or function and press `Execute…` for a form of its parameters. Each one
+  can take a value, an explicit NULL, or be omitted so the routine's own default applies. Gridlet
+  turns the form into a script — quoted for each parameter's declared type, declaring any output
+  parameters and selecting them with the return value at the end — and opens it in a query tab, so
+  what runs is visible and editable rather than hidden. `Script only` stops before running it.
 
 If the person already supplied the object name, that is enough to explain the UI route. Do not ask
 for schema access merely to tell them where the control is. Look up schema when exact qualification

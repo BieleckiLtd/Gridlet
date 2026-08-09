@@ -505,6 +505,94 @@ public sealed class SqlServerSchemaReader : ISchemaReader
         return null;
     }
 
+    /// <summary>
+    /// Reads a routine's parameters. For a procedure the return value is synthesised, because every
+    /// procedure returns an int and SQL Server does not list it; for a scalar function the engine
+    /// reports it as parameter 0.
+    /// </summary>
+    public async Task<RoutineDefinition> GetRoutineDefinitionAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql =
+            """
+            SELECT o.type, s.name, o.name
+            FROM sys.objects o
+            JOIN sys.schemas s ON s.schema_id = o.schema_id
+            WHERE o.object_id = OBJECT_ID(@name);
+
+            SELECT p.name, t.name AS type_name, p.max_length, p.precision, p.scale,
+                   p.parameter_id, p.is_output, p.has_default_value,
+                   CONVERT(nvarchar(4000), p.default_value) AS default_text,
+                   p.is_readonly, t.is_table_type, SCHEMA_NAME(t.schema_id) AS type_schema
+            FROM sys.parameters p
+            JOIN sys.types t ON t.user_type_id = p.user_type_id
+            WHERE p.object_id = OBJECT_ID(@name)
+            ORDER BY p.parameter_id;
+            """;
+
+        var qualifiedName = SqlServerIdentifier.QuoteQualified(schema, name);
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@name", qualifiedName);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            throw new GridletObjectNotFoundException(qualifiedName);
+        }
+
+        var objectType = MapObjectType(reader.GetString(0));
+        if (objectType is not (DbObjectType.StoredProcedure or DbObjectType.ScalarFunction
+            or DbObjectType.TableValuedFunction))
+        {
+            throw new GridletValidationException(
+                $"{qualifiedName} is not a stored procedure or function.");
+        }
+
+        var routine = new DbObjectInfo(reader.GetString(1), reader.GetString(2), objectType.Value);
+
+        await reader.NextResultAsync(cancellationToken);
+        var parameters = new List<RoutineParameterInfo>();
+        if (objectType == DbObjectType.StoredProcedure)
+        {
+            parameters.Add(new RoutineParameterInfo(
+                "@ReturnValue", "int", 0, IsOutput: true, IsReturnValue: true));
+        }
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var parameterId = reader.GetInt32(5);
+            var isTableType = !reader.IsDBNull(10) && reader.GetBoolean(10);
+            var typeName = isTableType
+                ? SqlServerIdentifier.QuoteQualified(
+                    reader.IsDBNull(11) ? "dbo" : reader.GetString(11), reader.GetString(1))
+                : SqlServerDataTypeFormatter.Format(
+                    reader.GetString(1), reader.GetInt16(2), reader.GetByte(3), reader.GetByte(4));
+            parameters.Add(new RoutineParameterInfo(
+                Name: string.IsNullOrEmpty(reader.GetString(0)) ? "@ReturnValue" : reader.GetString(0),
+                DataType: typeName,
+                Ordinal: parameterId,
+                IsOutput: reader.GetBoolean(6) && parameterId > 0,
+                IsReturnValue: parameterId == 0,
+                HasDefault: reader.GetBoolean(7),
+                DefaultDefinition: reader.IsDBNull(8) ? null : reader.GetString(8),
+                IsReadOnly: reader.GetBoolean(9),
+                IsTableType: isTableType));
+        }
+
+        return new RoutineDefinition(routine, parameters);
+    }
+
+    /// <inheritdoc />
+    public string BuildRoutineExecuteScript(
+        RoutineDefinition routine,
+        IReadOnlyDictionary<string, RoutineArgument> arguments)
+        => SqlServerRoutineScriptBuilder.Build(routine, arguments);
+
     private static DbObjectType? MapObjectType(string type)
         => type.Trim() switch
         {
