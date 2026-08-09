@@ -522,6 +522,7 @@
       renameObject: (s, n, type) => `${objBase(s, n)}/rename?type=${enc(type)}`,
       renameIndex: (s, n, index) => `${objBase(s, n)}/indexes/${enc(index)}/rename`,
       truncate: (s, n) => `${objBase(s, n)}/truncate`,
+      script: (s, n) => `${objBase(s, n)}/script`,
       queries: () => 'api/queries',
       savedQuery: (id) => `api/queries/${enc(id)}`,
       published: () => 'api/published',
@@ -1360,6 +1361,48 @@
     input.select();
   }
 
+  // Scripting is the way out when the designer will not do something: the script opens in a query
+  // tab, where it can be read and edited before anything runs.
+  function openScriptDialog(o, scope = state) {
+    const target = { connection: scope.connection, database: scope.database };
+    const part = (value, label, checked) => {
+      const box = h('input', { type: 'checkbox', 'aria-label': label, 'data-testid': `script-${value}` });
+      box.checked = checked;
+      return { value, box, row: h('label', { class: 'checkbox-row' }, box, label) };
+    };
+    const hasRows = o.type === 'Table' || o.type === 'View';
+    const parts = [
+      part('drop', 'DROP statement', false),
+      part('create', 'CREATE statement', true),
+      ...(hasRows ? [part('data', 'INSERT statements for the rows', false)] : []),
+    ];
+    const rowLimit = h('input', {
+      type: 'number', min: '1', max: String(state.meta.maxQueryResultRows),
+      value: String(Math.min(1000, state.meta.maxQueryResultRows)), 'aria-label': 'Rows to script',
+    });
+
+    modal(`Script ${displayName(o, target)}`, h('div', {},
+      ...parts.map((entry) => entry.row),
+      hasRows ? h('label', { class: 'checkbox-row' }, 'Rows at most ', rowLimit) : null), [
+      { label: 'Cancel', onClick: (close) => close() },
+      {
+        label: 'Script', primary: true,
+        onClick: async (close, showError) => {
+          const include = parts.filter((entry) => entry.box.checked).map((entry) => entry.value);
+          if (!include.length) { showError('Choose at least one part to script.'); return; }
+          try {
+            const scripted = await post(urlsFor(target).script(o.schema, o.name),
+              { include, maxRows: Number(rowLimit.value) || undefined });
+            close();
+            openQueryTab(scripted.sql, `Script ${o.name}`, target);
+          } catch (err) {
+            showError(err.message);
+          }
+        },
+      },
+    ]);
+  }
+
   function emptyTable(o, scope = state, onDone = null) {
     const target = { connection: scope.connection, database: scope.database };
     confirmModal('Empty table',
@@ -1378,6 +1421,9 @@
     }
     if (isRoutine(o) && currentConn().allowSqlExecution) {
       items.push({ label: 'Execute…', action: () => openRoutineExecuteDialog(o) });
+    }
+    if (currentConn().allowSqlExecution && o.type !== 'Trigger') {
+      items.push({ label: 'Script…', action: () => openScriptDialog(o) });
     }
     if (currentConn().allowDdl && canDropObject(o)) {
       items.push({ label: 'Rename…', action: () => renameObject(o) });
@@ -2037,6 +2083,9 @@
         canIndexes ? h('button', { onclick: () => openIndexDialog() }, '＋ Index') : null,
         canDrop ? h('button', {
           text: 'Rename…', 'data-testid': 'rename-object', onclick: () => renameObject(o, scope),
+        }) : null,
+        currentConn().allowSqlExecution ? h('button', {
+          text: 'Script…', 'data-testid': 'script-object', onclick: () => openScriptDialog(o, scope),
         }) : null,
         useInQueryButton(o, scope),
         h('span', { class: 'spacer' }),

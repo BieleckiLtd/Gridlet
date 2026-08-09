@@ -575,6 +575,16 @@ public sealed class FakeGridletProvider :
         return Task.CompletedTask;
     }
 
+    public string BuildDropScript(DbObjectInfo @object)
+        => $"DROP {@object.Type.ToString().ToUpperInvariant()} {@object.Schema}.{@object.Name};";
+
+    public string BuildInsertScript(
+        TableDefinition table, IReadOnlyList<ResultColumn> columns, IReadOnlyList<object?[]> rows)
+        => string.Join('\n', rows.Select(row =>
+            $"INSERT INTO {table.Object.Schema}.{table.Object.Name} "
+            + $"({string.Join(", ", columns.Select(column => column.Name))}) "
+            + $"VALUES ({string.Join(", ", row.Select(value => value ?? "NULL"))});"));
+
     public Task RenameObjectAsync(
         GridletConnectionContext context, string schema, string name, DbObjectType type, string newName,
         CancellationToken cancellationToken = default)

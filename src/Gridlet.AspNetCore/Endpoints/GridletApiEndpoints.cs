@@ -63,6 +63,7 @@ internal static partial class GridletApiEndpoints
         MapSessions(api);
         MapRoutines(api);
         MapPlans(api);
+        MapScripts(api);
 
         // Optional Microsoft Agent Framework integration. The routes stay dormant when no
         // IGridletAgentService has been registered by the host.

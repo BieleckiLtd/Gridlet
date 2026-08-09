@@ -1,0 +1,143 @@
+using System.Text;
+using Gridlet.Abstractions;
+using Gridlet.AspNetCore.Contracts;
+using Gridlet.Models;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
+using static Gridlet.AspNetCore.GridletEndpointHelpers;
+
+namespace Gridlet.AspNetCore;
+
+/// <summary>
+/// Scripting an object as SQL. This is the standard escape hatch when the designer will not do
+/// something: a script can be read, edited, kept and run somewhere else, which is what people
+/// otherwise open a second tool for.
+/// </summary>
+internal static partial class GridletApiEndpoints
+{
+    private static void MapScripts(RouteGroupBuilder api)
+        => api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/script",
+            ScriptObject);
+
+    private static Task<IResult> ScriptObject(
+        string connection,
+        string database,
+        string schema,
+        string name,
+        ObjectScriptRequest body,
+        IGridletConnectionResolver resolver,
+        IOptionsMonitor<GridletOptions> options,
+        CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            var parts = (body.Include ?? ["create"])
+                .Select(part => (part ?? "").Trim().ToLowerInvariant())
+                .Where(part => part.Length > 0)
+                .Distinct()
+                .ToArray();
+            if (parts.Length == 0)
+            {
+                throw new GridletValidationException(
+                    "Choose at least one of 'drop', 'create' or 'data' to script.");
+            }
+
+            foreach (var part in parts)
+            {
+                if (part is not ("drop" or "create" or "data"))
+                {
+                    throw new GridletValidationException($"'{part}' is not something Gridlet can script.");
+                }
+            }
+
+            var limits = options.CurrentValue.Limits;
+            var maxRows = Math.Clamp(body.MaxRows ?? limits.MaxQueryResultRows, 1, limits.MaxQueryResultRows);
+            var definition = await resolved.Provider.Schema.GetTableDefinitionAsync(
+                resolved.Context, schema, name, cancellationToken);
+            var script = new StringBuilder();
+
+            // Ordered so the result runs top to bottom: drop what is there, create it, fill it.
+            if (parts.Contains("drop"))
+            {
+                Append(script, resolved.Provider.Ddl.BuildDropScript(definition.Object));
+            }
+
+            if (parts.Contains("create"))
+            {
+                var create = await resolved.Provider.Schema.GetObjectDefinitionAsync(
+                    resolved.Context, schema, name, cancellationToken);
+                Append(script, string.IsNullOrWhiteSpace(create)
+                    ? $"-- No definition available for {schema}.{name}."
+                    : create.TrimEnd());
+            }
+
+            if (parts.Contains("data"))
+            {
+                Append(script, await BuildDataScriptAsync(
+                    resolved, schema, name, definition, maxRows, limits.MaxPageSize, cancellationToken));
+            }
+
+            return Results.Ok(new ObjectScriptResponse(script.ToString().TrimEnd()));
+        });
+
+    private static async Task<string> BuildDataScriptAsync(
+        ResolvedConnection resolved,
+        string schema,
+        string name,
+        TableDefinition definition,
+        int maxRows,
+        int maxPageSize,
+        CancellationToken cancellationToken)
+    {
+        if (definition.Object.Type is not (DbObjectType.Table or DbObjectType.View))
+        {
+            throw new GridletValidationException($"{schema}.{name} has no rows to script.");
+        }
+
+        // Rows are read a page at a time, so scripting a large table does not depend on one
+        // enormous result, and stops at the same cap the grid uses.
+        var columns = Array.Empty<ResultColumn>();
+        var rows = new List<object?[]>();
+        var page = 1;
+        while (rows.Count < maxRows)
+        {
+            var pageSize = Math.Min(maxPageSize, maxRows - rows.Count);
+            var data = await resolved.Provider.Data.GetPageAsync(
+                resolved.Context, schema, name, new TableDataRequest(page, pageSize), cancellationToken);
+            if (page == 1)
+            {
+                columns = [.. data.Columns];
+            }
+
+            if (data.Rows.Count == 0)
+            {
+                break;
+            }
+
+            rows.AddRange(data.Rows);
+            if (rows.Count >= data.TotalRows)
+            {
+                break;
+            }
+
+            page++;
+        }
+
+        var script = resolved.Provider.Ddl.BuildInsertScript(definition, columns, rows);
+        return rows.Count >= maxRows
+            ? script + $"\n-- Stopped at {maxRows} rows."
+            : script;
+    }
+
+    private static void Append(StringBuilder script, string part)
+    {
+        if (script.Length > 0)
+        {
+            script.AppendLine().AppendLine();
+        }
+
+        script.Append(part.TrimEnd());
+    }
+}

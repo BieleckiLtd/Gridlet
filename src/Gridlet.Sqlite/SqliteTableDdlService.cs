@@ -365,6 +365,17 @@ public sealed class SqliteTableDdlService : ITableDdlService
             ? DropTableAsync(context, schema, name, cancellationToken)
             : ExecuteAsync(context, SqliteDdlBuilder.BuildDropObject(schema, name, type), cancellationToken);
 
+    public string BuildDropScript(DbObjectInfo @object)
+        => @object.Type == DbObjectType.Table
+            ? SqliteDdlBuilder.BuildDropTable(SqliteIdentifier.MainSchema, @object.Name)
+            : SqliteDdlBuilder.BuildDropObject(SqliteIdentifier.MainSchema, @object.Name, @object.Type);
+
+    public string BuildInsertScript(
+        TableDefinition table,
+        IReadOnlyList<ResultColumn> columns,
+        IReadOnlyList<object?[]> rows)
+        => SqliteInsertScriptBuilder.Build(table, columns, rows);
+
     /// <summary>
     /// Renames a table. SQLite has no rename for views, triggers or routines - they would have to be
     /// dropped and recreated from their source, which is the person's decision to make in the

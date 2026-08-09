@@ -2234,6 +2234,8 @@ td.cell-actions, th.cell-actions { white-space: nowrap; width: 1%; }
 .result-meta { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .toolbar-slot { display: contents; }
 .toolbar-group { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.checkbox-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.checkbox-row input[type="number"] { width: 90px; }
 .filter-bar {
   display: flex;
   flex-wrap: wrap;

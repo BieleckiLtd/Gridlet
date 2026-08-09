@@ -159,6 +159,28 @@ public interface ITableDdlService
         => throw new GridletValidationException("This provider does not support renaming indexes.");
 
     /// <summary>
+    /// Returns the statement that drops <paramref name="object"/>, for scripting rather than
+    /// execution.
+    /// </summary>
+    string BuildDropScript(DbObjectInfo @object)
+        => throw new GridletValidationException("This provider does not support scripting.");
+
+    /// <summary>
+    /// Returns <c>INSERT</c> statements that reproduce <paramref name="rows"/> in
+    /// <paramref name="table"/>. Values are written as literals of their column's type, which is
+    /// what makes the script portable; a provider that needs to allow explicit identity values
+    /// wraps the statements accordingly.
+    /// </summary>
+    /// <param name="table">The table being scripted, for its column metadata.</param>
+    /// <param name="columns">The columns present in <paramref name="rows"/>, in order.</param>
+    /// <param name="rows">The rows to script.</param>
+    string BuildInsertScript(
+        TableDefinition table,
+        IReadOnlyList<ResultColumn> columns,
+        IReadOnlyList<object?[]> rows)
+        => throw new GridletValidationException("This provider does not support scripting.");
+
+    /// <summary>
     /// Deletes every row of a table, keeping the table itself. Providers use the cheapest statement
     /// the engine offers and fall back to a delete where truncation is not allowed.
     /// </summary>

@@ -87,6 +87,14 @@ public sealed record TableStructureResponse(
 
 public sealed record ObjectDefinitionResponse(string? Definition);
 
+/// <summary>Body for scripting an object.</summary>
+/// <param name="Include">Any of <c>drop</c>, <c>create</c> and <c>data</c>; defaults to create.</param>
+/// <param name="MaxRows">How many rows to script, clamped to the server's query row limit.</param>
+public sealed record ObjectScriptRequest(List<string?>? Include, int? MaxRows = null);
+
+/// <summary>A generated script, ready for the query editor.</summary>
+public sealed record ObjectScriptResponse(string Sql);
+
 /// <summary>The parameters a stored procedure or function is called with.</summary>
 public sealed record RoutineDefinitionResponse(
     DbObjectDto Object,

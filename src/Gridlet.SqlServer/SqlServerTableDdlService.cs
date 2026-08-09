@@ -255,6 +255,15 @@ public sealed class SqlServerTableDdlService : ITableDdlService
         CancellationToken cancellationToken = default)
         => ExecuteAsync(context, SqlServerDdlBuilder.BuildDropObject(schema, name, type), cancellationToken);
 
+    public string BuildDropScript(DbObjectInfo @object)
+        => SqlServerDdlBuilder.BuildDropObject(@object.Schema, @object.Name, @object.Type);
+
+    public string BuildInsertScript(
+        TableDefinition table,
+        IReadOnlyList<ResultColumn> columns,
+        IReadOnlyList<object?[]> rows)
+        => SqlServerInsertScriptBuilder.Build(table, columns, rows);
+
     public Task RenameObjectAsync(
         GridletConnectionContext context, string schema, string name, DbObjectType type, string newName,
         CancellationToken cancellationToken = default)

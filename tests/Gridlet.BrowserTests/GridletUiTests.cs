@@ -1983,6 +1983,36 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
 
+    /// <summary>
+    /// Scripting is the way out of anything the designer will not do, so the script has to land
+    /// somewhere it can be read and edited before it runs.
+    /// </summary>
+    [Fact]
+    public async Task Scripts_an_object_into_a_query_tab()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await panel.GetByTestId("script-object").ClickAsync();
+
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Script dbo.Customers" });
+        await dialog.GetByTestId("script-drop").CheckAsync();
+        await dialog.GetByTestId("script-data").CheckAsync();
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Script", Exact = true }).ClickAsync();
+
+        var editor = ActivePanel(page).GetByTestId("sql-editor");
+        await Assertions.Expect(editor).ToBeVisibleAsync();
+        var sql = await editor.InputValueAsync();
+        Assert.Contains("DROP TABLE dbo.Customers;", sql, StringComparison.Ordinal);
+        Assert.Contains("CREATE VIEW dbo.Customers", sql, StringComparison.Ordinal);
+        Assert.Contains("INSERT INTO dbo.Customers", sql, StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     [Fact]
     public async Task Renames_an_object_and_empties_a_table()
     {

@@ -25,6 +25,10 @@ Other object-management routes:
   exposes the same creation route when supported.
 - Open a table's Structure view to add or drop columns, primary keys, and foreign keys.
 - Use the table designer to create a table with its columns and constraints in one operation.
+- `Script…` writes an object out as SQL: its DROP statement, its CREATE statement, INSERT
+  statements for its rows, or any combination, opened in a query tab. This is the way round
+  anything the designer refuses — script it, edit the script, run it — and the way to copy an
+  object or its data somewhere else.
 - Rename an object from its Structure view or its context menu in the sidebar. A rename changes the
   object's name only: views, procedures and other code that names it are not rewritten, and the
   dialog says so. SQLite can rename a table but not a view or a trigger, which have to be dropped
