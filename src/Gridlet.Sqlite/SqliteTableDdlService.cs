@@ -494,7 +494,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         await EnsureTableCanBeRebuiltAsync(connection, schema, table, cancellationToken);
         var tempTable = $"__gridlet_{table}_{Guid.NewGuid():N}";
         var keyName = primaryKeyName ?? definition.Indexes.FirstOrDefault(i => i.IsPrimaryKey)?.Name;
-        var tempDesign = new TableDesign(schema, tempTable, columns);
+        // The rebuilt table has to be the same kind of table: dropping WITHOUT ROWID or STRICT would
+        // silently change how the engine stores and checks every row.
+        var tempDesign = new TableDesign(schema, tempTable, columns, definition.TableOptions);
         checkConstraints ??= ToCheckDesigns(definition, renamedColumns, columns);
         uniqueConstraints ??= ToUniqueDesigns(definition, renamedColumns, columns);
         ordinaryIndexes ??= ToIndexDesigns(definition, renamedColumns, columns);
@@ -612,19 +614,15 @@ public sealed class SqliteTableDdlService : ITableDdlService
         CancellationToken cancellationToken)
     {
         string tableType;
-        bool withoutRowId;
-        bool strict;
         await using (var classification = connection.CreateCommand())
         {
             classification.CommandText =
-                "SELECT type, wr, strict FROM pragma_table_list WHERE schema = 'main' AND name = @table;";
+                "SELECT type FROM pragma_table_list WHERE schema = 'main' AND name = @table;";
             classification.Parameters.AddWithValue("@table", table);
             await using var reader = await classification.ExecuteReaderAsync(cancellationToken);
             if (!await reader.ReadAsync(cancellationToken))
                 throw new GridletObjectNotFoundException($"{schema}.{table}");
             tableType = reader.GetString(0);
-            withoutRowId = reader.GetInt64(1) != 0;
-            strict = reader.GetInt64(2) != 0;
         }
 
         if (tableType is "virtual" or "shadow")
@@ -644,8 +642,6 @@ public sealed class SqliteTableDdlService : ITableDdlService
         }
 
         var unsupported = new List<string>();
-        if (strict) unsupported.Add("STRICT tables");
-        if (withoutRowId) unsupported.Add("WITHOUT ROWID tables");
         if (SqliteCreateSqlParser.ParseTable(source).HasColumnCollation) unsupported.Add("column collations");
         if (SqliteSqlInspection.ContainsKeywordSequence(source, "ON", "CONFLICT")) unsupported.Add("ON CONFLICT policies");
 

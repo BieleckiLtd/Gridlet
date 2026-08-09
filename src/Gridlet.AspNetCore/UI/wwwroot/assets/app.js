@@ -2456,6 +2456,12 @@
 
       const columnsBody = h('tbody', {}, columnRows);
       const sections = [
+        // WITHOUT ROWID and STRICT change how every row is stored and checked, so they belong at
+        // the top of the structure rather than being invisible.
+        s.tableOptions?.length
+          ? h('div', { class: 'table-options muted', 'data-testid': 'table-options' },
+            ...s.tableOptions.map((option) => h('span', { class: 'badge', text: option })))
+          : null,
         h('h3', { text: 'Columns' }),
         h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
           h('thead', {}, h('tr', {}, headers.map((t) => h('th', { text: t })))),
@@ -2815,10 +2821,18 @@
       panel: null,
     };
 
+    // WITHOUT ROWID and STRICT change what the table is, not how it looks, so they belong beside
+    // the name rather than buried in a column row.
+    const tableOptions = (capabilities.supportedTableOptions || []).map((option) => {
+      const box = h('input', { type: 'checkbox', 'aria-label': option, 'data-testid': `table-option-${option.replace(/\s+/g, '-').toLowerCase()}` });
+      return { option, box, label: h('label', { class: 'checkbox-row' }, box, option) };
+    });
+
     const create = async () => {
       const design = {
         schema: schemaInput.value.trim() || capabilities.defaultSchema,
         name: nameInput.value.trim(),
+        options: tableOptions.filter((entry) => entry.box.checked).map((entry) => entry.option),
         columns: rows
           .filter((r) => r.name.value.trim())
           .map((r) => ({
@@ -2855,6 +2869,9 @@
         h('span', { class: 'muted', text: 'Name' }), nameInput,
         h('span', { class: 'spacer' }),
         h('button', { class: 'primary', onclick: create, 'data-testid': 'create-table' }, 'Create table')),
+      tableOptions.length
+        ? h('div', { class: 'designer-header table-options' }, ...tableOptions.map((entry) => entry.label))
+        : null,
       h('div', { class: 'designer-header muted' },
         'Columns - define regular, identity, primary-key, defaulted, or computed (optionally persisted) columns.'),
       columnsHost,

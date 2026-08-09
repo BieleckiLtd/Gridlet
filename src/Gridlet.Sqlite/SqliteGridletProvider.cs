@@ -30,7 +30,8 @@ public sealed class SqliteGridletProvider :
         SupportsUniqueConstraints: true,
         SupportsIndexes: true,
         SupportsSessions: true,
-        SupportsQueryPlans: true);
+        SupportsQueryPlans: true,
+        SupportedTableOptions: [SqliteTableOptions.WithoutRowId, SqliteTableOptions.Strict]);
 
     public ISchemaReader Schema { get; } = new SqliteSchemaReader();
 

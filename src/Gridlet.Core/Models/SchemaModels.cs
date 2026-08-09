@@ -278,8 +278,22 @@ public sealed record TableDefinition(
     IReadOnlyList<ForeignKeyInfo> ForeignKeys,
     IReadOnlyList<CheckConstraintInfo> CheckConstraints,
     IReadOnlyList<UniqueConstraintInfo> UniqueConstraints,
-    RowIdentityInfo? RowIdentity = null)
+    RowIdentityInfo? RowIdentity = null,
+    IReadOnlyList<string>? TableOptions = null)
 {
+    /// <summary>Creates the seven-field table-definition shape without relying on optional-parameter ABI.</summary>
+    public TableDefinition(
+        DbObjectInfo @object,
+        IReadOnlyList<ColumnInfo> columns,
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ForeignKeyInfo> foreignKeys,
+        IReadOnlyList<CheckConstraintInfo> checkConstraints,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints,
+        RowIdentityInfo? rowIdentity)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, rowIdentity, null)
+    {
+    }
+
     /// <summary>Creates the six-field table-definition shape without relying on optional-parameter ABI.</summary>
     public TableDefinition(
         DbObjectInfo @object,
@@ -288,7 +302,7 @@ public sealed record TableDefinition(
         IReadOnlyList<ForeignKeyInfo> foreignKeys,
         IReadOnlyList<CheckConstraintInfo> checkConstraints,
         IReadOnlyList<UniqueConstraintInfo> uniqueConstraints)
-        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, null)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, null, null)
     {
     }
 
@@ -298,7 +312,7 @@ public sealed record TableDefinition(
         IReadOnlyList<ColumnInfo> columns,
         IReadOnlyList<IndexInfo> indexes,
         IReadOnlyList<ForeignKeyInfo> foreignKeys)
-        : this(@object, columns, indexes, foreignKeys, [], [], null)
+        : this(@object, columns, indexes, foreignKeys, [], [], null, null)
     {
     }
 

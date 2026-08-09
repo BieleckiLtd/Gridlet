@@ -75,7 +75,23 @@ public sealed record ForeignKeyDesign(
     string OnUpdate = "NO ACTION");
 
 /// <summary>A new table as designed in the UI.</summary>
+/// <param name="Options">
+/// Table-level options the engine accepts after the column list, such as SQLite's
+/// <c>WITHOUT ROWID</c> and <c>STRICT</c>. Providers reject anything they do not recognise.
+/// </param>
+// The compatibility constructor below leaves the serializer with two candidates, so the shape a
+// request body binds to is named explicitly.
+[method: System.Text.Json.Serialization.JsonConstructor]
 public sealed record TableDesign(
     string Schema,
     string Name,
-    IReadOnlyList<ColumnDesign> Columns);
+    IReadOnlyList<ColumnDesign> Columns,
+    IReadOnlyList<string>? Options = null)
+{
+
+    /// <summary>Creates the legacy three-field design shape without relying on optional-parameter ABI.</summary>
+    public TableDesign(string schema, string name, IReadOnlyList<ColumnDesign> columns)
+        : this(schema, name, columns, null)
+    {
+    }
+}

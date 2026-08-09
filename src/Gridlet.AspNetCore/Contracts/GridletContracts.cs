@@ -50,7 +50,8 @@ public sealed record TableStructureResponse(
     IReadOnlyList<ForeignKeyInfo> ForeignKeys,
     IReadOnlyList<CheckConstraintInfo> CheckConstraints,
     IReadOnlyList<UniqueConstraintInfo> UniqueConstraints,
-    RowIdentityInfo? RowIdentity = null)
+    RowIdentityInfo? RowIdentity = null,
+    IReadOnlyList<string>? TableOptions = null)
 {
     public TableStructureResponse(
         DbObjectDto @object,
@@ -58,8 +59,21 @@ public sealed record TableStructureResponse(
         IReadOnlyList<IndexInfo> indexes,
         IReadOnlyList<ForeignKeyInfo> foreignKeys,
         IReadOnlyList<CheckConstraintInfo> checkConstraints,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints,
+        RowIdentityInfo? rowIdentity)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints,
+            rowIdentity, null)
+    {
+    }
+
+    public TableStructureResponse(
+        DbObjectDto @object,
+        IReadOnlyList<ColumnInfo> columns,
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ForeignKeyInfo> foreignKeys,
+        IReadOnlyList<CheckConstraintInfo> checkConstraints,
         IReadOnlyList<UniqueConstraintInfo> uniqueConstraints)
-        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, null)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, null, null)
     {
     }
 
@@ -68,7 +82,7 @@ public sealed record TableStructureResponse(
         IReadOnlyList<ColumnInfo> columns,
         IReadOnlyList<IndexInfo> indexes,
         IReadOnlyList<ForeignKeyInfo> foreignKeys)
-        : this(@object, columns, indexes, foreignKeys, [], [], null)
+        : this(@object, columns, indexes, foreignKeys, [], [], null, null)
     {
     }
 

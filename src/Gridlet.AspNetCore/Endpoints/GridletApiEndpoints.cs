@@ -366,7 +366,8 @@ internal static partial class GridletApiEndpoints
                 resolved.Context, schema, name, cancellationToken);
             return Results.Ok(new TableStructureResponse(
                 ToDto(definition.Object), definition.Columns, definition.Indexes, definition.ForeignKeys,
-                definition.CheckConstraints, definition.UniqueConstraints, definition.RowIdentity));
+                definition.CheckConstraints, definition.UniqueConstraints, definition.RowIdentity,
+                definition.TableOptions));
         });
 
     private static Task<IResult> GetObjectDefinition(

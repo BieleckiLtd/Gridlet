@@ -124,7 +124,8 @@ internal sealed class BrowserSqliteProvider(FakeGridletProvider inner) : IGridle
         SupportsUniqueConstraints: true,
         SupportsIndexes: true,
         SupportsSessions: true,
-        SupportsQueryPlans: true);
+        SupportsQueryPlans: true,
+        SupportedTableOptions: ["WITHOUT ROWID", "STRICT"]);
 
     public ISchemaReader Schema => inner.Schema;
 

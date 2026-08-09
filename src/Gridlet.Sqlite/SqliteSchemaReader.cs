@@ -79,6 +79,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
         string objectType;
         bool isInternal;
         bool withoutRowId;
+        bool strict;
         string? createSql;
         await using (var objectCommand = connection.CreateCommand())
         {
@@ -86,7 +87,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
                 """
                 SELECT tl.type, s.sql,
                        CASE WHEN tl.type = 'shadow' OR tl.name GLOB 'sqlite_*' THEN 1 ELSE 0 END,
-                       tl.wr
+                       tl.wr, tl.strict
                 FROM pragma_table_list AS tl
                 LEFT JOIN main.sqlite_schema AS s ON s.name = tl.name AND s.type IN ('table', 'view')
                 WHERE tl.schema = 'main' AND tl.name = @name;
@@ -102,6 +103,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
             createSql = objectReader.IsDBNull(1) ? null : objectReader.GetString(1);
             isInternal = objectReader.GetInt64(2) != 0;
             withoutRowId = objectReader.GetInt64(3) != 0;
+            strict = objectReader.GetInt64(4) != 0;
         }
 
         var rawColumns = new List<(string Name, string Type, bool Nullable, string? Default, int PkOrdinal, int Hidden)>();
@@ -169,7 +171,11 @@ public sealed class SqliteSchemaReader : ISchemaReader
             foreignKeys,
             parsedTable.Checks,
             parsedTable.Uniques,
-            rowIdentity);
+            rowIdentity,
+            // The options are read from pragma_table_list rather than the CREATE text, so they are
+            // what SQLite applied rather than what the statement appeared to ask for.
+            [.. withoutRowId ? new[] { SqliteTableOptions.WithoutRowId } : [],
+             .. strict ? new[] { SqliteTableOptions.Strict } : []]);
     }
 
     public async Task<string?> GetObjectDefinitionAsync(

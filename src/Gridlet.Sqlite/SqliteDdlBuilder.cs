@@ -91,8 +91,9 @@ public static partial class SqliteDdlBuilder
             lines.AddRange(uniqueConstraints.Select(BuildUniqueConstraintDefinition));
         }
 
+        var options = SqliteTableOptions.BuildClause(design.Options, design.Columns);
         return $"CREATE TABLE {SqliteIdentifier.QuoteQualified(design.Schema, design.Name)} (\n" +
-               $"    {string.Join(",\n    ", lines)}\n);";
+               $"    {string.Join(",\n    ", lines)}\n){options};";
     }
 
     public static string BuildAddColumn(string schema, string table, ColumnDesign column)

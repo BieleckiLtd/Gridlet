@@ -1984,6 +1984,29 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
 
     /// <summary>
+    /// WITHOUT ROWID and STRICT change what a table is, so the designer offers them where the
+    /// provider has them and leaves them out where it does not.
+    /// </summary>
+    [Fact]
+    public async Task Offers_table_options_only_where_the_provider_has_them()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("Create table").ClickAsync();
+        var sqlServerPanel = ActivePanel(page);
+        await Assertions.Expect(sqlServerPanel.GetByTestId("table-option-strict")).ToHaveCountAsync(0);
+
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
+        await page.GetByTitle("Create table").ClickAsync();
+        var sqlitePanel = ActivePanel(page);
+        await Assertions.Expect(sqlitePanel.GetByTestId("table-option-strict")).ToBeVisibleAsync();
+        await Assertions.Expect(sqlitePanel.GetByTestId("table-option-without-rowid")).ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// Scripting is the way out of anything the designer will not do, so the script has to land
     /// somewhere it can be read and edited before it runs.
     /// </summary>

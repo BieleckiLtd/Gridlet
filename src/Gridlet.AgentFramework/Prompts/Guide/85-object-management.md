@@ -25,6 +25,10 @@ Other object-management routes:
   exposes the same creation route when supported.
 - Open a table's Structure view to add or drop columns, primary keys, and foreign keys.
 - Use the table designer to create a table with its columns and constraints in one operation.
+- On SQLite the table designer offers `WITHOUT ROWID` and `STRICT`, and a table's Structure view
+  shows which of them it uses. Both change what the table is rather than how it looks — WITHOUT
+  ROWID removes the implicit rowid, STRICT makes SQLite enforce declared types — and the designer
+  keeps them when it rebuilds the table to change a column. It used to refuse such tables outright.
 - `Script…` writes an object out as SQL: its DROP statement, its CREATE statement, INSERT
   statements for its rows, or any combination, opened in a query tab. This is the way round
   anything the designer refuses — script it, edit the script, run it — and the way to copy an
