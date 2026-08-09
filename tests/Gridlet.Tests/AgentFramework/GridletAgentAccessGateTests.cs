@@ -29,6 +29,35 @@ public sealed class GridletAgentAccessGateTests
         Assert.Contains(events, item => item.Type == "permission-resolved");
     }
 
+    [Fact]
+    public async Task Requesting_api_access_reports_the_updated_shared_state()
+    {
+        var registry = new GridletAgentPermissionRegistry();
+        var events = new List<GridletAgentStreamEvent>();
+        var gate = CreateGate(
+            registry,
+            events,
+            GridletAgentAccess.None,
+            hostAllows: new GridletAgentAccess(Schema: true, Data: true, Api: true));
+        var function = GridletDatabaseAgentToolsTests.CreateTools(gate: gate)
+            .Create()
+            .OfType<AIFunction>()
+            .Single(tool => tool.Name == "request_database_access");
+
+        var invocation = function.InvokeAsync(new AIFunctionArguments
+        {
+            ["scope"] = "api",
+            ["reason"] = "Call the published customers endpoint.",
+        });
+        var requestId = await WaitForRequestIdAsync(events);
+        Assert.True(registry.TryResolve(
+            requestId, GridletAgentAccessScope.Api, granted: true, Anonymous));
+
+        var result = (await invocation)?.ToString();
+
+        Assert.Contains("\"shared\":{\"schema\":false,\"data\":false,\"api\":true}", result, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// The browser keys the prompt card off the scope name. An ordinal there renders no card at all,
     /// so the person never sees the question and the waiting turn only ends when the prompt expires.

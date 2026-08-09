@@ -25,6 +25,9 @@ public class GridletOptionsValidatorTests
     [InlineData("published/v1")]
     [InlineData("{route}")]
     [InlineData("pub*")]
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("/../")]
     [InlineData("../pub")]
     public void Rejects_an_unusable_published_api_route_prefix(string prefix)
     {

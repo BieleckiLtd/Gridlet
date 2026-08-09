@@ -59,6 +59,10 @@ public sealed class GridletOptionsValidator : IValidateOptions<GridletOptions>
             {
                 failures.Add("PublishedApiRoutePrefix must contain 1-64 characters once surrounding slashes are removed.");
             }
+            else if (prefix is "." or "..")
+            {
+                failures.Add("PublishedApiRoutePrefix cannot be '.' or '..' because route dot segments may be normalized as traversal.");
+            }
             else if (!prefix.All(character =>
                 char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.'))
             {

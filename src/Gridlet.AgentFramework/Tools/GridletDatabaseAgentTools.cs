@@ -347,7 +347,7 @@ internal sealed class GridletDatabaseAgentTools(
                 GridletAgentAccessRequestOutcome.Denied => "denied",
                 _ => "timed_out",
             },
-            shared = new { schema = current.Schema, data = current.Data },
+            shared = new { schema = current.Schema, data = current.Data, api = current.Api },
             guidance = outcome switch
             {
                 GridletAgentAccessRequestOutcome.Granted or
