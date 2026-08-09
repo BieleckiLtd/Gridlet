@@ -89,13 +89,9 @@ instructions, so responses use the correct SQL dialect and version-supported fea
 inferring the engine from schema details. Built-in SQL Server and SQLite providers report this
 metadata; third-party providers can implement `IGridletDatabaseSystemInfoProvider` to do the same.
 
-<p align="center">
-  <a href="assets/recording-1.mp4">
-    <img src="assets/screenshot-5.png" width="720" alt="Watch the Gridlet Ask workspace demonstration" />
-  </a>
-</p>
+<video src="https://github.com/user-attachments/assets/f62b6df5-9681-4a37-b133-3141b31f568d" controls></video>
 
-<p align="center"><em>Click the preview to watch the Gridlet Ask demonstration.</em></p>
+<p align="center"><em>Gridlet Ask workspace demonstration.</em></p>
 
 Profiles can use a ChatGPT subscription through the local Codex runtime, a Claude subscription
 through the local Claude Code CLI, a GitHub Copilot subscription through the local Copilot CLI,
