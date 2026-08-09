@@ -86,6 +86,11 @@
       more.open = false;
       for (const record of records) record.slot.append(record.element);
       more.hidden = true;
+      for (const record of records) {
+        const compactAt = Number(record.element.dataset.compactAt);
+        record.element.classList.toggle('toolbar-compact', Boolean(compactAt)
+          && toolbar.clientWidth <= compactAt);
+      }
       const forced = records.filter((record) => {
         const breakpoint = Number(record.element.dataset.overflowAt);
         return breakpoint && toolbar.clientWidth <= breakpoint;
@@ -152,7 +157,9 @@
   function setupThemedSelect(select) {
     const parent = select.parentElement;
     const wrapper = h('div', { class: 'picker-select' });
-    const value = h('span', { class: 'select-value' });
+    const fullValue = h('span', { class: 'select-value-full' });
+    const compactValue = h('span', { class: 'select-value-compact' });
+    const value = h('span', { class: 'select-value' }, fullValue, compactValue);
     const button = h('button', {
       type: 'button', class: 'select-trigger', 'aria-haspopup': 'listbox', 'aria-expanded': 'false',
     }, value);
@@ -212,10 +219,13 @@
     };
 
     const sync = () => {
-      value.textContent = select.selectedOptions[0]?.textContent || '—';
+      const selectedOption = select.selectedOptions[0];
+      const fullLabel = selectedOption?.textContent || '-';
+      fullValue.textContent = fullLabel;
+      compactValue.textContent = selectedOption?.dataset.compactLabel || fullLabel;
       button.disabled = select.disabled || !select.options.length;
-      button.setAttribute('aria-label', `${select.getAttribute('aria-label') || 'Select'}: ${value.textContent}`);
-      button.title = value.textContent;
+      button.setAttribute('aria-label', `${select.getAttribute('aria-label') || 'Select'}: ${fullLabel}`);
+      button.title = fullLabel;
       render();
     };
 
@@ -505,6 +515,8 @@
       agentConversation: (conversationId) => `api/agents/conversations/${enc(conversationId)}`,
       agentChat: (connection, database, mode) =>
         `api/connections/${enc(connection)}/databases/${enc(database)}/agents/${enc(mode)}/chat`,
+      agentPermission: (requestId, scope) =>
+        `api/agents/permissions/${enc(requestId)}/${enc(scope)}`,
     };
   }
 
@@ -528,6 +540,11 @@
     agentPreferences: {
       profileId: null,
       reasoningEffort: null,
+      // What the person last chose to share with an agent. Schema starts on because reasoning
+      // about a database without its shape is mostly guesswork; data starts off.
+      shareSchema: true,
+      shareData: false,
+      shareApi: false,
     },
   };
 
@@ -559,16 +576,53 @@
   const connectionFor = (scope) =>
     (state.meta && state.meta.connections.find((c) => c.name === scope.connection)) || {};
   const currentConn = () => connectionFor(state);
-  const allowedAgentModes = (connection = currentConn()) => [
-    ...(connection.allowAgentDataAccess ? [{ id: 'data', label: 'Data' }] : []),
-    ...(connection.allowAgentSchemaAccess ? [{ id: 'schema', label: 'Design / Schema' }] : []),
+
+  // Published endpoints answer on a segment the host configures, so it comes from the server
+  // rather than being assumed. The default is used only before the first meta response lands.
+  const publishedSegment = () => state.meta?.publishedApiSegment || 'pub';
+  const publishedUrl = (route) =>
+    new URL(`${publishedSegment()}/${String(route).replace(/^\/+/, '')}`, document.baseURI);
+
+  // The scopes a person can share with an agent, in the order the sharing menu lists them. API
+  // access is distinct from direct data access, but its description explains that an endpoint
+  // response may contain data if the agent requests one.
+  const AGENT_SHARE_SCOPES = [
+    {
+      id: 'schema',
+      label: 'Schema',
+      summary: 'schema',
+      access: 'database schema metadata',
+      detail: 'Names and definitions of tables, views, columns, keys, indexes, and other database objects.',
+    },
+    {
+      id: 'data',
+      label: 'Data',
+      summary: 'data',
+      access: 'limited, read-only database queries and their results',
+      detail: 'Allows the agent to run limited, read-only queries and read the returned row values.',
+    },
+    {
+      id: 'api',
+      label: 'Published API',
+      summary: 'published API',
+      access: 'published API definitions and permission to request endpoint responses',
+      detail: 'Allows the agent to inspect your published API definitions and request responses '
+        + 'from them. This does not grant direct database data access. If the agent requests an '
+        + 'endpoint response, that response is shared and may contain data.',
+    },
   ];
+
+  const allowedAgentScopes = (connection = currentConn()) => AGENT_SHARE_SCOPES.filter((scope) => ({
+    schema: connection.allowAgentSchemaAccess,
+    data: connection.allowAgentDataAccess,
+    api: connection.allowAgentApiAccess,
+  })[scope.id]);
 
   function refreshAgentAvailability() {
     const button = $('#ask-btn');
     if (!button) return;
     const hasProfiles = Boolean(state.meta?.agent?.profiles?.length);
-    button.hidden = !hasProfiles || !allowedAgentModes().length;
+    button.hidden = !hasProfiles || !allowedAgentScopes().length;
     button.disabled = !state.database;
     navigationOverflow?.refresh();
   }
@@ -1103,7 +1157,7 @@
         },
       });
     }
-    modal(existing ? `Schema — ${existing.name}` : 'New schema', body, actions);
+    modal(existing ? `Schema - ${existing.name}` : 'New schema', body, actions);
     name.focus();
   }
 
@@ -1480,9 +1534,9 @@
           if (event.type === 'resultSet') gridView.setColumns(event.columns);
           else if (event.type === 'rows') {
             gridView.appendRows(event.rows);
-            status.textContent = `${data.rows.length} row(s) — receiving…`;
+            status.textContent = `${data.rows.length} row(s) - receiving…`;
           }
-          else if (event.type === 'resultSetCompleted') status.textContent = `${data.rows.length} row(s)` + (event.truncated ? ' — safety cap reached' : '');
+          else if (event.type === 'resultSetCompleted') status.textContent = `${data.rows.length} row(s)` + (event.truncated ? ' - safety cap reached' : '');
           else if (event.type === 'error') throw new Error(event.message);
         });
       } catch (err) {
@@ -2197,7 +2251,7 @@
         h('span', { class: 'spacer' }),
         h('button', { class: 'primary', onclick: create, 'data-testid': 'create-table' }, 'Create table')),
       h('div', { class: 'designer-header muted' },
-        'Columns — define regular, identity, primary-key, defaulted, or computed (optionally persisted) columns.'),
+        'Columns - define regular, identity, primary-key, defaulted, or computed (optionally persisted) columns.'),
       columnsHost,
       h('div', {}, h('button', { onclick: () => addColumnRow() }, '＋ Add column')));
 
@@ -2292,6 +2346,17 @@
       const language = match[1].trim().toLowerCase();
       const code = match[2];
       const isSql = ['sql', 'tsql', 't-sql', 'sqlite', 'postgresql', 'mysql'].includes(language);
+      const isJson = language === 'json';
+      // The agent asks for the API request panel with a `gridlet-api` block holding one
+      // `METHOD url` line. Only same-origin Gridlet addresses are honoured, so a URL that reached
+      // the agent from database content cannot turn into a button pointing somewhere else.
+      const apiRequest = language === 'gridlet-api' ? parseAgentApiRequest(code) : null;
+      const codeElement = h('code', { text: code });
+      const codePre = h('pre', {}, codeElement);
+      const jsonPresentation = isJson ? createJsonPresentation((text, syntax) => {
+        if (syntax) codeElement.innerHTML = highlightJson(text);
+        else codeElement.textContent = text;
+      }) : null;
       const codeBlock = h('div', {
         class: 'agent-code-block' + (isSql ? ' agent-sql-block' : ''),
         'data-testid': isSql ? 'agent-sql-block' : null,
@@ -2299,6 +2364,10 @@
         h('div', { class: 'agent-code-toolbar' },
           h('span', { class: 'muted mono', text: language || 'code' }),
           h('span', { class: 'spacer' }),
+          jsonPresentation ? h('div', {
+            class: 'view-switcher agent-json-format-switcher',
+            'data-testid': 'agent-json-format-switcher',
+          }, jsonPresentation.rawButton, jsonPresentation.prettyButton) : null,
           h('button', {
             class: 'mini-btn', text: 'Copy', title: 'Copy this code',
             'aria-label': `Copy ${language || 'code'} block`,
@@ -2307,7 +2376,7 @@
                 await navigator.clipboard.writeText(code);
                 toast('Code copied.', false);
               } catch {
-                toast('Copy failed — clipboard unavailable.');
+                toast('Copy failed - clipboard unavailable.');
               }
             },
           }),
@@ -2315,13 +2384,41 @@
             class: 'mini-btn', text: 'Open in Query', title: 'Open this SQL in a query tab',
             'data-testid': 'agent-open-query',
             onclick: () => openQueryTab(code.trim(), 'Agent SQL', scope),
+          }) : null,
+          apiRequest ? h('button', {
+            class: 'mini-btn', text: 'Open in API request',
+            title: 'Load this call into an API request tab',
+            'data-testid': 'agent-open-api-request',
+            onclick: () => openApiPreviewTab(null, apiRequest),
           }) : null),
-        h('pre', {}, h('code', { text: code })));
+        codePre);
+      jsonPresentation?.setText(code, true);
       host.append(codeBlock);
       cursor = match.index + match[0].length;
       if (!match[0].endsWith('```')) break;
     }
     appendProse(content.slice(cursor));
+  }
+
+  // Reads one `METHOD url` line out of an agent `gridlet-api` block. The URL is model-authored text
+  // that may have been influenced by database content, so it has to resolve to a published endpoint
+  // on this very origin before it becomes a clickable control.
+  function parseAgentApiRequest(code) {
+    const line = String(code || '').trim().split('\n')[0]?.trim();
+    if (!line) return null;
+    const match = /^(GET|POST|PUT|PATCH|DELETE)\s+(\S+)$/i.exec(line);
+    if (!match) return null;
+    const method = match[1].toUpperCase();
+    let url;
+    try {
+      url = new URL(match[2], document.baseURI);
+    } catch {
+      return null;
+    }
+    if (url.origin !== window.location.origin) return null;
+    const publishedRoot = new URL(publishedSegment() + '/', document.baseURI).pathname;
+    if (!url.pathname.startsWith(publishedRoot)) return null;
+    return { method, url: url.href };
   }
 
   function renderAgentMarkdown(host, content) {
@@ -2339,6 +2436,39 @@
       const line = lines[index];
       if (!line.trim()) {
         flushParagraph();
+        continue;
+      }
+      const heading = /^\s{0,3}(#{1,6})\s+(.+?)\s*$/.exec(line);
+      if (heading) {
+        flushParagraph();
+        const block = h(`h${heading[1].length}`, { class: 'agent-heading' });
+        appendAgentInlineMarkdown(block, heading[2].replace(/\s+#+\s*$/, ''));
+        host.append(block);
+        continue;
+      }
+      if (/^\s{0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line)) {
+        flushParagraph();
+        host.append(h('hr', { class: 'agent-rule' }));
+        continue;
+      }
+      const unorderedItem = /^\s{0,3}[-+*]\s+(.+)$/.exec(line);
+      const orderedItem = /^\s{0,3}(\d+)[.)]\s+(.+)$/.exec(line);
+      if (unorderedItem || orderedItem) {
+        flushParagraph();
+        const ordered = Boolean(orderedItem);
+        const list = h(ordered ? 'ol' : 'ul', { class: 'agent-list' });
+        if (ordered && orderedItem[1] !== '1') list.start = Number(orderedItem[1]);
+        for (; index < lines.length; index += 1) {
+          const item = ordered
+            ? /^\s{0,3}(\d+)[.)]\s+(.+)$/.exec(lines[index])
+            : /^\s{0,3}[-+*]\s+(.+)$/.exec(lines[index]);
+          if (!item) break;
+          const element = h('li', {});
+          appendAgentInlineMarkdown(element, ordered ? item[2] : item[1]);
+          list.append(element);
+        }
+        index -= 1;
+        host.append(list);
         continue;
       }
       if (isAgentTableStart(lines, index)) {
@@ -2359,13 +2489,25 @@
   }
 
   function appendAgentInlineMarkdown(parent, text) {
-    const pattern = /(\*\*([^*]+)\*\*|`([^`\n]+)`)/g;
+    const pattern = /(\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|`([^`\n]+)`|\$(\\(?:bigtriangleup|triangle|Delta|times|div|pm|leq?|geq?|ne|neq|rightarrow|leftarrow))\$)/g;
     let cursor = 0;
     let match;
     while ((match = pattern.exec(text)) !== null) {
       if (match.index > cursor) parent.append(document.createTextNode(text.slice(cursor, match.index)));
-      if (match[2] !== undefined) parent.append(h('strong', { text: match[2] }));
-      else parent.append(h('code', { text: match[3] }));
+      if (match[2] !== undefined) {
+        parent.append(h('strong', { text: match[2] }));
+      } else if (match[3] !== undefined) {
+        parent.append(h('em', { text: match[3] }));
+      } else if (match[4] !== undefined) {
+        parent.append(h('code', { text: match[4] }));
+      } else {
+        const symbols = {
+          '\\bigtriangleup': '△', '\\triangle': '△', '\\Delta': 'Δ', '\\times': '×',
+          '\\div': '÷', '\\pm': '±', '\\le': '≤', '\\leq': '≤', '\\ge': '≥', '\\geq': '≥',
+          '\\ne': '≠', '\\neq': '≠', '\\rightarrow': '→', '\\leftarrow': '←',
+        };
+        parent.append(h('span', { class: 'agent-math', text: symbols[match[5]] }));
+      }
       cursor = match.index + match[0].length;
     }
     if (cursor < text.length) parent.append(document.createTextNode(text.slice(cursor)));
@@ -2402,38 +2544,318 @@
     return fragment;
   }
 
-  function openAgentTab(scope = scopeOf()) {
+  // ---- saved conversations ----------------------------------------------------
+  // Conversations live in browser storage only. They are the person's own transcripts, so they
+  // never reach the database or the Gridlet store, and they stay on the machine that produced them.
+
+  const agentHistoryKey = 'gridlet.agentConversations';
+  const agentHistoryLimit = 50;
+  const agentHistoryListeners = new Set();
+
+  const readAgentHistory = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(agentHistoryKey) || '[]');
+      return Array.isArray(parsed) ? parsed.filter((entry) => entry && entry.id) : [];
+    } catch { return []; }
+  };
+
+  const writeAgentHistory = (records) => {
+    let pending = records.slice(0, agentHistoryLimit);
+    // Transcripts can be long, so a full quota is expected rather than exceptional. Drop the
+    // oldest conversations until the newest ones fit instead of losing the whole write.
+    while (pending.length) {
+      try {
+        localStorage.setItem(agentHistoryKey, JSON.stringify(pending));
+        break;
+      } catch {
+        pending = pending.slice(0, pending.length - 1);
+      }
+    }
+    if (!pending.length) {
+      try { localStorage.removeItem(agentHistoryKey); } catch { /* unavailable */ }
+    }
+    for (const listener of agentHistoryListeners) listener();
+  };
+
+  const saveAgentConversation = (record) => {
+    if (!record.messages.length) return;
+    const others = readAgentHistory().filter((entry) => entry.id !== record.id);
+    writeAgentHistory([record, ...others].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+  };
+
+  const deleteAgentConversation = (id) => {
+    writeAgentHistory(readAgentHistory().filter((entry) => entry.id !== id));
+  };
+
+  const agentConversationsFor = (scope) => readAgentHistory()
+    .filter((entry) => entry.connection === scope.connection && entry.database === scope.database);
+
+  const agentConversationTitle = (text) => {
+    const line = String(text || '').trim().split('\n').find((part) => part.trim()) || 'Chat';
+    return line.length > 80 ? `${line.slice(0, 79)}…` : line;
+  };
+
+  const agentConversationTime = (timestamp) => {
+    const when = new Date(timestamp || 0);
+    if (Number.isNaN(when.getTime())) return '';
+    const elapsed = Date.now() - when.getTime();
+    if (elapsed < 60_000) return 'just now';
+    if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+    if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`;
+    if (elapsed < 604_800_000) return `${Math.floor(elapsed / 86_400_000)}d ago`;
+    return when.toLocaleDateString();
+  };
+
+  const agentTabKey = (conversationId) => `agent:${conversationId}`;
+
+  const readAgentPreferences = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('gridlet.agentPreferences') || '{}');
+      return {
+        profileId: typeof parsed.profileId === 'string' ? parsed.profileId : null,
+        reasoningEffort: typeof parsed.reasoningEffort === 'string' ? parsed.reasoningEffort : null,
+        // Schema defaults on for a browser that has never chosen. Neither scope that can disclose
+        // row values ever defaults on.
+        shareSchema: parsed.shareSchema !== false,
+        shareData: parsed.shareData === true,
+        shareApi: parsed.shareApi === true,
+      };
+    } catch {
+      return {
+        profileId: null, reasoningEffort: null,
+        shareSchema: true, shareData: false, shareApi: false,
+      };
+    }
+  };
+
+  // Maps a scope id to the browser preference that remembers it between conversations.
+  const AGENT_SHARE_PREFERENCE = {
+    schema: 'shareSchema', data: 'shareData', api: 'shareApi',
+  };
+
+  const writeAgentPreferences = () => {
+    try {
+      localStorage.setItem('gridlet.agentPreferences', JSON.stringify(state.agentPreferences));
+    } catch { /* unavailable */ }
+  };
+
+  // The last model and effort a person chose survive a reload, so a new conversation opens where
+  // they left off unless the host declared a default profile.
+  Object.assign(state.agentPreferences, readAgentPreferences());
+
+  function openAgentTab(scope = scopeOf(), saved = null) {
     const profiles = state.meta?.agent?.profiles || [];
-    const modes = allowedAgentModes(connectionFor(scope));
+    const scopes = allowedAgentScopes(connectionFor(scope));
     if (!scope.database) {
       toast('Select a database first.');
       return;
     }
-    if (!profiles.length || !modes.length) {
-      toast('Database conversation is not available for this connection.');
+    if (!profiles.length || !scopes.length) {
+      toast('Database chat is not available for this connection.');
       return;
     }
 
     const connection = scope.connection;
     const database = scope.database;
-    const modeSelect = h('select', {
-      'aria-label': 'Agent mode', 'data-testid': 'agent-mode',
-    }, modes.map((mode) => h('option', { value: mode.id, text: mode.label })));
+    // Sharing is opt-in per scope rather than a mode. Nothing here is a mutually exclusive choice:
+    // an agent can hold all, some, or none, and the person can change that mid-conversation.
+    const allowsScope = (id) => scopes.some((entry) => entry.id === id);
+    const shareBoxes = new Map();
+    // The checkboxes remain the single source of truth even though a menu now draws them: a
+    // permission card answered mid-turn, a reopened conversation, and a click in the menu all set
+    // the same input and raise the same change event.
+    const shareMenu = h('div', {
+      class: 'select-menu agent-share-menu', role: 'group', tabindex: '-1', hidden: '',
+      'aria-label': 'Database context shared with the agent',
+    });
+    const shareTooltipId = `agent-share-tooltip-${crypto.randomUUID()}`;
+    const shareHelp = h('span', {
+      class: 'agent-share-help', id: shareTooltipId, role: 'tooltip',
+      'data-testid': 'agent-share-help',
+    });
+    const shareInfoIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    shareInfoIcon.setAttribute('viewBox', '0 0 24 24');
+    shareInfoIcon.setAttribute('aria-hidden', 'true');
+    shareInfoIcon.setAttribute('focusable', 'false');
+    const shareInfoCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    shareInfoCircle.setAttribute('cx', '12');
+    shareInfoCircle.setAttribute('cy', '12');
+    shareInfoCircle.setAttribute('r', '9');
+    const shareInfoMark = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    shareInfoMark.setAttribute('d', 'M12 10v6m0-9h.01');
+    shareInfoIcon.append(shareInfoCircle, shareInfoMark);
+    const shareInfoButton = h('button', {
+      class: 'agent-share-info-button', type: 'button',
+      'aria-label': 'About data shared with the AI Agent',
+      'aria-describedby': shareTooltipId, 'data-testid': 'agent-share-info',
+    }, shareInfoIcon);
+    const shareInfo = h('span', { class: 'agent-share-info' }, shareInfoButton, shareHelp);
+    const shareOptions = h('div', { class: 'agent-share-options' });
+    shareMenu.append(h('div', { class: 'agent-share-menu-header' },
+      h('span', { text: 'Data shared with AI Agent' }), shareInfo), shareOptions);
+    const shareSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    shareSvg.setAttribute('class', 'agent-share-icon');
+    shareSvg.setAttribute('viewBox', '0 0 24 24');
+    shareSvg.setAttribute('aria-hidden', 'true');
+    shareSvg.setAttribute('focusable', 'false');
+    const shareShield = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    shareShield.setAttribute('d', 'M12 3l7 3v5c0 4.8-2.8 8.2-7 10-4.2-1.8-7-5.2-7-10V6l7-3z');
+    const shareWarning = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    shareWarning.setAttribute('class', 'agent-share-warning');
+    shareWarning.setAttribute('d', 'M12 8v5m0 3h.01');
+    const shareCheck = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    shareCheck.setAttribute('class', 'agent-share-check');
+    shareCheck.setAttribute('d', 'M8.5 12.2l2.3 2.3 4.8-5');
+    shareSvg.append(shareShield, shareWarning, shareCheck);
+    const shareSummary = h('span', { class: 'select-value' });
+    const shareTrigger = h('button', {
+      type: 'button', class: 'select-trigger agent-share-trigger',
+      'aria-haspopup': 'true', 'aria-expanded': 'false',
+      'data-testid': 'agent-share-trigger',
+    }, shareSvg, shareSummary);
+    const sharePicker = h('span', { class: 'picker-select agent-share-picker' },
+      shareTrigger, shareMenu);
+    const welcomeShareSummary = h('span', { class: 'select-value' });
+    const welcomeShareTrigger = h('button', {
+      type: 'button', class: 'select-trigger agent-welcome-share-trigger',
+      'aria-haspopup': 'true', 'aria-expanded': 'false',
+      'data-testid': 'agent-welcome-share-trigger',
+    }, shareSvg.cloneNode(true), welcomeShareSummary);
+    const welcomeSharePicker = h('span', {
+      class: 'picker-select agent-welcome-share-picker',
+    }, welcomeShareTrigger);
+    for (const entry of AGENT_SHARE_SCOPES) {
+      const allowed = allowsScope(entry.id);
+      const box = h('input', {
+        type: 'checkbox', class: 'agent-share-input',
+        'data-testid': `agent-share-${entry.id}`, 'aria-label': `Share ${entry.label}`,
+      });
+      box.disabled = !allowed;
+      shareBoxes.set(entry.id, box);
+      // A scope the host turned off is shown rather than hidden. Its absence would otherwise read
+      // as a missing feature, when it is a decision somebody made about this connection.
+      shareOptions.append(h('label', {
+        class: 'select-option agent-share-option',
+        'data-scope': entry.id, 'data-allowed': String(allowed),
+      },
+        box,
+        h('span', { class: 'agent-share-mark', 'aria-hidden': 'true' }),
+        h('span', { class: 'agent-share-text' },
+          h('span', { class: 'agent-share-name' },
+            h('span', { text: entry.label })),
+          h('span', {
+            class: 'agent-share-detail',
+            text: allowed ? entry.detail : 'Turned off by the host for this connection.',
+          }))));
+    }
+    const shareControl = h('span', {
+      class: 'agent-composer-select agent-share-control', 'data-testid': 'agent-share',
+    }, sharePicker);
+    const isShared = (id) => Boolean(shareBoxes.get(id)?.checked);
+    let shareDestination = 'the selected model';
+    let shareProviderDescription = 'the selected model provider';
+    const syncShareHelp = () => {
+      const provider = `${shareDestination} (${shareProviderDescription})`;
+      const on = AGENT_SHARE_SCOPES.filter((entry) => isShared(entry.id));
+      const current = on.length
+        ? `For ${connection} / ${database}, access currently allowed for ${provider}: `
+          + `${on.map((entry) => entry.access).join('; ')}.`
+        : `For ${connection} / ${database}, no database or published API access is currently `
+          + `allowed for ${provider}.`;
+      const apiDetail = isShared('api')
+        ? ' Published API access is separate from Data access; an endpoint response is shared only '
+          + 'when the agent requests it.'
+        : '';
+      shareHelp.textContent = `${current}${apiDetail} You can change sharing at any time. `
+        + 'Anything already sent cannot be recalled.';
+    };
+    const syncShareSummary = () => {
+      const on = AGENT_SHARE_SCOPES.filter((entry) => isShared(entry.id));
+      const summary = on.length
+        ? `Sharing ${on.map((entry) => entry.summary).join(' + ')}`
+        : 'Not sharing';
+      welcomeShareSummary.textContent = on.length
+        ? on.map((entry) => entry.label).join(' + ')
+        : 'None (no access)';
+      shareSummary.textContent = summary;
+      shareTrigger.setAttribute(
+        'aria-label', `${summary}. Activate to change what is shared with the Gridlet agent.`);
+      welcomeShareTrigger.setAttribute(
+        'aria-label', `${welcomeShareSummary.textContent}. Activate to change agent access.`);
+      shareControl.dataset.sharing = on.length ? 'active' : 'none';
+      shareControl.classList.toggle('agent-share-active', on.length > 0);
+      welcomeSharePicker.dataset.sharing = on.length ? 'active' : 'none';
+      syncShareHelp();
+    };
+    let activeSharePicker = null;
+    let activeShareTrigger = null;
+    const closeShareMenu = (restoreFocus = false) => {
+      if (shareMenu.hidden) return;
+      shareMenu.hidden = true;
+      activeSharePicker?.classList.remove('open');
+      activeShareTrigger?.setAttribute('aria-expanded', 'false');
+      if (restoreFocus) activeShareTrigger?.focus();
+      activeSharePicker = null;
+      activeShareTrigger = null;
+      sharePicker.append(shareMenu);
+    };
+    const toggleShareMenu = (picker, trigger) => {
+      if (!shareMenu.hidden && activeSharePicker === picker) return closeShareMenu();
+      if (!shareMenu.hidden) closeShareMenu();
+      // Only one picker at a time, matching the model and effort selects beside it.
+      document.querySelectorAll('.picker-select.open').forEach((other) => {
+        if (other !== picker) other.querySelector('.select-trigger')?.click();
+      });
+      picker.append(shareMenu);
+      shareMenu.hidden = false;
+      picker.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
+      activeSharePicker = picker;
+      activeShareTrigger = trigger;
+      shareMenu.querySelector('.agent-share-input:not(:disabled)')?.focus();
+    };
+    shareTrigger.addEventListener('click', () => toggleShareMenu(sharePicker, shareTrigger));
+    welcomeShareTrigger.addEventListener(
+      'click', () => toggleShareMenu(welcomeSharePicker, welcomeShareTrigger));
+    // Toggling is multi-select, so the menu stays open; only Escape or a click elsewhere closes it.
+    // Escape is watched on the document because clicking a row leaves focus on a visually hidden
+    // checkbox, and in some browsers on nothing at all, so a listener on the menu would miss it.
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape' || shareMenu.hidden) return;
+      event.preventDefault();
+      closeShareMenu(true);
+    });
+    document.addEventListener('pointerdown', (event) => {
+      if (!activeSharePicker?.contains(event.target)) closeShareMenu();
+    });
     const providerSelect = h('select', {
       'aria-label': 'Agent model', 'data-testid': 'agent-provider',
     }, profiles.map((profile) => h('option', {
       value: profile.id,
-      text: `${profile.displayName} — ${profile.model}`,
+      'data-compact-label': profile.model,
+      text: `${profile.displayName} - ${profile.model}`,
     })));
-    const preferredProfileId = profiles.some((profile) => profile.id === state.agentPreferences.profileId)
-      ? state.agentPreferences.profileId
-      : profiles[0].id;
+    const knownProfile = (id) => profiles.some((profile) => profile.id === id);
+    // A conversation reopens with the model it used. Otherwise a host-declared default wins over
+    // the last model this browser used, which in turn wins over the first configured profile.
+    const preferredProfileId = [
+      saved?.profileId,
+      state.meta?.agent?.defaultProfileId,
+      state.agentPreferences.profileId,
+    ].find(knownProfile) || profiles[0].id;
     providerSelect.value = preferredProfileId;
+    // A reopened conversation restores what it was sharing; otherwise the last choice this browser
+    // made carries over. Either way a scope the connection forbids stays off.
+    for (const [id, box] of shareBoxes) {
+      const remembered = saved
+        ? saved.share?.[id]
+        : state.agentPreferences[AGENT_SHARE_PREFERENCE[id]];
+      box.checked = Boolean(remembered) && allowsScope(id);
+    }
+    syncShareSummary();
     const effortSelect = h('select', {
       'aria-label': 'Thinking effort', 'data-testid': 'agent-effort',
     });
-    const modeControl = h('label', { class: 'agent-composer-select agent-mode-control' },
-      h('span', { class: 'agent-option-label', text: 'Mode' }), modeSelect);
     const providerControl = h('label', { class: 'agent-composer-select agent-provider-control' },
       h('span', { class: 'agent-option-label', text: 'Model' }), providerSelect);
     const effortControl = h('label', {
@@ -2451,11 +2873,59 @@
       }));
     const messages = h('div', {
       class: 'agent-messages', role: 'log', 'aria-live': 'off', 'aria-busy': 'false',
-      'aria-label': 'Database conversation', 'data-testid': 'agent-messages',
+      'aria-label': 'Database chat', 'data-testid': 'agent-messages',
     });
-    const welcome = h('div', { class: 'agent-welcome muted' },
-      h('strong', { text: 'Ask about this database' }),
-      h('span', { text: 'Data mode answers from permitted database data. Design / Schema mode helps inspect and reason about structure.' }));
+    const welcomeIcon = (className, paths) => {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('class', className);
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.setAttribute('focusable', 'false');
+      for (const pathData of paths) {
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', pathData);
+        svg.append(path);
+      }
+      return svg;
+    };
+    const cautionIcon = welcomeIcon('agent-welcome-caution-icon', [
+      'M12 3L2.8 20h18.4L12 3z', 'M12 9v5m0 3h.01',
+    ]);
+    const accessIcon = welcomeIcon('agent-welcome-access-icon', [
+      'M7 10V8a5 5 0 0110 0v2', 'M6 10h12v10H6z', 'M12 14v2',
+    ]);
+    const welcome = h('div', { class: 'agent-welcome' },
+      h('div', { class: 'agent-welcome-intro' },
+        h('strong', { text: 'Ask about this database' }),
+        h('p', {
+          class: 'muted',
+        text: 'Use the sharing control below to choose what the agent can access. The agent can '
+          + 'ask for more, and you answer right here.',
+        })),
+      h('section', {
+        class: 'agent-welcome-caution', 'aria-label': 'AI query warning',
+        'data-testid': 'agent-welcome-disclaimer',
+      },
+        cautionIcon,
+        h('div', { class: 'agent-welcome-caution-copy' },
+          h('strong', { text: 'AI-generated queries may be incorrect.' }),
+          h('p', {},
+            'Always ', h('b', { text: 'review queries before running them' }),
+            ' and ', h('b', { text: 'verify important information' }), '. ',
+            'Incorrect queries may modify or delete data, and could result in data loss.'))),
+      h('section', {
+        class: 'agent-welcome-access', 'aria-label': 'Agent access',
+        'data-testid': 'agent-welcome-access',
+      },
+        h('span', { class: 'agent-welcome-access-icon-wrap' }, accessIcon),
+        h('div', { class: 'agent-welcome-access-copy' },
+          h('strong', { text: 'Agent access' }),
+          h('span', { class: 'muted', text: 'Choose what the agent can see and query.' })),
+        h('div', { class: 'agent-welcome-access-choice' },
+          welcomeSharePicker,
+          h('span', {
+            class: 'muted', text: 'You can grant more access when the agent asks.',
+          }))));
     messages.append(welcome);
     const composer = h('textarea', {
       class: 'agent-composer', rows: '1', maxlength: '20000',
@@ -2540,32 +3010,9 @@
       'data-state': SpeechRecognitionApi ? 'idle' : 'unsupported',
       disabled: SpeechRecognitionApi ? null : '',
     }, microphoneSvg);
-    const privacySvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    privacySvg.setAttribute('class', 'agent-privacy-icon');
-    privacySvg.setAttribute('viewBox', '0 0 24 24');
-    privacySvg.setAttribute('aria-hidden', 'true');
-    privacySvg.setAttribute('focusable', 'false');
-    const privacyShield = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    privacyShield.setAttribute('d', 'M12 3l7 3v5c0 4.8-2.8 8.2-7 10-4.2-1.8-7-5.2-7-10V6l7-3z');
-    const privacyMark = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    privacyMark.setAttribute('d', 'M12 8v5m0 3h.01');
-    privacySvg.append(privacyShield, privacyMark);
-    const privacyTooltipId = `agent-privacy-tooltip-${crypto.randomUUID()}`;
-    const privacyTooltip = h('span', {
-      class: 'agent-privacy-tooltip', id: privacyTooltipId, role: 'tooltip',
-      'data-testid': 'agent-privacy-tooltip',
-    });
-    const privacyButton = h('button', {
-      class: 'agent-privacy-button', type: 'button', 'aria-label': 'Privacy and data scope',
-      'aria-describedby': privacyTooltipId, 'data-testid': 'agent-privacy',
-    }, privacySvg);
-    const privacyControl = h('span', { class: 'agent-privacy-control' },
-      privacyButton, privacyTooltip);
     const composerOptions = h('span', {
-      class: 'agent-composer-options', 'data-overflow-at': '620',
-    },
-      modeControl, providerControl, effortControl);
-    setupThemedSelect(modeSelect);
+      class: 'agent-composer-options', 'data-compact-at': '850', 'data-overflow-at': '620',
+    }, providerControl, effortControl);
     setupThemedSelect(providerSelect);
     setupThemedSelect(effortSelect);
     const statusAnnouncement = h('span', {
@@ -2580,7 +3027,7 @@
       'data-context': 'unknown',
     }, contextRingSvg, actionButton, contextTooltip);
     const composeActions = h('div', { class: 'agent-compose-actions' },
-      status, privacyControl, h('span', { class: 'spacer' }), composerOptions,
+      status, shareControl, h('span', { class: 'spacer' }), composerOptions,
       dictationButton, submitControl);
     const composerShell = h('div', {
       class: 'agent-composer-shell', 'data-testid': 'agent-composer-shell',
@@ -2589,7 +3036,7 @@
     const optionsIcon = composerIcon('agent-options-icon',
       'M4 7h4m4 0h8M4 17h8m4 0h4M8 4v6M16 14v6');
     const composerOverflow = setupOverflowToolbar(
-      composeActions, [composerOptions], 'Conversation options');
+      composeActions, [composerOptions], 'Chat options');
     composerOverflow.more.classList.add('agent-composer-overflow');
     composeActions.insertBefore(composerOverflow.more, dictationButton);
     composerOverflow.more.querySelector('summary').replaceChildren(optionsIcon);
@@ -2599,6 +3046,7 @@
     let isDictating = false;
     let dictationStarting = false;
     let applyingDictation = false;
+    let acceptingDictationResults = false;
     let dictationBase = '';
     let dictationSeparator = '';
     let dictationError = '';
@@ -2606,6 +3054,13 @@
     let credentialProfileId = null;
     let conversation = [];
     let conversationId = crypto.randomUUID();
+    // The provider conversation is ephemeral and server-side; this key identifies the saved
+    // transcript in browser storage, so a reopened conversation keeps updating its own record.
+    let conversationKey = saved?.id || crypto.randomUUID();
+    let conversationCreatedAt = saved?.createdAt || saved?.updatedAt || Date.now();
+    // Set once a transcript is written, so a reopened conversation is only rewritten when it
+    // actually gains a turn.
+    let persistedSignature = '';
     let messageScrollTop = 0;
     let followMessages = true;
     let contextUsage = null;
@@ -2620,7 +3075,7 @@
         submitControl.dataset.context = 'unknown';
         contextRingValue.setAttribute('stroke-dashoffset', String(contextRingLength));
         contextTooltip.textContent = profile
-          ? `${profile.displayName} has not reported context usage for this conversation.`
+          ? `${profile.displayName} has not reported context usage for this chat.`
           : 'Context usage is not available.';
         actionButton.removeAttribute('aria-describedby');
         return;
@@ -2638,10 +3093,13 @@
         contextUsage.cachedInputTokens ? `cached ${formatTokens(contextUsage.cachedInputTokens)}` : null,
         contextUsage.outputTokens ? `output ${formatTokens(contextUsage.outputTokens)}` : null,
       ].filter(Boolean).join(' · ');
-      const headline = windowTokens > 0
-        ? `Context used: ${formatTokens(used)} of ${formatTokens(windowTokens)} tokens (${Math.round(ratio * 100)}%).`
-        : `Context used: ${formatTokens(used)} tokens. This model's context window was not reported.`;
-      contextTooltip.textContent = detail ? `${headline} ${detail}.` : headline;
+      contextTooltip.textContent = [
+        `Context used: ${formatTokens(used)} tokens`,
+        windowTokens > 0
+          ? `Window: ${formatTokens(windowTokens)} tokens (${Math.round(ratio * 100)}%)`
+          : 'This model\'s context window was not reported.',
+        detail || null,
+      ].filter(Boolean).join('\n');
       actionButton.setAttribute('aria-describedby', contextTooltipId);
     };
     const setContextUsage = (usage) => {
@@ -2700,6 +3158,9 @@
         statusAnnouncement.textContent = 'Dictation started.';
       };
       recognition.onresult = (event) => {
+        // stop() can deliver one last result asynchronously. Once a prompt has been submitted or
+        // dictation was aborted, that stale result must not put the submitted text back.
+        if (!acceptingDictationResults) return;
         let transcript = '';
         for (let index = 0; index < event.results.length; index += 1) {
           transcript += event.results[index][0]?.transcript || '';
@@ -2728,6 +3189,7 @@
       recognition.onend = () => {
         dictationStarting = false;
         isDictating = false;
+        acceptingDictationResults = false;
         updateDictationButton();
         statusAnnouncement.textContent = dictationError && dictationError !== 'aborted'
           ? 'Dictation ended with an error.'
@@ -2737,7 +3199,8 @@
       return recognition;
     };
 
-    const stopDictation = (abort = false) => {
+    const stopDictation = (abort = false, discardResults = abort) => {
+      if (discardResults) acceptingDictationResults = false;
       if (!recognition || (!isDictating && !dictationStarting)) return;
       try {
         if (abort) recognition.abort();
@@ -2756,12 +3219,14 @@
       dictationError = '';
       try {
         dictationStarting = true;
+        acceptingDictationResults = true;
         updateDictationButton();
         const active = ensureRecognition();
         if (active) active.lang = dictationLanguage();
         active?.start();
       } catch {
         dictationStarting = false;
+        acceptingDictationResults = false;
         updateDictationButton();
         toast('Dictation is already starting.');
       }
@@ -2774,8 +3239,42 @@
     };
 
     const selectedProfile = () => profiles.find((profile) => profile.id === providerSelect.value) || profiles[0];
+    // Each answer keeps the model that produced it, so a conversation that switched models reads
+    // back the way it happened rather than crediting every answer to the last model used.
+    const savedMessages = () => conversation.map((entry) => ({
+      role: entry.role,
+      content: entry.content,
+      profileId: entry.profileId || null,
+      label: entry.label || null,
+    }));
+    const persistConversation = () => {
+      if (!conversation.length) return;
+      const messageRecords = savedMessages();
+      const signature = JSON.stringify(messageRecords);
+      // Opening and closing a conversation must not make it look newer than its last answer.
+      if (signature === persistedSignature) return;
+      persistedSignature = signature;
+      saveAgentConversation({
+        id: conversationKey,
+        connection,
+        database,
+        share: { schema: isShared('schema'), data: isShared('data'), api: isShared('api') },
+        profileId: selectedProfile()?.id || null,
+        reasoningEffort: effortControl.hidden ? null : effortSelect.value || null,
+        title: agentConversationTitle(
+          conversation.find((entry) => entry.role === 'user')?.content),
+        messages: messageRecords,
+        createdAt: conversationCreatedAt,
+        updatedAt: Date.now(),
+      });
+    };
     const resetConversation = () => {
       void closeProviderConversation();
+      // The transcript so far keeps its own saved record; the emptied panel starts a new one.
+      conversationKey = crypto.randomUUID();
+      conversationCreatedAt = Date.now();
+      persistedSignature = '';
+      tab.key = agentTabKey(conversationKey);
       conversation = [];
       messages.replaceChildren(welcome);
       messages.setAttribute('aria-busy', 'false');
@@ -2812,7 +3311,8 @@
       sendIcon.toggleAttribute('hidden', isBusy);
       stopIcon.toggleAttribute('hidden', !isBusy);
       dictationButton.disabled = isBusy || !SpeechRecognitionApi;
-      modeSelect.disabled = Boolean(activeRequest);
+      // Sharing stays editable while a response streams: revoking mid-answer is the point, and an
+      // access prompt on screen is answered by the very checkbox this would otherwise disable.
       providerSelect.disabled = Boolean(activeRequest);
       effortSelect.disabled = Boolean(activeRequest);
       apiKeyInput.disabled = Boolean(activeRequest);
@@ -2838,26 +3338,22 @@
       apiKeyInput.required = Boolean(profile?.requiresUserApiKey);
       apiKeyInput.placeholder = profile?.requiresUserApiKey
         ? 'Required for this provider'
-        : 'Optional — use your own key for this tab';
-      const destination = profile?.isLocal
-        ? `${profile.displayName} is configured as a local provider. Questions and permitted database context are sent to its local endpoint.`
-        : `${profile.displayName} is an external provider. Questions and permitted database context are sent to that provider.`;
-      const credentialPrivacy = acceptsKey
-        ? ' API keys are exchanged for ephemeral server handles and are not stored in browser storage.'
-        : '';
-      const privacyText = `This conversation is scoped to ${connection} / ${database}. ${destination}${credentialPrivacy}`;
-      const dictationPrivacy = SpeechRecognitionApi
-        ? ' Dictation is handled by the browser speech recognition service and may send audio to the browser vendor.'
-        : '';
-      privacyControl.classList.toggle('local', Boolean(profile?.isLocal));
-      privacyControl.classList.toggle('external', !profile?.isLocal);
-      privacyTooltip.textContent = `${privacyText}${dictationPrivacy}`;
+        : 'Optional - use your own key for this tab';
+      shareDestination = profile?.displayName || 'the selected model';
+      shareProviderDescription = profile?.isLocal
+        ? 'local model provider'
+        : 'an external model provider';
+      syncShareHelp();
       renderContextUsage();
       syncControls();
     };
     const rememberAgentPreferences = () => {
       state.agentPreferences.profileId = selectedProfile()?.id || null;
       state.agentPreferences.reasoningEffort = effortControl.hidden ? null : effortSelect.value || null;
+      state.agentPreferences.shareSchema = isShared('schema');
+      state.agentPreferences.shareData = isShared('data');
+      state.agentPreferences.shareApi = isShared('api');
+      writeAgentPreferences();
     };
     const scrollMessages = (force = false) => {
       if (force) followMessages = true;
@@ -2871,6 +3367,7 @@
       messageScrollTop = messages.scrollTop;
     });
     const appendMessage = (role, content = '', assistantLabel = 'Agent') => {
+      closeShareMenu();
       welcome.remove();
       let lastReasoningValue = '';
       let lastContentValue = role === 'user' ? content : '';
@@ -2898,7 +3395,7 @@
             await navigator.clipboard.writeText(lastContentValue);
             toast(role === 'user' ? 'Message copied.' : 'Response copied.', false);
           } catch {
-            toast('Copy failed — clipboard unavailable.');
+            toast('Copy failed - clipboard unavailable.');
           }
         },
       }, copyIcon);
@@ -2909,18 +3406,17 @@
       }, h('time', {
         class: 'agent-message-time', datetime: createdAt.toISOString(),
         text: createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      }), copyMessage);
+      }),
+        role === 'assistant' && assistantLabel
+          ? h('span', { class: 'agent-message-role-detail', text: `· ${assistantLabel}` })
+          : null,
+        copyMessage);
       const body = h('div', { class: 'agent-message-content' });
       const error = h('div', { class: 'agent-message-error', hidden: '' });
       const element = h('article', {
         class: `agent-message agent-message-${role}`,
         'data-testid': `agent-message-${role}`,
       },
-        h('div', { class: 'agent-message-role' },
-          h('span', { class: 'agent-message-role-name', text: role === 'user' ? 'Me' : 'Agent' }),
-          role === 'assistant'
-            ? h('span', { class: 'agent-message-role-detail', text: ` - ${assistantLabel}` })
-            : null),
         role === 'assistant' ? null : body,
         error,
         messageFooter);
@@ -3066,9 +3562,121 @@
       messages.append(h('div', {
         class: 'agent-model-marker',
         'data-testid': 'agent-model-marker',
-        text: `Now using ${profile.displayName} — ${profile.model}`,
+        text: `Now using ${profile.displayName} - ${profile.model}`,
       }));
       scrollMessages();
+    };
+
+    // ---- access sharing ----
+    const scopeLabels = { schema: 'schema', data: 'data', api: 'published API access' };
+    const scopeSharingLabels = {
+      schema: 'the database schema', data: 'database data', api: 'published API access',
+    };
+    const announceShareChange = (id, shared) => {
+      welcome.remove();
+      messages.append(h('div', {
+        class: 'agent-model-marker agent-share-marker',
+        'data-testid': 'agent-share-marker',
+        text: shared
+          ? `You started sharing ${scopeSharingLabels[id]} with the agent.`
+          : `You stopped sharing ${scopeSharingLabels[id]} with the agent.`,
+      }));
+      scrollMessages();
+    };
+
+    // An access prompt is a question the agent asked mid-answer. The turn is still open while the
+    // card is on screen, so answering it lets the same response continue.
+    const permissionCards = new Map();
+    const scopeGrantLabels = {
+      schema: 'database schema', data: 'database data', api: 'published API',
+    };
+    const appendPermissionRequest = (payload) => {
+      const scopeId = String(payload?.scope || '').toLowerCase();
+      const requestId = String(payload?.requestId || '');
+      if (!requestId || !shareBoxes.has(scopeId)) return;
+      welcome.remove();
+
+      const status = h('p', {
+        class: 'agent-permission-status', role: 'status', hidden: '',
+        'data-testid': 'agent-permission-status',
+      });
+      const actions = h('div', { class: 'agent-permission-actions' });
+      const card = h('section', {
+        class: 'agent-permission', 'data-testid': 'agent-permission',
+        'data-scope': scopeId, 'aria-label': `Share ${scopeLabels[scopeId]} with the agent?`,
+      },
+        h('h3', {
+          class: 'agent-permission-title',
+          text: `Share ${scopeLabels[scopeId]} with the agent?`,
+        }),
+        // Model-authored text. It is set as text, never markup, and the server bounds its length.
+        h('p', {
+          class: 'agent-permission-reason', 'data-testid': 'agent-permission-reason',
+          text: payload?.reason || 'No reason was given.',
+        }),
+        actions, status);
+
+      const settle = (message, tone) => {
+        actions.replaceChildren();
+        status.hidden = false;
+        status.textContent = message;
+        card.dataset.state = tone;
+        permissionCards.delete(requestId);
+        scrollMessages();
+      };
+      const answer = async (granted) => {
+        for (const button of actions.querySelectorAll('button')) button.disabled = true;
+        try {
+          await post(urls.agentPermission(requestId, scopeId), { granted });
+        } catch (err) {
+          for (const button of actions.querySelectorAll('button')) button.disabled = false;
+          status.hidden = false;
+          status.textContent = err.message;
+          card.dataset.state = 'failed';
+          return;
+        }
+        if (granted) {
+          // The menu reflects the current grant; the person can revoke it at any time.
+          const box = shareBoxes.get(scopeId);
+          if (box) box.checked = true;
+          syncShareSummary();
+          rememberAgentPreferences();
+        }
+        settle(
+          granted
+            ? `You allowed access to the ${scopeGrantLabels[scopeId]}.`
+            : `Denied. The agent will answer without ${scopeLabels[scopeId]}.`,
+          granted ? 'granted' : 'denied');
+      };
+
+      actions.append(
+        h('button', {
+          class: 'primary', type: 'button', 'data-testid': 'agent-permission-allow',
+          onclick: () => void answer(true),
+        }, 'Allow'),
+        h('button', {
+          type: 'button', 'data-testid': 'agent-permission-deny',
+          onclick: () => void answer(false),
+        }, 'Deny'));
+
+      permissionCards.set(requestId, { settle });
+      messages.append(card);
+      scrollMessages(true);
+      // The person has to act for the answer to continue, so move focus to the choice.
+      if (state.activeTabId === tab.id) card.querySelector('button')?.focus();
+    };
+
+    // The server resolves a request itself when it expires or the turn ends, so a card left on
+    // screen is closed out rather than waiting for a click that can no longer do anything.
+    const resolvePermissionRequest = (payload) => {
+      const card = permissionCards.get(String(payload?.requestId || ''));
+      if (!card) return;
+      const status = String(payload?.status || '');
+      card.settle(
+        status === 'timed-out'
+          ? 'The request expired without an answer, so it was treated as a denial.'
+          : payload?.granted ? 'Shared.' : 'Denied.',
+        payload?.granted ? 'granted' : 'denied');
     };
 
     const storeCredentialIfSupplied = async (profile, signal) => {
@@ -3098,17 +3706,20 @@
 
     const tab = {
       id: state.nextTabId++,
-      key: null,
+      key: agentTabKey(conversationKey),
       scope,
       badge: 'A',
-      title: `Ask — ${database}`,
+      title: saved ? `Ask - ${saved.title}` : `Ask - ${database}`,
       loaded: true,
       load: () => {},
       panel: null,
     };
 
     const send = async () => {
-      stopDictation();
+      // The current interim transcript is already in the composer. Ignore any final result that
+      // speech recognition emits while shutting down, otherwise it can refill the cleared
+      // composer. Abort rather than gracefully stopping so Send turns the microphone off now.
+      stopDictation(true);
       const message = composer.value.trim();
       const profile = selectedProfile();
       if (!message || !profile || activeRequest) return;
@@ -3133,7 +3744,9 @@
       const assistantLabel = `${profile.displayName} · ${profile.model}`;
       try {
         const handle = await storeCredentialIfSupplied(profile, controller.signal);
-        const history = conversation.slice(-50).map((entry) => ({ ...entry }));
+        // Providers receive only the provider-neutral turn; the model attribution kept alongside
+        // each answer is a client-side record.
+        const history = conversation.slice(-50).map(({ role, content }) => ({ role, content }));
         composer.value = '';
         resizeComposer();
         appendMessage('user', message);
@@ -3144,7 +3757,11 @@
         assistantMessage = appendMessage('assistant', '', assistantLabel);
         setStatus('streaming', '', `${profile.displayName} response is streaming.`);
 
-        await streamNdjson(urls.agentChat(connection, database, modeSelect.value), {
+        // The route carries the host's authorization policy for the widest scope this turn may
+        // reach. Sharing data sends the turn to the data route, and so does sharing the published
+        // API, because calling an endpoint returns row values just the same.
+        const route = isShared('data') || isShared('api') ? 'data' : 'schema';
+        await streamNdjson(urls.agentChat(connection, database, route), {
           method: 'POST',
           signal: controller.signal,
           body: JSON.stringify({
@@ -3154,6 +3771,9 @@
             credentialHandle: handle,
             conversationId,
             reasoningEffort: effortControl.hidden ? null : effortSelect.value,
+            shareSchema: isShared('schema'),
+            shareData: isShared('data'),
+            shareApi: isShared('api'),
           }),
         }, (event) => {
           const type = String(event.type || '').toLowerCase();
@@ -3181,6 +3801,12 @@
             assistantMessage.finishReasoning();
             assistantText = text.startsWith(assistantText) ? text : assistantText + text;
             assistantMessage.setContent(assistantText);
+          } else if (type === 'permission-request') {
+            appendPermissionRequest(agentEventPayload(event));
+            setStatus('waiting', 'Waiting for you', 'The agent is waiting for your answer.');
+          } else if (type === 'permission-resolved') {
+            resolvePermissionRequest(agentEventPayload(event));
+            setStatus('streaming', '', `${profile.displayName} response is streaming.`);
           } else if (type === 'usage') {
             setContextUsage(agentEventPayload(event));
           } else if (type === 'error') {
@@ -3201,7 +3827,12 @@
         }
         else if (completed) {
           setStatus('complete', '', 'Agent response complete.');
-          conversation.push({ role: 'assistant', content: assistantText });
+          conversation.push({
+            role: 'assistant',
+            content: assistantText,
+            profileId: profile.id,
+            label: assistantLabel,
+          });
         } else {
           streamError = 'The response ended before the agent reported completion.';
           assistantMessage.setError(streamError);
@@ -3222,6 +3853,11 @@
           activeRequest = null;
           tab.isRunning = false;
           messages.setAttribute('aria-busy', 'false');
+          for (const [, card] of permissionCards) {
+            card.settle('This response ended before the request was answered.', 'denied');
+          }
+          permissionCards.clear();
+          persistConversation();
           syncControls();
           if (state.activeTabId === tab.id) composer.focus();
         }
@@ -3238,7 +3874,15 @@
       rememberAgentPreferences();
       appendModelMarker(selectedProfile());
     });
-    modeSelect.addEventListener('change', resetConversation);
+    for (const [id, box] of shareBoxes) {
+      box.addEventListener('change', () => {
+        const changedFromWelcome = activeSharePicker === welcomeSharePicker;
+        syncShareSummary();
+        rememberAgentPreferences();
+        if (!changedFromWelcome) announceShareChange(id, box.checked);
+        syncControls();
+      });
+    }
     effortSelect.addEventListener('change', () => {
       rememberAgentPreferences();
       syncControls();
@@ -3266,7 +3910,7 @@
       return new Promise((resolve) => {
         let decision = false;
         modal('Agent response in progress',
-          h('p', { text: 'Stop the current response before leaving this conversation.' }), [
+          h('p', { text: 'Stop the current response before leaving this chat.' }), [
             { label: 'Stay', onClick: (close) => close() },
             {
               label: 'Stop response', danger: true, onClick: (close) => {
@@ -3286,23 +3930,250 @@
       messages.scrollTop = messageScrollTop;
       rememberAgentPreferences();
     });
+    // ---- saved conversation pane ----
+    const historyList = h('div', {
+      class: 'agent-history-list', role: 'list', 'data-testid': 'agent-history-list',
+    });
+    const historyToggleIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    historyToggleIcon.setAttribute('class', 'agent-history-toggle-icon');
+    historyToggleIcon.setAttribute('viewBox', '0 0 24 24');
+    historyToggleIcon.setAttribute('aria-hidden', 'true');
+    historyToggleIcon.setAttribute('focusable', 'false');
+    const historyTogglePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    historyTogglePath.setAttribute('d', 'M9 5l7 7-7 7');
+    historyToggleIcon.append(historyTogglePath);
+    const historyToggle = h('button', {
+      class: 'mini-btn agent-history-toggle', type: 'button',
+      'data-testid': 'agent-history-toggle',
+    }, historyToggleIcon);
+    const newChatIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    newChatIcon.setAttribute('class', 'agent-history-new-icon');
+    newChatIcon.setAttribute('viewBox', '0 0 24 24');
+    newChatIcon.setAttribute('aria-hidden', 'true');
+    newChatIcon.setAttribute('focusable', 'false');
+    const newChatPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    newChatPath.setAttribute('d', 'M12 5v14M5 12h14');
+    newChatIcon.append(newChatPath);
+    const newChatButton = h('button', {
+      class: 'mini-btn agent-history-new', type: 'button', title: 'Start a new chat',
+      'aria-label': 'Start a new chat', 'data-testid': 'agent-new-chat',
+    }, newChatIcon, h('span', { text: 'New chat' }));
+    const historyGrip = h('div', {
+      class: 'agent-history-grip', role: 'separator', tabindex: '0',
+      'aria-label': 'Resize chats sidebar', 'aria-orientation': 'vertical',
+      'aria-valuemin': '180', 'aria-valuemax': '520',
+      'data-testid': 'agent-history-grip',
+    });
+    const historyPane = h('aside', {
+      class: 'agent-history', 'aria-label': 'Saved chats',
+      'data-testid': 'agent-history',
+    },
+      historyGrip,
+      h('div', { class: 'agent-history-head' },
+        historyToggle,
+        h('span', { class: 'agent-history-title', text: 'Chats' }),
+        h('span', { class: 'spacer' }),
+        newChatButton),
+      historyList);
+
+    const historyMinWidth = 180;
+    const historyMaxWidth = 520;
+    const clampHistoryWidth = (width) => Math.min(
+      Math.max(historyMinWidth, width),
+      Math.max(historyMinWidth, Math.min(historyMaxWidth, window.innerWidth - 320)));
+    const setHistoryWidth = (width, remember = false) => {
+      const next = clampHistoryWidth(width);
+      historyPane.style.setProperty('--agent-history-width', `${next}px`);
+      historyGrip.setAttribute('aria-valuenow', String(Math.round(next)));
+      if (remember) {
+        try { localStorage.setItem('gridlet.agentHistoryWidth', String(next)); }
+        catch { /* unavailable */ }
+      }
+    };
+    try {
+      const savedWidth = Number(localStorage.getItem('gridlet.agentHistoryWidth'));
+      setHistoryWidth(savedWidth || 232);
+    } catch { setHistoryWidth(232); }
+    historyGrip.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      historyGrip.setPointerCapture(event.pointerId);
+      historyGrip.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      const startX = event.clientX;
+      const startWidth = historyPane.offsetWidth;
+      const move = (moveEvent) => setHistoryWidth(startWidth + startX - moveEvent.clientX);
+      const stop = () => {
+        historyGrip.removeEventListener('pointermove', move);
+        historyGrip.removeEventListener('pointerup', stop);
+        historyGrip.removeEventListener('pointercancel', stop);
+        historyGrip.classList.remove('dragging');
+        document.body.style.cursor = '';
+        setHistoryWidth(historyPane.offsetWidth, true);
+      };
+      historyGrip.addEventListener('pointermove', move);
+      historyGrip.addEventListener('pointerup', stop);
+      historyGrip.addEventListener('pointercancel', stop);
+    });
+    historyGrip.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      setHistoryWidth(
+        historyPane.offsetWidth + (event.key === 'ArrowLeft' ? 20 : -20), true);
+    });
+    const resizeHistoryForViewport = () => setHistoryWidth(historyPane.offsetWidth);
+    window.addEventListener('resize', resizeHistoryForViewport);
+
+    const openSavedConversation = (record) => {
+      const existing = state.tabs.find((candidate) => candidate.key === agentTabKey(record.id));
+      if (existing) {
+        void setActiveTab(existing.id);
+        return;
+      }
+      if (record.profileId && !profiles.some((profile) => profile.id === record.profileId)) {
+        toast('That chat used a model this server no longer offers.');
+      }
+      openAgentTab({ connection: record.connection, database: record.database }, record);
+    };
+
+    const renderHistory = () => {
+      const records = agentConversationsFor(scope);
+      historyList.replaceChildren(...(records.length
+        ? records.map((record) => {
+          const profile = profiles.find((candidate) => candidate.id === record.profileId);
+          const models = new Set((record.messages || [])
+            .filter((entry) => entry.role === 'assistant' && entry.label)
+            .map((entry) => entry.label));
+          // A conversation that moved between models is summarised by its count rather than by
+          // the last model, which would misrepresent most of the answers in it.
+          const modelLabel = models.size > 1
+            ? `${models.size} models`
+            : profile ? `${profile.displayName} · ${profile.model}` : record.profileId;
+          const meta = [agentConversationTime(record.updatedAt), modelLabel]
+            .filter(Boolean).join(' · ');
+          return h('div', {
+            class: 'agent-history-item' + (record.id === conversationKey ? ' is-current' : ''),
+            role: 'listitem', 'data-testid': 'agent-history-item',
+          },
+            h('button', {
+              class: 'agent-history-open', type: 'button',
+              title: [
+                record.title,
+                record.createdAt ? `Started ${new Date(record.createdAt).toLocaleString()}` : null,
+                record.updatedAt
+                  ? `Last answer ${new Date(record.updatedAt).toLocaleString()}`
+                  : null,
+                ...[...models].map((label) => `Model: ${label}`),
+              ].filter(Boolean).join('\n'),
+              'data-testid': 'agent-history-open',
+              onclick: () => openSavedConversation(record),
+            },
+              h('span', { class: 'agent-history-item-title', text: record.title }),
+              h('span', { class: 'agent-history-item-meta', text: meta })),
+            h('button', {
+              class: 'mini-btn agent-history-delete', type: 'button',
+              title: 'Delete chat',
+              'aria-label': `Delete chat ${record.title}`,
+              'data-testid': 'agent-history-delete',
+              onclick: () => deleteAgentConversation(record.id),
+            }, h('span', { 'aria-hidden': 'true', text: '×' })));
+        })
+        : [h('p', {
+          class: 'agent-history-empty muted', 'data-testid': 'agent-history-empty',
+          text: 'Chats you have in this database are saved here, in this browser only.',
+        })]));
+    };
+
+    const applyHistoryCollapsed = () => {
+      let collapsed = false;
+      try { collapsed = localStorage.getItem('gridlet.agentHistoryCollapsed') === '1'; }
+      catch { /* unavailable */ }
+      historyPane.classList.toggle('is-collapsed', collapsed);
+      historyPane.dataset.collapsed = collapsed ? 'true' : 'false';
+      historyToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      const label = collapsed ? 'Show saved chats' : 'Hide saved chats';
+      historyToggle.setAttribute('aria-label', label);
+      historyToggle.title = label;
+    };
+
+    historyToggle.addEventListener('click', () => {
+      const collapsed = historyPane.classList.contains('is-collapsed');
+      try { localStorage.setItem('gridlet.agentHistoryCollapsed', collapsed ? '0' : '1'); }
+      catch { /* unavailable */ }
+      // Every open conversation shares one pane state, so they all follow this toggle.
+      for (const listener of agentHistoryListeners) listener();
+    });
+
+    newChatButton.addEventListener('click', () => {
+      if (activeRequest) {
+        toast('Stop the current response before starting a new chat.');
+        return;
+      }
+      persistConversation();
+      resetConversation();
+      composer.value = '';
+      resizeComposer();
+      syncControls();
+      renderHistory();
+      composer.focus();
+    });
+
+    const refreshHistory = () => {
+      applyHistoryCollapsed();
+      renderHistory();
+    };
+    agentHistoryListeners.add(refreshHistory);
+    refreshHistory();
+
     tab.onClose = () => {
       stopDictation(true);
       activeRequest?.abort();
       discardCredential();
+      agentHistoryListeners.delete(refreshHistory);
+      window.removeEventListener('resize', resizeHistoryForViewport);
+      persistConversation();
       conversation = [];
       return closeProviderConversation();
     };
 
     tab.panel = h('div', { class: 'panel agent-panel', 'data-testid': 'agent-panel' },
-      messages,
-      h('div', { class: 'agent-compose-area' },
-        apiKeyField, composerShell));
+      h('div', { class: 'agent-workspace' },
+        messages,
+        h('div', { class: 'agent-compose-area' },
+          apiKeyField, composerShell)),
+      historyPane);
 
-    refreshProfile(state.agentPreferences.profileId === preferredProfileId
-      ? state.agentPreferences.reasoningEffort
-      : null);
+    refreshProfile(saved
+      ? saved.reasoningEffort
+      : state.agentPreferences.profileId === preferredProfileId
+        ? state.agentPreferences.reasoningEffort
+        : null);
     rememberAgentPreferences();
+    if (saved) {
+      // A saved transcript is replayed as messages and as the history sent with the next turn, so
+      // the reopened conversation continues from where it stopped even on a fresh provider session.
+      conversation = saved.messages.map((entry) => ({ ...entry }));
+      const currentLabel = `${selectedProfile()?.displayName} · ${selectedProfile()?.model}`;
+      let replayedLabel = '';
+      for (const entry of conversation) {
+        if (entry.role === 'user') {
+          appendMessage('user', entry.content);
+          continue;
+        }
+        const label = entry.label || currentLabel;
+        // Older records predate per-answer attribution and have no label to compare, so a marker
+        // is only replayed where the transcript itself recorded a switch.
+        if (entry.label && replayedLabel && entry.label !== replayedLabel) {
+          messages.append(h('div', {
+            class: 'agent-model-marker', 'data-testid': 'agent-model-marker',
+            text: `Now using ${label.replace(' · ', ' - ')}`,
+          }));
+        }
+        replayedLabel = entry.label || replayedLabel;
+        appendMessage('assistant', entry.content, label);
+      }
+      persistedSignature = JSON.stringify(savedMessages());
+      refreshHistory();
+    }
     addTab(tab);
     requestAnimationFrame(resizeComposer);
     composer.focus();
@@ -3454,7 +4325,7 @@
       const messages = h('div', { class: 'query-messages' });
       const addEvent = (event) => {
         if (event.type === 'resultSet') {
-          const metaText = h('span', { text: '0 row(s) — receiving…' });
+          const metaText = h('span', { text: '0 row(s) - receiving…' });
           const exports = h('span', { class: 'export-buttons' });
           const meta = h('div', { class: 'result-meta muted' }, metaText, h('span', { class: 'spacer' }), exports);
           const scroll = h('div', { class: 'grid-scroll' });
@@ -3470,13 +4341,13 @@
           const set = sets.get(event.resultSetIndex);
           if (!set) return;
           set.gridView.appendRows(event.rows);
-          set.metaText.textContent = `${set.rows.length} row(s) — receiving…`;
+          set.metaText.textContent = `${set.rows.length} row(s) - receiving…`;
         } else if (event.type === 'resultSetCompleted') {
           const set = sets.get(event.resultSetIndex);
           if (!set) return;
           if (!set.gridView.table) set.gridView.render();
           set.metaText.textContent = set.rows.length + ' row(s)'
-            + (event.truncated ? ' — truncated at the configured limit' : '');
+            + (event.truncated ? ' - truncated at the configured limit' : '');
           const controls = exportButtons(set.columns, set.rows,
             `${tab.title}-result${event.resultSetIndex + 1}`,
             { sql: editor.value.trim(), name: tab.title.startsWith('Query ') ? '' : tab.title, scope });
@@ -3489,7 +4360,11 @@
         } else if (event.type === 'completed') {
           completedSuccessfully = true;
           if (!sets.size && event.recordsAffected >= 0) {
-            results.append(h('div', { class: 'result-meta', text: event.recordsAffected + ' record(s) affected' }));
+            const count = event.recordsAffected;
+            results.append(h('div', {
+              class: 'result-meta',
+              text: `Query executed successfully — ${count} ${count === 1 ? 'record' : 'records'} affected`,
+            }));
           }
           status.textContent = event.durationMs + ' ms';
         } else if (event.type === 'error') {
@@ -3528,7 +4403,7 @@
       return new Promise((resolve) => {
         let decision = false;
         modal('Query still running',
-          h('p', { text: `The query on ${tab.title} is still running. Stop it before leaving — otherwise it keeps running on the server and you lose the ability to cancel it or return to its results.` }), [
+          h('p', { text: `The query on ${tab.title} is still running. Stop it before leaving; otherwise it keeps running on the server and you lose the ability to cancel it or return to its results.` }), [
           { label: 'Stay', onClick: (close) => close() },
           { label: 'Stop query', danger: true, onClick: (close) => {
             activeQuery?.abort();
@@ -3678,7 +4553,7 @@
               enabled: true,
             });
             close();
-            toast(`Published: ${saved.method} ${new URL('pub/' + saved.route, document.baseURI).pathname}`, false);
+            toast(`Published: ${saved.method} ${publishedUrl(saved.route).pathname}`, false);
             const apisTab = state.tabs.find((t) => t.key === 'published-apis');
             if (apisTab) apisTab.load();
           } catch (err) {
@@ -3705,6 +4580,48 @@
       last = match.index + text.length;
     }
     return result + escape(value.slice(last));
+  }
+
+  // Shared by the full API preview and JSON blocks in Ask. It owns parsing, raw/pretty state,
+  // button accessibility, and whether JSON syntax colouring is safe to apply; each caller only
+  // supplies the appropriate text renderer for its viewport.
+  function createJsonPresentation(renderText) {
+    const rawButton = h('button', {
+      class: 'view-btn', type: 'button', text: 'Raw', 'aria-pressed': 'false',
+    });
+    const prettyButton = h('button', {
+      class: 'view-btn active', type: 'button', text: 'Pretty', 'aria-pressed': 'true',
+    });
+    let rawText = '';
+    let prettyText = null;
+    let showPretty = true;
+    let enabled = true;
+
+    const sync = () => {
+      const pretty = showPretty && prettyText !== null;
+      renderText(pretty ? prettyText : rawText, prettyText !== null);
+      rawButton.classList.toggle('active', !pretty);
+      prettyButton.classList.toggle('active', pretty);
+      rawButton.setAttribute('aria-pressed', String(!pretty));
+      prettyButton.setAttribute('aria-pressed', String(pretty));
+      rawButton.disabled = !enabled;
+      prettyButton.disabled = !enabled || prettyText === null;
+    };
+    rawButton.addEventListener('click', () => { showPretty = false; sync(); });
+    prettyButton.addEventListener('click', () => { showPretty = true; sync(); });
+
+    return {
+      rawButton,
+      prettyButton,
+      setEnabled(value) { enabled = value; sync(); },
+      setText(value, preferPretty = true) {
+        rawText = String(value ?? '');
+        try { prettyText = JSON.stringify(JSON.parse(rawText), null, 2); }
+        catch { prettyText = null; }
+        showPretty = preferPretty && prettyText !== null;
+        sync();
+      },
+    };
   }
 
   function createJsonEditor(initialValue = '') {
@@ -3855,7 +4772,7 @@
       spacerHeight = Math.min(contentHeight, maxSpacer);
       // No-wrap: spacer spans the true content width (clamped under the browser's max element
       // size) so the whole line is horizontally reachable. Wrap: chunks are built to fit the
-      // viewport, so the spacer needs no horizontal extent — keep it minimal so a vertical
+      // viewport, so the spacer needs no horizontal extent; keep it minimal so a vertical
       // scrollbar can never push the content into a spurious horizontal scroll.
       contentWidth = wrap
         ? Math.max(1, lastWidth || 320)
@@ -3918,27 +4835,16 @@
       requestBody);
     const status = h('span', { class: 'api-response-status muted', text: 'No request sent' });
     const elapsed = h('span', { class: 'muted' });
-    const rawButton = h('button', { class: 'view-btn', type: 'button', text: 'Raw', disabled: '' });
-    const prettyButton = h('button', { class: 'view-btn active', type: 'button', text: 'Pretty', disabled: '' });
     const wrapCheck = h('input', { class: 'api-wrap-check', type: 'checkbox', id: 'api-wrap-lines' });
     const wrapToggle = h('label', {
       class: 'api-wrap-toggle', for: 'api-wrap-lines', title: 'Wrap long lines to the viewport width',
     }, wrapCheck, 'Wrap');
     const responseView = createVirtualCodeViewer();
+    const responsePresentation = createJsonPresentation((text, syntax) =>
+      responseView.setText(text || '(empty response)', syntax));
+    const { rawButton, prettyButton } = responsePresentation;
     let responseText = '';
-    let prettyResponse = null;
     let controller = null;
-
-    const renderResponse = (pretty) => {
-      const text = pretty && prettyResponse !== null ? prettyResponse : responseText;
-      const shown = text || '(empty response)';
-      responseView.setText(shown, prettyResponse !== null);
-      rawButton.classList.toggle('active', !pretty);
-      prettyButton.classList.toggle('active', pretty);
-    };
-
-    rawButton.addEventListener('click', () => renderResponse(false));
-    prettyButton.addEventListener('click', () => renderResponse(true));
     wrapCheck.addEventListener('change', () => responseView.setWrap(wrapCheck.checked));
 
     const setMethodBodyState = () => {
@@ -3973,10 +4879,8 @@
       status.className = 'api-response-status muted';
       status.textContent = 'Waiting for response…';
       elapsed.textContent = '';
-      rawButton.disabled = true;
-      prettyButton.disabled = true;
+      responsePresentation.setEnabled(false);
       responseText = '';
-      prettyResponse = null;
       responseView.setText('Waiting for response…');
 
       try {
@@ -3987,24 +4891,21 @@
         }
         const response = await fetch(target, options);
         responseText = await response.text();
-        try { prettyResponse = JSON.stringify(JSON.parse(responseText), null, 2); }
-        catch { prettyResponse = null; }
 
         const duration = Math.round(performance.now() - started);
         status.className = `api-response-status ${response.ok ? 'success' : 'error'}`;
         status.textContent = `${response.status} ${response.statusText}`.trim();
         elapsed.textContent = `${duration} ms · ${formatBytes(new Blob([responseText]).size)}`;
-        rawButton.disabled = false;
-        prettyButton.disabled = prettyResponse === null;
-        renderResponse(prettyResponse !== null);
+        responsePresentation.setText(responseText, true);
+        responsePresentation.setEnabled(true);
       } catch (err) {
         if (err.name === 'AbortError') return;
         responseText = err.message;
         status.className = 'api-response-status error';
         status.textContent = 'Request failed';
         elapsed.textContent = '';
-        rawButton.disabled = false;
-        renderResponse(false);
+        responsePresentation.setText(responseText, false);
+        responsePresentation.setEnabled(true);
       } finally {
         if (controller === requestController) {
           go.disabled = false;
@@ -4025,14 +4926,24 @@
         responseView.element));
 
     setMethodBodyState();
+    responsePresentation.setEnabled(false);
     responseView.setText('Send a request to see its response.');
     return {
       element,
       focus: () => address.focus(),
       abort: () => controller?.abort(),
+      // Loads a bare method and address, for a call the agent proposed rather than a stored endpoint.
+      setAddress: (httpMethod, url) => {
+        method.value = httpMethod;
+        address.value = url;
+        requestBody.value = '';
+        requestDetails.open = httpMethod !== 'GET';
+        setMethodBodyState();
+        address.focus();
+      },
       setRequest: (endpoint) => {
         method.value = endpoint.method;
-        const baseUrl = new URL('pub/' + endpoint.route, document.baseURI).href;
+        const baseUrl = publishedUrl(endpoint.route).href;
         if (endpoint.method === 'GET' && endpoint.parameters.length) {
           address.value = baseUrl + '?' + endpoint.parameters
             .map((parameter) => `${encodeURIComponent(parameter.name)}=`).join('&');
@@ -4051,12 +4962,16 @@
     };
   }
 
-  // Each request lives in its own tab, so several endpoints can stay open side by side.
-  function openApiPreviewTab(endpoint = null) {
+  // Each request lives in its own tab, so several endpoints can stay open side by side. `request`
+  // is the agent's `{method, url}` shortcut; it loads the address without needing a stored endpoint.
+  function openApiPreviewTab(endpoint = null, request = null) {
     const key = endpoint ? `api-preview:${endpoint.id}` : null;
     const existing = key && state.tabs.find((t) => t.key === key);
     if (existing) {
       setActiveTab(existing.id);
+      // The endpoint may have been edited since this tab was opened, so the address is refreshed
+      // rather than left pointing at a route that no longer exists.
+      existing.preview.setRequest(endpoint);
       existing.preview.focus();
       return;
     }
@@ -4075,6 +4990,7 @@
       onClose: () => preview.abort(),
     };
     if (endpoint) preview.setRequest(endpoint);
+    else if (request) preview.setAddress(request.method, request.url);
     addTab(tab);
     preview.focus();
   }
@@ -4088,6 +5004,13 @@
     }
 
     const body = h('div', { class: 'panel-body' });
+    // Starting a blank request belongs to the list view. While one endpoint is open for editing the
+    // actions that matter are the ones for that endpoint, so this steps aside for them.
+    const newRequestButton = h('button', {
+      'data-testid': 'new-api-request',
+      title: 'Open an empty request in a new tab',
+      onclick: () => openApiPreviewTab(),
+    }, 'New request');
     const tab = {
       id: state.nextTabId++,
       key: 'published-apis',
@@ -4096,11 +5019,7 @@
       panel: h('div', { class: 'panel' },
         h('div', { class: 'viewbar' },
           h('span', { class: 'spacer' }),
-          h('button', {
-            'data-testid': 'new-api-request',
-            title: 'Open an empty request in a new tab',
-            onclick: () => openApiPreviewTab(),
-          }, 'New request')),
+          newRequestButton),
         body),
       loaded: false,
       load: () => {},
@@ -4118,11 +5037,13 @@
         return { name: parameter.name, required, type: parameterTypeSelect(parameter.type || 'auto') };
       });
       const error = h('div', { class: 'inline-error', hidden: '' });
+      // Returns the saved endpoint so a caller can act on what the server actually stored — the
+      // route may have changed, and the parameters are re-detected from the SQL.
       const save = async () => {
         error.hidden = true;
         try {
           const existingParameters = new Map(parameterEditors.map((p) => [p.name.toLowerCase(), p]));
-          await post(urls.published(), {
+          const saved = await post(urls.published(), {
             id: endpoint.id, name: name.value.trim(), method: method.value, route: route.value.trim(),
             connectionName: endpoint.connectionName, database: endpoint.database, sql: sql.value,
             parameters: detectParameters(sql.value).map((p) => ({
@@ -4133,9 +5054,43 @@
             authorizationPolicy: policy.value.trim() || null, enabled: enabled.checked,
           });
           toast('Endpoint updated.', false); tab.load();
-        } catch (err) { error.textContent = err.message; error.hidden = false; }
+          return saved;
+        } catch (err) { error.textContent = err.message; error.hidden = false; return null; }
       };
-      body.replaceChildren(h('div', { class: 'inline-editor' },
+      // A request always hits the stored endpoint, so edits have to be saved before they can be
+      // tried. Rather than running the old version and looking broken, or saving silently when
+      // nothing asked it to, the button says which of the two it is about to do.
+      const hasUnsavedChanges = () =>
+        name.value.trim() !== endpoint.name ||
+        method.value !== endpoint.method ||
+        route.value.trim() !== endpoint.route ||
+        (policy.value.trim() || null) !== (endpoint.authorizationPolicy || null) ||
+        enabled.checked !== endpoint.enabled ||
+        sql.value !== endpoint.sql ||
+        parameterEditors.some((editor, index) =>
+          editor.required.checked !== endpoint.parameters[index].required ||
+          editor.type.value !== (endpoint.parameters[index].type || 'auto'));
+      const runButton = h('button', {
+        'data-testid': 'run-api-endpoint',
+        onclick: async () => {
+          if (!hasUnsavedChanges()) {
+            openApiPreviewTab(endpoint);
+            return;
+          }
+
+          const saved = await save();
+          if (saved) openApiPreviewTab(saved);
+        },
+      }, 'Run');
+      const syncRunButton = () => {
+        const unsaved = hasUnsavedChanges();
+        runButton.textContent = unsaved ? 'Save and run' : 'Run';
+        runButton.title = unsaved
+          ? 'Save these changes, then open the endpoint in a request tab'
+          : 'Open this endpoint in a request tab';
+      };
+
+      const editor = h('div', { class: 'inline-editor' },
         h('div', { class: 'inline-form' },
           h('span', { class: 'muted', text: 'Name' }), name,
           h('span', { class: 'muted', text: 'Method' }), method,
@@ -4144,6 +5099,7 @@
           h('label', { class: 'null-toggle' }, enabled, 'Enabled'),
           h('span', { class: 'spacer' }),
           h('button', { onclick: () => tab.load() }, 'Cancel'),
+          runButton,
           h('button', { class: 'primary', onclick: save }, 'Save endpoint')),
         h('div', { class: 'muted', text: 'Policy is the ASP.NET Core authorization policy required in addition to Gridlet’s global authorization.' }),
         h('div', { class: 'parameter-heading' },
@@ -4152,10 +5108,19 @@
           parameterEditors.map((p) => h('label', { class: 'null-toggle' },
             p.required, '@' + p.name + ' required ', p.type)))
           : h('div', { class: 'muted', text: 'No @parameters found in this SQL.' }),
-        sql, error));
+        sql, error);
+      // Every control in the editor bubbles one of these, so the button tracks the form without
+      // each field having to remember to announce itself.
+      editor.addEventListener('input', syncRunButton);
+      editor.addEventListener('change', syncRunButton);
+      syncRunButton();
+
+      newRequestButton.hidden = true;
+      body.replaceChildren(editor);
     };
 
     tab.load = async () => {
+      newRequestButton.hidden = false;
       body.replaceChildren(h('div', { class: 'loading', text: 'Loading…' }));
       let endpoints;
       try {
@@ -4176,7 +5141,7 @@
           ['Name', 'Method', 'URL', 'Connection', 'Parameters', 'Policy', 'Enabled', '']
             .map((t) => h('th', { text: t })))),
         h('tbody', {}, endpoints.map((e) => {
-          const url = new URL('pub/' + e.route, document.baseURI).href;
+          const url = publishedUrl(e.route).href;
           return h('tr', {},
             h('td', { text: e.name }),
             h('td', { class: 'mono', text: e.method }),
@@ -4197,7 +5162,7 @@
                 class: 'mini-btn', title: 'Copy URL',
                 onclick: async () => {
                   try { await navigator.clipboard.writeText(url); toast('URL copied.', false); }
-                  catch { toast('Copy failed — clipboard unavailable.'); }
+                  catch { toast('Copy failed - clipboard unavailable.'); }
                 },
               }, '⧉'),
               h('button', {
@@ -4294,7 +5259,7 @@
         event.preventDefault();
         const text = chosen.map((row) => row.map((value) => value == null ? '' : String(value)).join('\t')).join('\n');
         try { await navigator.clipboard.writeText(text); toast(`${chosen.length} row${chosen.length === 1 ? '' : 's'} copied.`, false); }
-        catch { toast('Copy failed — clipboard unavailable.'); }
+        catch { toast('Copy failed - clipboard unavailable.'); }
       } else if (event.key === 'Delete' && chosen.length && options.rowActions?.onDeleteSelected) {
         event.preventDefault();
         options.rowActions.onDeleteSelected(chosen);

@@ -44,6 +44,7 @@ public sealed class BrowserAppFixture : IAsyncLifetime
                 connection.AllowAgentDataAccess = true;
                 connection.AllowAgentDataWithPrimaryConnection = true;
                 connection.AllowAgentSchemaAccess = true;
+                connection.AllowAgentApiAccess = true;
             });
             options.AddConnection("SQLite", "Data Source=browser-test.db;", BrowserSqliteProvider.Name);
             options.Security.AllowAnonymous = true;

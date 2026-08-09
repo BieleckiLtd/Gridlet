@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -118,13 +119,12 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private const string McpServerName = "gridlet";
-    private const string CapabilityInstructions = """
-
-        Gridlet exposes the only tools you may use through the gridlet MCP server. Do not use shell
-        commands, filesystem tools, web search, skills, subagents, or request additional permissions.
-        Do not inspect the host computer. Answer only from the user's messages and results returned
-        by Gridlet's tools.
-        """;
+    /// <summary>
+    /// Appended to the system prompt because a coding CLI arrives believing it may reach the host
+    /// computer. The wording lives in Prompts/Instructions/cli-claude-code.md.
+    /// </summary>
+    private static string CapabilityInstructions =>
+        GridletPrompts.Text("Instructions/cli-claude-code");
 
     private readonly string executablePath;
     private readonly string model;
@@ -615,8 +615,9 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
                 id,
                 callId,
                 toolName,
-                $"Gridlet's limit of {limit} tool calls was reached. Do not call another tool; " +
-                    "finish the response using the information already collected.",
+                GridletPrompts.Section(
+                    "Notes/tool-call-limit", "claude-code",
+                    ("limit", limit.ToString(CultureInfo.InvariantCulture))),
                 updates);
         }
 
@@ -694,12 +695,16 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            // Claude Code reads the working directory as a project. See GridletCliWorkspace:
+            // --setting-sources= stops project CLAUDE.md but not the user's own agent memory,
+            // which is keyed by the working directory.
+            WorkingDirectory = GridletCliWorkspace.Path,
         };
         startInfo.ArgumentList.Add("--output-format");
         startInfo.ArgumentList.Add("stream-json");
         startInfo.ArgumentList.Add("--verbose");
         startInfo.ArgumentList.Add("--system-prompt");
-        startInfo.ArgumentList.Add(string.Concat(instructions, CapabilityInstructions));
+        startInfo.ArgumentList.Add(string.Concat(instructions, "\n", CapabilityInstructions));
         startInfo.ArgumentList.Add("--tools");
         startInfo.ArgumentList.Add(string.Empty);
         startInfo.ArgumentList.Add("--model");

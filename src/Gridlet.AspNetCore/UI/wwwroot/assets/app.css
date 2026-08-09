@@ -694,7 +694,164 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 .message { color: var(--ok); font-size: 12.5px; white-space: pre-wrap; }
 
 /* ---- database agent tab ---- */
-.agent-panel { gap: 10px; overflow: hidden; padding: 12px; }
+.agent-panel { position: relative; flex-direction: row; gap: 10px; overflow: hidden; padding: 12px; }
+.agent-workspace {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+.agent-history {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  width: var(--agent-history-width, 232px);
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+.agent-history.is-collapsed { width: auto; padding-left: 6px; }
+.agent-history-head { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.agent-history-title {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: .35px;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.agent-history.is-collapsed .agent-history-title,
+.agent-history.is-collapsed .agent-history-new,
+.agent-history.is-collapsed .agent-history-grip,
+.agent-history.is-collapsed .agent-history-list { display: none; }
+.agent-history-toggle { display: inline-flex; padding: 2px 4px; }
+.agent-history-toggle-icon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+.agent-history:not(.is-collapsed) .agent-history-toggle-icon { transform: rotate(180deg); }
+.agent-history-new {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.agent-history-new-icon {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+.agent-history-grip {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  width: 9px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.agent-history-grip::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+  background: transparent;
+  content: '';
+}
+.agent-history-grip:hover::after,
+.agent-history-grip:focus-visible::after,
+.agent-history-grip.dragging::after { background: var(--accent); }
+.agent-history-list {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.agent-history-empty { padding: 4px 2px; font-size: 11.5px; line-height: 1.45; }
+.agent-history-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 5px;
+}
+.agent-history-item:hover { background: var(--panel-2); }
+.agent-history-item.is-current { background: var(--panel-2); }
+.agent-history-open {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 6px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.agent-history-item-title {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-item-meta {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-history-delete { flex: 0 0 auto; opacity: 0; font-size: 15px; line-height: 1; }
+.agent-history-item:hover .agent-history-delete,
+.agent-history-item:focus-within .agent-history-delete { opacity: 1; }
+@media (hover: none) {
+  .agent-history-delete { opacity: 1; }
+}
+/* Below this width the conversation itself needs the whole panel, so the pane floats over it
+   instead of squeezing the composer into its overflow menu. */
+@media (max-width: 1100px) {
+  .agent-history {
+    position: absolute;
+    z-index: 20;
+    top: 12px;
+    right: 12px;
+    max-height: calc(100% - 24px);
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: 0 8px 24px var(--shadow);
+  }
+  .agent-history.is-collapsed {
+    padding: 2px;
+    border-color: transparent;
+    background: none;
+    box-shadow: none;
+  }
+}
 .agent-key-field {
   display: grid;
   width: 100%;
@@ -721,22 +878,112 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   align-items: center;
   justify-content: center;
   flex-direction: column;
-  gap: 8px;
-  padding: 20px;
-  text-align: center;
+  gap: 24px;
+  padding: clamp(20px, 5vh, 54px) clamp(16px, 4vw, 48px);
   line-height: 1.5;
 }
-.agent-welcome strong { color: var(--text); font-size: 15px; }
+.agent-welcome-intro { text-align: center; }
+.agent-welcome-intro strong {
+  display: block;
+  color: var(--text);
+  font-size: clamp(20px, 2.2vw, 28px);
+  line-height: 1.25;
+}
+.agent-welcome-intro p { margin: 12px 0 0; font-size: 13px; }
+.agent-welcome-caution,
+.agent-welcome-access {
+  width: min(100%, 920px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.agent-welcome-caution {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 20px;
+  padding: 20px 24px;
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 9%, var(--panel));
+}
+.agent-welcome-caution-icon {
+  width: 42px;
+  height: 42px;
+  fill: none;
+  stroke: var(--warning);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.agent-welcome-caution-copy strong {
+  color: var(--warning);
+  font-size: 17px;
+}
+.agent-welcome-caution-copy p { margin: 5px 0 0; color: var(--text); font-size: 13px; }
+.agent-welcome-access {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) minmax(240px, 360px);
+  align-items: center;
+  gap: 18px;
+  padding: 18px 22px;
+  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+}
+.agent-welcome-access-icon-wrap {
+  display: flex;
+  width: 46px;
+  height: 46px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--border);
+}
+.agent-welcome-access-icon {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.agent-welcome-access-copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.agent-welcome-access-copy strong { color: var(--text); font-size: 15px; }
+.agent-welcome-access-copy span,
+.agent-welcome-access-choice > .muted { font-size: 12px; }
+.agent-welcome-access-choice { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
+.agent-welcome-share-picker,
+.agent-welcome-share-trigger { width: 100%; }
+.agent-welcome-share-trigger { height: 40px; color: var(--text); }
+.agent-welcome-share-trigger .agent-share-icon { width: 20px; height: 20px; }
+.agent-welcome-share-picker[data-sharing="none"] .agent-share-icon { color: var(--ok); }
+.agent-welcome-share-picker[data-sharing="active"] .agent-share-icon { color: var(--privacy); }
+.agent-welcome-share-picker[data-sharing="none"] .agent-share-warning { display: none; }
+.agent-welcome-share-picker[data-sharing="none"] .agent-share-check { display: block; }
+.agent-welcome-share-picker .agent-share-menu {
+  top: calc(100% + 6px);
+  right: 0;
+  bottom: auto;
+  left: auto;
+}
+@media (max-width: 760px) {
+  .agent-welcome { justify-content: flex-start; gap: 16px; padding: 20px 12px; }
+  .agent-welcome-caution { gap: 13px; padding: 16px; }
+  .agent-welcome-caution-icon { width: 32px; height: 32px; }
+  .agent-welcome-access {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 12px;
+    padding: 15px;
+  }
+  .agent-welcome-access-choice { grid-column: 1 / -1; }
+}
 .agent-message { display: flex; max-width: min(82%, 900px); flex-direction: column; gap: 4px; margin-bottom: 6px; }
 .agent-message-user { margin-left: auto; align-items: flex-end; }
 .agent-message-assistant { width: min(82%, 900px); margin-right: auto; align-items: flex-start; }
-.agent-message-role { color: var(--muted); font-size: 10.5px; font-weight: 650; letter-spacing: .35px; text-transform: uppercase; }
-.agent-message-role-name { color: var(--text); }
 .agent-message-role-detail {
+  overflow: hidden;
   color: var(--agent-detail);
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .agent-message-footer {
   display: flex;
@@ -815,6 +1062,20 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 .agent-prose { white-space: pre-wrap; }
 .agent-prose + .agent-prose { margin-top: 8px; }
 .agent-prose strong { font-weight: 700; }
+.agent-heading {
+  margin: 12px 0 5px;
+  line-height: 1.3;
+  font-weight: 700;
+}
+.agent-heading:first-child { margin-top: 0; }
+.agent-heading:is(h1) { font-size: 1.35em; }
+.agent-heading:is(h2) { font-size: 1.2em; }
+.agent-heading:is(h3) { font-size: 1.08em; }
+.agent-heading:is(h4, h5, h6) { font-size: 1em; }
+.agent-list { margin: 6px 0; padding-left: 24px; }
+.agent-list li + li { margin-top: 3px; }
+.agent-rule { margin: 12px 0; border: 0; border-top: 1px solid var(--border); }
+.agent-math { font-family: serif; }
 .agent-prose code, .agent-table code {
   padding: 1px 4px;
   border-radius: 4px;
@@ -999,6 +1260,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 .agent-code-block:last-child { margin-bottom: 0; }
 .agent-code-toolbar { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-bottom: 1px solid var(--border); }
 .agent-code-toolbar .mini-btn { color: var(--accent); font-family: var(--sans); font-size: 11.5px; }
+.agent-json-format-switcher .view-btn { min-width: 52px; padding: 2px 7px; }
 .agent-code-block pre { max-width: 100%; margin: 0; overflow: auto; padding: 10px 12px; }
 .agent-code-block code { font: 12.5px/1.5 var(--mono); white-space: pre; }
 .agent-compose-area {
@@ -1090,6 +1352,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   color: var(--muted);
   border-radius: 6px;
 }
+.agent-composer-select .select-trigger::after { display: none; }
 .agent-composer-select .select-trigger:hover { border-color: var(--border); color: var(--text); }
 .agent-composer-select .select-value {
   min-width: 0;
@@ -1097,6 +1360,13 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.select-value-compact { display: none; }
+/* Keep the model identity and effort legible before the whole options group has to collapse. The
+   toolbar slot qualifier limits this to the inline row; opening the icon menu restores full labels. */
+.toolbar-slot > .agent-composer-options.toolbar-compact
+  .agent-provider-control .select-value-full { display: none; }
+.toolbar-slot > .agent-composer-options.toolbar-compact
+  .agent-provider-control .select-value-compact { display: inline; }
 .agent-composer-select .select-menu {
   top: auto;
   right: 0;
@@ -1109,26 +1379,186 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.agent-mode-control { max-width: 160px; }
+/* Sharing is a menu rather than a row of checkboxes: there are three scopes now, each needs a
+   sentence explaining what it exposes, and the trigger can summarise the answer in the width one
+   checkbox used to take. */
+.agent-share-control {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  align-items: center;
+  height: 32px;
+}
+.agent-share-picker .select-trigger {
+  min-width: 0;
+  gap: 8px;
+  padding-left: 7px;
+}
+.agent-share-picker .select-trigger::after { display: none; }
+.agent-share-control.agent-share-active .select-trigger { color: var(--text); }
+.agent-share-control[data-sharing="none"] .agent-share-icon { color: var(--ok); }
+.agent-share-control[data-sharing="active"] .agent-share-icon { color: var(--privacy); }
+.agent-share-check { display: none; }
+.agent-share-control[data-sharing="none"] .agent-share-warning { display: none; }
+.agent-share-control[data-sharing="none"] .agent-share-check { display: block; }
+.agent-share-control .select-menu { right: auto; left: 0; }
+.agent-share-menu {
+  width: min(340px, calc(100vw - 48px));
+  max-height: calc(100vh - 96px);
+  overflow: visible;
+  padding: 6px;
+}
+.agent-share-menu:not([hidden]) { display: flex; flex-direction: column; }
+.agent-share-menu-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+.agent-share-options { min-height: 0; overflow-y: auto; padding-top: 4px; }
+.agent-share-info { position: relative; display: inline-flex; }
+.agent-share-info-button {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 50%;
+}
+.agent-share-info-button:hover,
+.agent-share-info-button:focus-visible { border-color: var(--border); color: var(--text); }
+.agent-share-info-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+}
+.agent-share-option {
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 9px;
+  white-space: normal;
+}
+.agent-share-option[data-allowed="false"] { opacity: 0.5; cursor: default; }
+.agent-share-option .agent-share-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+/* The box is drawn rather than native so it lines up with the first line of the label at any
+   font size, and so the checked state can use the accent colour in both themes. */
+.agent-share-mark {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  border: 1.5px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+}
+.agent-share-option:has(.agent-share-input:checked) .agent-share-mark {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.agent-share-option:has(.agent-share-input:checked) .agent-share-mark::after {
+  content: '';
+  display: block;
+  width: 4px;
+  height: 8px;
+  margin: 1px auto 0;
+  border: solid var(--panel);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.agent-share-option:has(.agent-share-input:focus-visible) { outline: 2px solid var(--accent); }
+.agent-share-text { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.agent-share-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-weight: 600;
+}
+.agent-share-detail { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.agent-share-option:hover .agent-share-detail { color: inherit; }
+.agent-share-help {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 7px);
+  right: -4px;
+  width: min(320px, calc(100vw - 64px));
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--code-popup);
+  box-shadow: 0 8px 24px var(--shadow);
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 120ms ease, visibility 120ms ease;
+}
+.agent-share-info:hover .agent-share-help,
+.agent-share-info:focus-within .agent-share-help { opacity: 1; visibility: visible; }
+.agent-share-marker { font-style: italic; }
+
+/* An access request the agent raised mid-answer. It is a decision, so it sits in the transcript
+   at the point it was asked rather than floating over the conversation. */
+.agent-permission {
+  margin: 4px 0 14px;
+  padding: 12px 13px;
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.agent-permission[data-state] { border-color: var(--border); }
+.agent-permission-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.agent-permission-reason {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.agent-permission-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 11px;
+}
+.agent-permission-actions:empty { display: none; }
+.agent-permission-status {
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.agent-permission[data-state='failed'] .agent-permission-status { color: var(--danger); }
 .agent-provider-control { max-width: min(430px, 46vw); }
 .agent-provider-control .select-menu { width: min(360px, calc(100vw - 48px)); }
 .agent-effort-control { max-width: 140px; }
-.agent-privacy-control { position: relative; display: inline-flex; flex: 0 0 auto; }
-.agent-privacy-button {
-  display: inline-flex;
-  width: 34px;
-  min-width: 34px;
-  height: 34px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border-color: transparent;
-  background: transparent;
-  color: var(--privacy);
-}
-.agent-privacy-button:hover,
-.agent-privacy-button:focus-visible { border-color: color-mix(in srgb, var(--privacy) 60%, transparent); }
-.agent-privacy-icon {
+.agent-share-icon {
   display: block;
   width: 22px;
   height: 22px;
@@ -1137,32 +1567,6 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
-}
-.agent-privacy-tooltip {
-  position: absolute;
-  z-index: 30;
-  bottom: calc(100% + 8px);
-  left: 0;
-  width: min(360px, calc(100vw - 48px));
-  padding: 9px 10px;
-  visibility: hidden;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--code-popup);
-  box-shadow: 0 8px 24px var(--shadow);
-  color: var(--text);
-  font-size: 11.5px;
-  line-height: 1.45;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(4px);
-  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
-}
-.agent-privacy-control:hover .agent-privacy-tooltip,
-.agent-privacy-control:focus-within .agent-privacy-tooltip {
-  visibility: visible;
-  opacity: 1;
-  transform: translateY(0);
 }
 .agent-dictation-button {
   position: relative;
@@ -1264,6 +1668,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   color: var(--text);
   font-size: 11.5px;
   line-height: 1.45;
+  white-space: pre-line;
   opacity: 0;
   pointer-events: none;
   transform: translateY(4px);

@@ -23,6 +23,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Every instruction given to a model is a Markdown file under Prompts/ rather than a string
+         literal, so the wording can be edited without touching C#. See Prompts/README.md. -->
+    <None Remove="Prompts\**\*.md" />
+    <EmbeddedResource Include="Prompts\**\*.md" Exclude="Prompts\README.md" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="Gridlet.Tests" />
   </ItemGroup>
 

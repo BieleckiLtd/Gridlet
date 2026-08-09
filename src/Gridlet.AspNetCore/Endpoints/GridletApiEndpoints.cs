@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Gridlet.Abstractions;
+using Gridlet.AspNetCore.Agents;
 using Gridlet.AspNetCore.Contracts;
 using Gridlet.Auditing;
 using Gridlet.Models;
@@ -68,13 +69,21 @@ internal static partial class GridletApiEndpoints
             "/connections/{connection}/databases/{database}/agents/data/chat", ChatWithDataAgent);
         var schemaAgent = api.MapPost(
             "/connections/{connection}/databases/{database}/agents/schema/chat", ChatWithSchemaAgent);
+        // Answering an access prompt widens what a live turn can reach, so each answer is guarded
+        // by the same policy as the chat route that grants the scope up front.
+        var grantData = api.MapPost("/agents/permissions/{requestId}/data", GrantDataAccess);
+        var grantApi = api.MapPost("/agents/permissions/{requestId}/api", GrantApiAccess);
+        var grantSchema = api.MapPost("/agents/permissions/{requestId}/schema", GrantSchemaAccess);
         if (!string.IsNullOrWhiteSpace(options.Security.AgentDataAuthorizationPolicy))
         {
             dataAgent.RequireAuthorization(options.Security.AgentDataAuthorizationPolicy);
+            grantData.RequireAuthorization(options.Security.AgentDataAuthorizationPolicy);
+            grantApi.RequireAuthorization(options.Security.AgentDataAuthorizationPolicy);
         }
         if (!string.IsNullOrWhiteSpace(options.Security.AgentSchemaAuthorizationPolicy))
         {
             schemaAgent.RequireAuthorization(options.Security.AgentSchemaAuthorizationPolicy);
+            grantSchema.RequireAuthorization(options.Security.AgentSchemaAuthorizationPolicy);
         }
         if (!string.IsNullOrWhiteSpace(options.Security.AgentCredentialAuthorizationPolicy))
         {
@@ -130,13 +139,15 @@ internal static partial class GridletApiEndpoints
                     ? metadata.Capabilities
                     : LegacyProviderCapabilities,
                 c.AllowAgentSchemaAccess,
-                c.AllowAgentDataAccess))
+                c.AllowAgentDataAccess,
+                c.AllowAgentApiAccess))
             .ToArray();
         return Results.Ok(new GridletMetaResponse(
             Version,
             connections,
             options.CurrentValue.Limits.MaxQueryResultRows,
-            services.GetService<IGridletAgentService>()?.Info));
+            services.GetService<IGridletAgentService>()?.Info,
+            options.CurrentValue.PublishedApiSegment));
     }
 
     private static Task<IResult> GetDatabases(
@@ -397,6 +408,78 @@ internal static partial class GridletApiEndpoints
             connection, database, GridletAgentMode.Data, body, resolver, audit, services,
             httpContext, cancellationToken);
 
+    private static Task<IResult> GrantDataAccess(
+        string requestId,
+        AgentPermissionDecisionBody body,
+        IServiceProvider services,
+        IGridletAuditSink audit,
+        HttpContext httpContext)
+        => ResolveAgentPermission(
+            requestId, GridletAgentAccessScope.Data, body, services, audit, httpContext);
+
+    private static Task<IResult> GrantSchemaAccess(
+        string requestId,
+        AgentPermissionDecisionBody body,
+        IServiceProvider services,
+        IGridletAuditSink audit,
+        HttpContext httpContext)
+        => ResolveAgentPermission(
+            requestId, GridletAgentAccessScope.Schema, body, services, audit, httpContext);
+
+    private static Task<IResult> GrantApiAccess(
+        string requestId,
+        AgentPermissionDecisionBody body,
+        IServiceProvider services,
+        IGridletAuditSink audit,
+        HttpContext httpContext)
+        => ResolveAgentPermission(
+            requestId, GridletAgentAccessScope.Api, body, services, audit, httpContext);
+
+    /// <summary>
+    /// Delivers one Allow or Deny answer to the turn waiting for it. Unknown, expired, and
+    /// somebody else's requests all return the same 404 so this route cannot be used to discover
+    /// which request ids are live.
+    /// </summary>
+    private static async Task<IResult> ResolveAgentPermission(
+        string requestId,
+        GridletAgentAccessScope scope,
+        AgentPermissionDecisionBody body,
+        IServiceProvider services,
+        IGridletAuditSink audit,
+        HttpContext httpContext)
+    {
+        httpContext.Response.Headers.CacheControl = "no-store";
+        if (body?.Granted is not { } granted)
+        {
+            return Results.BadRequest(new GridletErrorResponse(
+                "The access decision must state whether the request was granted."));
+        }
+        if (string.IsNullOrWhiteSpace(requestId) || requestId.Length > 100)
+        {
+            return Results.NotFound(new GridletErrorResponse(
+                "The access request is no longer waiting for an answer."));
+        }
+
+        var broker = services.GetService<IGridletAgentPermissionBroker>();
+        if (broker is null)
+        {
+            return Results.NotFound(new GridletErrorResponse(
+                "Database agents are not configured for this application."));
+        }
+
+        var user = AgentUser(httpContext);
+        var resolved = broker.TryResolve(requestId, scope, granted, user);
+        await AuditAsync(
+            audit, httpContext, $"agent.access.{scope.ToString().ToLowerInvariant()}",
+            connectionName: string.Empty, database: null, objectName: null, sql: null,
+            succeeded: resolved && granted, durationMs: 0,
+            error: resolved ? (granted ? null : "Denied by the user.") : "No matching request.");
+        return resolved
+            ? Results.NoContent()
+            : Results.NotFound(new GridletErrorResponse(
+                "The access request is no longer waiting for an answer."));
+    }
+
     private static async Task<IResult> CloseAgentConversation(
         string conversationId,
         IServiceProvider services,
@@ -470,6 +553,36 @@ internal static partial class GridletApiEndpoints
             return;
         }
 
+        // The API scope has its own per-connection switch, and the route's mode does not imply it,
+        // so it is checked here rather than only inside the agent service. A connection that never
+        // opted in gets the same 403 as any other disabled scope.
+        if (body.ShareApi && !resolved.Context.Connection.AllowAgentApiAccess)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await httpContext.Response.WriteAsJsonAsync(
+                new GridletErrorResponse(
+                    $"Published API agent access is disabled for connection '{connection}'."),
+                cancellationToken);
+            return;
+        }
+
+        // The route carries the host authorization policy, so the schema route may never open data
+        // access — neither up front nor by an access prompt answered later in the turn. API access
+        // grants no direct query access, but an invoked endpoint may return rows, so it uses the
+        // route carrying the same host authorization policy.
+        if (mode == GridletAgentMode.Schema && (body.ShareData || body.ShareApi))
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await httpContext.Response.WriteAsJsonAsync(
+                new GridletErrorResponse(
+                    body.ShareData
+                        ? "Sharing database data requires the data agent route."
+                        : "Published API access requires the data agent route because an invoked " +
+                          "endpoint may return row data; it does not enable direct data queries."),
+                cancellationToken);
+            return;
+        }
+
         var agent = services.GetService<IGridletAgentService>();
         if (agent is null)
         {
@@ -537,14 +650,15 @@ internal static partial class GridletApiEndpoints
         var request = new GridletAgentRequest(
             connection,
             database,
-            mode,
+            new GridletAgentAccess(body.ShareSchema, body.ShareData, body.ShareApi),
             profile.Id,
             body.Message,
             history,
             body.CredentialHandle,
             AgentUser(httpContext),
             body.ConversationId,
-            reasoningEffort is { Length: > 0 } ? reasoningEffort : null);
+            reasoningEffort is { Length: > 0 } ? reasoningEffort : null,
+            AgentEnvironment(httpContext));
         var stopwatch = Stopwatch.StartNew();
         httpContext.Response.ContentType = "application/x-ndjson; charset=utf-8";
 
@@ -719,6 +833,23 @@ internal static partial class GridletApiEndpoints
             succeeded,
             DurationMs: 0,
             error), CancellationToken.None);
+
+    /// <summary>
+    /// The address this Gridlet is actually answering on, taken from the request the browser just
+    /// made. An agent given only the product's documented defaults invents plausible hostnames
+    /// instead of naming the one the person is looking at.
+    /// </summary>
+    private static GridletAgentEnvironment AgentEnvironment(HttpContext httpContext)
+    {
+        var request = httpContext.Request;
+        var baseAddress = string.Concat(
+            request.Scheme, "://", request.Host.ToUriComponent(),
+            request.PathBase.HasValue ? request.PathBase.ToUriComponent() : string.Empty, "/");
+        var mountPath = httpContext.RequestServices.GetService<GridletMountPath>()?.Value ?? "/gridlet";
+        var published = httpContext.RequestServices
+            .GetService<IOptionsMonitor<GridletOptions>>()?.CurrentValue.PublishedApiSegment ?? "pub";
+        return new GridletAgentEnvironment(baseAddress, mountPath, published);
+    }
 
     private static GridletAgentUserContext AgentUser(HttpContext httpContext)
     {

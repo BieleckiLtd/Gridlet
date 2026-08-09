@@ -57,6 +57,13 @@ public sealed class GridletAgentFrameworkOptions
     public int MaxOutputTokens { get; set; } = 4_096;
 
     /// <summary>
+    /// How long an agent's request to share database schema or data waits for a browser answer
+    /// before it is treated as a denial. The turn stays on the wire for this long, so it is bounded
+    /// deliberately rather than left open.
+    /// </summary>
+    public TimeSpan AccessPromptTimeout { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
     /// Command used to launch the locally installed Codex CLI for subscription-backed profiles.
     /// Authentication is owned by that local Codex installation and is never read by Gridlet.
     /// </summary>
@@ -191,6 +198,9 @@ public sealed class GridletAgentFrameworkOptions
             nameof(MaxToolIterations), "null or between 1 and 100");
         ValidateRange(MaxOutputTokens is >= 1 and <= 100_000,
             nameof(MaxOutputTokens), "between 1 and 100,000");
+        ValidateRange(AccessPromptTimeout >= TimeSpan.FromSeconds(10) &&
+                      AccessPromptTimeout <= TimeSpan.FromMinutes(30),
+            nameof(AccessPromptTimeout), "between ten seconds and thirty minutes");
         if (string.IsNullOrWhiteSpace(CodexExecutablePath) || CodexExecutablePath.Length > 1_024)
         {
             throw new GridletValidationException(
@@ -226,6 +236,12 @@ public sealed class GridletAgentFrameworkOptions
             profiles.Add(profile);
         }
 
+        if (profiles.Count(profile => profile.IsDefault) > 1)
+        {
+            throw new GridletValidationException(
+                "Only one agent profile can be marked as the default with AsDefault().");
+        }
+
         return new GridletAgentFrameworkSettings(
             CredentialLifetime,
             ConversationIdleTimeout,
@@ -239,6 +255,7 @@ public sealed class GridletAgentFrameworkOptions
             QueryTimeoutSeconds,
             MaxToolIterations,
             MaxOutputTokens,
+            AccessPromptTimeout,
             CodexExecutablePath,
             ClaudeExecutablePath,
             CopilotExecutablePath,
@@ -287,6 +304,7 @@ public sealed class GridletAgentProfileBuilder
     internal GridletClaudeCodeEffort? ClaudeCodeEffort { get; private set; }
     internal bool AllowsReasoningEffortSelection { get; private set; }
     internal int? ContextWindowTokens { get; private set; }
+    internal bool IsDefault { get; private set; }
 
     /// <summary>Changes the safe display label exposed to Gridlet clients.</summary>
     public GridletAgentProfileBuilder WithDisplayName(string displayName)
@@ -309,6 +327,16 @@ public sealed class GridletAgentProfileBuilder
     public GridletAgentProfileBuilder AllowUserApiKeys(bool allow = true)
     {
         AllowsUserApiKey = allow;
+        return this;
+    }
+
+    /// <summary>
+    /// Selects this profile for every new conversation. Without a configured default, a client is
+    /// free to reopen with the profile the person last used. At most one profile may be the default.
+    /// </summary>
+    public GridletAgentProfileBuilder AsDefault(bool isDefault = true)
+    {
+        IsDefault = isDefault;
         return this;
     }
 
@@ -481,7 +509,8 @@ public sealed class GridletAgentProfileBuilder
             CopilotReasoningEffort,
             ClaudeCodeEffort,
             AllowsReasoningEffortSelection,
-            ContextWindowTokens);
+            ContextWindowTokens,
+            IsDefault);
     }
 }
 
@@ -560,7 +589,8 @@ internal sealed record GridletAgentProfileSettings(
     GridletCopilotReasoningEffort? CopilotReasoningEffort,
     GridletClaudeCodeEffort? ClaudeCodeEffort,
     bool AllowsReasoningEffortSelection,
-    int? ContextWindowTokens = null)
+    int? ContextWindowTokens = null,
+    bool IsDefault = false)
 {
     public bool RequiresUserApiKey =>
         ServerApiKey is null &&
@@ -583,6 +613,7 @@ internal sealed record GridletAgentFrameworkSettings(
     int QueryTimeoutSeconds,
     int? MaxToolIterations,
     int MaxOutputTokens,
+    TimeSpan AccessPromptTimeout,
     string CodexExecutablePath,
     string ClaudeExecutablePath,
     string CopilotExecutablePath,
@@ -603,7 +634,8 @@ internal sealed record GridletAgentFrameworkSettings(
             profile.RequiresUserApiKey,
             GetReasoningEfforts(profile),
             GetDefaultReasoningEffort(profile),
-            profile.ContextWindowTokens)).ToArray());
+            profile.ContextWindowTokens)).ToArray(),
+        Profiles.FirstOrDefault(profile => profile.IsDefault)?.Id);
 
     public bool TryGetProfile(string id, out GridletAgentProfileSettings profile)
         => _profilesById.TryGetValue(id, out profile!);

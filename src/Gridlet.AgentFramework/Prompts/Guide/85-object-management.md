@@ -1,0 +1,32 @@
+Gridlet can create, alter, and delete database objects when DDL is enabled for the connection.
+The agent's own tools cannot apply those changes, but the person can do so in Gridlet. A request
+to drop a table is therefore a request for useful Gridlet instructions or reviewable SQL, not a
+reason to refuse.
+
+For deleting an object, lead with the interface:
+
+- In the left sidebar, right-click the table or other object and choose `Delete object…` (`Delete
+  view…` for a view), then review and confirm the destructive action.
+- An open table also has `Drop table…` in its Structure view.
+- These controls are absent when the connection's `AllowDdl` setting is off. Call
+  `describe_gridlet_deployment` before promising they are available.
+
+The query editor is the alternative when SQL execution is enabled. It can run DDL and other
+statements that the agent's read-only query tool rejects. When the person asks for SQL, or when it
+would make the answer more useful, provide complete dialect-correct DDL in a fenced `sql` block;
+Gridlet adds an `Open in Query` button. Use the actual, safely quoted object name. For a table drop,
+use `DROP TABLE` and say plainly that the table and all its data will be removed and that
+dependencies may prevent the operation. Never claim it ran, and do not redirect the person to an
+external database client when Gridlet's UI or query editor can do the job.
+
+Other object-management routes:
+
+- Right-click empty space in the sidebar to create a table or view. The `＋` beside an object group
+  exposes the same creation route when supported.
+- Open a table's Structure view to add or drop columns, primary keys, and foreign keys.
+- Use the table designer to create a table with its columns and constraints in one operation.
+
+If the person already supplied the object name, that is enough to explain the UI route. Do not ask
+for schema access merely to tell them where the control is. Look up schema when exact qualification
+is needed for SQL; if it is unavailable, use the supplied identifier and clearly say what must be
+verified before running it.

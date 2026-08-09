@@ -3,50 +3,148 @@
     {
       "Id": "sample-order-summary-query",
       "Name": "Order summary",
-      "ConnectionName": "GridletSample.db",
+      "ConnectionName": "BytePizza.db",
       "Database": "main",
       "Sql": "SELECT * FROM vw_OrderSummary ORDER BY OrderedAtUtc DESC LIMIT 100;",
-      "UpdatedAtUtc": "2026-07-12T00:00:00+00:00"
+      "UpdatedAtUtc": "2026-08-09T12:30:00+00:00"
     }
   ],
   "PublishedEndpoints": [
     {
-      "Id": "sample-customers-endpoint",
-      "Name": "Customers by country",
+      "Id": "sample-vegetarian-menu-endpoint",
+      "Name": "Vegetarian pizzas by calories",
       "Method": "GET",
-      "Route": "customers",
-      "ConnectionName": "GridletSample.db",
+      "Route": "menu/vegetarian",
+      "ConnectionName": "BytePizza.db",
       "Database": "main",
-      "Sql": "SELECT * FROM Customers WHERE Country = @country ORDER BY LastName, FirstName;",
+      "Sql": "SELECT PizzaId, PizzaName, Size, Price, EstimatedCalories, AverageRating, Toppings FROM vw_CurrentMenu WHERE IsVegetarian = 1 AND EstimatedCalories <= @max_calories ORDER BY EstimatedCalories, PizzaName;",
       "Parameters": [
         {
-          "Name": "country",
+          "Name": "max_calories",
+          "Required": true,
+          "Type": "integer"
+        }
+      ],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-08-09T12:30:00+00:00",
+      "MaxRows": 50
+    },
+    {
+      "Id": "sample-menu-search-endpoint",
+      "Name": "Search menu and reviews",
+      "Method": "GET",
+      "Route": "menu/search",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "SELECT EntityType, EntityId, Title, snippet(MenuSearch, 3, '<mark>', '</mark>', ' ... ', 12) AS Match FROM MenuSearch WHERE MenuSearch MATCH @term ORDER BY rank LIMIT 20;",
+      "Parameters": [
+        {
+          "Name": "term",
           "Required": true,
           "Type": "string"
         }
       ],
       "AuthorizationPolicy": null,
       "Enabled": true,
-      "UpdatedAtUtc": "2026-07-12T00:00:00+00:00",
-      "MaxRows": null
+      "UpdatedAtUtc": "2026-08-09T12:30:00+00:00",
+      "MaxRows": 20
     },
     {
-      "Id": "sample-odd-second-endpoint",
-      "Name": "Odd-second policy demo",
-      "Method": "GET",
-      "Route": "samples/odd-second",
-      "ConnectionName": "GridletSample.db",
+      "Id": "sample-order-estimate-endpoint",
+      "Name": "Estimate an order",
+      "Method": "POST",
+      "Route": "orders/estimate",
+      "ConnectionName": "BytePizza.db",
       "Database": "main",
-      "Sql": "SELECT strftime(\u0027%Y-%m-%dT%H:%M:%fZ\u0027, \u0027now\u0027) AS ExecutedAtUtc, \u0027OddSecond policy passed\u0027 AS Message;",
-      "Parameters": [],
-      "AuthorizationPolicy": "OddSecond",
+      "Sql": "SELECT p.PizzaId, p.Name AS PizzaName, s.Name AS Size, @quantity AS Quantity, round((p.BasePricePence + s.PriceAdjustmentPence) / 100.0, 2) AS UnitPrice, round((p.BasePricePence + s.PriceAdjustmentPence) * @quantity / 100.0, 2) AS EstimatedTotal FROM Pizzas p CROSS JOIN PizzaSizes s WHERE p.PizzaId = @pizza_id AND lower(s.Name) = lower(@size) AND @quantity BETWEEN 1 AND 20;",
+      "Parameters": [
+        {
+          "Name": "pizza_id",
+          "Required": true,
+          "Type": "integer"
+        },
+        {
+          "Name": "size",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "quantity",
+          "Required": true,
+          "Type": "integer"
+        }
+      ],
+      "AuthorizationPolicy": null,
       "Enabled": true,
-      "UpdatedAtUtc": "2026-07-12T00:00:00+00:00",
-      "MaxRows": null
+      "UpdatedAtUtc": "2026-08-09T12:30:00+00:00",
+      "MaxRows": 1
+    },
+    {
+      "Id": "sample-customer-orders-endpoint",
+      "Name": "Customer order history",
+      "Method": "GET",
+      "Route": "orders/customer",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "SELECT v.OrderId, v.OrderedAtUtc, v.OrderType, v.Status, v.PizzaCount, v.OrderTotal, v.Tip, json_extract(o.PaymentMetadata, '$.source') AS OrderSource FROM Customers c JOIN Orders o ON o.CustomerId = c.CustomerId JOIN vw_OrderSummary v ON v.OrderId = o.OrderId WHERE lower(c.Email) = lower(@email) ORDER BY v.OrderedAtUtc DESC;",
+      "Parameters": [
+        {
+          "Name": "email",
+          "Required": true,
+          "Type": "string"
+        }
+      ],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-08-09T12:30:00+00:00",
+      "MaxRows": 50
+    },
+    {
+      "Id": "sample-popular-pizzas-endpoint",
+      "Name": "Popular pizza analytics",
+      "Method": "GET",
+      "Route": "analytics/popular-pizzas",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "SELECT * FROM vw_PopularPizzas ORDER BY Revenue DESC, PizzaName;",
+      "Parameters": [],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-08-09T12:30:00+00:00",
+      "MaxRows": 10
+    },
+    {
+      "Id": "sample-delivery-hours-menu-endpoint",
+      "Name": "Delivery-hours menu",
+      "Method": "GET",
+      "Route": "menu/delivery",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "SELECT PizzaId, PizzaName, Size, Price, EstimatedCalories, AverageRating, 'Delivery available until 22:00 local time' AS Availability FROM vw_CurrentMenu ORDER BY PizzaName, DiameterInches;",
+      "Parameters": [],
+      "AuthorizationPolicy": "BytePizzaDeliveryHours",
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-08-09T12:30:00+00:00",
+      "MaxRows": 50
+    },
+    {
+      "Id": "sample-after-hours-menu-endpoint",
+      "Name": "After-hours collection menu",
+      "Method": "GET",
+      "Route": "menu/after-hours",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "SELECT PizzaId, PizzaName, Size, Price, 'Collection only - no delivery after 22:00' AS Availability FROM vw_CurrentMenu WHERE PizzaName = 'Margherita' ORDER BY DiameterInches;",
+      "Parameters": [],
+      "AuthorizationPolicy": "BytePizzaAfterHoursCollection",
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-08-09T12:30:00+00:00",
+      "MaxRows": 4
     },
     {
       "Id": "eaa782df509a464bb73d306af419bf35",
-      "Name": "sqlserver",
+      "Name": "SQL Server order summary",
       "Method": "GET",
       "Route": "sqlserver",
       "ConnectionName": "(localdb)\\MSSQLLocalDB",
@@ -57,6 +155,20 @@
       "Enabled": true,
       "UpdatedAtUtc": "2026-08-08T14:14:18.0590862+00:00",
       "MaxRows": null
+    },
+    {
+      "Id": "ff7fe69e1caf4a0d80fb45dbb5761174",
+      "Name": "Frequent customers this month",
+      "Method": "GET",
+      "Route": "agent-sql",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "SELECT c.CustomerId, c.FirstName, c.LastName, c.Email, COUNT(o.OrderId) AS OrdersThisMonth FROM main.Customers c JOIN main.Orders o ON o.CustomerId = c.CustomerId WHERE o.OrderedAtUtc >= datetime('now', 'start of month') GROUP BY c.CustomerId, c.FirstName, c.LastName, c.Email HAVING COUNT(o.OrderId) > 3 ORDER BY OrdersThisMonth DESC;",
+      "Parameters": [],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-08-09T10:10:03.2899468+00:00",
+      "MaxRows": 50
     }
   ]
 }

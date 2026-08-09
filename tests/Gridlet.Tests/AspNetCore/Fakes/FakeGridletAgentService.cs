@@ -107,7 +107,18 @@ public sealed class FakeGridletAgentService : IGridletAgentService
             yield return new GridletAgentStreamEvent(
                 "content",
                 """
+                ### Query plan
+
+                *Prepared safely.*
+
                 **Explanation of the join logic:**
+
+                * `Orders` supplies the order identifier.
+                * `OrderLines` supplies the matching products.
+
+                ***
+
+                Delta symbol: $\bigtriangleup$
 
                 | Step | Tables Joined Via Column | Purpose |
                 |------|---------------------------|---------|
@@ -118,6 +129,10 @@ public sealed class FakeGridletAgentService : IGridletAgentService
                 SELECT o.orderId
                 FROM Orders AS o;
                 ```
+
+                ```json
+                {"request":{"method":"GET"},"rows":2,"ok":true}
+                ```
                 """,
                 "assistant");
             yield return new GridletAgentStreamEvent("completed");
@@ -126,7 +141,7 @@ public sealed class FakeGridletAgentService : IGridletAgentService
 
         yield return new GridletAgentStreamEvent(
             "content",
-            $"Fake {request.Mode.ToString().ToLowerInvariant()} response",
+            $"Fake {(request.Access.Data ? "data" : "schema")} response",
             "assistant");
         yield return new GridletAgentStreamEvent("completed");
     }
