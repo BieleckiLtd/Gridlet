@@ -39,6 +39,36 @@ public sealed class SqliteDdlBuilderTests
     public void Rejects_unsafe_or_malformed_types(string input)
         => Assert.Throws<GridletValidationException>(() => SqliteDdlBuilder.NormalizeDataType(input));
 
+    /// <summary>
+    /// A type name may contain spaces, so shape alone cannot separate DOUBLE PRECISION from a type
+    /// with a constraint stuck on the end. Left alone, that text goes into the column definition
+    /// whole: "TEXT NOT NULL" on a nullable column would silently make it required, and "TEXT
+    /// REFERENCES Other" would add a foreign key the designer never showed anybody.
+    /// </summary>
+    [Theory]
+    [InlineData("TEXT NOT NULL")]
+    [InlineData("TEXT PRIMARY KEY")]
+    [InlineData("INTEGER PRIMARY KEY AUTOINCREMENT")]
+    [InlineData("TEXT UNIQUE")]
+    [InlineData("TEXT COLLATE NOCASE")]
+    [InlineData("TEXT REFERENCES Other")]
+    [InlineData("INTEGER GENERATED ALWAYS AS")]
+    public void Rejects_a_constraint_dressed_up_as_a_type(string input)
+    {
+        var exception = Assert.Throws<GridletValidationException>(
+            () => SqliteDdlBuilder.NormalizeDataType(input));
+
+        Assert.Contains("column constraint", exception.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>The refusal is about constraint words, not about spaces: real type names still pass.</summary>
+    [Theory]
+    [InlineData("double precision")]
+    [InlineData("unsigned big int")]
+    [InlineData("varying character(20)")]
+    public void Still_accepts_a_type_name_written_as_several_words(string input)
+        => SqliteDdlBuilder.NormalizeDataType(input);
+
     [Fact]
     public void Builds_identity_primary_key_defaults_and_foreign_keys()
     {

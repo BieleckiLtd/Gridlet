@@ -17,6 +17,20 @@ public static partial class SqliteDdlBuilder
         @"(?:\s*\(\s*(?<args>\d{1,4}(?:\s*,\s*\d{1,4})?)\s*\))?$")]
     private static partial Regex DataTypePattern();
 
+    /// <summary>
+    /// Words that begin or belong to a column constraint rather than a type name. A multi-word type
+    /// is legitimate - DOUBLE PRECISION, UNSIGNED BIG INT - so the shape alone cannot tell a type
+    /// from "TEXT NOT NULL" or "TEXT REFERENCES Other", and the type field is not the place to
+    /// declare a constraint the designer already has its own fields for.
+    /// </summary>
+    private static readonly HashSet<string> ConstraintWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "constraint", "primary", "key", "not", "null", "unique", "check", "default", "collate",
+        "references", "foreign", "generated", "always", "as", "stored", "virtual", "autoincrement",
+        "asc", "desc", "on", "conflict", "deferrable", "initially", "deferred", "immediate", "match",
+        "hidden",
+    };
+
     public static string NormalizeDataType(string dataType)
     {
         var match = DataTypePattern().Match(dataType?.Trim() ?? "");
@@ -25,6 +39,14 @@ public static partial class SqliteDdlBuilder
             throw new GridletValidationException(
                 $"'{dataType}' is not a usable SQLite data type. Use a name such as INTEGER, TEXT, REAL, " +
                 "BLOB, NUMERIC, ANY, or VARCHAR(100).");
+        }
+
+        var words = match.Groups["name"].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.FirstOrDefault(ConstraintWords.Contains) is { } constraintWord)
+        {
+            throw new GridletValidationException(
+                $"'{dataType}' is a type followed by a column constraint, not a type. Remove " +
+                $"'{constraintWord}' and set the constraint with its own field instead.");
         }
 
         var displayName = match.Groups["name"].Value.Trim().ToUpperInvariant();
