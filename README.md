@@ -6,7 +6,7 @@
 
 Gridlet is an embeddable ASP.NET Core database management interface. Add it to an existing
 application to browse schemas and data, inspect keys, indexes and relationships, edit database
-objects, run queries, publish APIs, and talk to your data with an integrated AI agent—all through
+objects, run queries, publish APIs, and talk to your data with an integrated AI agent, all through
 the host application's authentication, authorisation, routing, logging and deployment model.
 
 <p align="center">
