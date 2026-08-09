@@ -92,6 +92,11 @@ public sealed class FakeGridletProvider :
             "Missing" => Task.FromException<TableDefinition>(
                 new GridletObjectNotFoundException($"{schema}.{name}")),
 
+            // A routine is not a table, and a strict provider says so rather than returning an
+            // empty definition. Anything that only needs the object's identity must not ask.
+            "RefreshOrders" or "OrderCount" => Task.FromException<TableDefinition>(
+                new GridletValidationException($"{schema}.{name} is not a table or view.")),
+
             // A heap: no primary key, and the value that identifies a row is not one of its columns.
             "Heap" => Task.FromResult(new TableDefinition(
                 new DbObjectInfo(schema, name, DbObjectType.Table),

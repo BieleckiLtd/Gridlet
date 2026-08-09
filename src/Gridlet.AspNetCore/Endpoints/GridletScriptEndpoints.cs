@@ -54,14 +54,17 @@ internal static partial class GridletApiEndpoints
 
             var limits = options.CurrentValue.Limits;
             var maxRows = Math.Clamp(body.MaxRows ?? limits.MaxQueryResultRows, 1, limits.MaxQueryResultRows);
-            var definition = await resolved.Provider.Schema.GetTableDefinitionAsync(
-                resolved.Context, schema, name, cancellationToken);
+
+            // Only the identity of the object is needed to drop or create it. A full table
+            // definition is asked for only when rows are scripted, so scripting a procedure never
+            // depends on a provider being willing to describe one as if it were a table.
+            var @object = await FindObjectAsync(resolved, schema, name, cancellationToken);
             var script = new StringBuilder();
 
             // Ordered so the result runs top to bottom: drop what is there, create it, fill it.
             if (parts.Contains("drop"))
             {
-                Append(script, resolved.Provider.Ddl.BuildDropScript(definition.Object));
+                Append(script, resolved.Provider.Ddl.BuildDropScript(@object));
             }
 
             if (parts.Contains("create"))
@@ -75,12 +78,36 @@ internal static partial class GridletApiEndpoints
 
             if (parts.Contains("data"))
             {
+                if (@object.Type is not (DbObjectType.Table or DbObjectType.View))
+                {
+                    throw new GridletValidationException($"{schema}.{name} has no rows to script.");
+                }
+
+                var definition = await resolved.Provider.Schema.GetTableDefinitionAsync(
+                    resolved.Context, schema, name, cancellationToken);
                 Append(script, await BuildDataScriptAsync(
                     resolved, schema, name, definition, maxRows, limits.MaxPageSize, cancellationToken));
             }
 
             return Results.Ok(new ObjectScriptResponse(script.ToString().TrimEnd()));
         });
+
+    /// <summary>
+    /// Finds the object by name in the provider's own list, so its kind comes from the database
+    /// rather than from the request.
+    /// </summary>
+    private static async Task<DbObjectInfo> FindObjectAsync(
+        ResolvedConnection resolved,
+        string schema,
+        string name,
+        CancellationToken cancellationToken)
+    {
+        var objects = await resolved.Provider.Schema.GetObjectsAsync(resolved.Context, cancellationToken);
+        return objects.FirstOrDefault(candidate =>
+            string.Equals(candidate.Schema, schema, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase))
+            ?? throw new GridletObjectNotFoundException($"{schema}.{name}");
+    }
 
     private static async Task<string> BuildDataScriptAsync(
         ResolvedConnection resolved,
@@ -91,11 +118,6 @@ internal static partial class GridletApiEndpoints
         int maxPageSize,
         CancellationToken cancellationToken)
     {
-        if (definition.Object.Type is not (DbObjectType.Table or DbObjectType.View))
-        {
-            throw new GridletValidationException($"{schema}.{name} has no rows to script.");
-        }
-
         // Rows are read a page at a time, so scripting a large table does not depend on one
         // enormous result, and stops at the same cap the grid uses.
         var columns = Array.Empty<ResultColumn>();
