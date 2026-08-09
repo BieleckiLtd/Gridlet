@@ -178,6 +178,9 @@ public sealed record RowWriteRequest(
 
 public sealed record RowWriteResponse(int RowsAffected);
 
+/// <summary>Body for a rename. The new name is always unqualified: a rename never moves an object.</summary>
+public sealed record RenameRequest(string? NewName);
+
 public sealed record SavedQuerySaveRequest(
     string? Id, string Name, string ConnectionName, string? Database, string Sql);
 

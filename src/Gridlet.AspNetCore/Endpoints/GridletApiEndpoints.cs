@@ -120,6 +120,9 @@ internal static partial class GridletApiEndpoints
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-keys", AddForeignKey);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/constraints/{constraint}", DropConstraint);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}", DropObject);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/rename", RenameObject);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/indexes/{index}/rename", RenameIndex);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/truncate", TruncateTable);
 
         // Saved queries.
         api.MapGet("/queries", GetSavedQueries);
@@ -1332,6 +1335,63 @@ internal static partial class GridletApiEndpoints
             (resolved, ct) => resolved.Provider.Ddl.DropObjectAsync(
                 resolved.Context, schema, name, type ?? DbObjectType.Table, ct),
             cancellationToken);
+
+    private static Task<IResult> RenameObject(
+        string connection, string database, string schema, string name, RenameRequest body,
+        DbObjectType? type,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}", "ddl.renameObject", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.RenameObjectAsync(
+                resolved.Context, schema, name, type ?? DbObjectType.Table, RequireNewName(body), ct),
+            cancellationToken);
+
+    private static Task<IResult> RenameIndex(
+        string connection, string database, string schema, string name, string index, RenameRequest body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}.{index}", "ddl.renameIndex", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.RenameIndexAsync(
+                resolved.Context, schema, name, index, RequireNewName(body), ct),
+            cancellationToken);
+
+    /// <summary>
+    /// Emptying a table destroys data but changes no schema, so it is gated on writes rather than
+    /// DDL - the same permission that lets somebody delete the rows one at a time.
+    /// </summary>
+    private static Task<IResult> TruncateTable(
+        string connection, string database, string schema, string name,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            if (!resolved.Context.Connection.AllowWrites)
+            {
+                return Forbidden($"Writes are disabled for connection '{resolved.Context.ConnectionName}'.");
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                await resolved.Provider.Ddl.TruncateTableAsync(
+                    resolved.Context, schema, name, cancellationToken);
+                await AuditAsync(audit, httpContext, "data.truncate", connection, database,
+                    $"{schema}.{name}", null, succeeded: true, stopwatch.ElapsedMilliseconds, null);
+                return Results.NoContent();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                await AuditAsync(audit, httpContext, "data.truncate", connection, database,
+                    $"{schema}.{name}", null, succeeded: false, stopwatch.ElapsedMilliseconds, ex.Message);
+                throw;
+            }
+        });
+
+    private static string RequireNewName(RenameRequest body)
+        => string.IsNullOrWhiteSpace(body?.NewName)
+            ? throw new GridletValidationException("The new name must not be empty.")
+            : body.NewName.Trim();
 
     private static Task<IResult> Ddl(
         string connection, string database, string objectName, string action,

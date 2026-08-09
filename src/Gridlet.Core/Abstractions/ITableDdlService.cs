@@ -134,4 +134,38 @@ public interface ITableDdlService
         string name,
         DbObjectType type,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Renames a table, view, procedure, function or trigger within its schema. Renaming does not
+    /// rewrite anything that refers to the object, so a provider that cannot do it safely says so.
+    /// </summary>
+    Task RenameObjectAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        DbObjectType type,
+        string newName,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support renaming objects.");
+
+    /// <summary>Renames an index on a table.</summary>
+    Task RenameIndexAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        string indexName,
+        string newName,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support renaming indexes.");
+
+    /// <summary>
+    /// Deletes every row of a table, keeping the table itself. Providers use the cheapest statement
+    /// the engine offers and fall back to a delete where truncation is not allowed.
+    /// </summary>
+    Task TruncateTableAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support emptying a table.");
 }

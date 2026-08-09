@@ -1983,6 +1983,38 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
 
+    [Fact]
+    public async Task Renames_an_object_and_empties_a_table()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await panel.GetByTestId("empty-table").ClickAsync();
+        var emptyDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Empty table" });
+        await Assertions.Expect(emptyDialog).ToContainTextAsync("cannot be undone");
+        await emptyDialog.GetByRole(AriaRole.Button, new() { Name = "Delete all rows", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "dbo.Customers emptied.", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.Contains("truncate dbo.Customers", fixture.Provider.Calls);
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await panel.GetByTestId("rename-object").ClickAsync();
+        var renameDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Rename dbo.Customers" });
+        await Assertions.Expect(renameDialog).ToContainTextAsync("are not updated");
+        await renameDialog.GetByTestId("rename-name").FillAsync("Clients");
+        await renameDialog.GetByRole(AriaRole.Button, new() { Name = "Rename", Exact = true }).ClickAsync();
+
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "Renamed to Clients.", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.Contains("renameObject Table dbo.Customers -> Clients", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     /// <summary>
     /// A filter has to reach the database: filtering the page already fetched would only ever search
     /// the rows on screen.

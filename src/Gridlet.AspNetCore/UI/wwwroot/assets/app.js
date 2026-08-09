@@ -519,6 +519,9 @@
       foreignKeys: (s, n) => `${objBase(s, n)}/foreign-keys`,
       constraint: (s, n, constraint) => `${objBase(s, n)}/constraints/${enc(constraint)}`,
       dropObject: (s, n, type) => `${objBase(s, n)}?type=${enc(type)}`,
+      renameObject: (s, n, type) => `${objBase(s, n)}/rename?type=${enc(type)}`,
+      renameIndex: (s, n, index) => `${objBase(s, n)}/indexes/${enc(index)}/rename`,
+      truncate: (s, n) => `${objBase(s, n)}/truncate`,
       queries: () => 'api/queries',
       savedQuery: (id) => `api/queries/${enc(id)}`,
       published: () => 'api/published',
@@ -1323,6 +1326,51 @@
       }, `Delete ${kind}`);
   }
 
+  // Renaming does not rewrite what refers to the object, so the dialog says so rather than
+  // implying the database will follow along.
+  function renameObject(o, scope = state) {
+    const target = { connection: scope.connection, database: scope.database };
+    const input = h('input', { type: 'text', value: o.name, 'data-testid': 'rename-name', 'aria-label': 'New name' });
+    modal(`Rename ${displayName(o, target)}`, h('div', {},
+      h('div', { class: 'form-grid' },
+        h('label', { class: 'field-label', text: 'New name' }),
+        h('div', { class: 'field-input' }, input)),
+      h('p', { class: 'muted', text: 'Views, procedures and other code that names this object are not updated.' })), [
+      { label: 'Cancel', onClick: (close) => close() },
+      {
+        label: 'Rename', primary: true,
+        onClick: async (close, showError) => {
+          const newName = input.value.trim();
+          if (!newName || newName === o.name) { showError('Give the object a different name.'); return; }
+          try {
+            await post(urlsFor(target).renameObject(o.schema, o.name, o.type), { newName });
+          } catch (err) {
+            showError(err.message);
+            return;
+          }
+          close();
+          const tab = state.tabs.find((candidate) => candidate.key === objectTabKey(o, target));
+          if (tab) closeTab(tab.id, true);
+          await refreshObjects(target);
+          toast(`Renamed to ${newName}.`, false);
+        },
+      },
+    ]);
+    input.focus();
+    input.select();
+  }
+
+  function emptyTable(o, scope = state, onDone = null) {
+    const target = { connection: scope.connection, database: scope.database };
+    confirmModal('Empty table',
+      `Delete every row of ${displayName(o, target)}? The table stays; its data does not. This cannot be undone.`,
+      async () => {
+        await post(urlsFor(target).truncate(o.schema, o.name), {});
+        toast(`${displayName(o, target)} emptied.`, false);
+        onDone?.();
+      }, 'Delete all rows');
+  }
+
   function objectContextItems(o) {
     const items = [{ label: 'Open', action: () => openObjectTab(o) }];
     if (o.type === 'Table' || o.type === 'View') {
@@ -1330,6 +1378,19 @@
     }
     if (isRoutine(o) && currentConn().allowSqlExecution) {
       items.push({ label: 'Execute…', action: () => openRoutineExecuteDialog(o) });
+    }
+    if (currentConn().allowDdl && canDropObject(o)) {
+      items.push({ label: 'Rename…', action: () => renameObject(o) });
+    }
+    if (o.type === 'Table' && currentConn().allowWrites && canDropObject(o)) {
+      items.push({
+        label: 'Empty table…',
+        danger: true,
+        action: () => emptyTable(o, state, () => {
+          const tab = state.tabs.find((candidate) => candidate.key === objectTabKey(o, state));
+          if (tab?.refreshData) tab.refreshData();
+        }),
+      });
     }
     if (currentConn().allowDdl && canDropObject(o)) {
       items.push({ separator: true }, { label: `Delete ${o.type === 'View' ? 'view' : 'object'}…`, danger: true, action: () => deleteObject(o) });
@@ -1559,6 +1620,7 @@
     };
 
     const renderData = async () => {
+      tab.refreshData = renderData;
       activeDataLoad?.abort();
       const controller = new AbortController();
       activeDataLoad = controller;
@@ -1736,6 +1798,12 @@
             : null),
         h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
         status,
+        o.type === 'Table' && currentConn().allowWrites && !o.isInternal && canDropObject(o)
+          ? h('button', {
+            class: 'danger', text: 'Empty table…', 'data-testid': 'empty-table',
+            onclick: () => emptyTable(o, scope, () => renderData()),
+          })
+          : null,
         o.type === 'View' && currentConn().allowDdl && canDropObject(o) ? h('button', {
           class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
         }) : null,
@@ -1967,6 +2035,9 @@
         canCheckConstraints ? h('button', { onclick: () => openCheckConstraintDialog() }, '＋ Check') : null,
         canUniqueConstraints ? h('button', { onclick: () => openUniqueConstraintDialog() }, '＋ Unique') : null,
         canIndexes ? h('button', { onclick: () => openIndexDialog() }, '＋ Index') : null,
+        canDrop ? h('button', {
+          text: 'Rename…', 'data-testid': 'rename-object', onclick: () => renameObject(o, scope),
+        }) : null,
         useInQueryButton(o, scope),
         h('span', { class: 'spacer' }),
         canDrop && o.type === 'Table' ? h('button', {

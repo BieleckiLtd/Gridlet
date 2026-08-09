@@ -574,4 +574,28 @@ public sealed class FakeGridletProvider :
         Calls.Add($"dropObject {type} {schema}.{name}");
         return Task.CompletedTask;
     }
+
+    public Task RenameObjectAsync(
+        GridletConnectionContext context, string schema, string name, DbObjectType type, string newName,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"renameObject {type} {schema}.{name} -> {newName}");
+        return Task.CompletedTask;
+    }
+
+    public Task RenameIndexAsync(
+        GridletConnectionContext context, string schema, string table, string indexName, string newName,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"renameIndex {schema}.{table}.{indexName} -> {newName}");
+        return Task.CompletedTask;
+    }
+
+    public Task TruncateTableAsync(
+        GridletConnectionContext context, string schema, string table,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"truncate {schema}.{table}");
+        return Task.CompletedTask;
+    }
 }

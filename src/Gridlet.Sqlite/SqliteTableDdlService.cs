@@ -365,6 +365,107 @@ public sealed class SqliteTableDdlService : ITableDdlService
             ? DropTableAsync(context, schema, name, cancellationToken)
             : ExecuteAsync(context, SqliteDdlBuilder.BuildDropObject(schema, name, type), cancellationToken);
 
+    /// <summary>
+    /// Renames a table. SQLite has no rename for views, triggers or routines - they would have to be
+    /// dropped and recreated from their source, which is the person's decision to make in the
+    /// editor, not something to do to their definition behind their back.
+    /// </summary>
+    public async Task RenameObjectAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        DbObjectType type,
+        string newName,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        if (type != DbObjectType.Table)
+        {
+            throw new GridletValidationException(
+                $"SQLite cannot rename a {type.ToString().ToLowerInvariant()}. " +
+                "Edit its definition instead: drop it and create it under the new name.");
+        }
+
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, name, cancellationToken);
+        if (definition.Object.IsInternal || definition.Object.SubKind == "shadow")
+        {
+            throw new GridletValidationException(
+                $"Internal SQLite table {schema}.{name} cannot be renamed.");
+        }
+
+        await ExecuteAsync(connection, transaction: null,
+            $"ALTER TABLE {SqliteIdentifier.Quote(name)} RENAME TO {SqliteIdentifier.Quote(newName)};",
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Renames an index by recreating it: SQLite has no ALTER INDEX. The definition is read back from
+    /// the database rather than rewritten as text, so the new index is the same index.
+    /// </summary>
+    public async Task RenameIndexAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        string indexName,
+        string newName,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, table, cancellationToken);
+        var index = definition.Indexes.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, indexName, StringComparison.OrdinalIgnoreCase))
+            ?? throw new GridletObjectNotFoundException($"{schema}.{table}.{indexName}");
+        if (index.IsPrimaryKey)
+        {
+            throw new GridletValidationException(
+                "The primary-key index is part of the table definition and has no name to change.");
+        }
+
+        var keys = index.KeyColumns is { Count: > 0 }
+            ? index.KeyColumns
+                .OrderBy(key => key.Ordinal)
+                .Select(key => new IndexKeyDesign(key.Column, key.IsDescending, key.Expression, key.Collation))
+                .ToArray()
+            : index.Columns.Select(column => new IndexKeyDesign(column)).ToArray();
+        var design = new IndexDesign(
+            newName,
+            keys,
+            index.IsUnique,
+            FilterExpression: index.FilterDefinition);
+
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await ExecuteAsync(connection, transaction,
+            SqliteDdlBuilder.BuildDropIndex(schema, indexName), cancellationToken);
+        await ExecuteAsync(connection, transaction,
+            SqliteDdlBuilder.BuildCreateIndex(schema, table, design), cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Empties a table. SQLite has no TRUNCATE; an unqualified DELETE is its equivalent and the
+    /// engine optimises it into the same wholesale drop of the table's pages.
+    /// </summary>
+    public async Task TruncateTableAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, table, cancellationToken);
+        if (definition.Object.Type != DbObjectType.Table || definition.Object.IsInternal
+            || definition.Object.SubKind == "shadow")
+        {
+            throw new GridletValidationException($"{schema}.{table} is not a table Gridlet can empty.");
+        }
+
+        await ExecuteAsync(connection, transaction: null,
+            $"DELETE FROM {SqliteIdentifier.QuoteQualified(schema, table)};", cancellationToken);
+    }
+
     internal static async Task RebuildTableAsync(
         SqliteConnection connection,
         TableDefinition definition,
