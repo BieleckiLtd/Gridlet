@@ -1,0 +1,1 @@
+List the API endpoints already published from this Gridlet, with their method, route, parameters, row cap, and authorization policy. Use it to answer questions about existing endpoints and to keep a suggested new endpoint consistent with them.

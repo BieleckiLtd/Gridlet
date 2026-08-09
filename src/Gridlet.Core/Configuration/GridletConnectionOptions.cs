@@ -66,6 +66,15 @@ public sealed class GridletConnectionOptions
     public bool AllowAgentDataAccess { get; set; } = false;
 
     /// <summary>
+    /// Whether an AI agent may read this Gridlet's published API endpoint definitions and invoke
+    /// its GET endpoints. Defaults to <c>false</c>. This grants no direct database-query access and
+    /// is independent of <see cref="AllowAgentDataAccess"/>. If an endpoint is invoked, its response
+    /// may contain data; that response is bounded by the endpoint's SQL and the identity it runs
+    /// under, not by the agent's read-only query guard.
+    /// </summary>
+    public bool AllowAgentApiAccess { get; set; } = false;
+
+    /// <summary>
     /// Optional provider-specific connection string used only by the data agent's read-only query
     /// tool. Configure a SELECT-only database identity here when the main Gridlet connection has
     /// broader privileges. It is server-side secret configuration and is never returned by Gridlet.

@@ -26,9 +26,10 @@ internal static class GridletPublishedEndpoints
 {
     private const string UnexpectedErrorMessage = "An unexpected server error occurred.";
 
-    public static void Map(RouteGroupBuilder group)
+    public static void Map(RouteGroupBuilder group, string segment)
     {
-        group.MapMethods("/pub/{**route}", ["GET", "POST", "PUT", "PATCH", "DELETE"], Invoke)
+        group.MapMethods(
+                $"/{segment}/{{**route}}", ["GET", "POST", "PUT", "PATCH", "DELETE"], Invoke)
             .ExcludeFromDescription();
     }
 
@@ -173,7 +174,7 @@ internal static class GridletPublishedEndpoints
             }
             else
             {
-                // No result set (e.g. a non-query statement) — mirror the previous buffering shape.
+                // No result set (e.g. a non-query statement); mirror the previous buffering shape.
                 await httpContext.Response.WriteAsJsonAsync(new { recordsAffected }, cancellationToken);
             }
 

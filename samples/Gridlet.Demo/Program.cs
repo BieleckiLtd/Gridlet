@@ -26,6 +26,7 @@ var gridlet = builder.Services
             //relativePathBase: builder.Environment.ContentRootPath
             c.AllowAgentSchemaAccess = true;
             c.AllowAgentDataAccess = true;
+            c.AllowAgentApiAccess = true;
             c.AllowAgentDataWithPrimaryConnection = true;
         });
 
@@ -38,13 +39,17 @@ if (OperatingSystem.IsWindows())
         {
             c.AllowAgentSchemaAccess = true;
             c.AllowAgentDataAccess = true;
+            c.AllowAgentApiAccess = true;
             c.AllowAgentDataWithPrimaryConnection = true;
         });
 }
 
 gridlet.AddAgentFramework(agents =>
     {
-        agents.AddOllama("local-qwen3.5-4b", new Uri("http://127.0.0.1:11434"), "qwen3.5:4b");
+        // Gridlet reads the loaded window from Ollama itself; this declaration is only the
+        // fallback for when the model is not currently resident.
+        agents.AddOllama("local-qwen3.5-4b", new Uri("http://127.0.0.1:11434"), "qwen3.5:4b")
+            .WithContextWindow(32_768);
         agents.AddOllama("local-qwen3.5-2b", new Uri("http://127.0.0.1:11434"), "qwen3.5:2b");
         agents.AddOllama("local-gemma4", new Uri("http://127.0.0.1:11434"), "gemma4:latest");
         agents.AddOllama("local-gemma4-12b", new Uri("http://127.0.0.1:11434"), "gemma4:12b");
@@ -53,13 +58,13 @@ gridlet.AddAgentFramework(agents =>
             .WithReasoningEffort(GridletCodexReasoningEffort.Medium)
             .AllowReasoningEffortSelection();
         // Each profile becomes a runtime-selectable entry in the Ask model dropdown.
-        agents.AddClaudeCode("claude-sonnet", "sonnet", "Claude Code — Sonnet")
+        agents.AddClaudeCode("claude-sonnet", "sonnet", "Claude Code - Sonnet")
             .WithReasoningEffort(GridletClaudeCodeEffort.Medium)
             .AllowReasoningEffortSelection();
-        agents.AddClaudeCode("claude-opus", "opus", "Claude Code — Opus")
+        agents.AddClaudeCode("claude-opus", "opus", "Claude Code - Opus")
             .WithReasoningEffort(GridletClaudeCodeEffort.High)
             .AllowReasoningEffortSelection();
-        agents.AddClaudeCode("claude-haiku", "haiku", "Claude Code — Haiku")
+        agents.AddClaudeCode("claude-haiku", "haiku", "Claude Code - Haiku")
             .WithReasoningEffort(GridletClaudeCodeEffort.Low);
         agents.AddGitHubCopilot("github-copilot", "gpt-5-mini")
             .WithReasoningEffort(GridletCopilotReasoningEffort.Medium)

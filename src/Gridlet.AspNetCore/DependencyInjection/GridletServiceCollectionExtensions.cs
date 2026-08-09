@@ -1,10 +1,11 @@
 using Gridlet;
 using Gridlet.Abstractions;
+using Gridlet.AspNetCore.Agents;
 using Gridlet.AspNetCore.Storage;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-// ReSharper disable once CheckNamespace — conventional namespace for DI extensions.
+// ReSharper disable once CheckNamespace; conventional namespace for DI extensions.
 namespace Microsoft.Extensions.DependencyInjection;
 
 public static class GridletServiceCollectionExtensions
@@ -52,6 +53,14 @@ public static class GridletServiceCollectionExtensions
         services.TryAddSingleton<GridletFileStore>();
         services.TryAddSingleton<ISavedQueryStore>(sp => sp.GetRequiredService<GridletFileStore>());
         services.TryAddSingleton<IPublishedEndpointStore>(sp => sp.GetRequiredService<GridletFileStore>());
+
+        // Lets an agent turn call this installation's own GET endpoints and show the real response.
+        // The accessor supplies the address and the caller's credentials; the mount path is filled
+        // in by MapGridlet, which is the only place that knows the prefix the host chose.
+        services.AddHttpContextAccessor();
+        services.TryAddSingleton<GridletMountPath>();
+        services.AddHttpClient(GridletPublishedEndpointInvoker.HttpClientName);
+        services.TryAddSingleton<IGridletPublishedEndpointInvoker, GridletPublishedEndpointInvoker>();
 
         return builder;
     }

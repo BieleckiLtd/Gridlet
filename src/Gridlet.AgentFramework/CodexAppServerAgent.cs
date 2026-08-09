@@ -23,13 +23,12 @@ internal sealed class CodexAppServerAgent(
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    private const string CapabilityInstructions = """
-
-        The host exposes the only tools you may use as dynamic tools. Do not use shell commands,
-        filesystem tools, web search, MCP tools, apps, skills, subagents, or request additional
-        permissions. Do not inspect the host computer. Answer only from the user's messages and
-        results returned by the host-provided dynamic tools.
-        """;
+    /// <summary>
+    /// Appended to the system prompt because a coding CLI arrives believing it may reach the host
+    /// computer. The wording lives in Prompts/Instructions/cli-codex.md.
+    /// </summary>
+    private static string CapabilityInstructions =>
+        GridletPrompts.Text("Instructions/cli-codex");
 
     public override string Name => "GridletCodexAppServerAgent";
 
@@ -118,7 +117,7 @@ internal sealed class CodexAppServerAgent(
                     ephemeral = codexSession.Ephemeral,
                     approvalPolicy = "never",
                     sandbox = "read-only",
-                    baseInstructions = string.Concat(instructions, CapabilityInstructions),
+                    baseInstructions = string.Concat(instructions, "\n", CapabilityInstructions),
                     serviceName = "gridlet",
                     dynamicTools = tools.Select(tool => new
                     {
@@ -194,9 +193,7 @@ internal sealed class CodexAppServerAgent(
                             new
                             {
                                 type = "inputText",
-                                text = "The tool-call limit was reached. Do not call another tool. " +
-                                       "Finish the answer using the information already collected, " +
-                                       "and clearly state any remaining uncertainty.",
+                                text = GridletPrompts.Section("Notes/tool-call-limit", "codex"),
                             },
                         },
                         success = false,
@@ -274,6 +271,13 @@ internal sealed class CodexAppServerAgent(
                     }
                 }
             }
+            else if (method == "thread/tokenUsage/updated")
+            {
+                if (TryCreateUsageUpdate(root, out var usageUpdate))
+                {
+                    yield return usageUpdate;
+                }
+            }
             else if (method == "error")
             {
                 turnError = ReadErrorMessage(root);
@@ -298,6 +302,47 @@ internal sealed class CodexAppServerAgent(
             }
         }
     }
+
+    /// <summary>
+    /// Reads a <c>thread/tokenUsage/updated</c> notification. Codex reports the accumulated turn
+    /// usage plus the most recent request's usage; the latter is what currently occupies the
+    /// model's context window.
+    /// </summary>
+    internal static bool TryCreateUsageUpdate(
+        JsonElement notification,
+        out AgentResponseUpdate update)
+    {
+        update = null!;
+        if (!notification.TryGetProperty("params", out var parameters) ||
+            parameters.ValueKind != JsonValueKind.Object ||
+            !parameters.TryGetProperty("tokenUsage", out var usage) ||
+            usage.ValueKind != JsonValueKind.Object ||
+            !usage.TryGetProperty("last", out var last) ||
+            last.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        var input = ReadTokenCount(last, "inputTokens");
+        var output = ReadTokenCount(last, "outputTokens");
+        var total = ReadTokenCount(last, "totalTokens");
+        if (total is null && input is null && output is null) return false;
+
+        update = new AgentResponseUpdate(ChatRole.Assistant, [GridletContextUsage.Create(
+            input,
+            output,
+            ReadTokenCount(last, "cachedInputTokens"),
+            total,
+            ReadTokenCount(usage, "modelContextWindow"))]);
+        return true;
+    }
+
+    private static long? ReadTokenCount(JsonElement element, string propertyName)
+        => element.TryGetProperty(propertyName, out var value) &&
+           value.ValueKind == JsonValueKind.Number &&
+           value.TryGetInt64(out var count)
+            ? count
+            : null;
 
     private static TextReasoningContent CreateReasoningContent(string text, string kind)
         => new(text) { RawRepresentation = new CodexReasoningEvent(kind) };
@@ -588,6 +633,8 @@ internal sealed class CodexAppServerClient : IAsyncDisposable
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            // Codex reads the working directory as a project. See GridletCliWorkspace.
+            WorkingDirectory = GridletCliWorkspace.Path,
         };
         startInfo.ArgumentList.Add("app-server");
         startInfo.ArgumentList.Add("--stdio");
@@ -606,6 +653,13 @@ internal sealed class CodexAppServerClient : IAsyncDisposable
         startInfo.ArgumentList.Add("mcp_servers={}");
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add("web_search=\"disabled\"");
+        // Neither of these is a tool, so disabling tools does not stop them: Codex injects the
+        // working directory, git root, and a directory listing as startup context, and loads
+        // AGENTS.md up the tree as instructions it tells the model to obey.
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("project_doc_max_bytes=0");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add("include_environment_context=false");
 
         try
         {

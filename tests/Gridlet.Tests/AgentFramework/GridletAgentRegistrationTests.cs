@@ -50,6 +50,55 @@ public sealed class GridletAgentRegistrationTests
     }
 
     [Fact]
+    public void Publishes_the_host_selected_default_profile()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddGridlet()
+            .AddAgentFramework(options =>
+            {
+                options.AddOllama("first", new Uri("http://127.0.0.1:11434"), "qwen3:4b");
+                options.AddOllama("preferred", new Uri("http://127.0.0.1:11434"), "gemma4:latest")
+                    .AsDefault();
+            });
+
+        using var provider = services.BuildServiceProvider();
+        var agent = provider.GetRequiredService<IGridletAgentService>();
+
+        Assert.Equal("preferred", agent.Info.DefaultProfileId);
+    }
+
+    [Fact]
+    public void Leaves_the_default_profile_unset_when_no_host_default_is_configured()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddGridlet()
+            .AddAgentFramework(options =>
+                options.AddOllama("first", new Uri("http://127.0.0.1:11434"), "qwen3:4b"));
+
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Null(provider.GetRequiredService<IGridletAgentService>().Info.DefaultProfileId);
+    }
+
+    [Fact]
+    public void Rejects_more_than_one_default_profile()
+    {
+        var services = new ServiceCollection();
+        var builder = services.AddGridlet();
+
+        var exception = Assert.Throws<GridletValidationException>(() =>
+            builder.AddAgentFramework(options =>
+            {
+                options.AddOllama("first", new Uri("http://localhost:11434"), "qwen3:4b").AsDefault();
+                options.AddOllama("second", new Uri("http://localhost:11434"), "llama3.2").AsDefault();
+            }));
+
+        Assert.Contains("only one agent profile", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Rejects_duplicate_profile_ids_during_registration()
     {
         var services = new ServiceCollection();

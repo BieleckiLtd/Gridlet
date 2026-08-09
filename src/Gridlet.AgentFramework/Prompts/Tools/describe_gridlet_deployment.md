@@ -1,0 +1,1 @@
+Report what this Gridlet installation actually permits: the current connection's feature switches, its provider's capabilities, and the configured limits. Check this before telling somebody they can do something, so you never describe a feature switched off here.

@@ -44,6 +44,7 @@ public sealed class BrowserAppFixture : IAsyncLifetime
                 connection.AllowAgentDataAccess = true;
                 connection.AllowAgentDataWithPrimaryConnection = true;
                 connection.AllowAgentSchemaAccess = true;
+                connection.AllowAgentApiAccess = true;
             });
             options.AddConnection("SQLite", "Data Source=browser-test.db;", BrowserSqliteProvider.Name);
             options.Security.AllowAnonymous = true;
@@ -186,6 +187,36 @@ public sealed class BrowserGridletAgentService : IGridletAgentService
             yield return new GridletAgentStreamEvent("reasoning", "Waiting on a deliberately slow provider.");
             await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
             yield return new GridletAgentStreamEvent("content", "This response should have been cancelled.");
+            yield return new GridletAgentStreamEvent("completed");
+            yield break;
+        }
+
+        if (request.Message.Contains("report unsized context usage", StringComparison.OrdinalIgnoreCase))
+        {
+            Requests.Add(request);
+            yield return new GridletAgentStreamEvent("started");
+            yield return new GridletAgentStreamEvent(
+                "usage",
+                System.Text.Json.JsonSerializer.Serialize(
+                    new GridletAgentContextUsage(12_500),
+                    new System.Text.Json.JsonSerializerOptions(
+                        System.Text.Json.JsonSerializerDefaults.Web)));
+            yield return new GridletAgentStreamEvent("content", "Usage reported without a window.");
+            yield return new GridletAgentStreamEvent("completed");
+            yield break;
+        }
+
+        if (request.Message.Contains("report context usage", StringComparison.OrdinalIgnoreCase))
+        {
+            Requests.Add(request);
+            yield return new GridletAgentStreamEvent("started");
+            yield return new GridletAgentStreamEvent(
+                "usage",
+                System.Text.Json.JsonSerializer.Serialize(
+                    new GridletAgentContextUsage(48_000, 64_000, 44_000, 30_000, 4_000),
+                    new System.Text.Json.JsonSerializerOptions(
+                        System.Text.Json.JsonSerializerDefaults.Web)));
+            yield return new GridletAgentStreamEvent("content", "Usage reported.");
             yield return new GridletAgentStreamEvent("completed");
             yield break;
         }

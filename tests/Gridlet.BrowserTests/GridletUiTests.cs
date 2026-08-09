@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
@@ -36,14 +37,105 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal("auto", await composer.EvaluateAsync<string>(
             "element => getComputedStyle(element).overflowY"));
         await Assertions.Expect(page.Locator(".agent-header")).ToHaveCountAsync(0);
-        await Assertions.Expect(composerShell.GetByTestId("agent-mode")).ToHaveCountAsync(1);
+        // The welcome card makes both the AI warning and the initial sharing choice prominent.
+        await Assertions.Expect(page.GetByTestId("agent-welcome-disclaimer"))
+            .ToContainTextAsync("AI-generated queries may be incorrect");
+        var welcomeAccess = page.GetByTestId("agent-welcome-access");
+        var welcomeShareTrigger = welcomeAccess.GetByTestId("agent-welcome-share-trigger");
+        await Assertions.Expect(welcomeShareTrigger).ToContainTextAsync("Schema");
+        await welcomeShareTrigger.ClickAsync();
+        var welcomeShareMenu = welcomeAccess.Locator(".agent-share-menu");
+        await Assertions.Expect(welcomeShareMenu).ToBeVisibleAsync();
+        await welcomeShareMenu.Locator("[data-scope='schema']").ClickAsync();
+        await Assertions.Expect(welcomeShareTrigger).ToContainTextAsync("None (no access)");
+        await Assertions.Expect(page.GetByTestId("agent-welcome-access")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("agent-share-marker")).ToHaveCountAsync(0);
+        await welcomeShareMenu.Locator("[data-scope='schema']").ClickAsync();
+        await page.Keyboard.PressAsync("Escape");
+        // Sharing is opt-in per scope and lives in one menu: schema starts shared, the two scopes
+        // that can disclose row values do not.
+        var shareTrigger = composerShell.GetByTestId("agent-share-trigger");
+        await Assertions.Expect(shareTrigger).ToContainTextAsync("Sharing schema");
+        await shareTrigger.ClickAsync();
+        var shareMenu = composerShell.Locator(".agent-share-menu");
+        await Assertions.Expect(shareMenu).ToBeVisibleAsync();
+        await Assertions.Expect(shareMenu.Locator(".agent-share-menu-header"))
+            .ToContainTextAsync("Data shared with AI Agent");
+        Assert.False(await shareMenu.EvaluateAsync<bool>(
+            "element => element.scrollHeight > element.clientHeight"));
+        var shareTriggerBounds = await shareTrigger.BoundingBoxAsync();
+        var shareMenuBounds = await shareMenu.BoundingBoxAsync();
+        Assert.NotNull(shareTriggerBounds);
+        Assert.NotNull(shareMenuBounds);
+        Assert.InRange(Math.Abs(shareMenuBounds.X - shareTriggerBounds.X), 0, 1);
+        var shareHelp = composerShell.GetByTestId("agent-share-help");
+        await Assertions.Expect(shareHelp).ToContainTextAsync("Main / FakeDb");
+        await Assertions.Expect(shareHelp).ToContainTextAsync("external model provider");
+        await Assertions.Expect(shareHelp).ToContainTextAsync("change sharing at any time");
+        await Assertions.Expect(shareHelp).ToBeHiddenAsync();
+        await shareMenu.GetByTestId("agent-share-info").FocusAsync();
+        await Assertions.Expect(shareHelp).ToBeVisibleAsync();
+        await Assertions.Expect(composerShell.GetByTestId("agent-privacy-tooltip")).ToHaveCountAsync(0);
+        Assert.Null(await shareTrigger.GetAttributeAsync("title"));
+        var shareSchema = composerShell.GetByTestId("agent-share-schema");
+        var shareData = composerShell.GetByTestId("agent-share-data");
+        var shareApi = composerShell.GetByTestId("agent-share-api");
+        await Assertions.Expect(shareSchema).ToBeCheckedAsync();
+        await Assertions.Expect(shareData).Not.ToBeCheckedAsync();
+        await Assertions.Expect(shareApi).Not.ToBeCheckedAsync();
+        await shareMenu.Locator("[data-scope='schema']").ClickAsync();
+        await Assertions.Expect(shareSchema).Not.ToBeCheckedAsync();
+        await Assertions.Expect(shareTrigger).ToContainTextAsync("Not sharing");
+        await Assertions.Expect(composerShell.Page.GetByTestId("agent-share-marker"))
+            .ToHaveTextAsync("You stopped sharing the database schema with the agent.");
+        await Assertions.Expect(composerShell.GetByTestId("agent-share"))
+            .ToHaveAttributeAsync("data-sharing", "none");
+        await Assertions.Expect(shareHelp)
+            .ToContainTextAsync("no database or published API access");
+        Assert.Equal("none", await shareTrigger.EvaluateAsync<string>(
+            "element => getComputedStyle(element, '::after').display"));
+        Assert.True(await page.EvaluateAsync<bool>("""
+            () => {
+                const icon = document.querySelector('[data-testid="agent-share"] .agent-share-icon');
+                const check = icon.querySelector('.agent-share-check');
+                const warning = icon.querySelector('.agent-share-warning');
+                const swatch = document.createElement('span');
+                swatch.style.color = 'var(--ok)';
+                document.body.append(swatch);
+                const expected = getComputedStyle(swatch).color;
+                const actual = getComputedStyle(icon).color;
+                swatch.remove();
+                return actual === expected
+                    && getComputedStyle(check).display !== 'none'
+                    && getComputedStyle(warning).display === 'none';
+            }
+            """));
+        // API access is independent: it exposes no direct query access and shares a response only
+        // when an endpoint is actually requested.
+        await Assertions.Expect(shareMenu.Locator("[data-scope='api']"))
+            .ToContainTextAsync("does not grant direct database data access");
+        await Assertions.Expect(shareMenu.Locator("[data-scope='api']"))
+            .ToContainTextAsync("that response is shared");
+        await Assertions.Expect(shareMenu.Locator("[data-scope='api']"))
+            .Not.ToContainTextAsync("GET");
+        await shareMenu.Locator("[data-scope='api']").ClickAsync();
+        await Assertions.Expect(shareApi).ToBeCheckedAsync();
+        await Assertions.Expect(shareData).Not.ToBeCheckedAsync();
+        await Assertions.Expect(shareHelp).ToContainTextAsync("published API definitions");
+        await Assertions.Expect(shareHelp).ToContainTextAsync("separate from Data access");
+        await Assertions.Expect(shareHelp)
+            .ToContainTextAsync("only when the agent requests it");
+        await shareMenu.Locator("[data-scope='api']").ClickAsync();
+        await shareMenu.Locator("[data-scope='schema']").ClickAsync();
         await Assertions.Expect(composerShell.GetByTestId("agent-provider")).ToHaveCountAsync(1);
-        await composerShell.GetByTestId("agent-mode").SelectOptionAsync("schema");
-        var modeTrigger = composerShell.Locator(".agent-mode-control .select-trigger");
-        await Assertions.Expect(modeTrigger).ToContainTextAsync("Design / Schema");
-        Assert.True(await modeTrigger.EvaluateAsync<bool>(
-            "element => element.scrollWidth <= element.clientWidth"));
-        await composerShell.GetByTestId("agent-mode").SelectOptionAsync("data");
+        await shareMenu.Locator("[data-scope='data']").ClickAsync();
+        await Assertions.Expect(shareData).ToBeCheckedAsync();
+        await Assertions.Expect(shareTrigger).ToContainTextAsync("Sharing schema + data");
+        await Assertions.Expect(composerShell.Page.GetByTestId("agent-share-marker")).ToHaveCountAsync(5);
+        // Several scopes can be chosen at once, so a toggle leaves the menu open.
+        await Assertions.Expect(shareMenu).ToBeVisibleAsync();
+        await composerShell.Page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(shareMenu).ToBeHiddenAsync();
         var providerControl = composerShell.Locator(".agent-provider-control");
         var providerTrigger = providerControl.Locator(".select-trigger");
         var providerMenu = providerControl.Locator(".select-menu");
@@ -59,19 +151,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.NotNull(menuBounds);
         Assert.True(menuBounds.Y + menuBounds.Height <= triggerBounds.Y + 1);
         await providerTrigger.ClickAsync();
-        var privacy = composerShell.GetByTestId("agent-privacy");
-        var privacyTooltip = composerShell.GetByTestId("agent-privacy-tooltip");
-        await Assertions.Expect(privacyTooltip).ToContainTextAsync("Main / FakeDb");
-        await Assertions.Expect(privacyTooltip).ToContainTextAsync("external provider");
-        await privacy.HoverAsync();
-        await Assertions.Expect(privacyTooltip).ToBeVisibleAsync();
-
         await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
         await composer.FillAsync("Summarize the customers");
         await page.GetByTestId("agent-send").ClickAsync();
 
-        await Assertions.Expect(page.GetByTestId("agent-message-user").Locator(".agent-message-role"))
-            .ToHaveTextAsync("Me");
+        await Assertions.Expect(page.GetByTestId("agent-message-user"))
+            .ToContainTextAsync("Summarize the customers");
         await Assertions.Expect(page.GetByTestId("agent-message-assistant"))
             .ToContainTextAsync("Fake data response");
         await ExpectAgentComplete(page);
@@ -122,8 +207,6 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             }
             """);
         await Assertions.Expect(composer).ToHaveValueAsync("Please list the recent orders");
-        await Assertions.Expect(page.GetByTestId("agent-privacy-tooltip"))
-            .ToContainTextAsync("browser speech recognition service");
 
         await dictation.ClickAsync();
         await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-pressed", "false");
@@ -133,6 +216,35 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await composer.FillAsync("Typed instead");
         await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-pressed", "false");
         Assert.True(await page.EvaluateAsync<bool>("window.__fakeSpeechRecognition.aborted"));
+
+        await page.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
+        await composer.FillAsync(string.Empty);
+        await page.EvaluateAsync("window.__fakeSpeechRecognition.aborted = false");
+        await dictation.ClickAsync();
+        await page.EvaluateAsync("""
+            () => {
+                const result = [{ transcript: 'send this dictated prompt' }];
+                result.isFinal = false;
+                window.__fakeSpeechRecognition.onresult({ results: [result] });
+            }
+            """);
+        await page.GetByTestId("agent-send").ClickAsync();
+        Assert.True(await page.EvaluateAsync<bool>("window.__fakeSpeechRecognition.aborted"));
+        await Assertions.Expect(dictation).ToHaveAttributeAsync("aria-pressed", "false");
+
+        // A browser may still emit a queued speech result while aborting. It belongs to the
+        // submitted turn and must not restore the prompt in the now-empty composer.
+        await page.EvaluateAsync("""
+            () => {
+                const result = [{ transcript: 'stale final result' }];
+                result.isFinal = true;
+                window.__fakeSpeechRecognition.onresult({ results: [result] });
+            }
+            """);
+        await Assertions.Expect(composer).ToHaveValueAsync(string.Empty);
+        await Assertions.Expect(page.GetByTestId("agent-message-user"))
+            .ToContainTextAsync("send this dictated prompt");
+        await ExpectAgentComplete(page);
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -172,14 +284,21 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var composer = page.GetByTestId("agent-composer-shell");
         var options = composer.Locator(".agent-composer-options");
         var optionsButton = composer.GetByRole(
-            AriaRole.Button, new() { Name = "Conversation options" });
+            AriaRole.Button, new() { Name = "Chat options" });
         await Assertions.Expect(optionsButton).ToBeVisibleAsync();
         await Assertions.Expect(options).ToBeHiddenAsync();
+        var shareTrigger = composer.GetByTestId("agent-share-trigger");
+        await Assertions.Expect(shareTrigger).ToBeVisibleAsync();
+        var actionsBounds = await composer.Locator(".agent-compose-actions").BoundingBoxAsync();
+        var shareBounds = await shareTrigger.BoundingBoxAsync();
+        Assert.NotNull(actionsBounds);
+        Assert.NotNull(shareBounds);
+        Assert.InRange(shareBounds.X - actionsBounds.X, 0, 20);
         var compactMetrics = await composer.EvaluateAsync<float[]>("""
             element => {
                 const actionElement = element.querySelector('.agent-compose-actions');
                 const actions = actionElement.getBoundingClientRect();
-                const buttonWidths = ['.agent-privacy-button', '.agent-dictation-button',
+                const buttonWidths = ['.agent-dictation-button',
                     '.agent-composer-overflow > summary', '.agent-composer-submit']
                     .map(selector => element.querySelector(selector).getBoundingClientRect().width);
                 return [actions.height, actions.width, actionElement.scrollWidth, ...buttonWidths];
@@ -193,7 +312,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await optionsButton.ClickAsync();
         await Assertions.Expect(options).ToBeVisibleAsync();
-        await Assertions.Expect(options.Locator(".agent-option-label")).ToHaveCountAsync(3);
+        await Assertions.Expect(options.Locator(".agent-option-label")).ToHaveCountAsync(2);
         var providerTrigger = options.Locator(".agent-provider-control .select-trigger");
         await providerTrigger.ClickAsync();
         await Assertions.Expect(options.GetByRole(
@@ -206,9 +325,26 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(composer.Locator(".agent-composer-overflow"))
             .Not.ToHaveAttributeAsync("open", "");
 
+        await page.SetViewportSizeAsync(1100, 600);
+        await Assertions.Expect(optionsButton).ToBeHiddenAsync();
+        await Assertions.Expect(options).ToBeVisibleAsync();
+        var inlineProvider = options.Locator(".agent-provider-control .select-trigger");
+        var inlineEffort = options.Locator(".agent-effort-control .select-trigger");
+        await Assertions.Expect(inlineProvider.Locator(".select-value-full")).ToBeHiddenAsync();
+        await Assertions.Expect(inlineProvider.Locator(".select-value-compact"))
+            .ToHaveTextAsync("fake-model-v1");
+        await Assertions.Expect(inlineProvider.Locator(".select-value-compact")).ToBeVisibleAsync();
+        await Assertions.Expect(inlineEffort).ToContainTextAsync("Medium");
+        Assert.Equal("none", await inlineProvider.EvaluateAsync<string>(
+            "element => getComputedStyle(element, '::after').display"));
+        Assert.Equal("none", await inlineEffort.EvaluateAsync<string>(
+            "element => getComputedStyle(element, '::after').display"));
+
         await page.SetViewportSizeAsync(1400, 600);
         await Assertions.Expect(optionsButton).ToBeHiddenAsync();
         await Assertions.Expect(options).ToBeVisibleAsync();
+        await Assertions.Expect(inlineProvider.Locator(".select-value-full")).ToBeVisibleAsync();
+        await Assertions.Expect(inlineProvider.Locator(".select-value-compact")).ToBeHiddenAsync();
         Assert.True(await options.Locator(".agent-option-label").EvaluateAllAsync<bool>(
             "labels => labels.every(label => getComputedStyle(label).display === 'none')"));
         browserPage.AssertNoUnexpectedErrors();
@@ -225,7 +361,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTestId("agent-open").ClickAsync();
 
         await Assertions.Expect(page.GetByTestId("agent-panel")).ToHaveCountAsync(2);
-        await Assertions.Expect(page.Locator("#tabbar .tab").Filter(new() { HasText = "Ask — FakeDb" }))
+        await Assertions.Expect(page.Locator("#tabbar .tab").Filter(new() { HasText = "Ask - FakeDb" }))
             .ToHaveCountAsync(2);
         await Assertions.Expect(page.Locator("#panels .agent-panel:not([hidden])"))
             .ToHaveCountAsync(1);
@@ -298,6 +434,54 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Shows_context_consumption_around_the_send_button_only_when_reported()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        var gauge = page.GetByTestId("agent-context-gauge");
+        var tooltip = page.GetByTestId("agent-context-tooltip");
+        await Assertions.Expect(gauge).ToHaveAttributeAsync("data-context", "unknown");
+        Assert.False(await page.Locator(".agent-context-ring").IsVisibleAsync());
+
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("Please report context usage");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await ExpectAgentComplete(page);
+
+        // 48k of a 64k window is 75%, the first level Gridlet calls out.
+        await Assertions.Expect(gauge).ToHaveAttributeAsync("data-context", "high");
+        await Assertions.Expect(tooltip).ToContainTextAsync("Context used: 48k tokens");
+        await Assertions.Expect(tooltip).ToContainTextAsync("Window: 64k tokens (75%)");
+        await Assertions.Expect(tooltip).ToContainTextAsync("cached 30k");
+        // The summary, the window and the token breakdown each own a line.
+        Assert.Equal(3, await tooltip.EvaluateAsync<int>("element => element.textContent.split('\\n').length"));
+        Assert.Equal("pre-line", await tooltip
+            .EvaluateAsync<string>("element => getComputedStyle(element).whiteSpace"));
+        var ring = page.Locator(".agent-context-ring-value");
+        var length = await ring.EvaluateAsync<double>("element => element.getTotalLength()");
+        var offset = await ring.EvaluateAsync<double>(
+            "element => Number(element.getAttribute('stroke-dashoffset'))");
+        Assert.InRange(1 - (offset / length), 0.74, 0.76);
+
+        await page.GetByTestId("agent-send").HoverAsync();
+        await Assertions.Expect(tooltip).ToBeVisibleAsync();
+
+        // Usage without a window must read as a plain token count, never as a proportion.
+        // Counts at or above 10k are rounded to whole thousands, so 12,500 reads as "13k".
+        await page.GetByTestId("agent-composer").FillAsync("Please report unsized context usage");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await ExpectAgentComplete(page);
+
+        await Assertions.Expect(gauge).ToHaveAttributeAsync("data-context", "unsized");
+        await Assertions.Expect(tooltip).ToHaveTextAsync(
+            "Context used: 13k tokens This model's context window was not reported.");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Changes_effort_without_replacing_the_conversation()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -337,13 +521,15 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await page.GetByTestId("agent-open").ClickAsync();
         await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        // Only schema is shared by default, and the agent answers differently once it sees rows.
+        await ShareScopeAsync(page, "data");
         await page.GetByTestId("agent-composer").FillAsync("First question");
         await page.GetByTestId("agent-send").ClickAsync();
         await ExpectAgentComplete(page);
 
         await page.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
         await Assertions.Expect(page.GetByTestId("agent-model-marker"))
-            .ToHaveTextAsync("Now using Fake local model — fake-local-v1");
+            .ToHaveTextAsync("Now using Fake local model - fake-local-v1");
         await Assertions.Expect(page.GetByTestId("agent-message-user"))
             .ToContainTextAsync("First question");
         await Assertions.Expect(page.GetByTestId("agent-message-assistant"))
@@ -352,12 +538,10 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTestId("agent-composer").FillAsync("Follow-up question");
         await page.GetByTestId("agent-send").ClickAsync();
         await ExpectAgentComplete(page);
-        var responseRole = page.GetByTestId("agent-message-assistant").Last
-            .Locator(".agent-message-role");
-        await Assertions.Expect(responseRole.Locator(".agent-message-role-name"))
-            .ToHaveTextAsync("Agent");
-        await Assertions.Expect(responseRole.Locator(".agent-message-role-detail"))
-            .ToHaveTextAsync("- Fake local model · fake-local-v1");
+        var responseFooter = page.GetByTestId("agent-message-assistant").Last
+            .Locator(".agent-message-footer");
+        await Assertions.Expect(responseFooter.Locator(".agent-message-role-detail"))
+            .ToHaveTextAsync("· Fake local model · fake-local-v1");
 
         Assert.Equal(requestsBefore + 2, fixture.Agent.Requests.Count);
         var followUp = fixture.Agent.Requests[^1];
@@ -437,9 +621,25 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToHaveCountAsync(0);
         await Assertions.Expect(assistant.Locator("strong"))
             .ToHaveTextAsync("Explanation of the join logic:");
+        await Assertions.Expect(assistant.Locator("h3.agent-heading"))
+            .ToHaveTextAsync("Query plan");
+        await Assertions.Expect(assistant.Locator("em"))
+            .ToHaveTextAsync("Prepared safely.");
+        await Assertions.Expect(assistant.Locator("ul.agent-list li")).ToHaveCountAsync(2);
+        await Assertions.Expect(assistant.Locator("hr.agent-rule")).ToHaveCountAsync(1);
+        await Assertions.Expect(assistant.Locator(".agent-math")).ToHaveTextAsync("△");
         await Assertions.Expect(assistant.Locator(".agent-table")).ToBeVisibleAsync();
         await Assertions.Expect(assistant.Locator(".agent-table th").Nth(0)).ToHaveTextAsync("Step");
         await Assertions.Expect(assistant.Locator(".agent-table code").Nth(0)).ToHaveTextAsync("Orders");
+        var jsonBlock = assistant.Locator(".agent-code-block").Filter(new() { HasText = "\"request\"" });
+        await Assertions.Expect(jsonBlock.Locator(".json-key").Nth(0)).ToHaveTextAsync("\"request\":");
+        await Assertions.Expect(jsonBlock.Locator("code")).ToContainTextAsync("\n  \"request\"");
+        await jsonBlock.GetByRole(AriaRole.Button, new() { Name = "Raw" }).ClickAsync();
+        await Assertions.Expect(jsonBlock.Locator("code"))
+            .ToHaveTextAsync("{\"request\":{\"method\":\"GET\"},\"rows\":2,\"ok\":true}\n");
+        await jsonBlock.GetByRole(AriaRole.Button, new() { Name = "Pretty" }).ClickAsync();
+        await Assertions.Expect(jsonBlock.GetByRole(AriaRole.Button, new() { Name = "Pretty" }))
+            .ToHaveAttributeAsync("aria-pressed", "true");
         await ExpectAgentComplete(page);
         browserPage.AssertNoUnexpectedErrors();
     }
@@ -637,11 +837,11 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.InRange(Math.Abs(expandedThinkingLabel.X - collapsedThinkingLabel.X), 0, 0.5f);
         Assert.InRange(Math.Abs(expandedThinkingLabel.Y - collapsedThinkingLabel.Y), 0, 0.5f);
         var reasoningPanelBounds = await thinking.BoundingBoxAsync();
-        var roleBounds = await cancelledAssistant.Locator(".agent-message-role").BoundingBoxAsync();
+        var messageBounds = await cancelledAssistant.BoundingBoxAsync();
         Assert.NotNull(reasoningPanelBounds);
-        Assert.NotNull(roleBounds);
-        Assert.True(reasoningPanelBounds.Y >= roleBounds.Y + roleBounds.Height,
-            "The expanded reasoning panel overlapped the agent heading.");
+        Assert.NotNull(messageBounds);
+        Assert.True(reasoningPanelBounds.Y >= messageBounds.Y,
+            "The expanded reasoning panel overflowed the agent message.");
         Assert.NotEqual("rgba(0, 0, 0, 0)", await thinking
             .EvaluateAsync<string>("element => getComputedStyle(element).borderColor"));
         await page.GetByTestId("agent-cancel").ClickAsync();
@@ -730,7 +930,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.True(before > 0);
 
         await openQuery.DispatchEventAsync("click");
-        await page.Locator("#tabbar .tab").Filter(new() { HasText = "Ask — FakeDb" }).ClickAsync();
+        await page.Locator("#tabbar .tab").Filter(new() { HasText = "Ask - FakeDb" }).ClickAsync();
         await Assertions.Expect(messages).ToBeVisibleAsync();
         await page.WaitForTimeoutAsync(50);
 
@@ -739,9 +939,189 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    [Fact]
+    public async Task Saves_conversations_in_the_browser_and_reopens_them_in_their_own_tab()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        var chats = page.GetByTestId("agent-history");
+        await Assertions.Expect(chats).ToHaveAttributeAsync("aria-label", "Saved chats");
+        await Assertions.Expect(chats.GetByText("Chats", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("agent-history-toggle"))
+            .ToHaveAttributeAsync("aria-label", "Hide saved chats");
+        await Assertions.Expect(page.GetByTestId("agent-history-empty")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("agent-welcome-disclaimer")).ToContainTextAsync(
+            "AI-generated queries may be incorrect");
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-effort").SelectOptionAsync("high");
+        await page.GetByTestId("agent-composer").FillAsync("Which customers ordered most?");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await ExpectAgentComplete(page);
+
+        var item = page.GetByTestId("agent-history-item");
+        await Assertions.Expect(item).ToHaveCountAsync(1);
+        await Assertions.Expect(item.GetByTestId("agent-history-open"))
+            .ToContainTextAsync("Which customers ordered most?");
+
+        // A new chat keeps the completed transcript in history and clears the current workspace.
+        await page.GetByTestId("agent-new-chat").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-history-item")).ToHaveCountAsync(1);
+        await Assertions.Expect(page.GetByTestId("agent-message-user")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByText("Ask about this database")).ToBeVisibleAsync();
+
+        // Transcripts belong to the browser, so they survive a reload without any server storage.
+        await page.ReloadAsync();
+        await page.GetByTestId("agent-open").ClickAsync();
+        // The effort the conversation used must win over whatever the composer is set to now.
+        await page.GetByTestId("agent-effort").SelectOptionAsync("low");
+        await page.GetByTestId("agent-history-open").ClickAsync();
+
+        await Assertions.Expect(page.GetByTestId("agent-panel")).ToHaveCountAsync(2);
+        var restored = page.GetByTestId("agent-panel").Last;
+        await Assertions.Expect(restored.GetByTestId("agent-message-user"))
+            .ToContainTextAsync("Which customers ordered most?");
+        // What the agent answered is beside the point here; that the answer came back is not.
+        await Assertions.Expect(restored.GetByTestId("agent-message-assistant"))
+            .ToContainTextAsync(new Regex("Fake (data|schema) response"));
+        await Assertions.Expect(restored.GetByTestId("agent-provider")).ToHaveValueAsync("fake-remote");
+        await Assertions.Expect(restored.GetByTestId("agent-effort")).ToHaveValueAsync("high");
+
+        // A conversation that is already open is brought forward instead of opening a second copy.
+        await restored.GetByTestId("agent-history-open").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-panel")).ToHaveCountAsync(2);
+
+        await restored.GetByTestId("agent-history-delete").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-history-item")).ToHaveCountAsync(0);
+        // Deleting the last conversation leaves nothing behind in storage.
+        Assert.Null(await page.EvaluateAsync<string?>(
+            "() => localStorage.getItem('gridlet.agentConversations')"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Remembers_the_last_model_and_the_collapsed_conversation_pane()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        var history = page.GetByTestId("agent-history");
+        await Assertions.Expect(history).ToHaveAttributeAsync("data-collapsed", "false");
+        var initialWidth = (await history.BoundingBoxAsync())!.Width;
+        await page.GetByTestId("agent-history-grip").PressAsync("ArrowLeft");
+        var resizedWidth = (await history.BoundingBoxAsync())!.Width;
+        Assert.InRange(resizedWidth, initialWidth + 19, initialWidth + 21);
+        await page.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
+        await page.GetByTestId("agent-history-toggle").ClickAsync();
+        await Assertions.Expect(history).ToHaveAttributeAsync("data-collapsed", "true");
+        await Assertions.Expect(page.GetByTestId("agent-history-list")).ToBeHiddenAsync();
+
+        await page.ReloadAsync();
+        await page.GetByTestId("agent-open").ClickAsync();
+        // Fake remote model is the first configured profile, so this can only be the last choice.
+        await Assertions.Expect(page.GetByTestId("agent-provider")).ToHaveValueAsync("fake-local");
+        await Assertions.Expect(page.GetByTestId("agent-history"))
+            .ToHaveAttributeAsync("data-collapsed", "true");
+        await page.GetByTestId("agent-history-toggle").ClickAsync();
+        var restoredWidth = (await page.GetByTestId("agent-history").BoundingBoxAsync())!.Width;
+        Assert.InRange(restoredWidth, resizedWidth - 1, resizedWidth + 1);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Reopened_conversations_keep_the_model_that_answered_each_turn()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("First question");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await ExpectAgentComplete(page);
+
+        await page.GetByTestId("agent-provider").SelectOptionAsync("fake-local");
+        await page.GetByTestId("agent-composer").FillAsync("Second question");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await ExpectAgentComplete(page);
+
+        // A conversation that changed models must not be back-dated to its last answer's model.
+        await page.ReloadAsync();
+        await page.GetByTestId("agent-open").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-history-open"))
+            .ToContainTextAsync("2 models");
+        await page.GetByTestId("agent-history-open").ClickAsync();
+
+        var restored = page.GetByTestId("agent-panel").Last;
+        var details = restored.Locator(".agent-message-role-detail");
+        await Assertions.Expect(details).ToHaveCountAsync(2);
+        await Assertions.Expect(details.First).ToHaveTextAsync("· Fake remote model · fake-model-v1");
+        await Assertions.Expect(details.Last).ToHaveTextAsync("· Fake local model · fake-local-v1");
+        await Assertions.Expect(restored.GetByTestId("agent-model-marker"))
+            .ToHaveTextAsync("Now using Fake local model - fake-local-v1");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Reopening_a_conversation_does_not_make_it_look_newer_than_its_last_answer()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("agent-open").ClickAsync();
+        await page.GetByTestId("agent-api-key").FillAsync("sk-browser-only");
+        await page.GetByTestId("agent-composer").FillAsync("An older question");
+        await page.GetByTestId("agent-send").ClickAsync();
+        await ExpectAgentComplete(page);
+
+        // Age the saved record, then reopen and close it the way a returning reader would.
+        await page.EvaluateAsync("""
+            () => {
+                const key = 'gridlet.agentConversations';
+                const records = JSON.parse(localStorage.getItem(key));
+                const twoHours = 2 * 60 * 60 * 1000;
+                records[0].createdAt = Date.now() - twoHours;
+                records[0].updatedAt = Date.now() - twoHours;
+                localStorage.setItem(key, JSON.stringify(records));
+            }
+            """);
+        await page.ReloadAsync();
+        await page.GetByTestId("agent-open").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("agent-history-open")).ToContainTextAsync("2h ago");
+        await page.GetByTestId("agent-history-open").ClickAsync();
+
+        var restored = page.GetByTestId("agent-panel").Last;
+        await Assertions.Expect(restored.GetByTestId("agent-message-user"))
+            .ToContainTextAsync("An older question");
+        await page.Locator(".tab.active .tab-close").ClickAsync();
+
+        await Assertions.Expect(page.GetByTestId("agent-history-open")).ToContainTextAsync("2h ago");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     private static Task ExpectAgentComplete(IPage page) =>
         Assertions.Expect(page.GetByTestId("agent-status"))
             .ToHaveAttributeAsync("data-state", "complete");
+
+    /// <summary>
+    /// Turns on one sharing scope through the composer's Share menu. Schema is the only scope on by
+    /// default, so a test that expects the agent to reach anything else has to ask for it the way a
+    /// person would.
+    /// </summary>
+    private static async Task ShareScopeAsync(IPage page, string scope)
+    {
+        await page.GetByTestId("agent-share-trigger").ClickAsync();
+        await page.Locator($".agent-share-menu [data-scope='{scope}']").ClickAsync();
+        await Assertions.Expect(page.GetByTestId($"agent-share-{scope}")).ToBeCheckedAsync();
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.Locator(".agent-share-menu")).ToBeHiddenAsync();
+    }
 
     [Fact]
     public async Task Theme_follows_system_and_persists_an_explicit_choice()
@@ -956,6 +1336,21 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal("SQL_1-result1.json", jsonDownload.SuggestedFilename);
         using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
         Assert.Equal(42, document.RootElement[0].GetProperty("Answer").GetInt32());
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Confirms_successful_non_row_query_execution()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "no-results");
+
+        await page.GetByTestId("query-run").ClickAsync();
+
+        await Assertions.Expect(page.GetByTestId("query-results").GetByText(
+            "Query executed successfully — 0 records affected", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -1205,6 +1600,202 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
         Assert.Equal(sql, fixture.Provider.LastQuerySql);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Switching_connection_keeps_tabs_open_and_bound_to_their_own_database()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT 1 AS Answer");
+
+        var queryRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/query", StringComparison.Ordinal))
+            {
+                queryRequests.Add(request.Url);
+            }
+        };
+
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
+        await Assertions.Expect(page.Locator("#connection-select")).ToHaveValueAsync("SQLite");
+
+        // The tab survives the switch and shows the connection it still runs on.
+        var tab = page.Locator("#tabbar .tab");
+        await Assertions.Expect(tab).ToHaveCountAsync(1);
+        await Assertions.Expect(tab.GetByTestId("tab-scope")).ToHaveTextAsync("Main / FakeDb");
+
+        var panel = ActivePanel(page);
+        await panel.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+
+        Assert.All(queryRequests, url => Assert.Contains("/connections/Main/databases/FakeDb/query", url));
+        Assert.NotEmpty(queryRequests);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Opens_each_published_endpoint_in_its_own_request_tab()
+    {
+        using var client = new HttpClient { BaseAddress = fixture.BaseAddress };
+        foreach (var name in new[] { "Tab one", "Tab two" })
+        {
+            using var publish = await client.PostAsJsonAsync("/gridlet/api/published", new
+            {
+                name,
+                method = "GET",
+                route = name.Replace(' ', '-').ToLowerInvariant(),
+                connectionName = "Main",
+                database = "FakeDb",
+                sql = "SELECT 42",
+            });
+            publish.EnsureSuccessStatusCode();
+        }
+
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.Locator("#apis-btn").ClickAsync();
+
+        var rows = page.Locator("#panels tr");
+        var tabs = page.Locator("#tabbar .tab");
+        var apisTab = tabs.Filter(new() { HasText = "Published APIs" });
+        await rows.Filter(new() { HasText = "Tab one" }).GetByTestId("open-api-request").ClickAsync();
+        await apisTab.ClickAsync();
+        await rows.Filter(new() { HasText = "Tab two" }).GetByTestId("open-api-request").ClickAsync();
+
+        // Both requests stay open next to the endpoint list instead of replacing each other.
+        await Assertions.Expect(tabs).ToHaveCountAsync(3);
+        await Assertions.Expect(tabs.Filter(new() { HasText = "Tab one" })).ToHaveCountAsync(1);
+        await Assertions.Expect(tabs.Filter(new() { HasText = "Tab two" })).ToHaveCountAsync(1);
+        await Assertions.Expect(ActivePanel(page).Locator(".api-preview-address"))
+            .ToHaveValueAsync(new Regex("/gridlet/pub/tab-two$"));
+
+        // The full API preview uses the same raw/pretty JSON presentation as Ask.
+        var preview = ActivePanel(page);
+        await preview.GetByRole(AriaRole.Button, new() { Name = "Go" }).ClickAsync();
+        await Assertions.Expect(preview.Locator(".api-response-status"))
+            .ToHaveTextAsync(new Regex("^200"));
+        await Assertions.Expect(preview.Locator(".api-code-content .json-key").Nth(0)).ToBeVisibleAsync();
+        var rawResponse = preview.GetByRole(AriaRole.Button, new() { Name = "Raw" });
+        var prettyResponse = preview.GetByRole(AriaRole.Button, new() { Name = "Pretty" });
+        await rawResponse.ClickAsync();
+        await Assertions.Expect(rawResponse).ToHaveAttributeAsync("aria-pressed", "true");
+        await prettyResponse.ClickAsync();
+        await Assertions.Expect(prettyResponse).ToHaveAttributeAsync("aria-pressed", "true");
+
+        // Re-opening the same endpoint focuses its tab rather than adding another.
+        await apisTab.ClickAsync();
+        await rows.Filter(new() { HasText = "Tab one" }).GetByTestId("open-api-request").ClickAsync();
+        await Assertions.Expect(tabs).ToHaveCountAsync(3);
+        await Assertions.Expect(ActivePanel(page).Locator(".api-preview-address"))
+            .ToHaveValueAsync(new Regex("/gridlet/pub/tab-one$"));
+
+        // An empty request tab is always available for ad-hoc calls.
+        await apisTab.ClickAsync();
+        await page.GetByTestId("new-api-request").ClickAsync();
+        await Assertions.Expect(tabs).ToHaveCountAsync(4);
+        await Assertions.Expect(ActivePanel(page).Locator(".api-preview-address")).ToHaveValueAsync("");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// While one endpoint is open for editing, the actions on screen should be the ones for that
+    /// endpoint. Starting a blank request is a list-view action and steps aside for them.
+    /// </summary>
+    [Fact]
+    public async Task Editing_an_endpoint_offers_run_beside_save_instead_of_a_new_request()
+    {
+        using var client = new HttpClient { BaseAddress = fixture.BaseAddress };
+        using var publish = await client.PostAsJsonAsync("/gridlet/api/published", new
+        {
+            name = "Editable",
+            method = "GET",
+            route = "editable",
+            connectionName = "Main",
+            database = "FakeDb",
+            sql = "SELECT 42",
+        });
+        publish.EnsureSuccessStatusCode();
+
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.Locator("#apis-btn").ClickAsync();
+
+        var newRequest = page.GetByTestId("new-api-request");
+        var run = page.GetByTestId("run-api-endpoint");
+        await Assertions.Expect(newRequest).ToBeVisibleAsync();
+        await Assertions.Expect(run).ToHaveCountAsync(0);
+
+        await page.Locator("#panels tr").Filter(new() { HasText = "Editable" })
+            .Locator("button[title='Edit endpoint inline']").ClickAsync();
+
+        await Assertions.Expect(run).ToBeVisibleAsync();
+        await Assertions.Expect(newRequest).ToBeHiddenAsync();
+
+        // Untouched, there is nothing to save, so Run just runs.
+        await Assertions.Expect(run).ToHaveTextAsync("Run");
+        await run.ClickAsync();
+        await Assertions.Expect(ActivePanel(page).Locator(".api-preview-address"))
+            .ToHaveValueAsync(new Regex("/gridlet/pub/editable$"));
+
+        // Leaving the editor brings the list-view action back.
+        await page.Locator("#tabbar .tab").Filter(new() { HasText = "Published APIs" }).ClickAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "Cancel" }).ClickAsync();
+        await Assertions.Expect(newRequest).ToBeVisibleAsync();
+        await Assertions.Expect(run).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A request always hits the stored endpoint, so edits have to be saved before they can be
+    /// tried. The button says which of the two it is about to do rather than running the old
+    /// version, and it follows the form as it is edited.
+    /// </summary>
+    [Fact]
+    public async Task Editing_an_endpoint_turns_run_into_save_and_run()
+    {
+        using var client = new HttpClient { BaseAddress = fixture.BaseAddress };
+        using var publish = await client.PostAsJsonAsync("/gridlet/api/published", new
+        {
+            name = "Rerouted",
+            method = "GET",
+            route = "rerouted",
+            connectionName = "Main",
+            database = "FakeDb",
+            sql = "SELECT 42",
+        });
+        publish.EnsureSuccessStatusCode();
+
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.Locator("#apis-btn").ClickAsync();
+        await page.Locator("#panels tr").Filter(new() { HasText = "Rerouted" })
+            .Locator("button[title='Edit endpoint inline']").ClickAsync();
+
+        var run = page.GetByTestId("run-api-endpoint");
+        await Assertions.Expect(run).ToHaveTextAsync("Run");
+
+        var route = ActivePanel(page).Locator(".inline-form input[type=text]").Nth(1);
+        await route.FillAsync("rerouted-v2");
+        await Assertions.Expect(run).ToHaveTextAsync("Save and run");
+
+        // Reverting by hand leaves nothing to save, so the button goes back on its own.
+        await route.FillAsync("rerouted");
+        await Assertions.Expect(run).ToHaveTextAsync("Run");
+
+        await route.FillAsync("rerouted-v2");
+        await run.ClickAsync();
+
+        // The change is saved first, and the request tab opens on the route that was just stored.
+        await Assertions.Expect(ActivePanel(page).Locator(".api-preview-address"))
+            .ToHaveValueAsync(new Regex("/gridlet/pub/rerouted-v2$"));
+        var endpoints = await client.GetStringAsync("/gridlet/api/published");
+        Assert.Contains("rerouted-v2", endpoints, StringComparison.Ordinal);
         browserPage.AssertNoUnexpectedErrors();
     }
 

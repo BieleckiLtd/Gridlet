@@ -1,11 +1,12 @@
 using Gridlet;
 using Gridlet.Abstractions;
 using Gridlet.AspNetCore;
+using Gridlet.AspNetCore.Agents;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
-// ReSharper disable once CheckNamespace — conventional namespace for endpoint extensions.
+// ReSharper disable once CheckNamespace; conventional namespace for endpoint extensions.
 namespace Microsoft.AspNetCore.Builder;
 
 public static class GridletEndpointRouteBuilderExtensions
@@ -30,7 +31,7 @@ public static class GridletEndpointRouteBuilderExtensions
 
         GridletUiEndpoints.Map(group, normalizedPattern);
         GridletApiEndpoints.Map(group.MapGroup("/api"), options);
-        GridletPublishedEndpoints.Map(group);
+        GridletPublishedEndpoints.Map(group, options.PublishedApiSegment);
 
         return group;
     }
@@ -50,7 +51,7 @@ public static class GridletEndpointRouteBuilderExtensions
             endpoints, pattern, validateAgentService: true);
 
         GridletApiEndpoints.Map(group.MapGroup("/api"), options);
-        GridletPublishedEndpoints.Map(group);
+        GridletPublishedEndpoints.Map(group, options.PublishedApiSegment);
 
         return group;
     }
@@ -61,16 +62,19 @@ public static class GridletEndpointRouteBuilderExtensions
     /// <see cref="GridletSecurityOptions.AllowAnonymous"/>, matching <see cref="MapGridlet"/>.
     /// </summary>
     /// <param name="endpoints">The application's endpoint route builder.</param>
-    /// <param name="pattern">Route prefix containing the <c>/pub</c> runtime. Defaults to <c>/gridlet</c>.</param>
+    /// <param name="pattern">
+    /// Route prefix containing the published-endpoint runtime, which is served from
+    /// <see cref="GridletOptions.PublishedApiRoutePrefix"/> beneath it. Defaults to <c>/gridlet</c>.
+    /// </param>
     /// <returns>The mapped route group, allowing additional endpoint conventions to be applied.</returns>
     public static IEndpointConventionBuilder MapGridletPublished(
         this IEndpointRouteBuilder endpoints,
         string pattern = "/gridlet")
     {
-        var (group, _, _) = CreateGroup(
+        var (group, options, _) = CreateGroup(
             endpoints, pattern, validateAgentService: false);
 
-        GridletPublishedEndpoints.Map(group);
+        GridletPublishedEndpoints.Map(group, options.PublishedApiSegment);
 
         return group;
     }
@@ -104,6 +108,10 @@ public static class GridletEndpointRouteBuilderExtensions
             // published-only runtime has no agent surface and deliberately avoids initializing it.
             _ = endpoints.ServiceProvider.GetService<IGridletAgentService>()?.Info;
         }
+
+        // The prefix is a mapping-time choice, so it is published to services here rather than
+        // being guessed from the documented default when an agent needs to name a real URL.
+        endpoints.ServiceProvider.GetService<GridletMountPath>()?.Set(pattern);
 
         var group = endpoints.MapGroup(pattern);
 

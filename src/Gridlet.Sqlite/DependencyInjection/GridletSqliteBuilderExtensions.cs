@@ -5,7 +5,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-// ReSharper disable once CheckNamespace — conventional namespace for DI extensions.
+// ReSharper disable once CheckNamespace; conventional namespace for DI extensions.
 namespace Microsoft.Extensions.DependencyInjection;
 
 public static class GridletSqliteBuilderExtensions

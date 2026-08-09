@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -118,13 +119,12 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private const string McpServerName = "gridlet";
-    private const string CapabilityInstructions = """
-
-        Gridlet exposes the only tools you may use through the gridlet MCP server. Do not use shell
-        commands, filesystem tools, web search, skills, subagents, or request additional permissions.
-        Do not inspect the host computer. Answer only from the user's messages and results returned
-        by Gridlet's tools.
-        """;
+    /// <summary>
+    /// Appended to the system prompt because a coding CLI arrives believing it may reach the host
+    /// computer. The wording lives in Prompts/Instructions/cli-claude-code.md.
+    /// </summary>
+    private static string CapabilityInstructions =>
+        GridletPrompts.Text("Instructions/cli-claude-code");
 
     private readonly string executablePath;
     private readonly string model;
@@ -138,6 +138,10 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
     private BoundedTextTail? stderr;
     private bool initialized;
     private bool disposed;
+
+    // Claude Code reports the model's context window only in the terminating `result` message.
+    // Retaining it lets later turns stream context consumption while the answer is still arriving.
+    private long? contextWindowTokens;
 
     public ClaudeCodeRuntime(
         string executablePath,
@@ -175,6 +179,7 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
 
         var toolCallCount = 0;
         var refusedToolCalls = 0;
+        var requestUsage = new ClaudeRequestUsage();
         while (true)
         {
             using var message = await ReadMessageAsync(cancellationToken);
@@ -198,6 +203,18 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
                     isToolCall ? ++toolCallCount : toolCallCount,
                     cancellationToken);
                 foreach (var update in updates) yield return update;
+                continue;
+            }
+
+            if (type == "stream_event" &&
+                root.TryGetProperty("event", out var usageEvent) &&
+                usageEvent.ValueKind == JsonValueKind.Object &&
+                TryReadStreamUsage(usageEvent, requestUsage))
+            {
+                if (requestUsage.TryCreateUpdate(contextWindowTokens, out var usageUpdate))
+                {
+                    yield return usageUpdate;
+                }
                 continue;
             }
 
@@ -241,11 +258,120 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
                         $"Claude Code returned an error result: {error}");
                 }
 
+                contextWindowTokens = ReadContextWindow(root) ?? contextWindowTokens;
+                if (requestUsage.TryCreateUpdate(contextWindowTokens, out var finalUsage))
+                {
+                    yield return finalUsage;
+                }
+
                 HasCompletedTurn = true;
                 yield break;
             }
         }
     }
+
+    /// <summary>
+    /// Accumulates the usage Claude Code forwards from the model's own streaming events. The final
+    /// request of a turn carries the whole conversation, so its usage is the context occupancy.
+    /// </summary>
+    internal sealed class ClaudeRequestUsage
+    {
+        private long? input;
+        private long? cached;
+        private long? output;
+        private long lastReportedTotal = -1;
+        private long? lastReportedWindow;
+
+        public void SetRequestStart(long? inputTokens, long? cachedTokens, long? outputTokens)
+        {
+            // `message_start` begins a new request; earlier requests in the same turn are superseded.
+            input = inputTokens;
+            cached = cachedTokens;
+            output = outputTokens;
+        }
+
+        public void SetOutput(long? outputTokens)
+        {
+            if (outputTokens is not null) output = outputTokens;
+        }
+
+        public bool TryCreateUpdate(long? contextWindowTokens, out AgentResponseUpdate update)
+        {
+            update = null!;
+            var total = (input ?? 0) + (cached ?? 0) + (output ?? 0);
+            // The window arrives only with the terminating `result` message, after the counts have
+            // stopped changing, so learning it must publish an update of its own.
+            if (total <= 0 ||
+                (total == lastReportedTotal && contextWindowTokens == lastReportedWindow))
+            {
+                return false;
+            }
+
+            lastReportedTotal = total;
+            lastReportedWindow = contextWindowTokens;
+            update = new AgentResponseUpdate(ChatRole.Assistant, [GridletContextUsage.Create(
+                (input ?? 0) + (cached ?? 0), output, cached, total, contextWindowTokens)]);
+            return true;
+        }
+    }
+
+    internal static bool TryReadStreamUsage(JsonElement modelEvent, ClaudeRequestUsage usage)
+    {
+        var eventType = ReadString(modelEvent, "type");
+        if (eventType == "message_start")
+        {
+            if (!modelEvent.TryGetProperty("message", out var startMessage) ||
+                !startMessage.TryGetProperty("usage", out var startUsage))
+            {
+                return false;
+            }
+
+            usage.SetRequestStart(
+                ReadTokenCount(startUsage, "input_tokens"),
+                (ReadTokenCount(startUsage, "cache_read_input_tokens") ?? 0) +
+                (ReadTokenCount(startUsage, "cache_creation_input_tokens") ?? 0),
+                ReadTokenCount(startUsage, "output_tokens"));
+            return true;
+        }
+
+        if (eventType != "message_delta" ||
+            !modelEvent.TryGetProperty("usage", out var deltaUsage))
+        {
+            return false;
+        }
+
+        usage.SetOutput(ReadTokenCount(deltaUsage, "output_tokens"));
+        return true;
+    }
+
+    /// <summary>
+    /// Reads the largest context window Claude Code reports for the models used in a turn. The
+    /// result message keys usage by model id, and a turn may involve more than one model.
+    /// </summary>
+    internal static long? ReadContextWindow(JsonElement result)
+    {
+        if (!result.TryGetProperty("modelUsage", out var modelUsage) ||
+            modelUsage.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        long? window = null;
+        foreach (var model in modelUsage.EnumerateObject())
+        {
+            if (model.Value.ValueKind != JsonValueKind.Object) continue;
+            var value = ReadTokenCount(model.Value, "contextWindow");
+            if (value is > 0 && value > (window ?? 0)) window = value;
+        }
+        return window;
+    }
+
+    private static long? ReadTokenCount(JsonElement element, string propertyName)
+        => element.TryGetProperty(propertyName, out var value) &&
+           value.ValueKind == JsonValueKind.Number &&
+           value.TryGetInt64(out var count)
+            ? count
+            : null;
 
     private async Task SetEffortAsync(
         GridletClaudeCodeEffort? requestedEffort,
@@ -489,8 +615,9 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
                 id,
                 callId,
                 toolName,
-                $"Gridlet's limit of {limit} tool calls was reached. Do not call another tool; " +
-                    "finish the response using the information already collected.",
+                GridletPrompts.Section(
+                    "Notes/tool-call-limit", "claude-code",
+                    ("limit", limit.ToString(CultureInfo.InvariantCulture))),
                 updates);
         }
 
@@ -568,12 +695,16 @@ internal sealed class ClaudeCodeRuntime : IAsyncDisposable
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            // Claude Code reads the working directory as a project. See GridletCliWorkspace:
+            // --setting-sources= stops project CLAUDE.md but not the user's own agent memory,
+            // which is keyed by the working directory.
+            WorkingDirectory = GridletCliWorkspace.Path,
         };
         startInfo.ArgumentList.Add("--output-format");
         startInfo.ArgumentList.Add("stream-json");
         startInfo.ArgumentList.Add("--verbose");
         startInfo.ArgumentList.Add("--system-prompt");
-        startInfo.ArgumentList.Add(string.Concat(instructions, CapabilityInstructions));
+        startInfo.ArgumentList.Add(string.Concat(instructions, "\n", CapabilityInstructions));
         startInfo.ArgumentList.Add("--tools");
         startInfo.ArgumentList.Add(string.Empty);
         startInfo.ArgumentList.Add("--model");

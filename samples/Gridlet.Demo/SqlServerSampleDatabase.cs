@@ -78,7 +78,7 @@ public static class SqlServerSampleDatabase
 
         await transaction.CommitAsync(cancellationToken);
         logger.LogInformation(exists
-            ? "SQL Server LocalDB sample database already exists — ensured current demo objects."
+            ? "SQL Server LocalDB sample database already exists; ensured current demo objects."
             : "SQL Server LocalDB sample database created and seeded.");
     }
 

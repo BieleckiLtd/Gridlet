@@ -12,6 +12,56 @@ public class GridletOptionsValidatorTests
         return new GridletOptionsValidator().Validate(null, options);
     }
 
+    /// <summary>
+    /// The prefix becomes a literal route segment, so a value that would turn into a route
+    /// template, a second path segment, or a collision with Gridlet's own API has to fail at
+    /// startup rather than produce endpoints nobody can reach.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("api")]
+    [InlineData("API")]
+    [InlineData("published/v1")]
+    [InlineData("{route}")]
+    [InlineData("pub*")]
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("/../")]
+    [InlineData("../pub")]
+    public void Rejects_an_unusable_published_api_route_prefix(string prefix)
+    {
+        var result = Validate(options =>
+        {
+            options.AddConnection("Main", "Server=x;", GridletProviderNames.Sqlite);
+            options.PublishedApiRoutePrefix = prefix;
+        });
+
+        Assert.True(result.Failed);
+        Assert.Contains(
+            result.Failures!,
+            failure => failure.Contains("PublishedApiRoutePrefix", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("pub", "pub")]
+    [InlineData("endpoints", "endpoints")]
+    [InlineData("/api-v1/", "api-v1")]
+    [InlineData("data_api", "data_api")]
+    public void Accepts_a_single_segment_published_api_route_prefix(string prefix, string expected)
+    {
+        var options = new GridletOptions();
+        options.AddConnection("Main", "Server=x;", GridletProviderNames.Sqlite);
+        options.PublishedApiRoutePrefix = prefix;
+
+        var result = new GridletOptionsValidator().Validate(null, options);
+
+        Assert.True(result.Succeeded);
+        // Surrounding slashes are a normal way to write a prefix, so they are accepted and stripped
+        // rather than being rejected or doubled up when a URL is built.
+        Assert.Equal(expected, options.PublishedApiSegment);
+    }
+
     [Fact]
     public void Add_connection_requires_a_strongly_typed_provider()
     {
