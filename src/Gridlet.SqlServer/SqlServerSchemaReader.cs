@@ -280,7 +280,9 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                     reader.GetBoolean(3),
                     indexType is 1 or 5,
                     indexType is 5 or 6,
-                    indexType is 5 or 6 && Convert.ToInt32(reader.GetValue(14)) > 0,
+                    indexType is 5 or 6
+                        && !reader.IsDBNull(14)
+                        && Convert.ToInt32(reader.GetValue(14)) > 0,
                     reader.IsDBNull(5) ? null : reader.GetString(5),
                     reader.GetByte(6),
                     reader.GetBoolean(7),
@@ -298,7 +300,9 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             var columnName = reader.GetString(12);
             if (entry.IsColumnstore)
             {
-                var columnstoreOrderOrdinal = Convert.ToInt32(reader.GetValue(13));
+                var columnstoreOrderOrdinal = reader.IsDBNull(13)
+                    ? 0
+                    : Convert.ToInt32(reader.GetValue(13));
                 var keyOrdinal = columnstoreOrderOrdinal > 0
                     ? columnstoreOrderOrdinal
                     : Convert.ToInt32(reader.GetValue(9));
