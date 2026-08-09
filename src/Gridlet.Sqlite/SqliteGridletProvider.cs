@@ -29,7 +29,8 @@ public sealed class SqliteGridletProvider :
         SupportsCheckConstraints: true,
         SupportsUniqueConstraints: true,
         SupportsIndexes: true,
-        SupportsSessions: true);
+        SupportsSessions: true,
+        SupportsQueryPlans: true);
 
     public ISchemaReader Schema { get; } = new SqliteSchemaReader();
 

@@ -7,7 +7,7 @@ namespace Gridlet.Tests.AspNetCore.Fakes;
 /// <summary>An in-memory provider so endpoint behaviour can be tested without a database.</summary>
 public sealed class FakeGridletProvider :
     IGridletProvider, IGridletProviderMetadata, ISchemaReader, ITableDataService, IQueryRunner,
-    IQuerySessionRunner, ITableWriteService, ITableDdlService
+    IQuerySessionRunner, IQueryPlanRunner, ITableWriteService, ITableDdlService
 {
     public const GridletProviderNames Name = GridletProviderNames.SqlServer;
 
@@ -39,7 +39,8 @@ public sealed class FakeGridletProvider :
         SupportsCheckConstraints: true,
         SupportsUniqueConstraints: true,
         SupportsIndexes: true,
-        SupportsSessions: true);
+        SupportsSessions: true,
+        SupportsQueryPlans: true);
 
     public ISchemaReader Schema => this;
 
@@ -193,6 +194,35 @@ public sealed class FakeGridletProvider :
                 TotalRows: 2,
                 RowIdentity: name == "NoKeys" ? null : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
                 RowKeys: name == "NoKeys" ? null : [[1], [2]]));
+
+    // ---- execution plans ----
+
+    public Task<QueryPlan> GetPlanAsync(
+        GridletConnectionContext context, string sql, QueryPlanMode mode,
+        QueryRequestOptions options, CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"plan.{mode.ToString().ToLowerInvariant()} {sql}");
+        if (sql == "boom")
+        {
+            throw new GridletQueryException("kaboom");
+        }
+
+        return Task.FromResult(new QueryPlan(
+            mode,
+            "showplan-xml",
+            [
+                new QueryPlanNode("SELECT", sql, EstimatedRows: 120, EstimatedCost: 0.04, Children:
+                [
+                    new QueryPlanNode("Clustered Index Scan", "Customers.PK_Customers",
+                        EstimatedRows: 120,
+                        ActualRows: mode == QueryPlanMode.Actual ? 118 : null,
+                        EstimatedCost: 0.04,
+                        Warnings: ["Missing index on Customers (Name)"]),
+                ]),
+            ],
+            "<ShowPlanXML />",
+            mode == QueryPlanMode.Actual ? ["Table 'Customers'. Scan count 1, logical reads 3."] : []));
+    }
 
     // ---- pinned sessions ----
     //

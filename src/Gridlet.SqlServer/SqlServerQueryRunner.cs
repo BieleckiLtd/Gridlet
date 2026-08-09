@@ -1,14 +1,138 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text;
 using Gridlet.Abstractions;
 using Gridlet.Models;
 using Microsoft.Data.SqlClient;
 
 namespace Gridlet.SqlServer;
 
-public sealed class SqlServerQueryRunner : IQueryRunner, IQuerySessionRunner
+public sealed class SqlServerQueryRunner : IQueryRunner, IQuerySessionRunner, IQueryPlanRunner
 {
     private const int BatchSize = 100;
+
+    /// <summary>The column SQL Server returns a plan in, whichever SET option produced it.</summary>
+    private const string ShowPlanColumnMarker = "Showplan";
+
+    /// <summary>
+    /// Asks SQL Server for a plan. An estimated plan comes from SHOWPLAN_XML, which compiles the
+    /// batch and returns the plan instead of running it - safe even for a DELETE. An actual plan
+    /// comes from STATISTICS XML, so the batch does run; STATISTICS IO and TIME are turned on with
+    /// it, because "how many reads did that take" is the other half of the same question.
+    /// </summary>
+    public async Task<QueryPlan> GetPlanAsync(
+        GridletConnectionContext context,
+        string sql,
+        QueryPlanMode mode,
+        QueryRequestOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(sql))
+        {
+            throw new GridletValidationException("Query text must not be empty.");
+        }
+
+        var messages = new ConcurrentQueue<string>();
+        var plans = new StringBuilder();
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        connection.InfoMessage += (_, e) =>
+        {
+            foreach (SqlError error in e.Errors) messages.Enqueue(error.Message);
+        };
+
+        var settings = mode == QueryPlanMode.Estimated
+            ? new[] { "SET SHOWPLAN_XML ON;" }
+            : ["SET STATISTICS XML ON;", "SET STATISTICS IO, TIME ON;"];
+        var teardown = mode == QueryPlanMode.Estimated
+            ? new[] { "SET SHOWPLAN_XML OFF;" }
+            : ["SET STATISTICS XML OFF;", "SET STATISTICS IO, TIME OFF;"];
+
+        try
+        {
+            // Each SET option has to be its own batch, which is why they are not prefixed onto the
+            // statement itself.
+            foreach (var setting in settings)
+            {
+                await ExecuteSettingAsync(connection, setting, options, cancellationToken);
+            }
+
+            try
+            {
+                foreach (var batch in SqlServerBatchSplitter.Split(sql))
+                {
+                    for (var repetition = 0; repetition < batch.RepeatCount; repetition++)
+                    {
+                        await CollectPlansAsync(connection, batch.Sql, options, plans, cancellationToken);
+                    }
+                }
+            }
+            finally
+            {
+                foreach (var setting in teardown)
+                {
+                    await ExecuteSettingAsync(connection, setting, options, CancellationToken.None);
+                }
+            }
+        }
+        catch (SqlException ex)
+        {
+            throw new GridletQueryException(ex.Message, ex);
+        }
+
+        var xml = plans.ToString();
+        return new QueryPlan(
+            mode,
+            "showplan-xml",
+            SqlServerShowPlanParser.Parse(xml),
+            string.IsNullOrWhiteSpace(xml) ? null : xml,
+            messages.ToArray());
+    }
+
+    private static async Task ExecuteSettingAsync(
+        SqlConnection connection,
+        string setting,
+        QueryRequestOptions options,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = setting;
+        command.CommandTimeout = options.CommandTimeoutSeconds;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Runs one batch and keeps only its plan result sets. With STATISTICS XML the statement's own
+    /// result sets come back too and are read past: the caller asked for the plan, not the rows.
+    /// </summary>
+    private static async Task CollectPlansAsync(
+        SqlConnection connection,
+        string sql,
+        QueryRequestOptions options,
+        StringBuilder plans,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.CommandTimeout = options.CommandTimeoutSeconds;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        do
+        {
+            if (reader.FieldCount != 1
+                || !reader.GetName(0).Contains(ShowPlanColumnMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (!reader.IsDBNull(0))
+                {
+                    plans.Append(reader.GetString(0));
+                }
+            }
+        }
+        while (await reader.NextResultAsync(cancellationToken));
+    }
 
     async Task<System.Data.Common.DbConnection> IQuerySessionRunner.OpenSessionAsync(
         GridletConnectionContext context,

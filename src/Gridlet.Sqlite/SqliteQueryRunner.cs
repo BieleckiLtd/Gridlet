@@ -5,9 +5,80 @@ using Microsoft.Data.Sqlite;
 
 namespace Gridlet.Sqlite;
 
-public sealed class SqliteQueryRunner : IQueryRunner, IQuerySessionRunner
+public sealed class SqliteQueryRunner : IQueryRunner, IQuerySessionRunner, IQueryPlanRunner
 {
     private const int BatchSize = 100;
+
+    /// <summary>
+    /// Returns SQLite's query plan. SQLite has no actual plan: EXPLAIN QUERY PLAN describes what the
+    /// planner chose without running the statement, and asking for an actual plan returns the same
+    /// thing rather than running a statement to learn nothing more.
+    /// </summary>
+    public async Task<QueryPlan> GetPlanAsync(
+        GridletConnectionContext context,
+        string sql,
+        QueryPlanMode mode,
+        QueryRequestOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateSql(sql);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "EXPLAIN QUERY PLAN " + sql;
+        command.CommandTimeout = options.CommandTimeoutSeconds;
+
+        var rows = new List<(long Id, long Parent, string Detail)>();
+        try
+        {
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                rows.Add((reader.GetInt64(0), reader.GetInt64(1), reader.GetString(3)));
+            }
+        }
+        catch (SqliteException ex)
+        {
+            throw new GridletQueryException(ex.Message, ex);
+        }
+
+        var messages = mode == QueryPlanMode.Actual
+            ? new[] { "SQLite has no actual execution plan; this is the plan the query planner chose." }
+            : Array.Empty<string>();
+        return new QueryPlan(
+            QueryPlanMode.Estimated,
+            "sqlite-query-plan",
+            BuildPlanTree(rows),
+            rows.Count == 0 ? null : string.Join("\n", rows.Select(row => $"{row.Id}|{row.Parent}|{row.Detail}")),
+            messages);
+    }
+
+    /// <summary>
+    /// EXPLAIN QUERY PLAN returns a flat list whose parent column describes the tree; only the
+    /// detail text carries meaning, so it becomes both the operation and its description.
+    /// </summary>
+    private static IReadOnlyList<QueryPlanNode> BuildPlanTree(
+        IReadOnlyList<(long Id, long Parent, string Detail)> rows)
+    {
+        var childrenByParent = rows
+            .GroupBy(row => row.Parent)
+            .ToDictionary(group => group.Key, group => group.ToArray());
+
+        QueryPlanNode Build((long Id, long Parent, string Detail) row)
+        {
+            var children = childrenByParent.TryGetValue(row.Id, out var found)
+                ? found.Select(Build).ToArray()
+                : [];
+            var separator = row.Detail.IndexOf(' ');
+            return new QueryPlanNode(
+                Operation: separator < 0 ? row.Detail : row.Detail[..separator],
+                Detail: separator < 0 ? null : row.Detail[(separator + 1)..],
+                Children: children);
+        }
+
+        return childrenByParent.TryGetValue(0, out var roots)
+            ? roots.Select(Build).ToArray()
+            : [];
+    }
 
     async Task<System.Data.Common.DbConnection> IQuerySessionRunner.OpenSessionAsync(
         GridletConnectionContext context,

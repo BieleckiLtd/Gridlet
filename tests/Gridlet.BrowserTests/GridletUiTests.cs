@@ -1984,6 +1984,34 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
 
     /// <summary>
+    /// "Why is this slow" is the question results cannot answer. The plan renders as a tree with the
+    /// operator, what it touches, the numbers that matter, and any warning attached to it.
+    /// </summary>
+    [Fact]
+    public async Task Shows_an_execution_plan_for_a_query()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT 1");
+        var panel = ActivePanel(page);
+
+        await panel.GetByTestId("query-plan-estimated").ClickAsync();
+
+        var plan = panel.GetByTestId("query-plan");
+        await Assertions.Expect(plan).ToBeVisibleAsync();
+        await Assertions.Expect(plan).ToContainTextAsync("Clustered Index Scan");
+        await Assertions.Expect(plan).ToContainTextAsync("Customers.PK_Customers");
+        await Assertions.Expect(plan).ToContainTextAsync("Missing index on Customers (Name)");
+        await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("Estimated plan");
+
+        await panel.GetByTestId("query-plan-actual").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("Actual plan");
+        await Assertions.Expect(panel.GetByText("logical reads 3")).ToBeVisibleAsync();
+        Assert.Contains("plan.actual SELECT 1", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// A procedure used to open as the bare text <c>EXEC dbo.Proc;</c>. It now offers a form for its
     /// arguments, and what runs is a script the person can see and keep.
     /// </summary>

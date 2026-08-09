@@ -105,6 +105,22 @@ public sealed record RoutineScriptResponse(string Sql);
 
 public sealed record QueryRequestBody(string? Sql, int? MaxRows = null);
 
+/// <summary>Body for an execution-plan request.</summary>
+/// <param name="Sql">The statement to explain.</param>
+/// <param name="Mode">
+/// <c>estimated</c> (the default) compiles the statement without running it; <c>actual</c> runs it
+/// and reports the plan the engine used.
+/// </param>
+public sealed record QueryPlanRequestBody(string? Sql, string? Mode = null);
+
+/// <summary>An execution plan. <paramref name="Mode"/> is <c>estimated</c> or <c>actual</c>.</summary>
+public sealed record QueryPlanResponse(
+    string Mode,
+    string Format,
+    IReadOnlyList<QueryPlanNode> Roots,
+    string? RawText,
+    IReadOnlyList<string> Messages);
+
 /// <summary>Body for a transaction control request on a pinned session.</summary>
 /// <param name="Command">One of <c>begin</c>, <c>commit</c> or <c>rollback</c>.</param>
 public sealed record SessionTransactionRequest(string? Command);

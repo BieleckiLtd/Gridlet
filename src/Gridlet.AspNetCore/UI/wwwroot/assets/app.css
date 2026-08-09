@@ -2234,6 +2234,24 @@ td.cell-actions, th.cell-actions { white-space: nowrap; width: 1%; }
 .result-meta { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .toolbar-slot { display: contents; }
 .toolbar-group { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.plan-panel { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; min-height: 0; overflow: auto; }
+.plan-tree { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.plan-node {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 6px;
+  border-left: 2px solid var(--border);
+  margin-left: calc(var(--plan-depth) * 18px);
+  background: var(--panel-2);
+  border-radius: 0 4px 4px 0;
+}
+.plan-op { font-weight: 600; white-space: nowrap; }
+.plan-detail { color: var(--text); opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-facts { margin-left: auto; white-space: nowrap; }
+.plan-warning { color: var(--warning); white-space: nowrap; }
+.plan-raw summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.plan-raw pre { max-height: 320px; overflow: auto; margin: 6px 0 0; font-size: 11.5px; }
 .session-actions button.active { border-color: var(--accent); color: var(--text); }
 .session-state { font-size: 11.5px; }
 .session-state.transaction-open { color: var(--warning); font-weight: 600; }

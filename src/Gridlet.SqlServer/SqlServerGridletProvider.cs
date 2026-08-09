@@ -30,7 +30,8 @@ public sealed class SqlServerGridletProvider :
         SupportsCheckConstraints: true,
         SupportsUniqueConstraints: true,
         SupportsIndexes: true,
-        SupportsSessions: true);
+        SupportsSessions: true,
+        SupportsQueryPlans: true);
 
     public ISchemaReader Schema { get; } = new SqlServerSchemaReader();
 

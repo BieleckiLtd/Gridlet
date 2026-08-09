@@ -19,8 +19,33 @@ public sealed record GridletProviderCapabilities(
     bool SupportsCheckConstraints = false,
     bool SupportsUniqueConstraints = false,
     bool SupportsIndexes = false,
-    bool SupportsSessions = false)
+    bool SupportsSessions = false,
+    bool SupportsQueryPlans = false)
 {
+    /// <summary>Creates the fifteen-field capability shape without relying on optional-parameter ABI.</summary>
+    public GridletProviderCapabilities(
+        string defaultSchema,
+        bool supportsSchemas,
+        bool supportsViews,
+        bool supportsStoredProcedures,
+        bool supportsFunctions,
+        bool supportsTriggers,
+        bool supportsClusteredPrimaryKeys,
+        IReadOnlyList<string> suggestedDataTypes,
+        string selectExample,
+        string createTriggerExample,
+        string objectEditMode,
+        bool supportsCheckConstraints,
+        bool supportsUniqueConstraints,
+        bool supportsIndexes,
+        bool supportsSessions)
+        : this(defaultSchema, supportsSchemas, supportsViews, supportsStoredProcedures,
+            supportsFunctions, supportsTriggers, supportsClusteredPrimaryKeys, suggestedDataTypes,
+            selectExample, createTriggerExample, objectEditMode, supportsCheckConstraints,
+            supportsUniqueConstraints, supportsIndexes, supportsSessions, false)
+    {
+    }
+
     /// <summary>Creates the fourteen-field capability shape without relying on optional-parameter ABI.</summary>
     public GridletProviderCapabilities(
         string defaultSchema,
@@ -40,7 +65,7 @@ public sealed record GridletProviderCapabilities(
         : this(defaultSchema, supportsSchemas, supportsViews, supportsStoredProcedures,
             supportsFunctions, supportsTriggers, supportsClusteredPrimaryKeys, suggestedDataTypes,
             selectExample, createTriggerExample, objectEditMode, supportsCheckConstraints,
-            supportsUniqueConstraints, supportsIndexes, false)
+            supportsUniqueConstraints, supportsIndexes, false, false)
     {
     }
 
@@ -59,7 +84,7 @@ public sealed record GridletProviderCapabilities(
         string objectEditMode)
         : this(defaultSchema, supportsSchemas, supportsViews, supportsStoredProcedures,
             supportsFunctions, supportsTriggers, supportsClusteredPrimaryKeys, suggestedDataTypes,
-            selectExample, createTriggerExample, objectEditMode, false, false, false, false)
+            selectExample, createTriggerExample, objectEditMode, false, false, false, false, false)
     {
     }
 

@@ -8,6 +8,13 @@ connection has SQL execution enabled.
   host, not in the browser, so they are shared by everyone who can reach that Gridlet.
 - A saved query is also the starting point for publishing an HTTP endpoint.
 
+- **Execution plans.** `Plan` shows how the engine would run the statement without running it, so it
+  is safe to ask for on an `UPDATE` or `DELETE`. `Plan + run` runs it and shows the plan it actually
+  used, with the rows each operator really produced and, on SQL Server, the STATISTICS IO and TIME
+  output. The plan is a tree of operators with what each one reads, its share of the cost, and any
+  warning the engine attached, such as a missing index. SQLite has no actual plan — `EXPLAIN QUERY
+  PLAN` describes the planner's choice either way, and Gridlet says so rather than pretending.
+  This is the first thing to reach for when somebody asks why a query is slow.
 - **Sessions and transactions.** Each execution normally gets its own connection, so a `BEGIN
   TRAN` is discarded the moment the statement ends. The `Session` button in the query toolbar pins
   one connection to that tab: `BEGIN`, the statements after it, and the final `COMMIT` or

@@ -498,6 +498,7 @@
       routine: (s, n) => `${objBase(s, n)}/routine`,
       routineScript: (s, n) => `${objBase(s, n)}/routine/script`,
       query: () => `${dbBase()}/query`,
+      queryPlan: () => `${dbBase()}/query/plan`,
       sessions: () => `${dbBase()}/sessions`,
       session: (id) => `api/sessions/${enc(id)}`,
       sessionQuery: (id) => `api/sessions/${enc(id)}/query`,
@@ -4806,6 +4807,31 @@
       panel: null,
     };
 
+    // ---- execution plans ----------------------------------------------------------------
+    // The plan answers the question results cannot: why the query costs what it does. An estimated
+    // plan compiles without running, so it is safe on a DELETE; an actual plan runs the statement
+    // and reports what really happened, which is why it is a separate, explicit action.
+
+    const showPlan = async (mode) => {
+      const sql = editor.value.trim();
+      if (!sql) return;
+      runButton.disabled = true;
+      status.textContent = mode === 'actual' ? 'Running for actual plan…' : 'Explaining…';
+      results.replaceChildren();
+      results.classList.remove('single-result');
+      try {
+        const plan = await post(urls.queryPlan(), { sql, mode });
+        results.replaceChildren(renderQueryPlan(plan));
+        status.textContent = plan.mode === 'actual' ? 'Actual plan' : 'Estimated plan';
+        await refreshSession();
+      } catch (err) {
+        results.replaceChildren(errorBox(err.message));
+        status.textContent = 'Failed';
+      } finally {
+        runButton.disabled = false;
+      }
+    };
+
     const run = async () => {
       const sql = editor.value.trim();
       if (!sql) return;
@@ -4942,6 +4968,20 @@
 
     const savedActions = h('span', { class: 'toolbar-group saved-query-actions' },
       h('span', { class: 'toolbar-divider' }), savedSelect, saveButton, deleteButton);
+    const planActions = capabilities.supportsQueryPlans && currentConn().allowSqlExecution
+      ? h('span', { class: 'toolbar-group plan-actions' },
+        h('span', { class: 'toolbar-divider' }),
+        h('button', {
+          text: 'Plan', 'data-testid': 'query-plan-estimated',
+          title: 'Show the plan without running the query',
+          onclick: () => showPlan('estimated'),
+        }),
+        h('button', {
+          text: 'Plan + run', 'data-testid': 'query-plan-actual',
+          title: 'Run the query and show the plan it actually used',
+          onclick: () => showPlan('actual'),
+        }))
+      : null;
     const sessionActions = capabilities.supportsSessions && currentConn().allowSqlExecution
       ? h('span', { class: 'toolbar-group session-actions' },
         h('span', { class: 'toolbar-divider' }),
@@ -4952,12 +4992,15 @@
     const queryToolbar = h('div', { class: 'query-toolbar', 'data-testid': 'query-toolbar' },
         runButton, cancelButton,
         savedActions,
+        planActions,
         sessionActions,
         h('span', { class: 'spacer' }),
         limitActions,
         status);
     setupOverflowToolbar(
-      queryToolbar, [savedActions, sessionActions, limitActions].filter(Boolean), 'More query actions');
+      queryToolbar,
+      [savedActions, planActions, sessionActions, limitActions].filter(Boolean),
+      'More query actions');
     renderSession();
     tab.panel = h('div', { class: 'panel query-panel' },
       resizableQueryEditor(editor),
@@ -5913,6 +5956,63 @@
     for (const th of table.querySelectorAll('thead th')) th.style.width = th.offsetWidth + 'px';
     table.style.width = width + 'px';
     table.style.tableLayout = 'fixed';
+  }
+
+  // Plans are trees of operators with a cost each. The rendering keeps the shape and the numbers
+  // that decide where to look - cost share, and estimate against reality - and leaves the engine's
+  // own text underneath for anything it does not show.
+  function renderQueryPlan(plan) {
+    const roots = plan.roots || [];
+    const totalCost = roots.reduce((sum, node) => sum + (node.estimatedCost || 0), 0);
+    const number = (value) => value == null
+      ? null
+      : Math.abs(value) >= 1000 || Number.isInteger(value)
+        ? Math.round(value).toLocaleString()
+        : value.toFixed(3);
+
+    const renderNode = (node, depth) => {
+      const share = totalCost > 0 && node.estimatedCost != null
+        ? Math.round((node.estimatedCost / totalCost) * 100)
+        : null;
+      const facts = [
+        node.actualRows != null ? `${number(node.actualRows)} rows` : null,
+        node.estimatedRows != null
+          ? `${node.actualRows != null ? 'est. ' : ''}${number(node.estimatedRows)} rows`
+          : null,
+        node.estimatedCost != null ? `cost ${number(node.estimatedCost)}` : null,
+        share != null && depth === 0 ? null : share != null ? `${share}%` : null,
+      ].filter(Boolean);
+      const row = h('div', { class: 'plan-node', style: `--plan-depth:${depth}` },
+        h('span', { class: 'plan-op', text: node.operation }),
+        node.detail ? h('span', { class: 'plan-detail', text: node.detail, title: node.detail }) : null,
+        facts.length ? h('span', { class: 'plan-facts muted', text: facts.join(' · ') }) : null,
+        ...(node.warnings || []).map((warning) =>
+          h('span', { class: 'plan-warning', text: warning, title: warning })));
+      return [row, ...(node.children || []).flatMap((child) => renderNode(child, depth + 1))];
+    };
+
+    const body = h('div', { class: 'plan-tree', 'data-testid': 'query-plan' },
+      ...roots.flatMap((root) => renderNode(root, 0)));
+    if (!roots.length) {
+      body.append(h('div', { class: 'muted', text: 'The provider returned no plan for this statement.' }));
+    }
+
+    const sections = [
+      h('div', { class: 'result-meta muted' },
+        h('span', { text: plan.mode === 'actual' ? 'Actual execution plan' : 'Estimated execution plan' })),
+      body,
+    ];
+    for (const message of plan.messages || []) {
+      sections.push(h('div', { class: 'message mono', text: message }));
+    }
+    if (plan.rawText) {
+      const raw = h('details', { class: 'plan-raw' },
+        h('summary', { text: 'Plan as the engine returned it' }),
+        h('pre', { class: 'mono', text: plan.rawText }));
+      sections.push(raw);
+    }
+
+    return h('div', { class: 'plan-panel' }, ...sections);
   }
 
   function renderCell(value) {
