@@ -503,6 +503,12 @@
       columns: (s, n) => `${objBase(s, n)}/columns`,
       column: (s, n, col) => `${objBase(s, n)}/columns/${enc(col)}`,
       primaryKey: (s, n) => `${objBase(s, n)}/primary-key`,
+      checkConstraints: (s, n) => `${objBase(s, n)}/check-constraints`,
+      dropCheckConstraint: (s, n) => `${objBase(s, n)}/check-constraints/drop`,
+      uniqueConstraints: (s, n) => `${objBase(s, n)}/unique-constraints`,
+      dropUniqueConstraint: (s, n) => `${objBase(s, n)}/unique-constraints/drop`,
+      indexes: (s, n) => `${objBase(s, n)}/indexes`,
+      index: (s, n, index) => `${objBase(s, n)}/indexes/${enc(index)}`,
       foreignKeys: (s, n) => `${objBase(s, n)}/foreign-keys`,
       constraint: (s, n, constraint) => `${objBase(s, n)}/constraints/${enc(constraint)}`,
       dropObject: (s, n, type) => `${objBase(s, n)}?type=${enc(type)}`,
@@ -523,6 +529,10 @@
   const post = (url, body) => api(url, { method: 'POST', body: JSON.stringify(body) });
   const put = (url, body) => api(url, { method: 'PUT', body: JSON.stringify(body) });
   const del = (url) => api(url, { method: 'DELETE' });
+
+  const isVirtualObject = (o) => !!o?.subKind && /virtual/i.test(o.subKind);
+  const canDropObject = (o) => !o?.isInternal;
+  const canDesignObject = (o) => canDropObject(o) && !isVirtualObject(o);
 
   // ---- state ----------------------------------------------------------------
 
@@ -633,7 +643,8 @@
     supportsClusteredPrimaryKeys: true,
     suggestedDataTypes: ['int', 'nvarchar(100)'], selectExample: 'SELECT TOP (100) * FROM {object};',
     createTriggerExample: 'CREATE TRIGGER dbo.NewTrigger ON dbo.SomeTable AFTER INSERT AS SELECT 1;',
-    objectEditMode: 'Alter',
+    objectEditMode: 'Alter', supportsCheckConstraints: false,
+    supportsUniqueConstraints: false, supportsIndexes: false,
   };
   const capabilitiesFor = (scope) => connectionFor(scope).capabilities || DEFAULT_CAPABILITIES;
   const currentCapabilities = () => capabilitiesFor(state);
@@ -1093,7 +1104,7 @@
 
     for (const [label, types, badge, capability] of SECTIONS) {
       if (capability && !capabilities[capability]) continue;
-      const items = state.objects.filter((o) =>
+      const items = state.objects.filter((o) => !o.isInternal &&
         types.includes(o.type) &&
         (!filter || (o.schema + '.' + o.name).toLowerCase().includes(filter)));
       const summary = h('summary', {}, label + ' ', h('span', { class: 'count', text: String(items.length) }));
@@ -1117,8 +1128,27 @@
             onclick: () => openObjectTab(o),
             oncontextmenu: (event) => showContextMenu(event, objectContextItems(o)),
           },
-            h('span', { class: 'badge badge-' + badge, text: badge }),
+            h('span', {
+              class: 'badge badge-' + (isVirtualObject(o) ? 'VT' : badge),
+              text: isVirtualObject(o) ? 'VT' : badge,
+              title: isVirtualObject(o) ? (o.subKind || 'Virtual table') : null,
+            }),
             h('span', { class: 'item-name', text: displayName(o) })))), !!filter));
+    }
+
+    const internalItems = state.objects.filter((o) => o.isInternal &&
+      (!filter || (o.schema + '.' + o.name).toLowerCase().includes(filter)));
+    if (internalItems.length) {
+      const summary = h('summary', {}, 'Internal ',
+        h('span', { class: 'count', text: String(internalItems.length) }));
+      tree.append(treeSection('internal', false, summary,
+        h('div', { class: 'items' }, internalItems.map((o) => h('button', {
+          class: 'tree-item', title: `Internal object: ${o.name}`,
+          onclick: () => openObjectTab(o),
+          oncontextmenu: (event) => showContextMenu(event, objectContextItems(o)),
+        },
+        h('span', { class: 'badge badge-I', text: 'I', title: o.subKind || 'Internal object' }),
+        h('span', { class: 'item-name', text: displayName(o) })))), !!filter));
     }
   }
 
@@ -1210,7 +1240,7 @@
     if (o.type === 'Table' || o.type === 'View') {
       items.push({ label: 'Query data', action: () => openQueryTab(objectQuerySql(o), displayName(o)) });
     }
-    if (currentConn().allowDdl) {
+    if (currentConn().allowDdl && canDropObject(o)) {
       items.push({ separator: true }, { label: `Delete ${o.type === 'View' ? 'view' : 'object'}…`, danger: true, action: () => deleteObject(o) });
     }
     return items;
@@ -1293,7 +1323,7 @@
             renderTabs();
           } },
           { label: 'Close all tabs', action: () => closeAllTabs() },
-          ...(tab.object && connectionFor(tab.scope).allowDdl ? [
+          ...(tab.object && connectionFor(tab.scope).allowDdl && canDropObject(tab.object) ? [
             { separator: true },
             { label: `Delete ${tab.object.type === 'View' ? 'view' : 'object'}…`, danger: true, action: () => deleteObject(tab.object, tab.scope) },
           ] : []),
@@ -1345,7 +1375,7 @@
       return;
     }
 
-    const badge = o.type === 'Table' ? 'T'
+    const badge = o.isInternal ? 'I' : isVirtualObject(o) ? 'VT' : o.type === 'Table' ? 'T'
       : o.type === 'View' ? 'V'
       : o.type === 'StoredProcedure' ? 'P'
       : o.type === 'Trigger' ? 'R' : 'F';
@@ -1414,7 +1444,7 @@
           'aria-pressed': String(v === currentView),
           onclick: () => switchView(v),
         })));
-      const deleteViewButton = o.type === 'View' && currentConn().allowDdl ? h('button', {
+      const deleteViewButton = o.type === 'View' && currentConn().allowDdl && canDropObject(o) ? h('button', {
           class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
         }) : null;
       actionBar.replaceChildren();
@@ -1437,7 +1467,7 @@
       const data = { columns: [], rows: [] };
       let structure = null;
       try {
-        if (o.type === 'Table' && currentConn().allowWrites) {
+        if (o.type === 'Table' && currentConn().allowWrites && !o.isInternal) {
           structure = await ensureStructure();
         }
       } catch (err) {
@@ -1446,7 +1476,7 @@
       }
 
       const pkColumns = structure
-        ? structure.columns.filter((c) => c.isPrimaryKey).map((c) => c.name)
+        ? structure.columns.filter((c) => c.isPrimaryKey && !c.isHidden).map((c) => c.name)
         : [];
       const columnIndex = (columnName) =>
         data.columns.findIndex((c) => c.name.toLowerCase() === columnName.toLowerCase());
@@ -1495,7 +1525,7 @@
       const cancel = h('button', { text: 'Cancel', onclick: () => controller.abort() });
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
       actionBar.replaceChildren(...[
-        structure && currentConn().allowWrites
+        structure && currentConn().allowWrites && !o.isInternal
           ? h('button', { onclick: () => openRowEditor(table, data.columns, structure, null, null, columnIndex) }, '＋ Row')
           : null,
         cancel,
@@ -1507,7 +1537,7 @@
             : null),
         h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
         status,
-        o.type === 'View' && currentConn().allowDdl ? h('button', {
+        o.type === 'View' && currentConn().allowDdl && canDropObject(o) ? h('button', {
           class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
         }) : null,
       ].filter(Boolean));
@@ -1553,11 +1583,11 @@
       selectedColumn = null, rowNumber = null, moveToNextRow = null) => {
       const isNew = existingRow === null;
       lockTableLayout(table);
-      const editable = structure.columns.filter((c) => !c.isIdentity && !c.isComputed);
+      const editable = structure.columns.filter((c) => !c.isIdentity && !c.isComputed && !c.isHidden);
       const editableByName = new Map(editable.map((c) => [c.name.toLowerCase(), c]));
       const fields = [];
       const focusableByName = new Map();
-      const pkColumns = structure.columns.filter((c) => c.isPrimaryKey).map((c) => c.name);
+      const pkColumns = structure.columns.filter((c) => c.isPrimaryKey && !c.isHidden).map((c) => c.name);
       const currentEditor = table.querySelector('tr.row-editor');
       if (currentEditor) {
         if (currentEditor === existingRowElement) return true;
@@ -1711,16 +1741,23 @@
         return;
       }
 
-      const canDesign = o.type === 'Table' && currentConn().allowDdl;
+      const canDesign = o.type === 'Table' && currentConn().allowDdl && canDesignObject(o);
+      const canDrop = currentConn().allowDdl && canDropObject(o);
+      const canCheckConstraints = canDesign && currentCapabilities().supportsCheckConstraints;
+      const canUniqueConstraints = canDesign && currentCapabilities().supportsUniqueConstraints;
+      const canIndexes = canDesign && currentCapabilities().supportsIndexes;
 
       actionBar.replaceChildren(...[
         canDesign ? h('button', { onclick: () => columnsBody.append(makeColumnEditor(null)) }, '＋ Add column') : null,
         canDesign && !s.indexes.some((x) => x.isPrimaryKey)
           ? h('button', { onclick: () => openPrimaryKeyDialog() }, '＋ Primary key') : null,
         canDesign ? h('button', { onclick: () => openForeignKeyDialog() }, '＋ Foreign key') : null,
+        canCheckConstraints ? h('button', { onclick: () => openCheckConstraintDialog() }, '＋ Check') : null,
+        canUniqueConstraints ? h('button', { onclick: () => openUniqueConstraintDialog() }, '＋ Unique') : null,
+        canIndexes ? h('button', { onclick: () => openIndexDialog() }, '＋ Index') : null,
         useInQueryButton(o, scope),
         h('span', { class: 'spacer' }),
-        canDesign ? h('button', {
+        canDrop && o.type === 'Table' ? h('button', {
           class: 'danger',
           onclick: () => confirmModal('Drop table', `Drop table ${tab.title} and all of its data? This cannot be undone.`,
             async () => {
@@ -1729,7 +1766,7 @@
               closeTab(tab.id);
               refreshObjects(scope);
             }, 'Drop table'),
-        }, 'Drop table…') : (o.type === 'View' && currentConn().allowDdl ? h('button', {
+        }, 'Drop table…') : (o.type === 'View' && currentConn().allowDdl && canDropObject(o) ? h('button', {
           class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
         }) : null),
       ].filter(Boolean));
@@ -1833,7 +1870,7 @@
         const clustered = h('input', { type: 'checkbox' });
         clustered.checked = true;
         clustered.disabled = !currentCapabilities().supportsClusteredPrimaryKeys;
-        const choices = s.columns.filter((c) => !c.isComputed && !c.isNullable).map((c) => {
+        const choices = s.columns.filter((c) => !c.isComputed && !c.isNullable && !c.isHidden).map((c) => {
           const input = h('input', { type: 'checkbox' });
           return { column: c.name, input, label: h('label', { class: 'constraint-column' }, input, c.name) };
         });
@@ -1860,9 +1897,142 @@
         ]);
       };
 
+      const orderedKeyEditor = (testId) => {
+        const available = s.columns.filter((c) => !c.isComputed && !c.isHidden);
+        const host = h('div', { class: 'constraint-pairs', 'data-testid': testId });
+        const rows = [];
+        const add = () => {
+          const column = h('select', { 'aria-label': 'Key column' }, available.map((c) =>
+            h('option', { value: c.name, text: c.name })));
+          const descending = h('input', { type: 'checkbox' });
+          const entry = { column, descending };
+          const row = h('div', { class: 'constraint-pair' },
+            column,
+            h('label', { class: 'null-toggle' }, descending, 'DESC'),
+            h('button', { class: 'mini-btn', title: 'Move key up', 'aria-label': 'Move key up', onclick: () => {
+              const index = rows.indexOf(entry);
+              if (index <= 0) return;
+              [rows[index - 1], rows[index]] = [rows[index], rows[index - 1]];
+              host.insertBefore(row, host.children[index - 1]);
+            } }, '↑'),
+            h('button', { class: 'mini-btn', title: 'Move key down', 'aria-label': 'Move key down', onclick: () => {
+              const index = rows.indexOf(entry);
+              if (index < 0 || index === rows.length - 1) return;
+              [rows[index], rows[index + 1]] = [rows[index + 1], rows[index]];
+              host.insertBefore(host.children[index + 1], row);
+            } }, '↓'),
+            h('button', { class: 'mini-btn', title: 'Remove key', 'aria-label': 'Remove key', onclick: () => {
+              rows.splice(rows.indexOf(entry), 1); row.remove();
+            } }, '✕'));
+          entry.row = row;
+          rows.push(entry);
+          host.append(row);
+        };
+        if (available.length) add();
+        return {
+          host,
+          add,
+          values: () => rows.map((row) => ({
+            column: row.column.value,
+            isDescending: row.descending.checked,
+          })),
+        };
+      };
+
+      const keyEditorContent = (editor) => h('div', { class: 'field-label' }, 'Ordered key columns',
+        editor.host,
+        h('button', { onclick: editor.add }, '＋ Add key'));
+
+      const openCheckConstraintDialog = () => {
+        const name = h('input', {
+          type: 'text', value: `CK_${o.name}_`, 'data-testid': 'check-name',
+          placeholder: 'Optional constraint name',
+        });
+        const expression = h('textarea', {
+          rows: '5', 'data-testid': 'check-expression',
+          placeholder: 'e.g. [Quantity] >= 0',
+        });
+        modal('Add check constraint', h('div', { class: 'constraint-dialog' },
+          h('label', { class: 'field-label' }, 'Constraint name (optional)', name),
+          h('label', { class: 'field-label' }, 'Expression', expression)), [
+          { label: 'Cancel', onClick: (close) => close() },
+          { label: 'Add check', primary: true, onClick: async (close, showError) => {
+            if (!expression.value.trim()) { showError('Enter a check expression.'); return; }
+            try {
+              await post(urls.checkConstraints(o.schema, o.name), {
+                name: name.value.trim() || null,
+                expression: expression.value.trim(),
+              });
+              close(); toast('Check constraint added.', false); invalidateStructure(); renderStructure();
+            } catch (err) { showError(err.message); }
+          } },
+        ]);
+      };
+
+      const openUniqueConstraintDialog = () => {
+        const name = h('input', {
+          type: 'text', value: `UQ_${o.name}_`, 'data-testid': 'unique-name',
+          placeholder: 'Optional constraint name',
+        });
+        const keys = orderedKeyEditor('unique-keys');
+        modal('Add unique constraint', h('div', { class: 'constraint-dialog' },
+          h('label', { class: 'field-label' }, 'Constraint name (optional)', name),
+          keyEditorContent(keys)), [
+          { label: 'Cancel', onClick: (close) => close() },
+          { label: 'Add unique', primary: true, onClick: async (close, showError) => {
+            const columns = keys.values();
+            if (!columns.length) { showError('Choose at least one key column.'); return; }
+            if (new Set(columns.map((key) => key.column.toLowerCase())).size !== columns.length) {
+              showError('Each key column can be selected only once.'); return;
+            }
+            try {
+              await post(urls.uniqueConstraints(o.schema, o.name), {
+                name: name.value.trim() || null, columns,
+              });
+              close(); toast('Unique constraint added.', false); invalidateStructure(); renderStructure();
+            } catch (err) { showError(err.message); }
+          } },
+        ]);
+      };
+
+      const openIndexDialog = () => {
+        const name = h('input', {
+          type: 'text', value: `IX_${o.name}_`, 'data-testid': 'index-name',
+        });
+        const keys = orderedKeyEditor('index-keys');
+        const unique = h('input', { type: 'checkbox', 'data-testid': 'index-unique' });
+        const filter = h('input', {
+          type: 'text', placeholder: 'Optional WHERE expression', 'data-testid': 'index-filter',
+        });
+        modal('Create index', h('div', { class: 'constraint-dialog' },
+          h('label', { class: 'field-label' }, 'Index name', name),
+          keyEditorContent(keys),
+          h('label', { class: 'null-toggle' }, unique, 'Unique index'),
+          h('label', { class: 'field-label' }, 'Filter (optional)', filter)), [
+          { label: 'Cancel', onClick: (close) => close() },
+          { label: 'Create index', primary: true, onClick: async (close, showError) => {
+            const keyColumns = keys.values();
+            if (!name.value.trim() || !keyColumns.length) {
+              showError('Choose a name and at least one key column.'); return;
+            }
+            if (new Set(keyColumns.map((key) => key.column.toLowerCase())).size !== keyColumns.length) {
+              showError('Each key column can be selected only once.'); return;
+            }
+            try {
+              await post(urls.indexes(o.schema, o.name), {
+                name: name.value.trim(), keyColumns, isUnique: unique.checked,
+                filterExpression: filter.value.trim() || null,
+              });
+              close(); toast('Index created.', false); invalidateStructure(); renderStructure();
+            } catch (err) { showError(err.message); }
+          } },
+        ]);
+      };
+
       const openForeignKeyDialog = () => {
         const name = h('input', { type: 'text', value: `FK_${o.name}_` });
-        const tableSelect = h('select', {}, objectsFor(scope).filter((candidate) => candidate.type === 'Table')
+        const tableSelect = h('select', {}, objectsFor(scope).filter((candidate) =>
+          candidate.type === 'Table' && !candidate.isInternal && !isVirtualObject(candidate))
           .map((candidate) => h('option', {
             value: `${candidate.schema}\u0000${candidate.name}`,
             text: `${candidate.schema}.${candidate.name}`,
@@ -1875,7 +2045,7 @@
         const pairs = [];
         let referencedColumns = [];
         const addPair = () => {
-          const local = h('select', {}, s.columns.filter((c) => !c.isComputed)
+          const local = h('select', {}, s.columns.filter((c) => !c.isComputed && !c.isHidden)
             .map((c) => h('option', { value: c.name, text: c.name })));
           const referenced = h('select', {}, referencedColumns
             .map((c) => h('option', { value: c.name, text: c.name })));
@@ -1888,7 +2058,7 @@
         };
         const loadReferencedColumns = async () => {
           const [schema, table] = tableSelect.value.split('\u0000');
-          referencedColumns = (await api(urls.structure(schema, table))).columns;
+          referencedColumns = (await api(urls.structure(schema, table))).columns.filter((c) => !c.isHidden);
           pairs.splice(0); pairsHost.replaceChildren(); addPair();
           if (!name.value.includes(table)) name.value = `FK_${o.name}_${table}`;
         };
@@ -1923,7 +2093,9 @@
         loadReferencedColumns().catch((err) => toast(err.message));
       };
 
-      const columnRows = s.columns.map((c) => {
+      const visibleColumns = s.columns.filter((c) => !c.isHidden);
+      const hiddenColumns = s.columns.filter((c) => c.isHidden);
+      const columnRows = visibleColumns.map((c) => {
         const row = h('tr', {},
         h('td', { text: c.isPrimaryKey ? '🔑' : '' }),
         h('td', { text: c.name }),
@@ -1958,23 +2130,117 @@
           columnsBody)),
       ];
 
+      if (hiddenColumns.length) {
+        sections.push(h('details', { class: 'hidden-columns' },
+          h('summary', { text: `Hidden columns (${hiddenColumns.length})` }),
+          h('p', { class: 'muted', text: 'Provider-managed columns are shown read-only and are excluded from editing and key choices.' }),
+          h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
+            h('thead', {}, h('tr', {}, ['Column', 'Type', 'Computed definition'].map((text) =>
+              h('th', { text })))),
+            h('tbody', {}, hiddenColumns.map((column) => h('tr', {},
+              h('td', { text: column.name }),
+              h('td', { class: 'mono', text: column.dataType }),
+              h('td', { class: 'mono muted', text: column.computedDefinition || '' }))))))));
+      }
+
+      const renderKey = (key) => {
+        let text = key.expression || key.column || '(expression)';
+        if (key.collation) text += ` COLLATE ${key.collation}`;
+        if (key.isDescending) text += ' DESC';
+        return text;
+      };
+      const renderIndexKeys = (index) => (index.keyColumns?.length
+        ? [...index.keyColumns].sort((a, b) => a.ordinal - b.ordinal).map(renderKey)
+        : index.columns || []).join(', ');
+      const indexDetails = (index) => [
+        index.isClustered ? 'clustered' : null,
+        index.isColumnstore ? 'columnstore' : null,
+        index.fillFactor ? `fill ${index.fillFactor}` : null,
+        index.isDisabled ? 'disabled' : null,
+      ].filter(Boolean).join(' · ');
+
       if (s.indexes.length) {
         sections.push(
           h('h3', { text: 'Indexes' }),
           h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
             h('thead', {}, h('tr', {},
-              ['Name', 'Kind', 'Unique', 'Primary key', 'Columns', ''].map((t) => h('th', { text: t })))),
+              ['Name', 'Kind', 'Unique', 'Primary key', 'Keys', 'Includes', 'Filter', 'Properties', ''].map((t) => h('th', { text: t })))),
             h('tbody', {}, s.indexes.map((x) => h('tr', {},
               h('td', { text: x.name }),
               h('td', { class: 'mono', text: x.kind }),
               h('td', { text: x.isUnique ? 'yes' : '' }),
               h('td', { text: x.isPrimaryKey ? 'yes' : '' }),
-              h('td', { class: 'mono', text: x.columns.join(', ') }),
-              h('td', { class: 'cell-actions' }, canDesign && x.isPrimaryKey ? h('button', {
+              h('td', { class: 'mono', text: renderIndexKeys(x) }),
+              h('td', { class: 'mono muted', text: (x.includedColumns || []).join(', ') }),
+              h('td', { class: 'mono muted', text: x.filterDefinition || '' }),
+              h('td', { class: 'muted', text: indexDetails(x) }),
+              h('td', { class: 'cell-actions' }, canDesign ? (x.isPrimaryKey ? h('button', {
                 class: 'mini-btn', title: 'Drop primary key', onclick: () => confirmModal(
                   'Drop primary key', `Drop primary key ${x.name}? Foreign keys may depend on it.`, async () => {
                     await del(urls.constraint(o.schema, o.name, x.name));
                     toast('Primary key dropped.', false); invalidateStructure(); renderStructure();
+                  }, 'Drop'),
+              }, '🗑') : canIndexes ? h('button', {
+                class: 'mini-btn', title: 'Drop index', 'aria-label': `Drop index ${x.name}`,
+                onclick: () => confirmModal(
+                  'Drop index', `Drop index ${x.name}?`, async () => {
+                    await del(urls.index(o.schema, o.name, x.name));
+                    toast('Index dropped.', false); invalidateStructure(); renderStructure();
+                  }, 'Drop'),
+              }, '🗑') : null) : null)))))));
+      }
+
+      if (s.checkConstraints?.length) {
+        sections.push(
+          h('h3', { text: 'Check constraints' }),
+          h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
+            h('thead', {}, h('tr', {}, ['Name', 'Expression', 'Column', 'Properties', ''].map((text) =>
+              h('th', { text })))),
+            h('tbody', {}, s.checkConstraints.map((constraint) => h('tr', {},
+              h('td', { text: constraint.name || `#${constraint.ordinal}` }),
+              h('td', { class: 'mono', text: constraint.definition }),
+              h('td', { text: constraint.column || '' }),
+              h('td', { class: 'muted', text: [
+                constraint.isDisabled ? 'disabled' : null,
+                constraint.isTrusted === false ? 'not trusted' : null,
+                constraint.isNotForReplication ? 'not for replication' : null,
+              ].filter(Boolean).join(' · ') }),
+              h('td', { class: 'cell-actions' }, canCheckConstraints ? h('button', {
+                class: 'mini-btn', title: 'Drop check constraint',
+                'aria-label': `Drop check constraint ${constraint.name || `#${constraint.ordinal}`}`,
+                onclick: () => confirmModal(
+                  'Drop check constraint', `Drop check constraint ${constraint.name || `#${constraint.ordinal}`}?`, async () => {
+                    await post(urls.dropCheckConstraint(o.schema, o.name), {
+                      name: constraint.name || null, ordinal: constraint.ordinal ?? null,
+                    });
+                    toast('Check constraint dropped.', false); invalidateStructure(); renderStructure();
+                  }, 'Drop'),
+              }, '🗑') : null)))))));
+      }
+
+      if (s.uniqueConstraints?.length) {
+        sections.push(
+          h('h3', { text: 'Unique constraints' }),
+          h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
+            h('thead', {}, h('tr', {}, ['Name', 'Keys', 'Properties', ''].map((text) => h('th', { text })))),
+            h('tbody', {}, s.uniqueConstraints.map((constraint) => h('tr', {},
+              h('td', { text: constraint.name || `#${constraint.ordinal}` }),
+              h('td', { class: 'mono', text: [...constraint.columns]
+                .sort((a, b) => a.ordinal - b.ordinal).map(renderKey).join(', ') }),
+              h('td', { class: 'muted', text: [
+                constraint.isClustered ? 'clustered' : null,
+                constraint.fillFactor ? `fill ${constraint.fillFactor}` : null,
+                constraint.isDisabled ? 'disabled' : null,
+              ].filter(Boolean).join(' · ') }),
+              h('td', { class: 'cell-actions' }, canUniqueConstraints ? h('button', {
+                class: 'mini-btn', title: 'Drop unique constraint',
+                'aria-label': `Drop unique constraint ${constraint.name || `#${constraint.ordinal}`}`,
+                onclick: () => confirmModal(
+                  'Drop unique constraint', `Drop unique constraint ${constraint.name || `#${constraint.ordinal}`}?`, async () => {
+                    await post(urls.dropUniqueConstraint(o.schema, o.name), {
+                      name: constraint.name || null, ordinal: constraint.ordinal ?? null,
+                    });
+                    toast('Unique constraint dropped.', false); invalidateStructure(); renderStructure();
                   }, 'Drop'),
               }, '🗑') : null)))))));
       }
@@ -2037,7 +2303,7 @@
     }
     const definition = response.definition || '-- definition unavailable --';
     const canExecute = connectionFor(scope).allowSqlExecution;
-    const canEdit = connectionFor(scope).allowDdl && canExecute;
+    const canEdit = connectionFor(scope).allowDdl && canExecute && canDesignObject(o);
     if (!canEdit) {
       const useButton = canExecute ? useInQueryButton(o, scope) : null;
       if (toolbar && useButton) toolbar.append(useButton);

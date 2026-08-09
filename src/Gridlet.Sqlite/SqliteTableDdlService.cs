@@ -31,13 +31,19 @@ public sealed class SqliteTableDdlService : ITableDdlService
         CancellationToken cancellationToken = default)
         => ExecuteAsync(context, SqliteDdlBuilder.BuildCreateTable(design), cancellationToken);
 
-    public Task AddColumnAsync(
+    public async Task AddColumnAsync(
         GridletConnectionContext context,
         string schema,
         string table,
         ColumnDesign column,
         CancellationToken cancellationToken = default)
-        => ExecuteAsync(context, SqliteDdlBuilder.BuildAddColumn(schema, table, column), cancellationToken);
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        _ = await RequireOrdinaryTableAsync(connection, table, cancellationToken);
+        await ExecuteAsync(connection, transaction: null,
+            SqliteDdlBuilder.BuildAddColumn(schema, table, column), cancellationToken);
+    }
 
     public async Task AlterColumnAsync(
         GridletConnectionContext context,
@@ -56,9 +62,18 @@ public sealed class SqliteTableDdlService : ITableDdlService
             : column with { IsPrimaryKey = existing.IsPrimaryKey };
 
         var columns = definition.Columns.Select(c =>
-            string.Equals(c.Name, columnName, StringComparison.OrdinalIgnoreCase)
-                ? replacement
-                : ToDesign(c)).ToArray();
+        {
+            if (string.Equals(c.Name, columnName, StringComparison.OrdinalIgnoreCase)) return replacement;
+            var design = ToDesign(c);
+            return design.ComputedExpression is null ||
+                   string.Equals(existing.Name, replacement.Name, StringComparison.OrdinalIgnoreCase)
+                ? design
+                : design with
+                {
+                    ComputedExpression = SqliteCreateSqlParser.RenameIdentifier(
+                        design.ComputedExpression, existing.Name, replacement.Name),
+                };
+        }).ToArray();
         var renamedColumns = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             [replacement.Name] = existing.Name,
@@ -172,6 +187,117 @@ public sealed class SqliteTableDdlService : ITableDdlService
             foreignKeys, null, cancellationToken);
     }
 
+    public async Task AddCheckConstraintAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        CheckConstraintDesign checkConstraint,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(checkConstraint.Name) && definition.CheckConstraints.Any(check =>
+                string.Equals(check.Name, checkConstraint.Name, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new GridletValidationException($"Constraint '{checkConstraint.Name}' already exists on {schema}.{table}.");
+        }
+
+        await RebuildTableAsync(connection, definition, definition.Columns.Select(ToDesign).ToArray(),
+            ToForeignKeyDesigns(definition), null, cancellationToken,
+            checkConstraints: ToCheckDesigns(definition).Append(checkConstraint).ToArray());
+    }
+
+    public async Task DropCheckConstraintAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        ConstraintReference constraint,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        var target = FindConstraint(definition.CheckConstraints, constraint, item => item.Name, item => item.Ordinal,
+            "CHECK", schema, table);
+        await RebuildTableAsync(connection, definition, definition.Columns.Select(ToDesign).ToArray(),
+            ToForeignKeyDesigns(definition), null, cancellationToken,
+            checkConstraints: ToCheckDesigns(definition).Where((_, index) => index != target).ToArray());
+    }
+
+    public async Task AddUniqueConstraintAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        UniqueConstraintDesign uniqueConstraint,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        if (uniqueConstraint.Columns is not { Count: > 0 })
+            throw new GridletValidationException("A unique constraint needs at least one key.");
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(uniqueConstraint.Name) && definition.UniqueConstraints.Any(unique =>
+                string.Equals(unique.Name, uniqueConstraint.Name, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new GridletValidationException($"Constraint '{uniqueConstraint.Name}' already exists on {schema}.{table}.");
+        }
+        ValidateIndexKeys(definition, uniqueConstraint.Columns);
+        await RebuildTableAsync(connection, definition, definition.Columns.Select(ToDesign).ToArray(),
+            ToForeignKeyDesigns(definition), null, cancellationToken,
+            uniqueConstraints: ToUniqueDesigns(definition).Append(uniqueConstraint).ToArray());
+    }
+
+    public async Task DropUniqueConstraintAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        ConstraintReference constraint,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        var target = FindConstraint(definition.UniqueConstraints, constraint, item => item.Name, item => item.Ordinal,
+            "UNIQUE", schema, table);
+        await RebuildTableAsync(connection, definition, definition.Columns.Select(ToDesign).ToArray(),
+            ToForeignKeyDesigns(definition), null, cancellationToken,
+            uniqueConstraints: ToUniqueDesigns(definition).Where((_, index) => index != target).ToArray());
+    }
+
+    public async Task CreateIndexAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        IndexDesign index,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await RequireOrdinaryTableAsync(connection, table, cancellationToken);
+        ValidateIndexKeys(definition, index.KeyColumns);
+        await ExecuteAsync(connection, transaction: null,
+            SqliteDdlBuilder.BuildCreateIndex(schema, table, index), cancellationToken);
+    }
+
+    public async Task DropIndexAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        string indexName,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await RequireOrdinaryTableAsync(connection, table, cancellationToken);
+        if (!definition.Indexes.Any(index => string.Equals(index.Name, indexName, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new GridletValidationException($"Ordinary index '{indexName}' does not exist on {schema}.{table}.");
+        }
+        await ExecuteAsync(connection, transaction: null,
+            SqliteDdlBuilder.BuildDropIndex(schema, indexName), cancellationToken);
+    }
+
     public async Task DropConstraintAsync(
         GridletConnectionContext context,
         string schema,
@@ -211,12 +337,23 @@ public sealed class SqliteTableDdlService : ITableDdlService
             $"Constraint '{constraintName}' does not exist on {schema}.{table}.");
     }
 
-    public Task DropTableAsync(
+    public async Task DropTableAsync(
         GridletConnectionContext context,
         string schema,
         string table,
         CancellationToken cancellationToken = default)
-        => ExecuteAsync(context, SqliteDdlBuilder.BuildDropTable(schema, table), cancellationToken);
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        if (definition.Object.IsInternal || definition.Object.SubKind == "shadow")
+        {
+            throw new GridletValidationException(
+                $"Internal SQLite table {schema}.{table} cannot be dropped directly.");
+        }
+        await ExecuteAsync(connection, transaction: null,
+            SqliteDdlBuilder.BuildDropTable(schema, table), cancellationToken);
+    }
 
     public Task DropObjectAsync(
         GridletConnectionContext context,
@@ -224,7 +361,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         string name,
         DbObjectType type,
         CancellationToken cancellationToken = default)
-        => ExecuteAsync(context, SqliteDdlBuilder.BuildDropObject(schema, name, type), cancellationToken);
+        => type == DbObjectType.Table
+            ? DropTableAsync(context, schema, name, cancellationToken)
+            : ExecuteAsync(context, SqliteDdlBuilder.BuildDropObject(schema, name, type), cancellationToken);
 
     internal static async Task RebuildTableAsync(
         SqliteConnection connection,
@@ -233,41 +372,26 @@ public sealed class SqliteTableDdlService : ITableDdlService
         IReadOnlyList<ForeignKeyDesign> foreignKeys,
         IReadOnlyDictionary<string, string>? renamedColumns,
         CancellationToken cancellationToken,
-        string? primaryKeyName = null)
+        string? primaryKeyName = null,
+        IReadOnlyList<CheckConstraintDesign>? checkConstraints = null,
+        IReadOnlyList<UniqueConstraintDesign>? uniqueConstraints = null,
+        IReadOnlyList<IndexDesign>? ordinaryIndexes = null)
     {
         var table = definition.Object.Name;
         var schema = definition.Object.Schema;
+        await EnsureTableCanBeRebuiltAsync(connection, schema, table, cancellationToken);
         var tempTable = $"__gridlet_{table}_{Guid.NewGuid():N}";
         var keyName = primaryKeyName ?? definition.Indexes.FirstOrDefault(i => i.IsPrimaryKey)?.Name;
         var tempDesign = new TableDesign(schema, tempTable, columns);
-        var createSql = SqliteDdlBuilder.BuildCreateTable(tempDesign, keyName, foreignKeys);
+        checkConstraints ??= ToCheckDesigns(definition, renamedColumns, columns);
+        uniqueConstraints ??= ToUniqueDesigns(definition, renamedColumns, columns);
+        ordinaryIndexes ??= ToIndexDesigns(definition, renamedColumns, columns);
+        var createSql = SqliteDdlBuilder.BuildCreateTable(tempDesign, keyName, foreignKeys,
+            checkConstraints, uniqueConstraints);
         var preserveAutoincrementSequence =
             definition.Columns.Any(column => column.IsIdentity) &&
             columns.Any(column => column.IsIdentity);
 
-        await EnsureTableCanBeRebuiltAsync(connection, schema, table, cancellationToken);
-        var unsupportedIndexes = await LoadUnsupportedIndexNamesAsync(connection, table, cancellationToken);
-        var indexes = new List<IndexInfo>();
-        var generatedIndexNumber = 0;
-        foreach (var index in definition.Indexes.Where(i => !i.IsPrimaryKey))
-        {
-            if (index.Columns.Count == 0 || unsupportedIndexes.Contains(index.Name))
-            {
-                throw new GridletValidationException(
-                    $"Table {schema}.{table} has an index ('{index.Name}') with a partial predicate, expression, descending key, or non-default collation that cannot be preserved by this designer operation. Drop or recreate that index explicitly in the query editor.");
-            }
-
-            var mappedColumns = index.Columns
-                .Select(c => renamedColumns?.FirstOrDefault(pair =>
-                    string.Equals(pair.Value, c, StringComparison.OrdinalIgnoreCase)).Key ?? c)
-                .Where(c => columns.Any(column => string.Equals(column.Name, c, StringComparison.OrdinalIgnoreCase)))
-                .ToArray();
-            if (mappedColumns.Length == 0) continue;
-            var indexName = index.Name.StartsWith("sqlite_autoindex_", StringComparison.OrdinalIgnoreCase)
-                ? $"UX_{table}_Gridlet{++generatedIndexNumber}"
-                : index.Name;
-            indexes.Add(index with { Name = indexName, Columns = mappedColumns });
-        }
         var triggers = await LoadTriggerSqlAsync(connection, table, cancellationToken);
         if (triggers.Count > 0 && renamedColumns is { Count: > 0 })
         {
@@ -320,10 +444,10 @@ public sealed class SqliteTableDdlService : ITableDdlService
                         connection, transaction, table, originalSequence.Value, cancellationToken);
                 }
 
-                foreach (var index in indexes)
+                foreach (var index in ordinaryIndexes)
                 {
                     await ExecuteAsync(connection, transaction,
-                        SqliteDdlBuilder.BuildCreateIndex(schema, table, index.Name, index.IsUnique, index.Columns),
+                        SqliteDdlBuilder.BuildCreateIndex(schema, table, index),
                         cancellationToken);
                 }
 
@@ -369,69 +493,65 @@ public sealed class SqliteTableDdlService : ITableDdlService
         return sql;
     }
 
-    private static async Task<HashSet<string>> LoadUnsupportedIndexNamesAsync(
-        SqliteConnection connection,
-        string table,
-        CancellationToken cancellationToken)
-    {
-        var indexes = new List<(string Name, bool IsPartial, string Origin)>();
-        await using (var command = connection.CreateCommand())
-        {
-            command.CommandText = "SELECT name, partial, origin FROM pragma_index_list(@table, 'main');";
-            command.Parameters.AddWithValue("@table", table);
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                indexes.Add((reader.GetString(0), reader.GetInt64(1) != 0, reader.GetString(2)));
-            }
-        }
-
-        var unsupported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var index in indexes)
-        {
-            if (index.IsPartial)
-            {
-                unsupported.Add(index.Name);
-                continue;
-            }
-
-            await using var detail = connection.CreateCommand();
-            detail.CommandText =
-                "SELECT 1 FROM pragma_index_xinfo(@index, 'main') " +
-                "WHERE [key] <> 0 AND (cid < 0 OR [desc] <> 0 OR UPPER(COALESCE(coll, '')) <> 'BINARY') LIMIT 1;";
-            detail.Parameters.AddWithValue("@index", index.Name);
-            if (await detail.ExecuteScalarAsync(cancellationToken) is not null)
-            {
-                if (string.Equals(index.Origin, "pk", StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new GridletValidationException(
-                        $"Table main.{table} has a primary key with a descending column or non-default collation that cannot be preserved by this designer operation. Apply the change with explicit SQLite DDL instead.");
-                }
-
-                unsupported.Add(index.Name);
-            }
-        }
-
-        return unsupported;
-    }
-
     private static async Task EnsureTableCanBeRebuiltAsync(
         SqliteConnection connection,
         string schema,
         string table,
         CancellationToken cancellationToken)
     {
-        await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT sql FROM main.sqlite_schema WHERE type = 'table' AND name = @table;";
-        command.Parameters.AddWithValue("@table", table);
-        var source = Convert.ToString(await command.ExecuteScalarAsync(cancellationToken)) ?? "";
+        string tableType;
+        bool withoutRowId;
+        bool strict;
+        await using (var classification = connection.CreateCommand())
+        {
+            classification.CommandText =
+                "SELECT type, wr, strict FROM pragma_table_list WHERE schema = 'main' AND name = @table;";
+            classification.Parameters.AddWithValue("@table", table);
+            await using var reader = await classification.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new GridletObjectNotFoundException($"{schema}.{table}");
+            tableType = reader.GetString(0);
+            withoutRowId = reader.GetInt64(1) != 0;
+            strict = reader.GetInt64(2) != 0;
+        }
+
+        if (tableType is "virtual" or "shadow")
+        {
+            throw new GridletValidationException(
+                $"Table {schema}.{table} is a SQLite {tableType} table and cannot be rebuilt by the designer.");
+        }
+        if (tableType != "table")
+            throw new GridletValidationException($"{schema}.{table} is not an ordinary table.");
+
+        string source;
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT sql FROM main.sqlite_schema WHERE type = 'table' AND name = @table;";
+            command.Parameters.AddWithValue("@table", table);
+            source = Convert.ToString(await command.ExecuteScalarAsync(cancellationToken)) ?? "";
+        }
 
         var unsupported = new List<string>();
-        if (SqliteSqlInspection.ContainsKeyword(source, "CHECK")) unsupported.Add("CHECK constraints");
-        if (SqliteSqlInspection.ContainsKeyword(source, "STRICT")) unsupported.Add("STRICT tables");
-        if (SqliteSqlInspection.ContainsKeywordSequence(source, "WITHOUT", "ROWID")) unsupported.Add("WITHOUT ROWID tables");
-        if (SqliteSqlInspection.ContainsKeyword(source, "COLLATE")) unsupported.Add("column collations");
+        if (strict) unsupported.Add("STRICT tables");
+        if (withoutRowId) unsupported.Add("WITHOUT ROWID tables");
+        if (SqliteCreateSqlParser.ParseTable(source).HasColumnCollation) unsupported.Add("column collations");
         if (SqliteSqlInspection.ContainsKeywordSequence(source, "ON", "CONFLICT")) unsupported.Add("ON CONFLICT policies");
+
+        await using (var primaryKey = connection.CreateCommand())
+        {
+            primaryKey.CommandText =
+                """
+                SELECT 1
+                FROM pragma_index_list(@table, 'main') AS il
+                JOIN pragma_index_xinfo(il.name, 'main') AS ix
+                WHERE il.origin = 'pk' AND ix.[key] <> 0
+                  AND (ix.[desc] <> 0 OR UPPER(COALESCE(ix.coll, '')) <> 'BINARY')
+                LIMIT 1;
+                """;
+            primaryKey.Parameters.AddWithValue("@table", table);
+            if (await primaryKey.ExecuteScalarAsync(cancellationToken) is not null)
+                unsupported.Add("primary-key direction or collation");
+        }
 
         if (unsupported.Count > 0)
         {
@@ -566,6 +686,20 @@ public sealed class SqliteTableDdlService : ITableDdlService
         return definition;
     }
 
+    private static async Task<TableDefinition> RequireOrdinaryTableAsync(
+        SqliteConnection connection,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        if (definition.Object.IsInternal || definition.Object.SubKind is "virtual" or "shadow")
+        {
+            throw new GridletValidationException(
+                $"{definition.Object.Schema}.{table} is a SQLite {definition.Object.SubKind ?? "internal"} table and cannot be changed by the designer.");
+        }
+        return definition;
+    }
+
     private static ColumnInfo FindColumn(TableDefinition definition, string name)
         => definition.Columns.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))
            ?? throw new GridletValidationException(
@@ -593,6 +727,100 @@ public sealed class SqliteTableDdlService : ITableDdlService
             fk.OnDelete.Replace('_', ' '),
             fk.OnUpdate.Replace('_', ' '))).ToArray();
 
+    private static CheckConstraintDesign[] ToCheckDesigns(
+        TableDefinition definition,
+        IReadOnlyDictionary<string, string>? renamedColumns = null,
+        IReadOnlyList<ColumnDesign>? availableColumns = null)
+        => definition.CheckConstraints
+            .Where(check => check.Column is null || availableColumns is null || availableColumns.Any(column =>
+                string.Equals(column.Name, MapColumn(check.Column, renamedColumns), StringComparison.OrdinalIgnoreCase)))
+            .Select(check => new CheckConstraintDesign(check.Name,
+                RenameExpression(check.Definition, renamedColumns),
+                IsDisabled: check.IsDisabled,
+                IsNotForReplication: check.IsNotForReplication))
+            .ToArray();
+
+    private static UniqueConstraintDesign[] ToUniqueDesigns(
+        TableDefinition definition,
+        IReadOnlyDictionary<string, string>? renamedColumns = null,
+        IReadOnlyList<ColumnDesign>? availableColumns = null)
+        => definition.UniqueConstraints
+            .Select(unique => new UniqueConstraintDesign(unique.Name,
+                unique.Columns.OrderBy(key => key.Ordinal).Select(key => new IndexKeyDesign(
+                    key.Column is null ? null : MapColumn(key.Column, renamedColumns),
+                    key.IsDescending,
+                    key.Expression is null ? null : RenameExpression(key.Expression, renamedColumns),
+                    key.Collation)).ToArray(),
+                unique.IsClustered, unique.FillFactor, unique.IsDisabled))
+            .Where(unique => availableColumns is null || unique.Columns.All(key => key.Column is null ||
+                availableColumns.Any(column => string.Equals(column.Name, key.Column, StringComparison.OrdinalIgnoreCase))))
+            .ToArray();
+
+    private static IndexDesign[] ToIndexDesigns(
+        TableDefinition definition,
+        IReadOnlyDictionary<string, string>? renamedColumns,
+        IReadOnlyList<ColumnDesign> availableColumns)
+        => definition.Indexes.Where(index => !index.IsPrimaryKey)
+            .Select(index => new IndexDesign(index.Name,
+                (index.KeyColumns ?? index.Columns.Select((column, ordinal) =>
+                    new IndexKeyInfo(column, ordinal + 1))).OrderBy(key => key.Ordinal).Select(key => new IndexKeyDesign(
+                        key.Column is null ? null : MapColumn(key.Column, renamedColumns),
+                        key.IsDescending,
+                        key.Expression is null ? null : RenameExpression(key.Expression, renamedColumns),
+                        key.Collation)).ToArray(),
+                index.IsUnique,
+                index.IncludedColumns,
+                index.FilterDefinition is null ? null : RenameExpression(index.FilterDefinition, renamedColumns),
+                index.IsClustered, index.IsColumnstore, index.FillFactor, index.IsDisabled))
+            .Where(index => index.KeyColumns.All(key => key.Column is null || availableColumns.Any(column =>
+                string.Equals(column.Name, key.Column, StringComparison.OrdinalIgnoreCase))))
+            .ToArray();
+
+    private static string MapColumn(string name, IReadOnlyDictionary<string, string>? renamedColumns)
+        => renamedColumns?.FirstOrDefault(pair =>
+            string.Equals(pair.Value, name, StringComparison.OrdinalIgnoreCase)).Key ?? name;
+
+    private static string RenameExpression(string expression, IReadOnlyDictionary<string, string>? renamedColumns)
+    {
+        // Schema SQL is trusted, but designer builders intentionally reject comments. Removing
+        // comments as whitespace preserves SQLite expression semantics before normal validation.
+        expression = SqliteCreateSqlParser.RemoveComments(expression);
+        if (renamedColumns is null) return expression;
+        foreach (var pair in renamedColumns)
+            expression = SqliteCreateSqlParser.RenameIdentifier(expression, pair.Value, pair.Key);
+        return expression;
+    }
+
+    private static void ValidateIndexKeys(TableDefinition definition, IReadOnlyList<IndexKeyDesign> keys)
+    {
+        if (keys is not { Count: > 0 }) throw new GridletValidationException("An index needs at least one key.");
+        foreach (var key in keys)
+        {
+            if (!string.IsNullOrWhiteSpace(key.Column)) _ = FindColumn(definition, key.Column);
+        }
+    }
+
+    private static int FindConstraint<T>(
+        IReadOnlyList<T> constraints,
+        ConstraintReference reference,
+        Func<T, string?> name,
+        Func<T, int> ordinal,
+        string kind,
+        string schema,
+        string table)
+    {
+        if (string.IsNullOrWhiteSpace(reference.Name) && reference.Ordinal is null)
+            throw new GridletValidationException($"A {kind} constraint name or ordinal is required.");
+        for (var i = 0; i < constraints.Count; i++)
+        {
+            if ((!string.IsNullOrWhiteSpace(reference.Name) &&
+                 string.Equals(name(constraints[i]), reference.Name, StringComparison.OrdinalIgnoreCase)) ||
+                (reference.Name is null && reference.Ordinal == ordinal(constraints[i])))
+                return i;
+        }
+        throw new GridletValidationException($"{kind} constraint '{reference.Name ?? $"#{reference.Ordinal}"}' does not exist on {schema}.{table}.");
+    }
+
     private static async Task ExecuteAsync(
         GridletConnectionContext context,
         string sql,
@@ -613,14 +841,21 @@ public sealed class SqliteTableDdlService : ITableDdlService
 
     private static async Task ExecuteAsync(
         SqliteConnection connection,
-        SqliteTransaction transaction,
+        SqliteTransaction? transaction,
         string sql,
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = sql;
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        try
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (SqliteException ex)
+        {
+            throw new GridletQueryException(ex.Message, ex);
+        }
     }
 
     private static GridletValidationException UnsupportedSchemas()

@@ -41,7 +41,10 @@ internal static partial class GridletApiEndpoints
         SelectExample: "SELECT TOP (100) * FROM {object};",
         CreateTriggerExample:
             "CREATE TRIGGER dbo.NewTrigger\nON dbo.SomeTable\nAFTER INSERT\nAS\nBEGIN\n    SELECT 1;\nEND;",
-        ObjectEditMode: "Alter");
+        ObjectEditMode: "Alter",
+        SupportsCheckConstraints: false,
+        SupportsUniqueConstraints: false,
+        SupportsIndexes: false);
 
     [GeneratedRegex(@"^[a-zA-Z0-9][a-zA-Z0-9\-_/]*$")]
     private static partial Regex RoutePattern();
@@ -105,6 +108,12 @@ internal static partial class GridletApiEndpoints
         api.MapPut("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns/{column}", AlterColumn);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns/{column}", DropColumn);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/primary-key", AddPrimaryKey);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/check-constraints", AddCheckConstraint);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/check-constraints/drop", DropCheckConstraint);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/unique-constraints", AddUniqueConstraint);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/unique-constraints/drop", DropUniqueConstraint);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/indexes", CreateIndex);
+        api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/indexes/{index}", DropIndex);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-keys", AddForeignKey);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/constraints/{constraint}", DropConstraint);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}", DropObject);
@@ -298,7 +307,8 @@ internal static partial class GridletApiEndpoints
             var definition = await resolved.Provider.Schema.GetTableDefinitionAsync(
                 resolved.Context, schema, name, cancellationToken);
             return Results.Ok(new TableStructureResponse(
-                ToDto(definition.Object), definition.Columns, definition.Indexes, definition.ForeignKeys));
+                ToDto(definition.Object), definition.Columns, definition.Indexes, definition.ForeignKeys,
+                definition.CheckConstraints, definition.UniqueConstraints));
         });
 
     private static Task<IResult> GetObjectDefinition(
@@ -1145,6 +1155,82 @@ internal static partial class GridletApiEndpoints
             (resolved, ct) => resolved.Provider.Ddl.AddPrimaryKeyAsync(resolved.Context, schema, name, body, ct),
             cancellationToken);
 
+    private static Task<IResult> AddCheckConstraint(
+        string connection, string database, string schema, string name, CheckConstraintDesign body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}.{body.Name ?? "(unnamed)"}",
+            "ddl.addCheckConstraint", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.AddCheckConstraintAsync(
+                resolved.Context, schema, name, body, ct), cancellationToken);
+
+    private static Task<IResult> DropCheckConstraint(
+        string connection, string database, string schema, string name, ConstraintReference body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => DropConstraintReference(connection, database, schema, name, body,
+            "ddl.dropCheckConstraint", resolver, audit, httpContext,
+            (resolved, reference, ct) => resolved.Provider.Ddl.DropCheckConstraintAsync(
+                resolved.Context, schema, name, reference, ct), cancellationToken);
+
+    private static Task<IResult> AddUniqueConstraint(
+        string connection, string database, string schema, string name, UniqueConstraintDesign body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}.{body.Name ?? "(unnamed)"}",
+            "ddl.addUniqueConstraint", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.AddUniqueConstraintAsync(
+                resolved.Context, schema, name, body, ct), cancellationToken);
+
+    private static Task<IResult> DropUniqueConstraint(
+        string connection, string database, string schema, string name, ConstraintReference body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => DropConstraintReference(connection, database, schema, name, body,
+            "ddl.dropUniqueConstraint", resolver, audit, httpContext,
+            (resolved, reference, ct) => resolved.Provider.Ddl.DropUniqueConstraintAsync(
+                resolved.Context, schema, name, reference, ct), cancellationToken);
+
+    private static Task<IResult> DropConstraintReference(
+        string connection, string database, string schema, string name, ConstraintReference body,
+        string action, IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext,
+        Func<ResolvedConnection, ConstraintReference, CancellationToken, Task> drop,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(body.Name) && body.Ordinal is null)
+        {
+            return Task.FromResult<IResult>(Results.BadRequest(
+                new GridletErrorResponse("A constraint name or ordinal is required.")));
+        }
+
+        var reference = body with
+        {
+            Name = string.IsNullOrWhiteSpace(body.Name) ? null : body.Name.Trim(),
+        };
+        var label = reference.Name ?? $"#{reference.Ordinal}";
+        return Ddl(connection, database, $"{schema}.{name}.{label}", action, resolver, audit, httpContext,
+            (resolved, ct) => drop(resolved, reference, ct), cancellationToken);
+    }
+
+    private static Task<IResult> CreateIndex(
+        string connection, string database, string schema, string name, IndexDesign body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}.{body.Name}", "ddl.createIndex",
+            resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.CreateIndexAsync(
+                resolved.Context, schema, name, body, ct), cancellationToken);
+
+    private static Task<IResult> DropIndex(
+        string connection, string database, string schema, string name, string index,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}.{index}", "ddl.dropIndex",
+            resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.DropIndexAsync(
+                resolved.Context, schema, name, index, ct), cancellationToken);
+
     private static Task<IResult> AddForeignKey(
         string connection, string database, string schema, string name, ForeignKeyDesign body,
         IGridletConnectionResolver resolver, IGridletAuditSink audit,
@@ -1301,5 +1387,5 @@ internal static partial class GridletApiEndpoints
             : Results.NotFound(new GridletErrorResponse($"No published endpoint with id '{id}'.")));
 
     private static DbObjectDto ToDto(DbObjectInfo info)
-        => new(info.Schema, info.Name, info.Type.ToString());
+        => new(info.Schema, info.Name, info.Type.ToString(), info.SubKind, info.IsInternal);
 }

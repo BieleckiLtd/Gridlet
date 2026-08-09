@@ -102,8 +102,70 @@ public class DdlEndpointTests
             columns = new[] { new { name = "Id", dataType = "int" } },
         });
         var dropTable = await client.DeleteAsync($"{Db}/objects/dbo/Widgets");
+        var addCheck = await client.PostAsJsonAsync($"{Db}/objects/dbo/Widgets/check-constraints",
+            new { name = "CK_Widgets", expression = "Age >= 0" });
+        var dropIndex = await client.DeleteAsync($"{Db}/objects/dbo/Widgets/indexes/IX_Widgets");
 
         Assert.Equal(HttpStatusCode.Forbidden, create.StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, dropTable.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, addCheck.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, dropIndex.StatusCode);
+    }
+
+    [Fact]
+    public async Task Portable_constraint_and_index_operations_reach_the_provider()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        const string table = $"{Db}/objects/dbo/Widgets";
+
+        var addCheck = await client.PostAsJsonAsync($"{table}/check-constraints",
+            new { name = "CK_Widgets_Age", expression = "Age >= 0" });
+        var dropCheck = await client.PostAsJsonAsync($"{table}/check-constraints/drop",
+            new { ordinal = 2 });
+        var addUnique = await client.PostAsJsonAsync($"{table}/unique-constraints", new
+        {
+            name = "UQ_Widgets_Code",
+            columns = new[] { new { column = "Code", isDescending = true } },
+        });
+        var dropUnique = await client.PostAsJsonAsync($"{table}/unique-constraints/drop",
+            new { name = "UQ_Widgets_Code" });
+        var createIndex = await client.PostAsJsonAsync($"{table}/indexes", new
+        {
+            name = "IX_Widgets_Age",
+            keyColumns = new[] { new { column = "Age", isDescending = true } },
+            isUnique = true,
+            filterExpression = "Age IS NOT NULL",
+        });
+        var dropIndex = await client.DeleteAsync($"{table}/indexes/IX_Widgets_Age");
+
+        Assert.All([addCheck, dropCheck, addUnique, dropUnique, createIndex, dropIndex],
+            response => Assert.Equal(HttpStatusCode.OK, response.StatusCode));
+        Assert.Contains("addCheckConstraint dbo.Widgets.CK_Widgets_Age expression=Age >= 0", fake.Calls);
+        Assert.Contains("dropCheckConstraint dbo.Widgets.#2", fake.Calls);
+        Assert.Contains("addUniqueConstraint dbo.Widgets.UQ_Widgets_Code (Code)", fake.Calls);
+        Assert.Contains("dropUniqueConstraint dbo.Widgets.UQ_Widgets_Code", fake.Calls);
+        Assert.Contains("createIndex dbo.Widgets.IX_Widgets_Age (Age:DESC) unique=True filter=Age IS NOT NULL", fake.Calls);
+        Assert.Contains("dropIndex dbo.Widgets.IX_Widgets_Age", fake.Calls);
+    }
+
+    [Theory]
+    [InlineData("check-constraints")]
+    [InlineData("unique-constraints")]
+    public async Task Empty_constraint_reference_is_rejected(string route)
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+
+        var response = await client.PostAsJsonAsync(
+            $"{Db}/objects/dbo/Widgets/{route}/drop", new { });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("name or ordinal", await response.Content.ReadAsStringAsync(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(fake.Calls, call => call.StartsWith("dropCheckConstraint") ||
+            call.StartsWith("dropUniqueConstraint"));
     }
 }

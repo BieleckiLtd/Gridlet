@@ -6,6 +6,15 @@ namespace Gridlet.Tests.Sqlite;
 
 public sealed class SqliteDdlBuilderTests
 {
+    [Fact]
+    public void Retains_the_public_three_parameter_create_table_abi()
+    {
+        var method = typeof(SqliteDdlBuilder).GetMethod(nameof(SqliteDdlBuilder.BuildCreateTable),
+            [typeof(TableDesign), typeof(string), typeof(IReadOnlyList<ForeignKeyDesign>)]);
+        Assert.NotNull(method);
+        Assert.True(method!.IsPublic);
+    }
+
     [Theory]
     [InlineData("integer", "INTEGER")]
     [InlineData("VARCHAR ( 100 )", "VARCHAR(100)")]

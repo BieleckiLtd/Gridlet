@@ -49,6 +49,11 @@ public sealed class SqliteTableWriteService : ITableWriteService
         {
             throw new GridletValidationException($"Rows cannot be written through {schema}.{table} because it is not a table.");
         }
+        if (definition.Object.IsInternal || definition.Object.SubKind == "shadow")
+        {
+            throw new GridletValidationException(
+                $"Rows cannot be written through {schema}.{table} because it is an internal SQLite table.");
+        }
 
         var setColumns = ValidateColumns(values, definition, forWrite: true);
         var keyColumns = ValidateColumns(key, definition, forWrite: false);
@@ -97,10 +102,10 @@ public sealed class SqliteTableWriteService : ITableWriteService
                 c => string.Equals(c.Name, requestedName, StringComparison.OrdinalIgnoreCase))
                 ?? throw new GridletValidationException(
                     $"Column '{requestedName}' does not exist on {definition.Object.Schema}.{definition.Object.Name}.");
-            if (forWrite && (column.IsIdentity || column.IsComputed))
+            if (forWrite && (column.IsIdentity || column.IsComputed || column.IsHidden))
             {
                 throw new GridletValidationException(
-                    $"Column '{requestedName}' is {(column.IsIdentity ? "an identity" : "a computed")} column and cannot be written.");
+                    $"Column '{requestedName}' is {(column.IsIdentity ? "an identity" : column.IsComputed ? "a computed" : "a hidden")} column and cannot be written.");
             }
 
             result.Add(column.Name);

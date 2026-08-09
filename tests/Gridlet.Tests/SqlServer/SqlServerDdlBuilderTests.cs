@@ -117,6 +117,203 @@ public class SqlServerDdlBuilderTests
     }
 
     [Fact]
+    public void Builds_check_and_unique_constraint_operations()
+    {
+        Assert.Equal(
+            "ALTER TABLE [sales].[Orders] WITH NOCHECK ADD CONSTRAINT [CK_Orders_Total] CHECK NOT FOR REPLICATION ([Total] >= 0); ALTER TABLE [sales].[Orders] NOCHECK CONSTRAINT [CK_Orders_Total];",
+            SqlServerDdlBuilder.BuildAddCheckConstraint("sales", "Orders",
+                new CheckConstraintDesign(
+                    "CK_Orders_Total", "[Total] >= 0", CheckExistingData: false,
+                    IsDisabled: true, IsNotForReplication: true)));
+        Assert.Equal(
+            "ALTER TABLE [sales].[Orders] ADD CONSTRAINT [UQ_Orders_Number] UNIQUE NONCLUSTERED ([TenantId] ASC, [Number] DESC) WITH (FILLFACTOR = 80);",
+            SqlServerDdlBuilder.BuildAddUniqueConstraint("sales", "Orders",
+                new UniqueConstraintDesign(
+                    "UQ_Orders_Number",
+                    [new("TenantId"), new("Number", IsDescending: true)],
+                    FillFactor: 80)));
+        Assert.Equal(
+            "ALTER TABLE [sales].[Orders] DROP CONSTRAINT [CK_Orders_Total];",
+            SqlServerDdlBuilder.BuildDropCheckConstraint(
+                "sales", "Orders", new ConstraintReference("CK_Orders_Total")));
+    }
+
+    [Fact]
+    public void Builds_rich_rowstore_and_columnstore_indexes()
+    {
+        Assert.Equal(
+            "CREATE UNIQUE NONCLUSTERED INDEX [IX_Orders_Number] ON [sales].[Orders] ([TenantId] ASC, [Number] DESC) INCLUDE ([CreatedAt]) WHERE ([IsDeleted] = 0) WITH (FILLFACTOR = 90); ALTER INDEX [IX_Orders_Number] ON [sales].[Orders] DISABLE;",
+            SqlServerDdlBuilder.BuildCreateIndex("sales", "Orders",
+                new IndexDesign(
+                    "IX_Orders_Number",
+                    [new("TenantId"), new("Number", IsDescending: true)],
+                    IsUnique: true,
+                    IncludedColumns: ["CreatedAt"],
+                    FilterExpression: "[IsDeleted] = 0",
+                    FillFactor: 90,
+                    IsDisabled: true)));
+        Assert.Equal(
+            "CREATE CLUSTERED COLUMNSTORE INDEX [CCI_Orders] ON [sales].[Orders];",
+            SqlServerDdlBuilder.BuildCreateIndex("sales", "Orders",
+                new IndexDesign("CCI_Orders", [], IsClustered: true, IsColumnstore: true)));
+        Assert.Equal(
+            "CREATE NONCLUSTERED COLUMNSTORE INDEX [NCCI_Orders] ON [sales].[Orders] ([Total], [CreatedAt]) WHERE ([Total] > 0);",
+            SqlServerDdlBuilder.BuildCreateIndex("sales", "Orders",
+                new IndexDesign(
+                    "NCCI_Orders", [new("Total"), new("CreatedAt")],
+                    FilterExpression: "[Total] > 0", IsColumnstore: true)));
+        Assert.Equal(
+            "DROP INDEX [IX_Orders_Number] ON [sales].[Orders];",
+            SqlServerDdlBuilder.BuildDropIndex("sales", "Orders", "IX_Orders_Number"));
+    }
+
+    [Fact]
+    public void Rejects_index_options_sql_server_cannot_represent()
+    {
+        Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.BuildCreateIndex(
+            "dbo", "T", new IndexDesign("IX", [new(null, Expression: "lower([Name])")])));
+        Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.BuildCreateIndex(
+            "dbo", "T", new IndexDesign("IX", [new("Name", Collation: "Latin1_General_CI_AS")])));
+        Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.BuildCreateIndex(
+            "dbo", "T", new IndexDesign("IX", [new("Name")], IncludedColumns: ["name"])));
+        Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.BuildCreateIndex(
+            "dbo", "T", new IndexDesign("IX", [], IsClustered: true, IsColumnstore: true, FilterExpression: "Id > 0")));
+        Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.BuildCreateIndex(
+            "dbo", "T", new IndexDesign("IX", [new("Id")], IsClustered: true, FilterExpression: "Id > 0")));
+        Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.BuildAddUniqueConstraint(
+            "dbo", "T", new UniqueConstraintDesign("UQ_T", [new("Name")], FillFactor: 101)));
+        Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.BuildDropUniqueConstraint(
+            "dbo", "T", new ConstraintReference(Ordinal: 0)));
+    }
+
+    [Fact]
+    public void Parenthesises_filter_so_index_options_cannot_be_injected()
+    {
+        var sql = SqlServerDdlBuilder.BuildCreateIndex(
+            "dbo", "T",
+            new IndexDesign(
+                "IX_T_Id",
+                [new("Id")],
+                FilterExpression: "([Id] > 0) WITH (DROP_EXISTING = ON)"));
+
+        Assert.Contains("WHERE (([Id] > 0) WITH (DROP_EXISTING = ON));", sql);
+        Assert.DoesNotContain("WHERE ([Id] > 0) WITH (DROP_EXISTING = ON)", sql);
+    }
+
+    [Fact]
+    public void Synthesised_create_renders_check_and_unique_constraints()
+    {
+        var definition = new TableDefinition(
+            new DbObjectInfo("sales", "Orders", DbObjectType.Table),
+            [new ColumnInfo("Id", "int", false, false, false, true, null, 0),
+             new ColumnInfo("Number", "nvarchar(20)", false, false, false, false, null, 1)],
+            [new IndexInfo(
+                "PK_Orders", "CLUSTERED", true, true, ["Id"],
+                [new IndexKeyInfo("Id", 1)], IsDisabled: true)],
+            [],
+            [new CheckConstraintInfo("CK_Orders_Id", "[Id] > 0", IsDisabled: true)],
+            [new UniqueConstraintInfo(
+                "UQ_Orders_Number", [new IndexKeyInfo("Number", 1, IsDescending: true)],
+                FillFactor: 75)]);
+
+        var sql = SqlServerDdlBuilder.BuildTableDefinition(definition);
+
+        Assert.Contains("CONSTRAINT [CK_Orders_Id] CHECK ([Id] > 0)", sql);
+        Assert.Contains(
+            "CONSTRAINT [UQ_Orders_Number] UNIQUE NONCLUSTERED ([Number] DESC) WITH (FILLFACTOR = 75)", sql);
+        Assert.Contains("ALTER TABLE [sales].[Orders] NOCHECK CONSTRAINT [CK_Orders_Id];", sql);
+        Assert.Contains("ALTER INDEX [PK_Orders] ON [sales].[Orders] DISABLE;", sql);
+    }
+
+    [Fact]
+    public void Synthesised_create_appends_rich_rowstore_indexes()
+    {
+        var definition = new TableDefinition(
+            new DbObjectInfo("sales", "Orders", DbObjectType.Table),
+            [new ColumnInfo("TenantId", "int", false, false, false, false, null, 0),
+             new ColumnInfo("Number", "nvarchar(20)", false, false, false, false, null, 1),
+             new ColumnInfo("CreatedAt", "datetime2", false, false, false, false, null, 2)],
+            [new IndexInfo(
+                "IX_Orders_Number", "NONCLUSTERED", true, false, ["TenantId", "Number"],
+                [new IndexKeyInfo("TenantId", 1), new IndexKeyInfo("Number", 2, IsDescending: true)],
+                ["CreatedAt"], "[Number] IS NOT NULL", FillFactor: 85, IsDisabled: true)],
+            [], [], []);
+
+        var sql = SqlServerDdlBuilder.BuildTableDefinition(definition);
+
+        const string create =
+            "CREATE UNIQUE NONCLUSTERED INDEX [IX_Orders_Number] ON [sales].[Orders] ([TenantId] ASC, [Number] DESC) INCLUDE ([CreatedAt]) WHERE ([Number] IS NOT NULL) WITH (FILLFACTOR = 85);";
+        const string disable = "ALTER INDEX [IX_Orders_Number] ON [sales].[Orders] DISABLE;";
+        Assert.Contains(create, sql);
+        Assert.Contains(disable, sql);
+        Assert.True(sql.IndexOf(create, StringComparison.Ordinal) < sql.IndexOf(disable, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Synthesised_create_appends_unordered_columnstore_indexes_and_preserves_disabled_state()
+    {
+        var definition = new TableDefinition(
+            new DbObjectInfo("dbo", "Facts", DbObjectType.Table),
+            [new ColumnInfo("Id", "bigint", false, false, false, false, null, 0),
+             new ColumnInfo("Amount", "decimal(18,2)", false, false, false, false, null, 1)],
+            [new IndexInfo(
+                "CCI_Facts", "CLUSTERED COLUMNSTORE", false, false, ["Id", "Amount"],
+                [new IndexKeyInfo("Id", 1), new IndexKeyInfo("Amount", 2)],
+                IsClustered: true, IsColumnstore: true),
+             new IndexInfo(
+                "NCCI_Facts_Amount", "NONCLUSTERED COLUMNSTORE", false, false, ["Amount"],
+                [new IndexKeyInfo("Amount", 1)], IsColumnstore: true, IsDisabled: true)],
+            [], [], []);
+
+        var sql = SqlServerDdlBuilder.BuildTableDefinition(definition);
+
+        Assert.Contains("CREATE CLUSTERED COLUMNSTORE INDEX [CCI_Facts] ON [dbo].[Facts];", sql);
+        Assert.DoesNotContain("[CCI_Facts] ON [dbo].[Facts] (", sql);
+        Assert.Contains(
+            "CREATE NONCLUSTERED COLUMNSTORE INDEX [NCCI_Facts_Amount] ON [dbo].[Facts] ([Amount]);", sql);
+        Assert.Contains("ALTER INDEX [NCCI_Facts_Amount] ON [dbo].[Facts] DISABLE;", sql);
+    }
+
+    [Theory]
+    [InlineData("XML")]
+    [InlineData("SPATIAL")]
+    [InlineData("NONCLUSTERED HASH")]
+    [InlineData("JSON")]
+    public void Synthesised_create_comments_out_index_kinds_it_cannot_represent(string kind)
+    {
+        var definition = new TableDefinition(
+            new DbObjectInfo("dbo", "T", DbObjectType.Table),
+            [new ColumnInfo("Id", "int", false, false, false, false, null, 0)],
+            [new IndexInfo("IX_Unsupported", kind, false, false, ["Id"],
+                [new IndexKeyInfo("Id", 1)])],
+            [], [], []);
+
+        var sql = SqlServerDdlBuilder.BuildTableDefinition(definition);
+
+        Assert.Contains("-- Gridlet omitted index [IX_Unsupported]:", sql);
+        Assert.DoesNotContain("CREATE NONCLUSTERED INDEX [IX_Unsupported]", sql);
+        Assert.DoesNotContain("CREATE CLUSTERED COLUMNSTORE INDEX [IX_Unsupported]", sql);
+    }
+
+    [Fact]
+    public void Synthesised_create_comments_out_ordered_clustered_columnstore_from_reader_metadata()
+    {
+        var definition = new TableDefinition(
+            new DbObjectInfo("dbo", "T", DbObjectType.Table),
+            [new ColumnInfo("Id", "int", false, false, false, false, null, 0)],
+            [new IndexInfo(
+                "CCI_T", "CLUSTERED COLUMNSTORE", false, false, ["Id"],
+                [new IndexKeyInfo("Id", 1)], IsClustered: true, IsColumnstore: true,
+                IsOrderedColumnstore: true)],
+            [], [], []);
+
+        var sql = SqlServerDdlBuilder.BuildTableDefinition(definition);
+
+        Assert.Contains("-- Gridlet omitted index [CCI_T]: ordered columnstore metadata", sql);
+        Assert.DoesNotContain("CREATE CLUSTERED COLUMNSTORE INDEX [CCI_T]", sql);
+    }
+
+    [Fact]
     public void Builds_safe_create_schema_if_missing()
     {
         Assert.Equal(

@@ -60,6 +60,54 @@ public interface ITableDdlService
         PrimaryKeyDesign primaryKey,
         CancellationToken cancellationToken = default);
 
+    Task AddCheckConstraintAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        CheckConstraintDesign checkConstraint,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support CHECK constraint management.");
+
+    Task DropCheckConstraintAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        ConstraintReference constraint,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support CHECK constraint management.");
+
+    Task AddUniqueConstraintAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        UniqueConstraintDesign uniqueConstraint,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support UNIQUE constraint management.");
+
+    Task DropUniqueConstraintAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        ConstraintReference constraint,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support UNIQUE constraint management.");
+
+    Task CreateIndexAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        IndexDesign index,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support index management.");
+
+    Task DropIndexAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        string indexName,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support index management.");
+
     Task AddForeignKeyAsync(
         GridletConnectionContext context,
         string schema,
