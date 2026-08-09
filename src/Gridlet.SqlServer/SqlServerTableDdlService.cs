@@ -309,8 +309,8 @@ public sealed class SqlServerTableDdlService : ITableDdlService
         if (newName.Contains('.', StringComparison.Ordinal))
         {
             throw new GridletValidationException(
-                $"A rename cannot move a{(kind == "index" ? "n" : "")} {kind} to another schema. " +
-                "Give the new name on its own.");
+                $"A rename changes the name only, so give the new {kind} name without a schema. " +
+                "Moving between schemas is a different operation.");
         }
 
         return newName;

@@ -377,6 +377,28 @@ public sealed class SqliteTableDdlService : ITableDdlService
         => SqliteInsertScriptBuilder.Build(table, columns, rows);
 
     /// <summary>
+    /// A new name is always unqualified: a rename changes the name, it does not move the object.
+    /// Quoting would happily accept a dotted name and produce an object whose name only looks
+    /// qualified, which is worse than refusing it.
+    /// </summary>
+    private static string RequireUnqualified(string newName, string kind)
+    {
+        if (string.IsNullOrWhiteSpace(newName))
+        {
+            throw new GridletValidationException($"The new {kind} name must not be empty.");
+        }
+
+        if (newName.Contains('.', StringComparison.Ordinal))
+        {
+            throw new GridletValidationException(
+                $"A rename changes the name only, so give the new {kind} name without a schema. " +
+                "SQLite has one schema for user objects anyway.");
+        }
+
+        return newName.Trim();
+    }
+
+    /// <summary>
     /// Renames a table. SQLite has no rename for views, triggers or routines - they would have to be
     /// dropped and recreated from their source, which is the person's decision to make in the
     /// editor, not something to do to their definition behind their back.
@@ -390,6 +412,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
         CancellationToken cancellationToken = default)
     {
         SqliteIdentifier.RequireMainSchema(schema);
+        RequireUnqualified(newName, "object");
         if (type != DbObjectType.Table)
         {
             throw new GridletValidationException(
@@ -423,6 +446,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
         CancellationToken cancellationToken = default)
     {
         SqliteIdentifier.RequireMainSchema(schema);
+        RequireUnqualified(newName, "index");
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
         var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, table, cancellationToken);
         var index = definition.Indexes.FirstOrDefault(candidate =>

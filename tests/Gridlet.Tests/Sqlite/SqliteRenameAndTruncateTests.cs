@@ -80,6 +80,34 @@ public sealed class SqliteRenameAndTruncateTests : IAsyncLifetime
         Assert.Contains("definition", exception.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A rename changes the name; it does not move the object. Quoting would accept a dotted name
+    /// and leave a table whose name only looks qualified, so it is refused — the same rule the SQL
+    /// Server provider applies.
+    /// </summary>
+    [Theory]
+    [InlineData("other.Clients")]
+    [InlineData("main.Clients")]
+    public async Task A_qualified_new_name_is_refused(string newName)
+    {
+        var table = await Assert.ThrowsAsync<GridletValidationException>(() =>
+            provider.Ddl.RenameObjectAsync(context, "main", "Customers", DbObjectType.Table, newName));
+        var index = await Assert.ThrowsAsync<GridletValidationException>(() =>
+            provider.Ddl.RenameIndexAsync(context, "main", "Customers", "UX_Customers_Name", newName));
+
+        Assert.Contains("without a schema", table.Message, StringComparison.Ordinal);
+        Assert.Contains("without a schema", index.Message, StringComparison.Ordinal);
+
+        // The refusal happens before anything is touched.
+        var definition = await provider.Schema.GetTableDefinitionAsync(context, "main", "Customers");
+        Assert.Contains(definition.Indexes, i => i.Name == "UX_Customers_Name");
+    }
+
+    [Fact]
+    public async Task An_empty_new_name_is_refused()
+        => await Assert.ThrowsAsync<GridletValidationException>(() =>
+            provider.Ddl.RenameObjectAsync(context, "main", "Customers", DbObjectType.Table, "  "));
+
     [Fact]
     public async Task Emptying_a_table_keeps_the_table_and_its_indexes()
     {
