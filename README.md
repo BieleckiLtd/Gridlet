@@ -5,9 +5,11 @@
 <h1 align="center">Gridlet</h1>
 
 Gridlet is an embeddable ASP.NET Core NuGet package that adds a configurable, web-based database
-management interface to an existing application: browse schema, view and stream through data, inspect
-keys/indexes/relationships, and run queries, all from inside the host app using the host's own
-authentication, authorization, routing, logging, and deployment model.
+management interface to an existing application. Browse schemas and data, inspect keys, indexes and
+relationships, and run queries, all from within the host application using its existing
+authentication, authorisation, routing, logging and deployment model. Gridlet also includes an
+integrated AI agent, allowing you to ask questions about the database, explore its structure,
+generate queries, and talk directly with your data using natural language.
 
 <p align="center">
   <img src="assets/screenshot-1.png" width="100%" alt="Gridlet table browser showing customer data" />
