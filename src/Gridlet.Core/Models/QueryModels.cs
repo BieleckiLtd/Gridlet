@@ -3,7 +3,7 @@ namespace Gridlet.Models;
 /// <summary>Limits applied to a single ad-hoc query execution.</summary>
 /// <param name="MaxRowsPerResultSet">
 /// Maximum rows retained per result set before the provider stops reading and marks the set
-/// truncated. A value of <c>0</c> or less disables the cap entirely (unbounded) — used by
+/// truncated. A value of <c>0</c> or less disables the cap entirely (unbounded); used by
 /// published endpoints that opt out of the row limit and paginate in SQL themselves.
 /// </param>
 /// <param name="CommandTimeoutSeconds">Database command timeout in seconds.</param>

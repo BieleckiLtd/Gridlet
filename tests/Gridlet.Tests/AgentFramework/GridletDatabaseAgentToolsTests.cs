@@ -14,7 +14,7 @@ public sealed class GridletDatabaseAgentToolsTests
     public async Task List_database_objects_accepts_optional_schema_argument()
     {
         var function = CreateTools()
-            .Create(GridletAgentMode.Data)
+            .Create()
             .OfType<AIFunction>()
             .Single(tool => tool.Name == "list_database_objects");
 
@@ -37,7 +37,7 @@ public sealed class GridletDatabaseAgentToolsTests
     public async Task List_database_objects_filters_by_name_and_type_case_insensitively()
     {
         var function = CreateTools()
-            .Create(GridletAgentMode.Data)
+            .Create()
             .OfType<AIFunction>()
             .Single(tool => tool.Name == "list_database_objects");
 
@@ -61,7 +61,7 @@ public sealed class GridletDatabaseAgentToolsTests
     public async Task List_database_object_filters_compose_with_schema()
     {
         var function = CreateTools()
-            .Create(GridletAgentMode.Data)
+            .Create()
             .OfType<AIFunction>()
             .Single(tool => tool.Name == "list_database_objects");
 
@@ -79,7 +79,7 @@ public sealed class GridletDatabaseAgentToolsTests
     public async Task Invalid_database_object_type_is_a_recoverable_tool_error()
     {
         var function = CreateTools()
-            .Create(GridletAgentMode.Data)
+            .Create()
             .OfType<AIFunction>()
             .Single(tool => tool.Name == "list_database_objects");
 
@@ -96,7 +96,7 @@ public sealed class GridletDatabaseAgentToolsTests
     public async Task Missing_database_object_is_returned_as_a_recoverable_tool_error()
     {
         var function = CreateTools()
-            .Create(GridletAgentMode.Data)
+            .Create()
             .OfType<AIFunction>()
             .Single(tool => tool.Name == "describe_table");
 
@@ -110,7 +110,12 @@ public sealed class GridletDatabaseAgentToolsTests
         Assert.Contains("\"recoverable\":true", result?.ToString(), StringComparison.Ordinal);
     }
 
-    private static GridletDatabaseAgentTools CreateTools()
+    internal static GridletDatabaseAgentTools CreateTools(
+        GridletAgentAccess? shared = null,
+        GridletAgentAccessGate? gate = null,
+        IGridletPublishedEndpointInvoker? endpointInvoker = null,
+        GridletAgentEnvironment? environment = null,
+        IPublishedEndpointStore? publishedEndpoints = null)
     {
         var connection = new GridletConnectionOptions
         {
@@ -134,6 +139,7 @@ public sealed class GridletDatabaseAgentToolsTests
             QueryTimeoutSeconds: 30,
             MaxToolIterations: 10,
             MaxOutputTokens: 2_000,
+            AccessPromptTimeout: TimeSpan.FromMinutes(5),
             CodexExecutablePath: "codex",
             ClaudeExecutablePath: "claude",
             CopilotExecutablePath: "copilot",
@@ -143,8 +149,32 @@ public sealed class GridletDatabaseAgentToolsTests
             resolved,
             userName: null,
             settings,
-            new NullAuditSink());
+            new NullAuditSink(),
+            gate ?? CreateGate(shared ?? new GridletAgentAccess(true, true, true)),
+            savedQueries: null,
+            publishedEndpoints,
+            endpointInvoker,
+            environment,
+            maxQueryResultRows: 10_000);
     }
+
+    internal static GridletAgentAccessGate CreateGate(
+        GridletAgentAccess shared,
+        GridletAgentAccess? hostAllows = null,
+        GridletAgentPermissionRegistry? registry = null,
+        TimeSpan? promptTimeout = null,
+        List<GridletAgentStreamEvent>? events = null)
+        => new(
+            hostAllows ?? new GridletAgentAccess(true, true, true),
+            shared,
+            new GridletAgentUserContext(Subject: null, DisplayName: null, IsAuthenticated: false),
+            registry ?? new GridletAgentPermissionRegistry(),
+            promptTimeout ?? TimeSpan.FromMinutes(5),
+            streamEvent =>
+            {
+                events?.Add(streamEvent);
+                return ValueTask.CompletedTask;
+            });
 
     private sealed class NullAuditSink : IGridletAuditSink
     {

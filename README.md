@@ -41,13 +41,46 @@ the current result set as CSV or JSON.
 ## Talk with your database
 
 The optional `Gridlet.AgentFramework` package adds an **Ask** workspace powered by
-[Microsoft Agent Framework](https://learn.microsoft.com/en-us/agent-framework/). It keeps two
-capability sets separate:
+[Microsoft Agent Framework](https://learn.microsoft.com/en-us/agent-framework/).
 
-- **Data** mode can inspect schema and run one bounded, read-only query at a time. It has no write
-  or DDL tool.
-- **Design / Schema** mode can inspect objects, columns, indexes, relationships, and definitions.
-  It can propose DDL in its answer, but it cannot apply it.
+**Nothing is shared with a model unless somebody opts in.** A **Share** menu next to the composer
+controls what one conversation may reach. The scopes are independent rather than a mode switch:
+
+- **Schema** — object names, columns, keys, indexes, relationships, and definitions. On by
+  default, because reasoning about a database without its shape is mostly guesswork.
+- **Data** — row values, read through one bounded, read-only query at a time. Off by default.
+- **Published API** — this Gridlet's own published endpoints: reading their definitions and
+  permission to invoke GET endpoints. Off by default. This does not grant direct database-query
+  access or automatically share rows. If the agent invokes an endpoint, that response is shared
+  and may contain data; it is bounded by the endpoint's SQL and the identity it runs under.
+
+Any scope can be cleared, including while an answer is streaming; the next tool call sees the
+change. A scope that is off makes its tools refuse without touching the database, and no scope can
+exceed what the connection's `AllowAgentSchemaAccess`, `AllowAgentDataAccess`, and
+`AllowAgentApiAccess` settings permit. The agent is read-only in every configuration: it can
+propose DDL and SQL, but it can never apply it.
+
+### Asking for access mid-answer
+
+When the agent needs a scope nobody shared, it does not fail and it does not silently do without.
+It asks, and an **Allow / Deny** card appears in the transcript with the reason it gave. The turn
+stays open while the card waits, so allowing lets the same answer continue straight into the query
+it wanted — no repeating the question, no starting a new conversation. Allowing shares that scope
+for the rest of the conversation and ticks the matching checkbox; denying, or leaving the card
+unanswered until it expires, is final for that turn. Every decision is audited.
+
+Answering a card goes through its own endpoint guarded by the same authorization policy as the chat
+route that would have granted the scope up front, so an access prompt can never widen what a person
+was already allowed to reach.
+
+### The agent knows Gridlet, not just your database
+
+The agent has no filesystem, repository, or web access, so it is given Gridlet's own documentation
+as a tool. It can explain how to publish a query as an HTTP API endpoint, how to declare and bind
+parameters, how to page and index an endpoint so it scales, what the response shape is, and what the
+interface, designer, and security model do — written for people who have never built an HTTP
+endpoint before. A separate tool reports what *this* installation actually permits, so it does not
+describe features a host switched off.
 
 Gridlet supplies the selected database technology and live engine version in the agent's system
 instructions, so responses use the correct SQL dialect and version-supported features instead of
@@ -220,6 +253,7 @@ builder.Services
         connection.AllowDdl = false;
         connection.AllowAgentSchemaAccess = true;
         connection.AllowAgentDataAccess = true;
+        connection.AllowAgentApiAccess = true;
         connection.AgentDataConnectionString = readOnlyReportingConnectionString;
     });
 ```
@@ -247,6 +281,7 @@ method only when no configured connection uses it.
 | `Security` | New `GridletSecurityOptions` | Authentication and authorization applied to the entire Gridlet route group. |
 | `Storage` | New `GridletStorageOptions` | Persistence settings for saved queries and published endpoint definitions. |
 | `Audit` | New `GridletAuditOptions` | Privacy controls for SQL and error details written by the default audit logger. |
+| `PublishedApiRoutePrefix` | `"pub"` | The single route segment, directly under the mount, that published endpoints answer on — so `/gridlet/pub/customers` becomes `/gridlet/endpoints/customers` when set to `"endpoints"`. Surrounding slashes are optional. Must be one segment of ASCII letters, digits, `.`, `-`, or `_`, and cannot be `api` (Gridlet's own management API is mounted there). Changing it moves every published endpoint at once, so existing callers have to be updated. |
 
 The lower-level, provider-agnostic
 `AddConnection(name, connectionString, providerName, configure)` API remains available for custom
@@ -274,9 +309,10 @@ the built-in SQL Server and SQLite providers because it does not require a name 
 | `AllowSqlExecution` | `true` | Shows and enables the ad-hoc SQL editor. This permits any statement allowed by the database login, including writes or DDL; it is independent of the two UI feature gates below. |
 | `AllowWrites` | `true` | Enables Gridlet's explicit row insert/update/delete UI and endpoints. It does not prevent write statements submitted through the SQL editor. |
 | `AllowDdl` | `true` | Enables Gridlet's schema-changing UI and endpoints: creating, altering, and dropping schemas, tables, columns, keys, indexes, views, routines, and triggers where supported. It does not prevent DDL submitted through the SQL editor. |
-| `AllowAgentSchemaAccess` | `false` | Allows Design / Schema chat to send schema metadata and object definitions to a configured model. The agent cannot apply DDL. |
-| `AllowAgentDataAccess` | `false` | Allows Data chat to inspect schema and run bounded read-only queries. |
-| `AgentDataConnectionString` | `null` | Separate server-side connection string for the Data agent. Use a SELECT-only identity. Never returned by Gridlet. |
+| `AllowAgentSchemaAccess` | `false` | Permits a person to share schema metadata and object definitions with a configured model. Sharing remains their per-conversation choice; the agent cannot apply DDL. |
+| `AllowAgentDataAccess` | `false` | Permits a person to share row data, read through bounded read-only queries. Off by default in every conversation even when this is enabled. |
+| `AllowAgentApiAccess` | `false` | Permits a person to share this Gridlet's published API definitions and let the agent invoke GET endpoints. It grants no direct database-query access and is independent of `AllowAgentDataAccess`. If an endpoint is invoked, its response is shared and may contain data. Off by default in every conversation even when this is enabled. |
+| `AgentDataConnectionString` | `null` | Separate server-side connection string used whenever the agent reads data. Use a SELECT-only identity. Never returned by Gridlet. |
 | `AllowAgentDataWithPrimaryConnection` | `false` | Explicitly opts into using the primary Gridlet identity when no agent-specific connection is configured. Avoid this when the primary identity can write or run DDL. |
 
 ### Limit options
@@ -299,8 +335,8 @@ key, otherwise-equal rows retain the database engine's ordering.
 | --- | --- | --- |
 | `AllowAnonymous` | `false` | When false, `MapGridlet` applies ASP.NET Core authorization to every UI, API, asset, and published endpoint under the mount path. Set true only when anonymous database tooling is intentional, typically local development. A named `AuthorizationPolicy` takes precedence. |
 | `AuthorizationPolicy` | `null` | Named ASP.NET Core authorization policy applied to the Gridlet route group. When null, the host's default policy is used unless `AllowAnonymous` is true. The policy must be registered by the host. When set, it always applies. |
-| `AgentDataAuthorizationPolicy` | `null` | Optional additional policy for Data chat. |
-| `AgentSchemaAuthorizationPolicy` | `null` | Optional additional policy for Design / Schema chat. |
+| `AgentDataAuthorizationPolicy` | `null` | Optional additional policy for conversations sharing data, and for answering an agent's request to share it. |
+| `AgentSchemaAuthorizationPolicy` | `null` | Optional additional policy for conversations sharing schema, and for answering an agent's request to share it. |
 | `AgentCredentialAuthorizationPolicy` | `null` | Optional additional policy for creating and removing ephemeral user-key handles. |
 | `AllowAnonymousAgentCredentials` | `false` | Allows anonymous BYOK handles only when explicitly enabled. Authenticated, user-bound keys are the default. |
 
@@ -312,6 +348,10 @@ host-controlled profiles through `AddCodex`, `AddClaudeCode`, `AddGitHubCopilot`
 `AllowUserApiKeys`; subscription-backed Codex, Claude Code, and GitHub Copilot profiles reject both because
 authentication belongs exclusively to the local CLI runtime. `AsLocal` controls the safe locality
 metadata exposed for OpenAI-compatible profiles.
+
+`AccessPromptTimeout` (default five minutes, between ten seconds and thirty minutes) bounds how long
+an agent's request to share schema or data waits for an answer. The turn stays on the wire for that
+long, so an unanswered prompt expires as a denial rather than holding a response open indefinitely.
 
 ### Context-window gauge
 
@@ -325,7 +365,7 @@ hover. Providers differ in what they report:
 | Claude Code | Usage forwarded from the model's own streaming events | `modelUsage.contextWindow` | While streaming; the window from the first completed turn onward |
 | GitHub Copilot | Session metadata `contextInfo.totalTokens` | The model's `max_prompt_tokens` | End of turn |
 | Ollama | `prompt_eval_count` / `eval_count` | The window the server actually loaded the model with, read from `/api/ps` | End of response |
-| OpenAI, Anthropic, OpenAI-compatible | Endpoint-reported usage, when returned | Not reported — declare it | End of response |
+| OpenAI, Anthropic, OpenAI-compatible | Endpoint-reported usage, when returned | Not reported; declare it | End of response |
 
 Ollama never reports a window with a response, and the effective window is the runtime `num_ctx` rather
 than the model's trained maximum, so Gridlet asks the running server which window the model is loaded
@@ -430,6 +470,7 @@ can be added later without rewriting the product.
 src/
   Gridlet.Core/          core abstractions + domain model
   Gridlet.AgentFramework/ optional Microsoft Agent Framework integration
+    Prompts/             every instruction given to a model, as editable Markdown
   Gridlet.AspNetCore/    host integration, API endpoints, embedded UI
   Gridlet.SqlServer/     SQL Server provider
   Gridlet.Sqlite/        SQLite provider
@@ -444,22 +485,33 @@ samples/
 ## Demo
 
 `samples/Gridlet.Demo` is the runnable sample project. It creates and seeds a local
-`GridletSample.db` SQLite database on first run (customers/products/orders plus a view and an audit
-trigger). On Windows, it also creates a `GridletLocalDbSample` database in the `MSSQLLocalDB` SQL
+`BytePizza.db` SQLite database on first run. The Byte Pizza dataset covers pizzas, toppings,
+customers, orders, promotions, and deliveries, along with views, triggers, FTS5 search, JSON,
+generated columns, and representative SQLite indexes. On Windows, the demo also creates a
+`GridletLocalDbSample` database in the `MSSQLLocalDB` SQL
 Server LocalDB instance, including multiple schemas, a view, trigger, stored procedure, and function.
 If LocalDB is not installed, the demo logs a warning and continues with SQLite only. It mounts
 Gridlet at `/gridlet` with anonymous access.
-It also registers an `OddSecond` ASP.NET Core authorization policy and includes a published endpoint
-definition in the sample `gridlet-store.json` for `GET /gridlet/pub/samples/odd-second`. The endpoint
-returns query results during odd-numbered UTC
-seconds and returns `403 Forbidden` during even-numbered UTC seconds, demonstrating how a published
-endpoint can require a host-defined policy while the rest of the sample remains anonymous.
+The sample store includes published APIs for typed query-string parameters, JSON request bodies,
+FTS5 search, views, joins, JSON extraction, result caps, and endpoint-specific authorization.
+Byte Pizza delivers from 11:00 until 22:00 in the host's local time zone. During those hours the
+delivery menu is authorized; outside them, a complementary policy exposes a collection-only
+Margherita menu. The inactive endpoint returns `403 Forbidden`, demonstrating that a host policy can
+control one published API while the rest of Gridlet remains anonymous.
 
 ```
 dotnet run --project samples/Gridlet.Demo
 # → http://localhost:5088/gridlet
-# retry this URL on consecutive seconds to see alternating 200/403 responses:
-# → http://localhost:5088/gridlet/pub/samples/odd-second
+# typed GET parameter and FTS5 search:
+# → http://localhost:5088/gridlet/pub/menu/vegetarian?max_calories=900
+# → http://localhost:5088/gridlet/pub/menu/search?term=cold
+# one of these two policy-controlled menus returns 200 and the other 403:
+# → http://localhost:5088/gridlet/pub/menu/delivery
+# → http://localhost:5088/gridlet/pub/menu/after-hours
+# typed JSON-body parameters:
+curl -X POST http://localhost:5088/gridlet/pub/orders/estimate \
+  -H "Content-Type: application/json" \
+  -d '{"pizza_id":9,"size":"Large","quantity":1}'
 ```
 
 ## Security model
@@ -479,10 +531,24 @@ dotnet run --project samples/Gridlet.Demo
   bracket-quoted, and row values always travel as SQL parameters.
 - **Audit:** queries, row writes, schema changes, and published-API invocations flow through
   `IGridletAuditSink` (default: structured logging); replace the sink to persist audit events.
-- **Agents:** both modes are default-off per connection. Data mode has only a guarded read-query
-  tool and should use `AgentDataConnectionString` with a SELECT-only database principal. Design mode
-  never receives a query or mutation tool. Tool results, schema definitions, and cell values are
-  treated as untrusted model input; row, character, iteration, token, and timeout caps are enforced.
+- **Agents:** all three scopes are default-off per connection, and a person then opts into each one
+  separately per conversation, with data and API off even when the connection permits them. The
+  API scope rides the same route, and therefore the same host authorization policy, as data because
+  an invoked endpoint may return row values. The API grant remains independent: it does not enable
+  direct database queries or turn on the Data scope. Every database tool re-checks the live grant
+  at the moment it runs, so clearing a scope or denying a request closes it immediately rather than
+  at the next turn. Reading data should use
+  `AgentDataConnectionString` with a SELECT-only database principal. The agent never receives a
+  mutation or DDL tool in any configuration. Tool results, schema definitions, saved SQL, cell
+  values, and an agent's own stated reason for requesting access are treated as untrusted model
+  input; row, character, iteration, token, prompt-timeout, and query-timeout caps are enforced.
+- **Subscription CLI isolation:** Codex, Claude Code, and GitHub Copilot each treat their working
+  directory as a project. Launched in the host application's directory they will, without any tool
+  call, read `AGENTS.md` and `CLAUDE.md` up the tree and obey them as instructions, report the
+  absolute path, git root, and a directory listing to the model, and load the operating-system
+  user's own agent memory. Gridlet launches all three in a private empty directory and additionally
+  disables Codex's project-doc and environment-context injection and Copilot's custom instructions,
+  so none of that reaches a model through the Ask workspace.
 - **Agent keys:** server keys remain in host configuration. User keys require authentication by
   default, live only in process memory, are zeroed when removed/expired, and are referenced by
   opaque handles sent in request bodies rather than URLs.
@@ -524,7 +590,8 @@ have a dedicated execution connection that automatically overrides every publish
 Any query can be published as an HTTP endpoint from the query editor (`Publish…`), or via
 `POST {mount}/api/published`. Published endpoints:
 
-- live at `{mount}/pub/{route}` (GET with query-string parameters, or POST, PUT, PATCH, and DELETE with a JSON body),
+- live at `{mount}/{PublishedApiRoutePrefix}/{route}`, which is `{mount}/pub/{route}` unless the
+  host changed the prefix (GET with query-string parameters, or POST, PUT, PATCH, and DELETE with a JSON body),
 - bind `@parameters` in the SQL to request values (missing optional parameters become `NULL`),
 - let the publisher declare each value parameter as `auto`, `string`, `integer`, `number`, or
   `boolean`; Gridlet performs no implicit filtering, ordering, or pagination,

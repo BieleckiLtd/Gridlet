@@ -156,6 +156,13 @@ public sealed class FakeGridletProvider :
 
         await Task.Yield();
 
+        if (sql == "no-results")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            yield break;
+        }
+
         // "many:N" streams N rows in batches, to prove uncapped streaming past the global default.
         if (sql.StartsWith("many:", StringComparison.Ordinal) &&
             int.TryParse(sql["many:".Length..], out var total))

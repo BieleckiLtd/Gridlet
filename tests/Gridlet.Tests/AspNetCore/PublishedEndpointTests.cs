@@ -14,6 +14,60 @@ public class PublishedEndpointTests
     private static Task<HttpResponseMessage> Publish(HttpClient client, object body)
         => client.PostAsJsonAsync("/gridlet/api/published", body);
 
+    /// <summary>
+    /// The segment published endpoints answer on is the host's choice, so a Gridlet can be fitted
+    /// to an application's own URL conventions. Only the segment moves: the routes themselves are
+    /// whatever was published.
+    /// </summary>
+    [Fact]
+    public async Task Published_endpoints_answer_on_the_configured_route_prefix()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Security.AllowAnonymous = true;
+            options.PublishedApiRoutePrefix = "endpoints";
+        });
+        await using var _ = app;
+
+        var publish = await Publish(client, new
+        {
+            name = "Customers",
+            method = "GET",
+            route = "customers",
+            connectionName = "Main",
+            database = "FakeDb",
+            sql = "SELECT * FROM dbo.Customers",
+        });
+        Assert.Equal(HttpStatusCode.OK, publish.StatusCode);
+
+        var moved = await client.GetAsync("/gridlet/endpoints/customers");
+        var original = await client.GetAsync("/gridlet/pub/customers");
+
+        Assert.Equal(HttpStatusCode.OK, moved.StatusCode);
+        Assert.Contains("\"rows\"", await moved.Content.ReadAsStringAsync());
+        // The default segment is not kept alive alongside the configured one; there is one address.
+        Assert.Equal(HttpStatusCode.NotFound, original.StatusCode);
+    }
+
+    /// <summary>The browser builds published URLs from the server's answer, never from the default.</summary>
+    [Fact]
+    public async Task Meta_reports_the_configured_route_prefix_to_the_browser()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Security.AllowAnonymous = true;
+            options.PublishedApiRoutePrefix = "/endpoints/";
+        });
+        await using var _ = app;
+
+        var meta = await client.GetFromJsonAsync<JsonElement>("/gridlet/api/meta");
+
+        // Surrounding slashes are a normal way to write a route prefix, and are normalized away.
+        Assert.Equal("endpoints", meta.GetProperty("publishedApiSegment").GetString());
+    }
+
     [Fact]
     public async Task Published_get_endpoint_executes_with_bound_parameters()
     {

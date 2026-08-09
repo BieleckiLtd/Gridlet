@@ -28,6 +28,28 @@ public sealed class GridletOptions
     public GridletAuditOptions Audit { get; set; } = new();
 
     /// <summary>
+    /// The single route segment, directly under Gridlet's mount, that published API endpoints are
+    /// served from. Defaults to <c>pub</c>, so a route named <c>customers</c> under the default
+    /// mount answers at <c>/gridlet/pub/customers</c>.
+    /// </summary>
+    /// <remarks>
+    /// Change it to fit a host's own URL conventions. It is one segment rather than a path so that
+    /// a published route can never be confused with a deeper part of the mount, and <c>api</c> is
+    /// rejected because Gridlet's own management API already occupies it. Existing published
+    /// endpoints keep their routes; only the segment in front of them moves, so anything already
+    /// calling them has to be updated.
+    /// </remarks>
+    public string PublishedApiRoutePrefix { get; set; } = "pub";
+
+    /// <summary>
+    /// <see cref="PublishedApiRoutePrefix"/> as the bare segment used to build a route or a URL,
+    /// with any surrounding slashes removed. A blank value falls back to the default so nothing
+    /// builds a URL with an empty segment while validation reports the misconfiguration.
+    /// </summary>
+    public string PublishedApiSegment =>
+        PublishedApiRoutePrefix?.Trim('/') is { Length: > 0 } segment ? segment : "pub";
+
+    /// <summary>
     /// Adds a database connection to Gridlet's allow-list.
     /// </summary>
     /// <param name="name">Unique display/route name for the connection.</param>

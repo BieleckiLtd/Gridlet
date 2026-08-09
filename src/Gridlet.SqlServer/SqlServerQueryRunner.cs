@@ -55,7 +55,7 @@ public sealed class SqlServerQueryRunner : IQueryRunner
             {
                 if (reader.FieldCount == 0)
                 {
-                    continue; // Non-query statement (INSERT/UPDATE/DDL) — no result set to read.
+                    continue; // Non-query statement (INSERT/UPDATE/DDL); no result set to read.
                 }
 
                 var columns = new ResultColumn[reader.FieldCount];

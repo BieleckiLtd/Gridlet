@@ -4,7 +4,7 @@ using Gridlet.Auditing;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 
-// ReSharper disable once CheckNamespace — conventional namespace for DI extensions.
+// ReSharper disable once CheckNamespace; conventional namespace for DI extensions.
 namespace Microsoft.Extensions.DependencyInjection;
 
 public static class GridletCoreServiceCollectionExtensions

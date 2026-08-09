@@ -26,6 +26,7 @@ var gridlet = builder.Services
             //relativePathBase: builder.Environment.ContentRootPath
             c.AllowAgentSchemaAccess = true;
             c.AllowAgentDataAccess = true;
+            c.AllowAgentApiAccess = true;
             c.AllowAgentDataWithPrimaryConnection = true;
         });
 
@@ -38,6 +39,7 @@ if (OperatingSystem.IsWindows())
         {
             c.AllowAgentSchemaAccess = true;
             c.AllowAgentDataAccess = true;
+            c.AllowAgentApiAccess = true;
             c.AllowAgentDataWithPrimaryConnection = true;
         });
 }
@@ -56,13 +58,13 @@ gridlet.AddAgentFramework(agents =>
             .WithReasoningEffort(GridletCodexReasoningEffort.Medium)
             .AllowReasoningEffortSelection();
         // Each profile becomes a runtime-selectable entry in the Ask model dropdown.
-        agents.AddClaudeCode("claude-sonnet", "sonnet", "Claude Code — Sonnet")
+        agents.AddClaudeCode("claude-sonnet", "sonnet", "Claude Code - Sonnet")
             .WithReasoningEffort(GridletClaudeCodeEffort.Medium)
             .AllowReasoningEffortSelection();
-        agents.AddClaudeCode("claude-opus", "opus", "Claude Code — Opus")
+        agents.AddClaudeCode("claude-opus", "opus", "Claude Code - Opus")
             .WithReasoningEffort(GridletClaudeCodeEffort.High)
             .AllowReasoningEffortSelection();
-        agents.AddClaudeCode("claude-haiku", "haiku", "Claude Code — Haiku")
+        agents.AddClaudeCode("claude-haiku", "haiku", "Claude Code - Haiku")
             .WithReasoningEffort(GridletClaudeCodeEffort.Low);
         agents.AddGitHubCopilot("github-copilot", "gpt-5-mini")
             .WithReasoningEffort(GridletCopilotReasoningEffort.Medium)

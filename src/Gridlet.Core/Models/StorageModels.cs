@@ -17,9 +17,10 @@ public sealed record SavedQuery(
 public sealed record PublishedParameter(string Name, bool Required, string Type = "auto");
 
 /// <summary>
-/// A data operation published as an HTTP endpoint under the Gridlet mount path
-/// (<c>{mount}/pub/{route}</c>). Endpoints inherit Gridlet's authorization and can
-/// additionally require their own policy.
+/// A data operation published as an HTTP endpoint under the Gridlet mount path, beneath the
+/// segment chosen by <see cref="GridletOptions.PublishedApiRoutePrefix"/> — by default
+/// <c>{mount}/pub/{route}</c>. Endpoints inherit Gridlet's authorization and can additionally
+/// require their own policy.
 /// </summary>
 /// <param name="MaxRows">
 /// Optional row cap for the streamed result. Published endpoints are uncapped by default:

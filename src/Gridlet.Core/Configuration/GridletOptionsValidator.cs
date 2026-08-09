@@ -44,6 +44,33 @@ public sealed class GridletOptionsValidator : IValidateOptions<GridletOptions>
             }
         }
 
+        // The prefix becomes a literal route segment, so anything that would turn it into a route
+        // template, a traversal, or a collision with Gridlet's own API is rejected at startup
+        // rather than producing endpoints nobody can reach.
+        var publishedPrefix = options.PublishedApiRoutePrefix;
+        if (string.IsNullOrWhiteSpace(publishedPrefix))
+        {
+            failures.Add("PublishedApiRoutePrefix must be a non-empty route segment, for example 'pub'.");
+        }
+        else
+        {
+            var prefix = publishedPrefix.Trim('/');
+            if (prefix.Length is 0 or > 64)
+            {
+                failures.Add("PublishedApiRoutePrefix must contain 1-64 characters once surrounding slashes are removed.");
+            }
+            else if (!prefix.All(character =>
+                char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.'))
+            {
+                failures.Add(
+                    $"PublishedApiRoutePrefix '{publishedPrefix}' must be a single route segment of ASCII letters, digits, '.', '-', or '_'.");
+            }
+            else if (prefix.Equals("api", StringComparison.OrdinalIgnoreCase))
+            {
+                failures.Add("PublishedApiRoutePrefix cannot be 'api'; Gridlet's own management API is mounted there.");
+            }
+        }
+
         var limits = options.Limits;
         if (limits.DefaultPageSize < 1)
         {

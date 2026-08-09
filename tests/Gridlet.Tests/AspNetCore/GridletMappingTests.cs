@@ -65,6 +65,26 @@ public class GridletMappingTests
     }
 
     [Fact]
+    public async Task Api_mapping_accepts_published_api_agent_permission_answers()
+    {
+        var broker = new RecordingPermissionBroker();
+        var (app, client) = await StartAsync(
+            MappingMode.Api,
+            options => options.Security.AllowAnonymous = true,
+            services => services.AddSingleton<IGridletAgentPermissionBroker>(broker));
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync(
+            "/gridlet/api/agents/permissions/api-request-1/api",
+            new { granted = true });
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(
+            ("api-request-1", GridletAgentAccessScope.Api, true),
+            Assert.Single(broker.Decisions));
+    }
+
+    [Fact]
     public async Task Published_mapping_requires_authorization_by_default()
     {
         var (app, _) = await StartAsync(MappingMode.Published);
@@ -174,6 +194,21 @@ public class GridletMappingTests
     private static void AddThrowingAgentService(IServiceCollection services)
         => services.AddSingleton<IGridletAgentService>(_ =>
             throw new InvalidOperationException("Agent service was initialized."));
+
+    private sealed class RecordingPermissionBroker : IGridletAgentPermissionBroker
+    {
+        public List<(string RequestId, GridletAgentAccessScope Scope, bool Granted)> Decisions { get; } = [];
+
+        public bool TryResolve(
+            string requestId,
+            GridletAgentAccessScope scope,
+            bool granted,
+            GridletAgentUserContext user)
+        {
+            Decisions.Add((requestId, scope, granted));
+            return true;
+        }
+    }
 
     private enum MappingMode
     {

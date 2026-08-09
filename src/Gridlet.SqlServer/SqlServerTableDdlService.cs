@@ -140,7 +140,7 @@ public sealed class SqlServerTableDdlService : ITableDdlService
 
             if (!string.Equals(columnName, column.Name, StringComparison.Ordinal))
             {
-                // sp_rename takes the names as string parameters — no dynamic SQL involved.
+                // sp_rename takes the names as string parameters; no dynamic SQL involved.
                 await using var rename = connection.CreateCommand();
                 rename.Transaction = transaction;
                 rename.CommandText = "EXEC sp_rename @objname, @newname, 'COLUMN';";

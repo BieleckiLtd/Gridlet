@@ -268,11 +268,11 @@ public class AgentEndpointTests
     }
 
     [Theory]
-    [InlineData("data", GridletAgentMode.Data)]
-    [InlineData("schema", GridletAgentMode.Schema)]
+    [InlineData("data", true)]
+    [InlineData("schema", false)]
     public async Task Chat_streams_ndjson_and_forwards_the_complete_provider_neutral_request(
         string routeMode,
-        GridletAgentMode expectedMode)
+        bool sharesData)
     {
         var agent = new FakeGridletAgentService();
         var (app, client) = await GridletTestHost.StartAsync(
@@ -303,6 +303,8 @@ public class AgentEndpointTests
                 credentialHandle = FakeGridletAgentService.CredentialHandle,
                 conversationId = "ask-tab-42",
                 reasoningEffort = "high",
+                shareSchema = true,
+                shareData = sharesData,
             });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -325,7 +327,8 @@ public class AgentEndpointTests
         var request = Assert.Single(agent.Requests);
         Assert.Equal("Main", request.ConnectionName);
         Assert.Equal("Reporting", request.Database);
-        Assert.Equal(expectedMode, request.Mode);
+        Assert.Equal(
+            new GridletAgentAccess(Schema: true, Data: sharesData, Api: false), request.Access);
         Assert.Equal(FakeGridletAgentService.ProfileId, request.ProfileId);
         Assert.Equal("What should I know?", request.Message);
         Assert.Equal(FakeGridletAgentService.CredentialHandle, request.CredentialHandle);
@@ -345,6 +348,117 @@ public class AgentEndpointTests
                 Assert.Equal("assistant", message.Role);
                 Assert.Equal("Earlier answer", message.Content);
             });
+    }
+
+    /// <summary>
+    /// Calling a published endpoint returns rows, so the API scope is bound to the same route — and
+    /// therefore the same host authorization policy — as the data scope. The schema route may not
+    /// open it, otherwise it would be a way to reach row values under the weaker policy.
+    /// </summary>
+    [Fact]
+    public async Task The_schema_route_refuses_to_share_published_api_access()
+    {
+        var agent = new FakeGridletAgentService();
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name, connection =>
+                {
+                    connection.AllowAgentSchemaAccess = true;
+                    connection.AllowAgentApiAccess = true;
+                });
+                options.Security.AllowAnonymous = true;
+            },
+            services => services.AddSingleton<IGridletAgentService>(agent));
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/Reporting/agents/schema/chat",
+            new
+            {
+                profileId = FakeGridletAgentService.ProfileId,
+                message = "Show me the endpoints.",
+                shareSchema = true,
+                shareApi = true,
+            });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Empty(agent.Requests);
+    }
+
+    /// <summary>
+    /// The API scope stands alone on the data route: it is forwarded without the data scope, so an
+    /// agent can call an endpoint without also being handed the read-only query tool.
+    /// </summary>
+    [Fact]
+    public async Task The_data_route_forwards_published_api_access_on_its_own()
+    {
+        var agent = new FakeGridletAgentService();
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name, connection =>
+                {
+                    connection.AllowAgentDataAccess = true;
+                    connection.AllowAgentDataWithPrimaryConnection = true;
+                    connection.AllowAgentSchemaAccess = true;
+                    connection.AllowAgentApiAccess = true;
+                });
+                options.Security.AllowAnonymous = true;
+            },
+            services => services.AddSingleton<IGridletAgentService>(agent));
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/Reporting/agents/data/chat",
+            new
+            {
+                profileId = FakeGridletAgentService.ProfileId,
+                message = "Call the customers endpoint.",
+                shareSchema = false,
+                shareData = false,
+                shareApi = true,
+            });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(
+            new GridletAgentAccess(Schema: false, Data: false, Api: true),
+            Assert.Single(agent.Requests).Access);
+    }
+
+    /// <summary>
+    /// The host switch is the ceiling. A connection that never opted into API access refuses the
+    /// scope even on the route that is otherwise allowed to carry it.
+    /// </summary>
+    [Fact]
+    public async Task A_connection_without_api_access_refuses_the_scope()
+    {
+        var agent = new FakeGridletAgentService();
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name, connection =>
+                {
+                    connection.AllowAgentDataAccess = true;
+                    connection.AllowAgentDataWithPrimaryConnection = true;
+                    connection.AllowAgentSchemaAccess = true;
+                });
+                options.Security.AllowAnonymous = true;
+            },
+            services => services.AddSingleton<IGridletAgentService>(agent));
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/Reporting/agents/data/chat",
+            new
+            {
+                profileId = FakeGridletAgentService.ProfileId,
+                message = "Call the customers endpoint.",
+                shareApi = true,
+            });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Empty(agent.Requests);
     }
 
     [Fact]
@@ -499,7 +613,8 @@ public class AgentEndpointTests
         await using var _ = app;
 
         var anonymous = await client.PostAsJsonAsync(DataChat, ValidChatBody());
-        var dataAllowed = await SendAuthorizedChatAsync(client, DataChat, "data", "data@example.com");
+        var dataAllowed = await SendAuthorizedChatAsync(
+            client, DataChat, "data", "data@example.com", shareData: true);
         var dataDeniedSchema = await SendAuthorizedChatAsync(client, SchemaChat, "data", "data@example.com");
         var schemaAllowed = await SendAuthorizedChatAsync(client, SchemaChat, "schema", "schema@example.com");
         var schemaDeniedData = await SendAuthorizedChatAsync(client, DataChat, "schema", "schema@example.com");
@@ -519,32 +634,35 @@ public class AgentEndpointTests
             agent.Requests,
             request =>
             {
-                Assert.Equal(GridletAgentMode.Data, request.Mode);
+                Assert.True(request.Access.Data);
                 Assert.Equal("data@example.com", request.User.DisplayName);
             },
             request =>
             {
-                Assert.Equal(GridletAgentMode.Schema, request.Mode);
+                Assert.False(request.Access.Data);
                 Assert.Equal("schema@example.com", request.User.DisplayName);
             });
     }
 
-    private static object ValidChatBody()
+    private static object ValidChatBody(bool shareData = false)
         => new
         {
             profileId = FakeGridletAgentService.ProfileId,
             message = "Hello database",
+            shareSchema = true,
+            shareData,
         };
 
     private static async Task<HttpResponseMessage> SendAuthorizedChatAsync(
         HttpClient client,
         string path,
         string mode,
-        string userName)
+        string userName,
+        bool shareData = false)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, path)
         {
-            Content = JsonContent.Create(ValidChatBody()),
+            Content = JsonContent.Create(ValidChatBody(shareData)),
         };
         request.Headers.Add("X-Test-Agent-Mode", mode);
         request.Headers.Add("X-Test-User", userName);

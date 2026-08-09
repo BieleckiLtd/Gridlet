@@ -8,7 +8,8 @@ public sealed record GridletMetaResponse(
     string Version,
     IReadOnlyList<GridletConnectionSummary> Connections,
     int MaxQueryResultRows,
-    GridletAgentInfo? Agent = null);
+    GridletAgentInfo? Agent = null,
+    string PublishedApiSegment = "pub");
 
 public sealed record GridletConnectionSummary(
     string Name,
@@ -19,7 +20,8 @@ public sealed record GridletConnectionSummary(
     bool AllowDdl,
     GridletProviderCapabilities Capabilities,
     bool AllowAgentSchemaAccess = false,
-    bool AllowAgentDataAccess = false);
+    bool AllowAgentDataAccess = false,
+    bool AllowAgentApiAccess = false);
 
 public sealed record DbObjectDto(string Schema, string Name, string Type);
 
@@ -39,13 +41,33 @@ public sealed record AgentCredentialResponse(string Handle, DateTimeOffset Expir
 
 public sealed record AgentCredentialRemoveRequestBody(string? Handle);
 
+/// <param name="ShareSchema">
+/// Whether the person has opted into sharing schema metadata for this turn. Defaults to
+/// <see langword="false"/>: a client that says nothing shares nothing.
+/// </param>
+/// <param name="ShareData">
+/// Whether the person has opted into sharing row data for this turn. Only the data chat route
+/// accepts <see langword="true"/>, so the host's data authorization policy always applies.
+/// </param>
+/// <param name="ShareApi">
+/// Whether the person has opted into sharing this Gridlet's published API endpoints for this turn,
+/// which lets the agent read their definitions and invoke GET endpoints. This grants no direct
+/// database-query access. If an endpoint is invoked, its response is shared and may contain data;
+/// only the data chat route accepts <see langword="true"/> for that reason.
+/// </param>
 public sealed record AgentChatRequestBody(
     string? ProfileId,
     string? Message,
     List<GridletAgentMessage>? History = null,
     string? CredentialHandle = null,
     string? ConversationId = null,
-    string? ReasoningEffort = null);
+    string? ReasoningEffort = null,
+    bool ShareSchema = false,
+    bool ShareData = false,
+    bool ShareApi = false);
+
+/// <summary>One browser answer to an agent's mid-turn request to share a scope.</summary>
+public sealed record AgentPermissionDecisionBody(bool? Granted);
 
 public sealed record GridletErrorResponse(string Error);
 
