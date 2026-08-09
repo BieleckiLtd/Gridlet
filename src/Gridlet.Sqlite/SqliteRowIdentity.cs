@@ -66,11 +66,10 @@ internal static class SqliteRowIdentity
             }
         }
 
-        return primaryKey.Length > 0
-            ? new RowIdentityInfo(
-                RowIdentityKinds.PrimaryKey,
-                primaryKey.Select(column => column.Name).ToArray())
-            : null;
+        // Nothing left: the primary key is one SQLite lets hold NULLs, and every rowid alias is
+        // taken by a real column. Returning that key anyway would offer editing on a table where
+        // two rows can share a NULL key, and the update meant for one of them would change both.
+        return null;
     }
 
     /// <summary>

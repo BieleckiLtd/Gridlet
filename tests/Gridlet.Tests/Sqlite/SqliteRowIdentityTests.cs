@@ -46,6 +46,8 @@ public sealed class SqliteRowIdentityTests : IAsyncLifetime
             INSERT INTO CompactCodes VALUES ('a', 'alpha');
             CREATE TABLE Shadowed (rowid TEXT, Body TEXT);
             INSERT INTO Shadowed VALUES ('not the rowid', 'first');
+            CREATE TABLE FullyShadowed (rowid TEXT, _rowid_ TEXT, oid TEXT, Code TEXT PRIMARY KEY);
+            INSERT INTO FullyShadowed VALUES ('a', 'b', 'c', NULL), ('d', 'e', 'f', NULL);
             CREATE VIEW NoteBodies AS SELECT Body FROM Notes;
             """;
         await command.ExecuteNonQueryAsync();
@@ -80,6 +82,22 @@ public sealed class SqliteRowIdentityTests : IAsyncLifetime
 
         Assert.NotNull(definition.RowIdentity);
         Assert.Equal(RowIdentityKinds.RowId, definition.RowIdentity.Kind);
+    }
+
+    /// <summary>
+    /// A primary key SQLite lets hold NULLs cannot address one row, and here every rowid alias is
+    /// taken by a real column, so there is nothing left to address a row with. Offering the key
+    /// anyway would let an edit meant for one row change every row that shares its NULL.
+    /// </summary>
+    [Fact]
+    public async Task A_table_with_no_usable_key_and_no_rowid_left_is_read_only()
+    {
+        var definition = await schema.GetTableDefinitionAsync(context, "main", "FullyShadowed");
+        var page = await data.GetPageAsync(context, "main", "FullyShadowed", new TableDataRequest(1, 10));
+
+        Assert.Null(definition.RowIdentity);
+        Assert.Null(page.RowIdentity);
+        Assert.Null(page.RowKeys);
     }
 
     [Fact]
