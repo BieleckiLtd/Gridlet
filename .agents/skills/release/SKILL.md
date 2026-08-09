@@ -22,7 +22,7 @@ Publish Gridlet through GitHub Actions. Merging the protected `dev` branch into 
 3. Run `dotnet test --configuration Release`. Stop if any test fails.
 4. Compute the semantic version bump and edit only `<Version>` in `Directory.Build.props`.
 5. Re-run release tests when the version or release contents changed after the first run.
-6. Stage the intended release contents, inspect the staged diff, and commit with a concise message that describes the shipped work. Use `Prepare Gridlet <version>` only for a version-only release commit.
+6. Stage the intended release contents, inspect the staged diff, and commit with a concise message that describes the shipped work. Use `Prepare Gridlet <version>` only for a version-only release commit. Follow the authorship rule in `AGENTS.md`: never attribute an AI agent as author, co-author, or contributor anywhere in the commit, pull request, or release notes.
 7. Push `dev` and open a `dev` to `main` pull request. Never push release changes or tags directly to `main`.
 8. Before merging, state that the merge irreversibly publishes the public NuGet packages and obtain explicit confirmation unless the user already explicitly requested both merge and publish in the current turn.
 9. Wait for the required CI and promotion-policy checks, then merge using a merge commit so `main` remains a descendant of `dev`.

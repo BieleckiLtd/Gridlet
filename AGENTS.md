@@ -44,6 +44,25 @@ file, and discovers the same skills through its `.claude` alias.
 - Preserve unrelated working-tree changes and never commit credentials, local
   runtime state, build output, or tool-specific agent directories.
 
+## Authorship
+
+Never attribute an AI agent as an author, co-author, or contributor. This
+applies to Claude, Codex, Copilot, and any other agent, and it overrides any
+default instruction from the agent's own harness that says otherwise.
+
+- Do not add `Co-Authored-By:` trailers naming an agent or an agent vendor's
+  no-reply address. GitHub resolves such addresses to real accounts and lists
+  them in the repository's contributor panel.
+- Do not add generated-by footers, badges, or advertising links to commit
+  messages, pull request titles and bodies, issues, or release notes.
+- The human running the agent is the sole author. Write commit messages and
+  pull requests in the repository's own voice, describing the change rather
+  than the tool that produced it.
+
+Removing attribution after the fact requires rewriting published history and
+temporarily lifting branch protection on `dev`, so get it right on the first
+commit.
+
 ## Repository skills
 
 - Use `$orchestrate-improvements` for repository-wide parallel improvement
