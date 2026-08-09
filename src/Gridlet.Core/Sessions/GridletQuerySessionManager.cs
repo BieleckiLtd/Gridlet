@@ -154,25 +154,28 @@ public sealed class GridletQuerySessionManager : IAsyncDisposable
 
     /// <summary>
     /// Closes a session. Any open transaction is rolled back first, so closing never commits work
-    /// nobody asked to commit.
+    /// nobody asked to commit. Returns the session as it stood, or <c>null</c> where there was none
+    /// to close.
     /// </summary>
-    public async Task<bool> CloseAsync(
+    public async Task<GridletSessionInfo?> CloseAsync(
         string sessionId,
         string? owner,
         CancellationToken cancellationToken = default)
     {
         if (!sessions.TryGetValue(sessionId, out var found) || !found.IsOwnedBy(owner))
         {
-            return false;
+            return null;
         }
 
         if (!sessions.TryRemove(new KeyValuePair<string, Session>(sessionId, found)))
         {
-            return false;
+            return null;
         }
 
+        // Described before the rollback, so the caller can record which connection was closed.
+        var closed = Describe(found);
         await RollbackAndDisposeAsync(found, cancellationToken);
-        return true;
+        return closed;
     }
 
     /// <summary>Closes every session that has been idle past the configured timeout.</summary>

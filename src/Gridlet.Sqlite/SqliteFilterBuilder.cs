@@ -71,30 +71,38 @@ public static class SqliteFilterBuilder
     }
 
     /// <summary>
-    /// Binds the value as the column's affinity would store it. SQLite compares across storage
-    /// classes literally, so the text '5' does not equal the integer 5: without this, a filter on a
-    /// numeric column would silently match nothing.
+    /// Binds the value the way SQLite would read the same literal in a comparison against this
+    /// column, which is the behaviour somebody typing the condition into the query editor would get.
     /// </summary>
+    /// <remarks>
+    /// A column with a numeric affinity needs no help: SQLite converts an untyped parameter to that
+    /// affinity before comparing, so the text '5' does find the integer 5. A column with no declared
+    /// type has no affinity, nothing is converted, and the same filter silently matches nothing -
+    /// which is what this is for. Only TEXT affinity is left alone, because there the conversion runs
+    /// the other way and binding the number 7 would stop the filter '007' from matching the text it
+    /// was written for.
+    /// </remarks>
     private static object? Bind(ColumnInfo column, string value)
     {
         var declared = column.DataType.ToUpperInvariant();
-        if (declared.Contains("INT", StringComparison.Ordinal))
-        {
-            return long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer)
-                ? integer
-                : value;
-        }
 
-        var isNumericAffinity = declared.Contains("REAL", StringComparison.Ordinal)
-            || declared.Contains("FLOA", StringComparison.Ordinal)
-            || declared.Contains("DOUB", StringComparison.Ordinal)
-            || declared.Contains("NUM", StringComparison.Ordinal)
-            || declared.Contains("DEC", StringComparison.Ordinal);
-        if (!isNumericAffinity)
-        {
-            return value;
-        }
+        // SQLite's own rule order: a declared type containing INT is INTEGER affinity whatever else
+        // it contains, so it is checked before the text names.
+        var isText = !declared.Contains("INT", StringComparison.Ordinal)
+            && (declared.Contains("CHAR", StringComparison.Ordinal)
+                || declared.Contains("CLOB", StringComparison.Ordinal)
+                || declared.Contains("TEXT", StringComparison.Ordinal));
 
+        return isText ? value : AsNumber(value);
+    }
+
+    /// <summary>
+    /// Converts the value the way a numeric affinity stores one: as an integer where it is whole, as
+    /// a real where it is not, and unchanged where it is not a number at all - a date held as text
+    /// in a DATE column keeps comparing as the text it is.
+    /// </summary>
+    private static object AsNumber(string value)
+    {
         if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var whole))
         {
             return whole;

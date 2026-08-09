@@ -107,14 +107,14 @@ internal static partial class GridletApiEndpoints
         {
             var owner = UserName(httpContext);
             var closed = await sessions.CloseAsync(sessionId, owner, cancellationToken);
-            if (!closed)
+            if (closed is null)
             {
                 return Results.NotFound(new GridletErrorResponse(
                     "That query session is no longer open."));
             }
 
-            await AuditAsync(audit, httpContext, "session.close", "", null, sessionId, null,
-                succeeded: true, 0, null);
+            await AuditAsync(audit, httpContext, "session.close", closed.ConnectionName, closed.Database,
+                sessionId, null, succeeded: true, 0, null);
             return Results.NoContent();
         });
 

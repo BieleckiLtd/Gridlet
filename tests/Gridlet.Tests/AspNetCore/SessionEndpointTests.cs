@@ -159,6 +159,51 @@ public sealed class SessionEndpointTests
         Assert.Equal("FakeDb", listed[0].GetProperty("database").GetString());
     }
 
+    /// <summary>
+    /// Closing is the event an audit trail cares about most - it ends a connection that may have
+    /// held an uncommitted transaction - so it has to name the connection like every other session
+    /// event, not just the session id.
+    /// </summary>
+    [Fact]
+    public async Task Closing_a_session_is_audited_against_its_connection()
+    {
+        var recorded = new RecordingAuditSink();
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+                options.Security.AllowAnonymous = true;
+            },
+            services => services.AddSingleton<Gridlet.Auditing.IGridletAuditSink>(recorded));
+        await using var _ = app;
+        var opened = await ReadAsync(await client.PostAsync($"{Base}/sessions", null));
+        var id = opened.GetProperty("id").GetString()!;
+
+        await client.DeleteAsync($"/gridlet/api/sessions/{id}");
+
+        var close = Assert.Single(recorded.Events, e => e.Action == "session.close");
+        Assert.Equal("Main", close.ConnectionName);
+        Assert.Equal("FakeDb", close.Database);
+        Assert.Equal(id, close.ObjectName);
+    }
+
+    private sealed class RecordingAuditSink : Gridlet.Auditing.IGridletAuditSink
+    {
+        public List<Gridlet.Auditing.GridletAuditEvent> Events { get; } = [];
+
+        public ValueTask WriteAsync(
+            Gridlet.Auditing.GridletAuditEvent auditEvent,
+            CancellationToken cancellationToken = default)
+        {
+            lock (Events)
+            {
+                Events.Add(auditEvent);
+            }
+
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private static async Task<JsonElement> ReadAsync(HttpResponseMessage response)
     {
         response.EnsureSuccessStatusCode();

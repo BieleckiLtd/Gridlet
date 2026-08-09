@@ -98,7 +98,11 @@ public sealed class SqliteQuerySessionTests : IAsyncLifetime
         await sessions.RunTransactionCommandAsync(session.Id, null, TransactionCommand.Begin);
         await RunAsync(session.Id, "INSERT INTO Notes (Body) VALUES ('abandoned');");
 
-        Assert.True(await sessions.CloseAsync(session.Id, owner: null));
+        var closed = await sessions.CloseAsync(session.Id, owner: null);
+
+        // Closing reports the session it closed, so the caller can record which connection it was on.
+        Assert.Equal(session.ConnectionName, closed?.ConnectionName);
+        Assert.Equal(session.Database, closed?.Database);
 
         Assert.Equal(0L, await CountNotesOutsideTheSessionAsync());
         await Assert.ThrowsAsync<GridletSessionNotFoundException>(
@@ -128,7 +132,7 @@ public sealed class SqliteQuerySessionTests : IAsyncLifetime
             () => sessions.GetAsync(session.Id, owner: "grace"));
         await Assert.ThrowsAsync<GridletSessionNotFoundException>(
             () => sessions.GetAsync(session.Id, owner: null));
-        Assert.False(await sessions.CloseAsync(session.Id, owner: "grace"));
+        Assert.Null(await sessions.CloseAsync(session.Id, owner: "grace"));
         Assert.Empty(sessions.List("grace"));
         Assert.Equal(session.Id, Assert.Single(sessions.List("ada")).Id);
     }

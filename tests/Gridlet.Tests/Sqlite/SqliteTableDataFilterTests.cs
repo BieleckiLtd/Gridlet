@@ -33,13 +33,16 @@ public sealed class SqliteTableDataFilterTests : IAsyncLifetime
                 Id INTEGER PRIMARY KEY,
                 Name TEXT NOT NULL,
                 Price NUMERIC,
-                Notes TEXT
+                Notes TEXT,
+                InStock BOOLEAN,
+                Code TEXT,
+                Untyped
             );
-            INSERT INTO Products (Name, Price, Notes) VALUES
-                ('Widget', 5, 'in stock'),
-                ('Wide widget', 50, NULL),
-                ('Gadget', 12.5, '50% off'),
-                ('Gizmo', 100, 'discontinued');
+            INSERT INTO Products (Name, Price, Notes, InStock, Code, Untyped) VALUES
+                ('Widget', 5, 'in stock', 1, '007', 7),
+                ('Wide widget', 50, NULL, 0, '7', 8),
+                ('Gadget', 12.5, '50% off', 1, '008', 7),
+                ('Gizmo', 100, 'discontinued', 0, '009', 9);
             """;
         await command.ExecuteNonQueryAsync();
     }
@@ -71,8 +74,8 @@ public sealed class SqliteTableDataFilterTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// SQLite compares a text '50' against a numeric column as unequal, so the value has to be bound
-    /// as a number. Without that this filter would silently return nothing.
+    /// A numeric column compares as a number. SQLite does most of this itself - it converts an
+    /// untyped parameter to the column's affinity - so this pins the behaviour rather than the fix.
     /// </summary>
     [Fact]
     public async Task A_numeric_column_is_compared_as_a_number()
@@ -84,6 +87,38 @@ public sealed class SqliteTableDataFilterTests : IAsyncLifetime
         Assert.Equal(["Widget", "Gadget"], await NamesAsync(
             new TableDataFilter("Price", FilterOperator.LessThan, "12.6")));
     }
+
+    /// <summary>
+    /// A column declared with no type at all - ordinary in SQLite - has no affinity, so SQLite
+    /// converts nothing and the text '7' never equals the stored number 7. This is the one case
+    /// where the filter has to bind the value as a number itself.
+    /// </summary>
+    [Fact]
+    public async Task A_column_with_no_declared_type_still_matches_a_number()
+        => Assert.Equal(["Widget", "Gadget"], await NamesAsync(
+            new TableDataFilter("Untyped", FilterOperator.Equals, "7")));
+
+    /// <summary>
+    /// The opposite guard: a text column keeps comparing as text, so a code written with leading
+    /// zeros matches itself rather than the number it looks like.
+    /// </summary>
+    [Fact]
+    public async Task A_text_column_is_not_turned_into_a_number()
+    {
+        Assert.Equal(["Widget"], await NamesAsync(
+            new TableDataFilter("Code", FilterOperator.Equals, "007")));
+        Assert.Equal(["Wide widget"], await NamesAsync(
+            new TableDataFilter("Code", FilterOperator.Equals, "7")));
+    }
+
+    /// <summary>
+    /// SQLite has no BOOLEAN type: it takes numeric affinity, so the column holds the integers 0 and
+    /// 1 and the declared name says nothing on its own.
+    /// </summary>
+    [Fact]
+    public async Task A_type_sqlite_does_not_know_is_compared_by_its_affinity()
+        => Assert.Equal(["Widget", "Gadget"], await NamesAsync(
+            new TableDataFilter("InStock", FilterOperator.Equals, "1")));
 
     [Fact]
     public async Task A_wildcard_in_the_value_matches_itself()
