@@ -88,8 +88,12 @@ inferring the engine from schema details. Built-in SQL Server and SQLite provide
 metadata; third-party providers can implement `IGridletDatabaseSystemInfoProvider` to do the same.
 
 <p align="center">
-  <img src="assets/screenshot-5.png" width="100%" alt="Gridlet Ask workspace showing a data conversation and generated SQL query" />
+  <a href="assets/recording-1.mp4">
+    <img src="assets/screenshot-5.png" width="720" alt="Watch the Gridlet Ask workspace demonstration" />
+  </a>
 </p>
+
+<p align="center"><em>Click the preview to watch the Gridlet Ask demonstration.</em></p>
 
 Profiles can use a ChatGPT subscription through the local Codex runtime, a Claude subscription
 through the local Claude Code CLI, a GitHub Copilot subscription through the local Copilot CLI,
