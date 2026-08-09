@@ -126,6 +126,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
             }
         }
 
+        var parsedTable = SqliteCreateSqlParser.ParseTable(createSql);
         var singlePrimaryKey = rawColumns.Count(c => c.PkOrdinal > 0) == 1;
         var columns = rawColumns.Select((column, ordinal) =>
         {
@@ -146,10 +147,10 @@ public sealed class SqliteSchemaReader : ISchemaReader
                 IsPersisted: column.Hidden == 3,
                 IdentitySeed: isIdentity ? 1 : null,
                 IdentityIncrement: isIdentity ? 1 : null,
-                IsHidden: column.Hidden == 1);
+                IsHidden: column.Hidden == 1,
+                Collation: parsedTable.ColumnCollations.GetValueOrDefault(column.Name));
         }).ToArray();
 
-        var parsedTable = SqliteCreateSqlParser.ParseTable(createSql);
         var indexes = await LoadIndexesAsync(connection, name, columns, cancellationToken);
         var foreignKeys = await LoadForeignKeysAsync(connection, name, cancellationToken);
         var rowIdentity = SqliteRowIdentity.Resolve(

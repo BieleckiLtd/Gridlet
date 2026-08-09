@@ -104,7 +104,8 @@ public static partial class SqlServerDdlBuilder
             c.ComputedDefinition,
             c.IsPersisted,
             c.IdentitySeed ?? 1,
-            c.IdentityIncrement ?? 1)).ToArray();
+            c.IdentityIncrement ?? 1,
+            c.Collation)).ToArray();
         var lines = columns.Select(c => BuildColumnDefinition(c, includeDefault: true)).ToList();
 
         if (primaryKey is not null)
@@ -461,6 +462,7 @@ public static partial class SqlServerDdlBuilder
 
         var definition =
             $"{SqlServerIdentifier.Quote(column.Name)} {NormalizeDataType(column.DataType)}" +
+            $"{NormalizeCollation(column.Collation)}" +
             $"{(column.IsIdentity ? $" IDENTITY({column.IdentitySeed},{column.IdentityIncrement})" : "")}" +
             $"{(column.IsNullable && !column.IsPrimaryKey ? " NULL" : " NOT NULL")}";
 
@@ -471,6 +473,31 @@ public static partial class SqlServerDdlBuilder
 
         return definition;
     }
+
+    /// <summary>
+    /// Validates a collation name and returns the clause. A collation is an identifier the engine
+    /// resolves, not an expression, so the shape is checked here rather than quoted: SQL Server does
+    /// not accept a quoted collation name.
+    /// </summary>
+    internal static string NormalizeCollation(string? collation)
+    {
+        if (string.IsNullOrWhiteSpace(collation))
+        {
+            return "";
+        }
+
+        var trimmed = collation.Trim();
+        if (!CollationPattern().IsMatch(trimmed))
+        {
+            throw new GridletValidationException(
+                $"'{collation}' is not a collation name. Use a name such as Latin1_General_CI_AS.");
+        }
+
+        return " COLLATE " + trimmed;
+    }
+
+    [GeneratedRegex(@"^[a-zA-Z][a-zA-Z0-9_]{0,127}$")]
+    private static partial Regex CollationPattern();
 
     private static string NormalizeReferentialAction(string? action)
     {

@@ -13,7 +13,7 @@ internal static class SqliteCreateSqlParser
     internal sealed record ParsedTable(
         IReadOnlyList<CheckConstraintInfo> Checks,
         IReadOnlyList<UniqueConstraintInfo> Uniques,
-        bool HasColumnCollation);
+        IReadOnlyDictionary<string, string> ColumnCollations);
 
     internal sealed record ParsedIndex(
         IReadOnlyList<IndexKeyInfo> Keys,
@@ -26,21 +26,21 @@ internal static class SqliteCreateSqlParser
     {
         if (string.IsNullOrWhiteSpace(sql) || !TryFindParenthesizedBody(sql, out var bodyStart, out var bodyEnd))
         {
-            return new ParsedTable([], [], false);
+            return new ParsedTable([], [], new Dictionary<string, string>());
         }
 
         var checks = new List<CheckConstraintInfo>();
         var uniques = new List<UniqueConstraintInfo>();
-        var hasColumnCollation = false;
+        var columnCollations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var fragment in SplitTopLevel(sql[(bodyStart + 1)..bodyEnd]))
         {
-            hasColumnCollation |= ParseTableFragment(fragment, checks, uniques);
+            ParseTableFragment(fragment, checks, uniques, columnCollations);
         }
 
         return new ParsedTable(
             checks.Select((item, ordinal) => item with { Ordinal = ordinal }).ToArray(),
             uniques.Select((item, ordinal) => item with { Ordinal = ordinal }).ToArray(),
-            hasColumnCollation);
+            columnCollations);
     }
 
     public static ParsedIndex ParseIndex(string? sql)
@@ -123,15 +123,17 @@ internal static class SqliteCreateSqlParser
         return builder.ToString();
     }
 
-    private static bool ParseTableFragment(
+    /// <param name="columnCollations">Receives the declared collation of each column that has one.</param>
+    private static void ParseTableFragment(
         string rawFragment,
         List<CheckConstraintInfo> checks,
-        List<UniqueConstraintInfo> uniques)
+        List<UniqueConstraintInfo> uniques,
+        Dictionary<string, string> columnCollations)
     {
         var fragment = rawFragment.Trim();
-        if (fragment.Length == 0) return false;
+        if (fragment.Length == 0) return;
         var tokens = Tokenize(fragment);
-        if (tokens.Count == 0) return false;
+        if (tokens.Count == 0) return;
 
         var position = 0;
         string? tableConstraintName = null;
@@ -145,7 +147,7 @@ internal static class SqliteCreateSqlParser
         {
             var expression = ExtractParenthesizedAfter(fragment, tokens[position]);
             if (expression is not null) checks.Add(new CheckConstraintInfo(tableConstraintName, expression));
-            return false;
+            return;
         }
 
         if (position < tokens.Count && IsWord(tokens[position], "UNIQUE"))
@@ -157,17 +159,16 @@ internal static class SqliteCreateSqlParser
                     SplitTopLevel(body).Select((part, ordinal) =>
                         ParseIndexKey(part, ordinal + 1, allowSingleQuotedIdentifier: true)).ToArray()));
             }
-            return false;
+            return;
         }
 
         // PRIMARY KEY and FOREIGN KEY are table constraints, not column definitions.
         if (position < tokens.Count && (IsWord(tokens[position], "PRIMARY") || IsWord(tokens[position], "FOREIGN")))
         {
-            return false;
+            return;
         }
 
         var columnName = UnquoteIdentifier(tokens[0].Text);
-        var hasColumnCollation = false;
         string? pendingConstraintName = null;
         for (var i = 1; i < tokens.Count; i++)
         {
@@ -199,9 +200,16 @@ internal static class SqliteCreateSqlParser
                 // A CONSTRAINT name belongs only to the immediately following column constraint.
                 pendingConstraintName = null;
             }
-            if (IsWord(token, "COLLATE")) hasColumnCollation = true;
+            if (IsWord(token, "COLLATE"))
+            {
+                // The collation name is the token straight after COLLATE, which is where SQLite
+                // reads it from too.
+                if (i + 1 < tokens.Count && tokens[i + 1].Depth == 0)
+                {
+                    columnCollations[columnName] = UnquoteIdentifier(tokens[i + 1].Text);
+                }
+            }
         }
-        return hasColumnCollation;
     }
 
     private static IndexKeyInfo ParseIndexKey(string raw, int ordinal, bool allowSingleQuotedIdentifier)

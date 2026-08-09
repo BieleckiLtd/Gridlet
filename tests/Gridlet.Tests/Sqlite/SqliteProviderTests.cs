@@ -657,7 +657,7 @@ public sealed class SqliteProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Allows_unique_key_collations_but_still_guards_column_collations()
+    public async Task Keeps_unique_key_and_column_collations_through_a_rebuild()
     {
         await provider.Query.ExecuteAsync(context,
             """
@@ -680,9 +680,12 @@ public sealed class SqliteProviderTests : IAsyncLifetime
         await provider.Query.ExecuteAsync(context,
             "INSERT INTO UniqueCollations VALUES (2, 'SAME');", new QueryRequestOptions(10, 30));
 
-        var exception = await Assert.ThrowsAsync<GridletValidationException>(() => provider.Ddl.AlterColumnAsync(
-            context, "main", "ColumnCollations", "Other", new ColumnDesign("Details", "TEXT")));
-        Assert.Contains("column collations", exception.Message);
+        // Rebuilding a table with a column collation used to be refused; now the collation is kept.
+        await provider.Ddl.AlterColumnAsync(
+            context, "main", "ColumnCollations", "Other", new ColumnDesign("Details", "TEXT"));
+        var rebuilt = await provider.Schema.GetTableDefinitionAsync(context, "main", "ColumnCollations");
+        Assert.Equal("NOCASE", rebuilt.Columns.Single(column => column.Name == "Code").Collation);
+        Assert.Contains(rebuilt.Columns, column => column.Name == "Details");
     }
 
     [Fact]

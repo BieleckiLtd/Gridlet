@@ -51,6 +51,22 @@ public class SqlServerDdlBuilderTests
         Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.NormalizeDataType(input));
     }
 
+    /// <summary>
+    /// A collation is an identifier the engine resolves, not a value, so it cannot be quoted - which
+    /// makes validating its shape the only thing standing between it and the statement.
+    /// </summary>
+    [Fact]
+    public void A_column_collation_is_emitted_and_validated()
+    {
+        var sql = SqlServerDdlBuilder.BuildCreateTable(new TableDesign("dbo", "Widgets",
+            [new ColumnDesign("Name", "nvarchar(100)", IsNullable: false, Collation: "Latin1_General_CI_AS")]));
+
+        Assert.Contains("[Name] nvarchar(100) COLLATE Latin1_General_CI_AS NOT NULL", sql, StringComparison.Ordinal);
+        Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.BuildCreateTable(
+            new TableDesign("dbo", "Widgets",
+                [new ColumnDesign("Name", "nvarchar(100)", Collation: "X NOT NULL, [y] int")])));
+    }
+
     [Fact]
     public void Builds_create_table_with_identity_pk_and_default()
     {

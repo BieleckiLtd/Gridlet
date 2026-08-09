@@ -54,8 +54,30 @@ public sealed record ColumnInfo(
     bool IsPersisted = false,
     long? IdentitySeed = null,
     long? IdentityIncrement = null,
-    bool IsHidden = false)
+    bool IsHidden = false,
+    string? Collation = null)
 {
+    /// <summary>Creates the thirteen-field column shape without relying on optional-parameter ABI.</summary>
+    public ColumnInfo(
+        string name,
+        string dataType,
+        bool isNullable,
+        bool isIdentity,
+        bool isComputed,
+        bool isPrimaryKey,
+        string? defaultDefinition,
+        int ordinal,
+        string? computedDefinition,
+        bool isPersisted,
+        long? identitySeed,
+        long? identityIncrement,
+        bool isHidden)
+        : this(name, dataType, isNullable, isIdentity, isComputed, isPrimaryKey,
+            defaultDefinition, ordinal, computedDefinition, isPersisted, identitySeed,
+            identityIncrement, isHidden, null)
+    {
+    }
+
     /// <summary>Creates the legacy twelve-field column shape without relying on optional-parameter ABI.</summary>
     public ColumnInfo(
         string name,
@@ -72,7 +94,7 @@ public sealed record ColumnInfo(
         long? identityIncrement)
         : this(name, dataType, isNullable, isIdentity, isComputed, isPrimaryKey,
             defaultDefinition, ordinal, computedDefinition, isPersisted, identitySeed,
-            identityIncrement, false)
+            identityIncrement, false, null)
     {
     }
 

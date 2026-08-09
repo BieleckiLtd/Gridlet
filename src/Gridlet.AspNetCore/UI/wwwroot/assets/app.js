@@ -2133,6 +2133,10 @@
           type: 'text', placeholder: 'e.g. 0 or SYSUTCDATETIME()',
           value: existing?.defaultDefinition || '',
         });
+        const collationInput = h('input', {
+          type: 'text', placeholder: 'collation', 'data-testid': 'column-collation',
+          'aria-label': 'Collation', value: existing?.collation || '',
+        });
         const syncColumnKind = () => {
           const computed = computedToggle.checked;
           typeInput.disabled = computed;
@@ -2140,6 +2144,7 @@
           identityToggle.disabled = !!existing || computed;
           identitySeed.disabled = identityIncrement.disabled = !!existing || computed || !identityToggle.checked;
           defaultInput.disabled = computed;
+          collationInput.disabled = computed;
           computedInput.disabled = persistedToggle.disabled = !computed;
           if (computed) nullableToggle.checked = true;
           if (identityToggle.checked) nullableToggle.checked = false;
@@ -2161,6 +2166,7 @@
             h('label', { class: 'null-toggle' }, computedToggle, 'Computed'), computedInput,
             h('label', { class: 'null-toggle' }, persistedToggle, 'Persisted'))),
           h('td', {}, defaultInput),
+          h('td', {}, collationInput),
           h('td', { class: 'cell-actions' },
             h('button', { class: 'mini-btn', title: 'Save', onclick: async () => {
               const design = {
@@ -2173,6 +2179,9 @@
                 isPersisted: computedToggle.checked && persistedToggle.checked,
                 identitySeed: Number(identitySeed.value || 1),
                 identityIncrement: Number(identityIncrement.value || 1),
+                collation: !computedToggle.checked && collationInput.value.trim()
+                  ? collationInput.value.trim()
+                  : null,
               };
               try {
                 if (isNew) {
@@ -2436,6 +2445,7 @@
         h('td', { text: c.isIdentity ? 'yes' : '' }),
         h('td', { class: 'mono', text: c.computedDefinition || '' }),
         h('td', { class: 'mono muted', text: c.defaultDefinition || '' }),
+        h('td', { class: 'mono muted', text: c.collation || '' }),
         canDesign ? h('td', { class: 'cell-actions' },
           h('button', { class: 'mini-btn', title: 'Edit column inline', onclick: () => row.replaceWith(makeColumnEditor(c)) }, '✎'),
           h('button', {
@@ -2451,7 +2461,7 @@
         return row;
       });
 
-      const headers = ['', 'Column', 'Type', 'Nullable', 'Identity', 'Computed', 'Default'];
+      const headers = ['', 'Column', 'Type', 'Nullable', 'Identity', 'Computed', 'Default', 'Collation'];
       if (canDesign) headers.push('');
 
       const columnsBody = h('tbody', {}, columnRows);

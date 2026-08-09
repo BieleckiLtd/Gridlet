@@ -642,7 +642,6 @@ public sealed class SqliteTableDdlService : ITableDdlService
         }
 
         var unsupported = new List<string>();
-        if (SqliteCreateSqlParser.ParseTable(source).HasColumnCollation) unsupported.Add("column collations");
         if (SqliteSqlInspection.ContainsKeywordSequence(source, "ON", "CONFLICT")) unsupported.Add("ON CONFLICT policies");
 
         await using (var primaryKey = connection.CreateCommand())
@@ -824,7 +823,8 @@ public sealed class SqliteTableDdlService : ITableDdlService
             column.ComputedDefinition,
             column.IsPersisted,
             column.IdentitySeed ?? 1,
-            column.IdentityIncrement ?? 1);
+            column.IdentityIncrement ?? 1,
+            column.Collation);
 
     private static ForeignKeyDesign[] ToForeignKeyDesigns(TableDefinition definition)
         => definition.ForeignKeys.Select(fk => new ForeignKeyDesign(

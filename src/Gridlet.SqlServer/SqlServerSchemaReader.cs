@@ -104,7 +104,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             SELECT c.name, t.name AS type_name, c.max_length, c.precision, c.scale,
                    c.is_nullable, c.is_identity, c.is_computed, dc.definition AS default_definition,
                    cc.definition AS computed_definition, cc.is_persisted,
-                   CONVERT(bigint, ic.seed_value), CONVERT(bigint, ic.increment_value)
+                   CONVERT(bigint, ic.seed_value), CONVERT(bigint, ic.increment_value),
+                   c.collation_name
             FROM sys.columns c
             JOIN sys.types t ON t.user_type_id = c.user_type_id
             LEFT JOIN sys.default_constraints dc
@@ -231,7 +232,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 ComputedDefinition: reader.IsDBNull(9) ? null : reader.GetString(9),
                 IsPersisted: !reader.IsDBNull(10) && reader.GetBoolean(10),
                 IdentitySeed: reader.IsDBNull(11) ? null : reader.GetInt64(11),
-                IdentityIncrement: reader.IsDBNull(12) ? null : reader.GetInt64(12)));
+                IdentityIncrement: reader.IsDBNull(12) ? null : reader.GetInt64(12),
+                Collation: reader.IsDBNull(13) ? null : reader.GetString(13)));
         }
 
         // Result set 3: primary key columns.

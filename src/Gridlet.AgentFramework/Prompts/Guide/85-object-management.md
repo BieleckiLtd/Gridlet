@@ -25,6 +25,10 @@ Other object-management routes:
   exposes the same creation route when supported.
 - Open a table's Structure view to add or drop columns, primary keys, and foreign keys.
 - Use the table designer to create a table with its columns and constraints in one operation.
+- A column's collation is shown in the Structure view and can be set when adding or altering a
+  column — `Latin1_General_CI_AS` on SQL Server, `NOCASE` and friends on SQLite. It decides how
+  every comparison on that column behaves, and SQLite keeps it through the table rebuilds the
+  designer performs; a table with one used to be off limits to the designer entirely.
 - On SQLite the table designer offers `WITHOUT ROWID` and `STRICT`, and a table's Structure view
   shows which of them it uses. Both change what the table is rather than how it looks — WITHOUT
   ROWID removes the implicit rowid, STRICT makes SQLite enforce declared types — and the designer

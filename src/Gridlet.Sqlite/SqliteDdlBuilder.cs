@@ -229,6 +229,31 @@ public static partial class SqliteDdlBuilder
         return result;
     }
 
+    /// <summary>
+    /// Validates a collation name and returns the clause. SQLite resolves a collation by name -
+    /// BINARY, NOCASE, RTRIM, or one the host registered - so the name is checked for shape rather
+    /// than quoted as a value.
+    /// </summary>
+    internal static string NormalizeCollation(string? collation)
+    {
+        if (string.IsNullOrWhiteSpace(collation))
+        {
+            return "";
+        }
+
+        var trimmed = collation.Trim();
+        if (!CollationPattern().IsMatch(trimmed))
+        {
+            throw new GridletValidationException(
+                $"'{collation}' is not a collation name. Use BINARY, NOCASE, RTRIM, or one registered by the host.");
+        }
+
+        return " COLLATE " + trimmed;
+    }
+
+    [GeneratedRegex(@"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")]
+    private static partial Regex CollationPattern();
+
     private static string BuildColumnDefinition(ColumnDesign column)
     {
         if (!string.IsNullOrWhiteSpace(column.ComputedExpression))
@@ -243,7 +268,8 @@ public static partial class SqliteDdlBuilder
                    (column.IsPersisted ? "STORED" : "VIRTUAL");
         }
 
-        var definition = $"{SqliteIdentifier.Quote(column.Name)} {NormalizeDataType(column.DataType)}";
+        var definition = $"{SqliteIdentifier.Quote(column.Name)} {NormalizeDataType(column.DataType)}" +
+            NormalizeCollation(column.Collation);
         if (column.IsIdentity)
         {
             definition += " PRIMARY KEY AUTOINCREMENT";
