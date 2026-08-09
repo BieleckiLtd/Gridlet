@@ -25,7 +25,10 @@ public sealed class SqliteGridletProvider :
         SelectExample: "SELECT * FROM {object} LIMIT 100;",
         CreateTriggerExample:
             "CREATE TRIGGER [main].[NewTrigger]\nAFTER INSERT ON [SomeTable]\nBEGIN\n    SELECT 1;\nEND;",
-        ObjectEditMode: "Recreate");
+        ObjectEditMode: "Recreate",
+        SupportsCheckConstraints: true,
+        SupportsUniqueConstraints: true,
+        SupportsIndexes: true);
 
     public ISchemaReader Schema { get; } = new SqliteSchemaReader();
 

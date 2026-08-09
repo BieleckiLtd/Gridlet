@@ -23,13 +23,55 @@ public sealed record GridletConnectionSummary(
     bool AllowAgentDataAccess = false,
     bool AllowAgentApiAccess = false);
 
-public sealed record DbObjectDto(string Schema, string Name, string Type);
+public sealed record DbObjectDto(
+    string Schema,
+    string Name,
+    string Type,
+    string? SubKind = null,
+    bool IsInternal = false)
+{
+    public DbObjectDto(string schema, string name, string type)
+        : this(schema, name, type, null, false)
+    {
+    }
+
+    public void Deconstruct(out string schema, out string name, out string type)
+    {
+        schema = Schema;
+        name = Name;
+        type = Type;
+    }
+}
 
 public sealed record TableStructureResponse(
     DbObjectDto Object,
     IReadOnlyList<ColumnInfo> Columns,
     IReadOnlyList<IndexInfo> Indexes,
-    IReadOnlyList<ForeignKeyInfo> ForeignKeys);
+    IReadOnlyList<ForeignKeyInfo> ForeignKeys,
+    IReadOnlyList<CheckConstraintInfo> CheckConstraints,
+    IReadOnlyList<UniqueConstraintInfo> UniqueConstraints)
+{
+    public TableStructureResponse(
+        DbObjectDto @object,
+        IReadOnlyList<ColumnInfo> columns,
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ForeignKeyInfo> foreignKeys)
+        : this(@object, columns, indexes, foreignKeys, [], [])
+    {
+    }
+
+    public void Deconstruct(
+        out DbObjectDto @object,
+        out IReadOnlyList<ColumnInfo> columns,
+        out IReadOnlyList<IndexInfo> indexes,
+        out IReadOnlyList<ForeignKeyInfo> foreignKeys)
+    {
+        @object = Object;
+        columns = Columns;
+        indexes = Indexes;
+        foreignKeys = ForeignKeys;
+    }
+}
 
 public sealed record ObjectDefinitionResponse(string? Definition);
 

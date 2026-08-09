@@ -78,10 +78,28 @@ public static partial class SqlServerDdlBuilder
 
         if (primaryKey is not null)
         {
+            var primaryKeyColumns = primaryKey.KeyColumns is { Count: > 0 }
+                ? BuildMetadataKeyList(primaryKey.KeyColumns)
+                : string.Join(", ", primaryKey.Columns.Select(SqlServerIdentifier.Quote));
+            var isClustered = primaryKey.IsClustered ||
+                primaryKey.Kind.Contains("CLUSTERED", StringComparison.OrdinalIgnoreCase) &&
+                !primaryKey.Kind.Contains("NONCLUSTERED", StringComparison.OrdinalIgnoreCase);
             lines.Add($"CONSTRAINT {SqlServerIdentifier.Quote(primaryKey.Name)} PRIMARY KEY " +
-                      $"{(primaryKey.Kind.Contains("CLUSTERED", StringComparison.OrdinalIgnoreCase) && !primaryKey.Kind.Contains("NONCLUSTERED", StringComparison.OrdinalIgnoreCase) ? "CLUSTERED " : "NONCLUSTERED ")}" +
-                      $"({string.Join(", ", primaryKey.Columns.Select(SqlServerIdentifier.Quote))})");
+                      $"{(isClustered ? "CLUSTERED " : "NONCLUSTERED ")}" +
+                      $"({primaryKeyColumns})" +
+                      BuildFillFactorClause(primaryKey.FillFactor));
         }
+
+        lines.AddRange(definition.CheckConstraints.Select(check =>
+            $"CONSTRAINT {SqlServerIdentifier.Quote(check.Name!)} CHECK " +
+            $"{(check.IsNotForReplication ? "NOT FOR REPLICATION " : "")}" +
+            $"({check.Definition})"));
+
+        lines.AddRange(definition.UniqueConstraints.Select(unique =>
+            $"CONSTRAINT {SqlServerIdentifier.Quote(unique.Name!)} UNIQUE " +
+            $"{(unique.IsClustered ? "CLUSTERED" : "NONCLUSTERED")} " +
+            $"({BuildMetadataKeyList(unique.Columns)})" +
+            BuildFillFactorClause(unique.FillFactor)));
 
         lines.AddRange(definition.ForeignKeys.Select(fk =>
             $"CONSTRAINT {SqlServerIdentifier.Quote(fk.Name)} FOREIGN KEY " +
@@ -90,8 +108,54 @@ public static partial class SqlServerDdlBuilder
             $"({string.Join(", ", fk.Columns.Select(p => SqlServerIdentifier.Quote(p.ReferencedColumn)))}) " +
             $"ON DELETE {fk.OnDelete.Replace('_', ' ')} ON UPDATE {fk.OnUpdate.Replace('_', ' ')}"));
 
-        return $"CREATE TABLE {SqlServerIdentifier.QuoteQualified(definition.Object.Schema, definition.Object.Name)} (\n" +
-               $"    {string.Join(",\n    ", lines)}\n);";
+        var target = SqlServerIdentifier.QuoteQualified(definition.Object.Schema, definition.Object.Name);
+        var sql = $"CREATE TABLE {target} (\n" +
+                  $"    {string.Join(",\n    ", lines)}\n);";
+        var scriptedIndexes = new List<(IndexInfo Info, IndexDesign Design)>();
+
+        foreach (var index in definition.Indexes.Where(i => !i.IsPrimaryKey))
+        {
+            if (TryCreateIndexDesign(index, out var design, out var unsupportedReason))
+            {
+                sql += "\n" + BuildCreateIndex(design! with { IsDisabled = false }, definition.Object.Schema,
+                    definition.Object.Name);
+                scriptedIndexes.Add((index, design!));
+            }
+            else
+            {
+                sql += "\n" + BuildUnsupportedIndexComment(index, unsupportedReason!);
+            }
+        }
+
+        foreach (var check in definition.CheckConstraints.Where(c => c.IsDisabled))
+        {
+            sql += $"\nALTER TABLE {target} NOCHECK CONSTRAINT {SqlServerIdentifier.Quote(check.Name!)};";
+        }
+
+        foreach (var check in definition.CheckConstraints.Where(c => !c.IsDisabled && !c.IsTrusted))
+        {
+            var name = SqlServerIdentifier.Quote(check.Name!);
+            sql += $"\nALTER TABLE {target} NOCHECK CONSTRAINT {name};" +
+                   $"\nALTER TABLE {target} WITH NOCHECK CHECK CONSTRAINT {name};";
+        }
+
+        foreach (var unique in definition.UniqueConstraints.Where(c => c.IsDisabled))
+        {
+            sql += $"\nALTER INDEX {SqlServerIdentifier.Quote(unique.Name!)} ON {target} DISABLE;";
+        }
+
+        if (primaryKey is { IsDisabled: true })
+        {
+            sql += $"\nALTER INDEX {SqlServerIdentifier.Quote(primaryKey.Name)} ON {target} DISABLE;";
+        }
+
+        foreach (var index in scriptedIndexes.Where(i => i.Info.IsDisabled))
+        {
+            sql += "\n" + BuildDisableIndex(
+                definition.Object.Schema, definition.Object.Name, index.Info.Name);
+        }
+
+        return sql;
     }
 
     /// <summary>Creates a schema only when it is not already present.</summary>
@@ -144,6 +208,179 @@ public static partial class SqlServerDdlBuilder
         var columns = string.Join(", ", primaryKey.Columns.Select(SqlServerIdentifier.Quote));
         return $"ALTER TABLE {SqlServerIdentifier.QuoteQualified(schema, table)} ADD CONSTRAINT " +
                $"{SqlServerIdentifier.Quote(primaryKey.Name)} PRIMARY KEY {(primaryKey.IsClustered ? "CLUSTERED" : "NONCLUSTERED")} ({columns});";
+    }
+
+    public static string BuildAddCheckConstraint(
+        string schema,
+        string table,
+        CheckConstraintDesign checkConstraint)
+    {
+        if (checkConstraint.IsDisabled && string.IsNullOrWhiteSpace(checkConstraint.Name))
+        {
+            throw new GridletValidationException("A disabled CHECK constraint needs a name.");
+        }
+
+        var target = SqlServerIdentifier.QuoteQualified(schema, table);
+        var name = string.IsNullOrWhiteSpace(checkConstraint.Name)
+            ? ""
+            : $"CONSTRAINT {SqlServerIdentifier.Quote(checkConstraint.Name)} ";
+        var expression = SqlServerExpressionSafety.RequireSingleExpression(
+            checkConstraint.Expression,
+            "CHECK constraint");
+        var sql = $"ALTER TABLE {target} WITH {(checkConstraint.CheckExistingData ? "CHECK" : "NOCHECK")} " +
+                  $"ADD {name}CHECK " +
+                  $"{(checkConstraint.IsNotForReplication ? "NOT FOR REPLICATION " : "")}" +
+                  $"({expression});";
+
+        if (checkConstraint.IsDisabled)
+        {
+            sql += $" ALTER TABLE {target} NOCHECK CONSTRAINT {SqlServerIdentifier.Quote(checkConstraint.Name!)};";
+        }
+
+        return sql;
+    }
+
+    public static string BuildAddUniqueConstraint(
+        string schema,
+        string table,
+        UniqueConstraintDesign uniqueConstraint)
+    {
+        ValidateFillFactor(uniqueConstraint.FillFactor);
+        if (uniqueConstraint.Columns is not { Count: > 0 })
+        {
+            throw new GridletValidationException("A UNIQUE constraint needs at least one column.");
+        }
+        if (uniqueConstraint.IsDisabled && string.IsNullOrWhiteSpace(uniqueConstraint.Name))
+        {
+            throw new GridletValidationException("A disabled UNIQUE constraint needs a name.");
+        }
+
+        var target = SqlServerIdentifier.QuoteQualified(schema, table);
+        var name = string.IsNullOrWhiteSpace(uniqueConstraint.Name)
+            ? ""
+            : $"CONSTRAINT {SqlServerIdentifier.Quote(uniqueConstraint.Name)} ";
+        var sql = $"ALTER TABLE {target} ADD {name}UNIQUE " +
+                  $"{(uniqueConstraint.IsClustered ? "CLUSTERED" : "NONCLUSTERED")} " +
+                  $"({BuildKeyList(uniqueConstraint.Columns)})" +
+                  $"{BuildFillFactorClause(uniqueConstraint.FillFactor)};";
+
+        if (uniqueConstraint.IsDisabled)
+        {
+            sql += $" ALTER INDEX {SqlServerIdentifier.Quote(uniqueConstraint.Name!)} ON {target} DISABLE;";
+        }
+
+        return sql;
+    }
+
+    public static string BuildCreateIndex(string schema, string table, IndexDesign index)
+        => BuildCreateIndex(index, schema, table);
+
+    private static string BuildCreateIndex(IndexDesign index, string schema, string table)
+    {
+        SqlServerIdentifier.Quote(index.Name);
+        ValidateFillFactor(index.FillFactor);
+        var keyColumns = index.KeyColumns ?? throw new GridletValidationException("Index keys are required.");
+        var includedColumns = index.IncludedColumns ?? [];
+
+        ValidateNoDuplicateColumns(keyColumns, includedColumns);
+        if (index.IsClustered && !string.IsNullOrWhiteSpace(index.FilterExpression))
+        {
+            throw new GridletValidationException("A clustered index cannot be filtered.");
+        }
+
+        if (index.IsColumnstore)
+        {
+            if (index.IsUnique)
+            {
+                throw new GridletValidationException("SQL Server columnstore indexes cannot be unique.");
+            }
+            if (index.FillFactor != 0)
+            {
+                throw new GridletValidationException("SQL Server columnstore indexes do not support fill factor.");
+            }
+            if (includedColumns.Count > 0)
+            {
+                throw new GridletValidationException("SQL Server columnstore indexes do not support included columns.");
+            }
+            if (index.IsClustered && keyColumns.Count > 0)
+            {
+                throw new GridletValidationException("A clustered columnstore index does not take a column list.");
+            }
+            if (!index.IsClustered && keyColumns.Count == 0)
+            {
+                throw new GridletValidationException("A nonclustered columnstore index needs at least one column.");
+            }
+
+            ValidateColumnstoreKeys(keyColumns);
+        }
+        else
+        {
+            if (keyColumns.Count == 0)
+            {
+                throw new GridletValidationException("An index needs at least one key column.");
+            }
+            if (index.IsClustered && includedColumns.Count > 0)
+            {
+                throw new GridletValidationException("A clustered index does not support included columns.");
+            }
+        }
+
+        var target = SqlServerIdentifier.QuoteQualified(schema, table);
+        var sql = "CREATE " +
+                  (index.IsUnique ? "UNIQUE " : "") +
+                  (index.IsClustered ? "CLUSTERED " : "NONCLUSTERED ") +
+                  (index.IsColumnstore ? "COLUMNSTORE " : "") +
+                  $"INDEX {SqlServerIdentifier.Quote(index.Name)} ON {target}";
+
+        if (!index.IsColumnstore || !index.IsClustered)
+        {
+            sql += $" ({BuildKeyList(keyColumns, allowDirection: !index.IsColumnstore)})";
+        }
+        if (includedColumns.Count > 0)
+        {
+            sql += $" INCLUDE ({string.Join(", ", includedColumns.Select(SqlServerIdentifier.Quote))})";
+        }
+        if (!string.IsNullOrWhiteSpace(index.FilterExpression))
+        {
+            sql += $" WHERE ({SqlServerExpressionSafety.RequireSingleExpression(index.FilterExpression, "index filter")})";
+        }
+        sql += BuildFillFactorClause(index.FillFactor) + ";";
+
+        if (index.IsDisabled)
+        {
+            sql += " " + BuildDisableIndex(schema, table, index.Name);
+        }
+
+        return sql;
+    }
+
+    public static string BuildDropIndex(string schema, string table, string indexName)
+        => $"DROP INDEX {SqlServerIdentifier.Quote(indexName)} ON {SqlServerIdentifier.QuoteQualified(schema, table)};";
+
+    public static string BuildDropCheckConstraint(
+        string schema,
+        string table,
+        ConstraintReference constraint)
+        => BuildDropNamedConstraint(schema, table, constraint, "CHECK");
+
+    public static string BuildDropUniqueConstraint(
+        string schema,
+        string table,
+        ConstraintReference constraint)
+        => BuildDropNamedConstraint(schema, table, constraint, "UNIQUE");
+
+    private static string BuildDropNamedConstraint(
+        string schema,
+        string table,
+        ConstraintReference constraint,
+        string kind)
+    {
+        if (string.IsNullOrWhiteSpace(constraint.Name))
+        {
+            throw new GridletValidationException($"SQL Server needs the {kind} constraint name to drop it.");
+        }
+
+        return BuildDropConstraint(schema, table, constraint.Name);
     }
 
     public static string BuildAddForeignKey(string schema, string table, ForeignKeyDesign foreignKey)
@@ -210,5 +447,145 @@ public static partial class SqlServerDdlBuilder
         return normalized is "NO ACTION" or "CASCADE" or "SET NULL" or "SET DEFAULT"
             ? normalized
             : throw new GridletValidationException($"'{action}' is not a supported referential action.");
+    }
+
+    private static string BuildKeyList(
+        IReadOnlyList<IndexKeyDesign> keys,
+        bool allowDirection = true)
+        => string.Join(", ", keys.Select(key =>
+        {
+            if (string.IsNullOrWhiteSpace(key.Column))
+            {
+                throw new GridletValidationException(
+                    "SQL Server index and UNIQUE constraint keys must name a column; expression keys are not supported.");
+            }
+            if (!string.IsNullOrWhiteSpace(key.Expression))
+            {
+                throw new GridletValidationException(
+                    "SQL Server index and UNIQUE constraint keys do not support expressions. Use a computed column instead.");
+            }
+            if (!string.IsNullOrWhiteSpace(key.Collation))
+            {
+                throw new GridletValidationException(
+                    "SQL Server index and UNIQUE constraint keys do not support a per-key collation.");
+            }
+            if (!allowDirection && key.IsDescending)
+            {
+                throw new GridletValidationException("SQL Server columnstore index columns do not support sort direction.");
+            }
+
+            return SqlServerIdentifier.Quote(key.Column) +
+                   (allowDirection ? (key.IsDescending ? " DESC" : " ASC") : "");
+        }));
+
+    private static string BuildMetadataKeyList(IReadOnlyList<IndexKeyInfo> keys)
+        => string.Join(", ", keys.OrderBy(k => k.Ordinal).Select(key =>
+        {
+            if (string.IsNullOrWhiteSpace(key.Column))
+            {
+                throw new GridletValidationException("SQL Server metadata index keys must name a column.");
+            }
+
+            return SqlServerIdentifier.Quote(key.Column) + (key.IsDescending ? " DESC" : " ASC");
+        }));
+
+    private static string BuildFillFactorClause(int fillFactor)
+    {
+        ValidateFillFactor(fillFactor);
+        return fillFactor == 0 ? "" : $" WITH (FILLFACTOR = {fillFactor})";
+    }
+
+    private static void ValidateFillFactor(int fillFactor)
+    {
+        if (fillFactor is < 0 or > 100)
+        {
+            throw new GridletValidationException("Fill factor must be between 0 and 100.");
+        }
+    }
+
+    private static void ValidateColumnstoreKeys(IReadOnlyList<IndexKeyDesign> keys)
+    {
+        _ = BuildKeyList(keys, allowDirection: false);
+    }
+
+    private static void ValidateNoDuplicateColumns(
+        IReadOnlyList<IndexKeyDesign> keys,
+        IReadOnlyList<string> includedColumns)
+    {
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var key in keys)
+        {
+            if (!string.IsNullOrWhiteSpace(key.Column) && !columns.Add(key.Column))
+            {
+                throw new GridletValidationException($"Column '{key.Column}' appears more than once in the index.");
+            }
+        }
+        foreach (var column in includedColumns)
+        {
+            SqlServerIdentifier.Quote(column);
+            if (!columns.Add(column))
+            {
+                throw new GridletValidationException($"Column '{column}' appears more than once in the index.");
+            }
+        }
+    }
+
+    private static bool TryCreateIndexDesign(
+        IndexInfo index,
+        out IndexDesign? design,
+        out string? unsupportedReason)
+    {
+        var kind = Regex.Replace(index.Kind.Trim().ToUpperInvariant().Replace('_', ' '), @"\s+", " ");
+        var isClustered = kind is "CLUSTERED" or "CLUSTERED COLUMNSTORE";
+        var isColumnstore = kind is "CLUSTERED COLUMNSTORE" or "NONCLUSTERED COLUMNSTORE";
+
+        if (index.IsOrderedColumnstore)
+        {
+            design = null;
+            unsupportedReason = "ordered columnstore metadata cannot be represented safely";
+            return false;
+        }
+
+        if (kind is not ("CLUSTERED" or "NONCLUSTERED" or
+            "CLUSTERED COLUMNSTORE" or "NONCLUSTERED COLUMNSTORE"))
+        {
+            design = null;
+            unsupportedReason = $"SQL Server index kind '{SanitizeCommentText(index.Kind)}' is not supported";
+            return false;
+        }
+
+        var keys = isColumnstore && isClustered
+            ? []
+            : (index.KeyColumns is { Count: > 0 }
+                ? index.KeyColumns.OrderBy(k => k.Ordinal)
+                    .Select(k => new IndexKeyDesign(k.Column, k.IsDescending, k.Expression, k.Collation))
+                    .ToArray()
+                : index.Columns.Select(c => new IndexKeyDesign(c)).ToArray());
+        design = new IndexDesign(
+            index.Name,
+            keys,
+            index.IsUnique,
+            index.IncludedColumns,
+            index.FilterDefinition,
+            isClustered,
+            isColumnstore,
+            index.FillFactor,
+            index.IsDisabled);
+        unsupportedReason = null;
+        return true;
+    }
+
+    private static string BuildDisableIndex(string schema, string table, string indexName)
+        => $"ALTER INDEX {SqlServerIdentifier.Quote(indexName)} ON " +
+           $"{SqlServerIdentifier.QuoteQualified(schema, table)} DISABLE;";
+
+    private static string BuildUnsupportedIndexComment(IndexInfo index, string reason)
+        => $"-- Gridlet omitted index {SqlServerIdentifier.Quote(SanitizeCommentText(index.Name))}: " +
+           $"{SanitizeCommentText(reason)}.";
+
+    private static string SanitizeCommentText(string value)
+    {
+        var sanitized = new string(value.Select(c => char.IsControl(c) ? ' ' : c).ToArray());
+        return sanitized.Length <= 256 ? sanitized : sanitized[..256];
     }
 }

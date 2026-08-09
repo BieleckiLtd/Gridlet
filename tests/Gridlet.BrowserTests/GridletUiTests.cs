@@ -1589,7 +1589,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTitle("dbo.Customers").ClickAsync();
         var panel = ActivePanel(page);
         await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
-        await Assertions.Expect(panel.GetByRole(AriaRole.Cell, new() { Name = "IX_Customers_Name" }))
+        await Assertions.Expect(panel.GetByRole(AriaRole.Cell, new() { Name = "IX_Customers_Name", Exact = true }))
             .ToBeVisibleAsync();
 
         const string sql = "CREATE UNIQUE INDEX IX_Customers_Name_Unique ON dbo.Customers ([Name]);";
@@ -1600,6 +1600,146 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
         Assert.Equal(sql, fixture.Provider.LastQuerySql);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Displays_rich_structure_and_uses_dedicated_portable_ddl_routes()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+
+        await Assertions.Expect(panel.GetByText("Name COLLATE Latin1_General_CI_AS DESC", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(panel.GetByText("[Name] IS NOT NULL", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(panel.GetByText("fill 80 · disabled", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(panel.GetByText("length([Name]) > 0", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(panel.GetByText("Name COLLATE NOCASE DESC", new() { Exact = true }))
+            .ToBeVisibleAsync();
+
+        var hidden = panel.Locator("details.hidden-columns");
+        await Assertions.Expect(hidden.GetByText("SysStart", new() { Exact = true })).Not.ToBeVisibleAsync();
+        await hidden.Locator("summary").ClickAsync();
+        await Assertions.Expect(hidden.GetByText("SysStart", new() { Exact = true })).ToBeVisibleAsync();
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Check", Exact = true }).ClickAsync();
+        var checkDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Add check constraint" });
+        await checkDialog.GetByTestId("check-name").FillAsync("CK_Customers_Id_Positive");
+        await checkDialog.GetByTestId("check-expression").FillAsync("[Id] > 0");
+        await checkDialog.GetByRole(AriaRole.Button, new() { Name = "Add check", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText("Check constraint added.", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        Assert.Contains("addCheckConstraint dbo.Customers.CK_Customers_Id_Positive expression=[Id] > 0",
+            fixture.Provider.Calls);
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Unique", Exact = true }).ClickAsync();
+        var uniqueDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Add unique constraint" });
+        await uniqueDialog.GetByTestId("unique-name").FillAsync("UQ_Customers_Name_2");
+        await Assertions.Expect(uniqueDialog.GetByLabel("Move key up", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(uniqueDialog.GetByLabel("Move key down", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(uniqueDialog.GetByLabel("Remove key", new() { Exact = true })).ToBeVisibleAsync();
+        await uniqueDialog.GetByLabel("Key column").SelectOptionAsync("Name");
+        await uniqueDialog.GetByLabel("DESC").CheckAsync();
+        await uniqueDialog.GetByRole(AriaRole.Button, new() { Name = "Add unique", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText("Unique constraint added.", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        Assert.Contains("addUniqueConstraint dbo.Customers.UQ_Customers_Name_2 (Name)", fixture.Provider.Calls);
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Index", Exact = true }).ClickAsync();
+        var indexDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Create index" });
+        await indexDialog.GetByTestId("index-name").FillAsync("IX_Customers_Name_2");
+        await indexDialog.GetByLabel("Key column").SelectOptionAsync("Name");
+        await indexDialog.GetByLabel("DESC").CheckAsync();
+        await indexDialog.GetByTestId("index-unique").CheckAsync();
+        await indexDialog.GetByTestId("index-filter").FillAsync("[Name] IS NOT NULL");
+        await indexDialog.GetByRole(AriaRole.Button, new() { Name = "Create index", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText("Index created.", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        Assert.Contains(
+            "createIndex dbo.Customers.IX_Customers_Name_2 (Name:DESC) unique=True filter=[Name] IS NOT NULL",
+            fixture.Provider.Calls);
+
+        var indexRow = panel.Locator("tr").Filter(new() { HasText = "IX_Customers_Name" });
+        await indexRow.GetByLabel("Drop index IX_Customers_Name", new() { Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Dialog, new() { Name = "Drop index" })
+            .GetByRole(AriaRole.Button, new() { Name = "Drop", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText("Index dropped.", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        Assert.Contains("dropIndex dbo.Customers.IX_Customers_Name", fixture.Provider.Calls);
+
+        var unnamedCheck = panel.Locator("tr").Filter(new() { HasText = "#0" });
+        await unnamedCheck.GetByLabel("Drop check constraint #0", new() { Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Dialog, new() { Name = "Drop check constraint" })
+            .GetByRole(AriaRole.Button, new() { Name = "Drop", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText("Check constraint dropped.", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        Assert.Contains("dropCheckConstraint dbo.Customers.#0", fixture.Provider.Calls);
+
+        var uniqueRow = panel.Locator("tr").Filter(new() { HasText = "UQ_Customers_Name" });
+        await uniqueRow.GetByLabel("Drop unique constraint UQ_Customers_Name", new() { Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Dialog, new() { Name = "Drop unique constraint" })
+            .GetByRole(AriaRole.Button, new() { Name = "Drop", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText("Unique constraint dropped.", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        Assert.Contains("dropUniqueConstraint dbo.Customers.UQ_Customers_Name", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Protects_virtual_and_internal_objects_and_reveals_internal_search_results()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var tables = page.Locator("#tree summary").Filter(new() { HasText = "Tables" });
+        await Assertions.Expect(tables).ToContainTextAsync("3");
+
+        await page.GetByTitle("dbo.NoKeys").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Foreign key", Exact = true }).ClickAsync();
+        var foreignKeyDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Add foreign key" });
+        var targetOptions = await foreignKeyDialog.Locator("select").First.Locator("option")
+            .AllTextContentsAsync();
+        Assert.DoesNotContain("dbo.SearchIndex", targetOptions);
+        Assert.DoesNotContain("dbo.Customers_fts_data", targetOptions);
+        await foreignKeyDialog.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+
+        var virtualTable = page.GetByTitle("dbo.SearchIndex");
+        await Assertions.Expect(virtualTable.Locator(".badge")).ToHaveTextAsync("VT");
+        await virtualTable.ClickAsync();
+        panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "＋ Add column", Exact = true }))
+            .ToHaveCountAsync(0);
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "Drop table…", Exact = true }))
+            .ToBeVisibleAsync();
+
+        var internalGroup = page.Locator("#tree details").Filter(new() { HasText = "Internal" });
+        await Assertions.Expect(internalGroup).Not.ToHaveAttributeAsync("open", "");
+        await Assertions.Expect(page.GetByTitle("Internal object: Customers_fts_data")).Not.ToBeVisibleAsync();
+        await page.Locator("#search").FillAsync("Customers_fts_data");
+        var internalObject = page.GetByTitle("Internal object: Customers_fts_data");
+        await Assertions.Expect(internalObject).ToBeVisibleAsync();
+        await Assertions.Expect(internalObject.Locator(".badge")).ToHaveTextAsync("I");
+        await internalObject.ClickAsync();
+        panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "＋ Row", Exact = true }))
+            .ToHaveCountAsync(0);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "＋ Add column", Exact = true }))
+            .ToHaveCountAsync(0);
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "Drop table…", Exact = true }))
+            .ToHaveCountAsync(0);
         browserPage.AssertNoUnexpectedErrors();
     }
 

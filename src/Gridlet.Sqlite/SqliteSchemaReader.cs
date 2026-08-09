@@ -30,20 +30,31 @@ public sealed class SqliteSchemaReader : ISchemaReader
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT name, type FROM main.sqlite_schema " +
-            "WHERE type IN ('table', 'view', 'trigger') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name;";
+            """
+            SELECT name, type, CASE WHEN type = 'shadow' OR name GLOB 'sqlite_*' THEN 1 ELSE 0 END AS is_internal
+            FROM pragma_table_list
+            WHERE schema = 'main' AND name NOT LIKE 'sqlite\_%' ESCAPE '\'
+            UNION ALL
+            SELECT name, 'trigger', 0
+            FROM main.sqlite_schema
+            WHERE type = 'trigger' AND name NOT LIKE 'sqlite\_%' ESCAPE '\'
+            ORDER BY name;
+            """;
 
         var objects = new List<DbObjectInfo>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            var type = reader.GetString(1) switch
+            var subKind = reader.GetString(1);
+            var type = subKind switch
             {
                 "view" => DbObjectType.View,
                 "trigger" => DbObjectType.Trigger,
                 _ => DbObjectType.Table,
             };
-            objects.Add(new DbObjectInfo(SqliteIdentifier.MainSchema, reader.GetString(0), type));
+            objects.Add(new DbObjectInfo(SqliteIdentifier.MainSchema, reader.GetString(0), type,
+                subKind is "virtual" or "shadow" ? subKind : null,
+                reader.GetInt64(2) != 0));
         }
 
         return objects;
@@ -66,11 +77,18 @@ public sealed class SqliteSchemaReader : ISchemaReader
         CancellationToken cancellationToken)
     {
         string objectType;
+        bool isInternal;
         string? createSql;
         await using (var objectCommand = connection.CreateCommand())
         {
             objectCommand.CommandText =
-                "SELECT type, sql FROM main.sqlite_schema WHERE name = @name AND type IN ('table', 'view');";
+                """
+                SELECT tl.type, s.sql,
+                       CASE WHEN tl.type = 'shadow' OR tl.name GLOB 'sqlite_*' THEN 1 ELSE 0 END
+                FROM pragma_table_list AS tl
+                LEFT JOIN main.sqlite_schema AS s ON s.name = tl.name AND s.type IN ('table', 'view')
+                WHERE tl.schema = 'main' AND tl.name = @name;
+                """;
             objectCommand.Parameters.AddWithValue("@name", name);
             await using var objectReader = await objectCommand.ExecuteReaderAsync(cancellationToken);
             if (!await objectReader.ReadAsync(cancellationToken))
@@ -80,6 +98,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
 
             objectType = objectReader.GetString(0);
             createSql = objectReader.IsDBNull(1) ? null : objectReader.GetString(1);
+            isInternal = objectReader.GetInt64(2) != 0;
         }
 
         var rawColumns = new List<(string Name, string Type, bool Nullable, string? Default, int PkOrdinal, int Hidden)>();
@@ -121,18 +140,24 @@ public sealed class SqliteSchemaReader : ISchemaReader
                 ComputedDefinition: isComputed ? ExtractGeneratedExpression(createSql, column.Name) : null,
                 IsPersisted: column.Hidden == 3,
                 IdentitySeed: isIdentity ? 1 : null,
-                IdentityIncrement: isIdentity ? 1 : null);
+                IdentityIncrement: isIdentity ? 1 : null,
+                IsHidden: column.Hidden == 1);
         }).ToArray();
 
+        var parsedTable = SqliteCreateSqlParser.ParseTable(createSql);
         var indexes = await LoadIndexesAsync(connection, name, columns, cancellationToken);
         var foreignKeys = await LoadForeignKeysAsync(connection, name, cancellationToken);
 
         return new TableDefinition(
             new DbObjectInfo(SqliteIdentifier.MainSchema, name,
-                objectType == "view" ? DbObjectType.View : DbObjectType.Table),
+                objectType == "view" ? DbObjectType.View : DbObjectType.Table,
+                objectType is "virtual" or "shadow" ? objectType : null,
+                isInternal),
             columns,
             indexes,
-            foreignKeys);
+            foreignKeys,
+            parsedTable.Checks,
+            parsedTable.Uniques);
     }
 
     public async Task<string?> GetObjectDefinitionAsync(
@@ -164,7 +189,13 @@ public sealed class SqliteSchemaReader : ISchemaReader
     {
         var indexes = new List<IndexInfo>();
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT name, [unique], origin FROM pragma_index_list(@table, 'main') ORDER BY seq;";
+        command.CommandText =
+            """
+            SELECT il.name, il.[unique], il.origin, s.sql
+            FROM pragma_index_list(@table, 'main') AS il
+            LEFT JOIN main.sqlite_schema AS s ON s.type = 'index' AND s.name = il.name
+            ORDER BY il.seq;
+            """;
         command.Parameters.AddWithValue("@table", table);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
@@ -172,21 +203,14 @@ public sealed class SqliteSchemaReader : ISchemaReader
             var indexName = reader.GetString(0);
             var unique = reader.GetInt64(1) != 0;
             var origin = reader.GetString(2);
-            var indexColumns = new List<string>();
-            await using var detailCommand = connection.CreateCommand();
-            detailCommand.CommandText =
-                "SELECT name FROM pragma_index_info(@index, 'main') WHERE name IS NOT NULL ORDER BY seqno;";
-            detailCommand.Parameters.AddWithValue("@index", indexName);
-            await using var detailReader = await detailCommand.ExecuteReaderAsync(cancellationToken);
-            while (await detailReader.ReadAsync(cancellationToken))
-            {
-                indexColumns.Add(detailReader.GetString(0));
-            }
+            if (origin != "c") continue; // UNIQUE and PRIMARY KEY constraints are modeled separately.
 
-            if (origin != "pk")
-            {
-                indexes.Add(new IndexInfo(indexName, unique ? "UNIQUE" : "INDEX", unique, false, indexColumns));
-            }
+            var createSql = reader.IsDBNull(3) ? null : reader.GetString(3);
+            var parsed = SqliteCreateSqlParser.ParseIndex(createSql);
+            var keyColumns = await LoadIndexKeysAsync(connection, indexName, parsed.Keys, cancellationToken);
+            var indexColumns = keyColumns.Where(key => key.Column is not null).Select(key => key.Column!).ToArray();
+            indexes.Add(new IndexInfo(indexName, unique ? "UNIQUE INDEX" : "INDEX", unique, false,
+                indexColumns, keyColumns, FilterDefinition: parsed.Filter));
         }
 
         var primaryKey = columns.Where(c => c.IsPrimaryKey).OrderBy(c => c.Ordinal).Select(c => c.Name).ToArray();
@@ -196,6 +220,35 @@ public sealed class SqliteSchemaReader : ISchemaReader
         }
 
         return indexes;
+    }
+
+    private static async Task<IReadOnlyList<IndexKeyInfo>> LoadIndexKeysAsync(
+        SqliteConnection connection,
+        string index,
+        IReadOnlyList<IndexKeyInfo> parsedKeys,
+        CancellationToken cancellationToken)
+    {
+        var keys = new List<IndexKeyInfo>();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT seqno, cid, name, [desc], coll FROM pragma_index_xinfo(@index, 'main') " +
+            "WHERE [key] <> 0 ORDER BY seqno;";
+        command.Parameters.AddWithValue("@index", index);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var ordinal = reader.GetInt32(0) + 1;
+            var cid = reader.GetInt32(1);
+            var parsed = parsedKeys.ElementAtOrDefault(ordinal - 1);
+            keys.Add(new IndexKeyInfo(
+                cid >= 0 && !reader.IsDBNull(2) ? reader.GetString(2) : null,
+                ordinal,
+                reader.GetInt64(3) != 0,
+                cid < 0 ? parsed?.Expression : null,
+                reader.IsDBNull(4) ? parsed?.Collation : reader.GetString(4)));
+        }
+
+        return keys;
     }
 
     private static async Task<IReadOnlyList<ForeignKeyInfo>> LoadForeignKeysAsync(
