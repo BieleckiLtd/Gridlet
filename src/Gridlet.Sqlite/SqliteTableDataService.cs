@@ -83,27 +83,76 @@ public sealed class SqliteTableDataService : ITableDataService
         var orderBy = orderByColumns.Count == 0
             ? ""
             : $" ORDER BY {string.Join(", ", orderByColumns)}";
-        command.CommandText = $"SELECT * FROM {qualifiedName}{orderBy} LIMIT @pageSize OFFSET @offset;";
+
+        // A rowid identity is not one of the table's columns, so it is selected as an extra trailing
+        // field and split back out of every row below.
+        var identity = definition.RowIdentity;
+        var rowIdKey = identity?.Kind == RowIdentityKinds.RowId ? identity.Columns[0] : null;
+        var selectList = rowIdKey is null ? "*" : $"*, {SqliteIdentifier.Quote(rowIdKey)}";
+        command.CommandText =
+            $"SELECT {selectList} FROM {qualifiedName}{orderBy} LIMIT @pageSize OFFSET @offset;";
         command.Parameters.AddWithValue("@pageSize", request.PageSize);
         command.Parameters.AddWithValue("@offset", (long)(request.Page - 1) * request.PageSize);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var columns = Enumerable.Range(0, reader.FieldCount)
+        var visibleFieldCount = reader.FieldCount - (rowIdKey is null ? 0 : 1);
+        var columns = Enumerable.Range(0, visibleFieldCount)
             .Select(i => new ResultColumn(reader.GetName(i), reader.GetDataTypeName(i)))
             .ToArray();
+        int[]? keyOrdinals = rowIdKey is not null
+            ? [visibleFieldCount]
+            : KeyOrdinals(identity, columns);
         var rows = new List<object?[]>();
+        var rowKeys = keyOrdinals is null ? null : new List<object?[]>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            var row = new object?[reader.FieldCount];
-            for (var i = 0; i < reader.FieldCount; i++)
+            var row = new object?[visibleFieldCount];
+            for (var i = 0; i < visibleFieldCount; i++)
             {
                 row[i] = SqliteValues.Materialize(reader.GetValue(i));
             }
 
             rows.Add(row);
+            if (keyOrdinals is not null)
+            {
+                rowKeys!.Add(keyOrdinals
+                    .Select(ordinal => SqliteValues.Materialize(reader.GetValue(ordinal)))
+                    .ToArray());
+            }
         }
 
-        return new TableDataPage(columns, rows, request.Page, request.PageSize, totalRows);
+        return new TableDataPage(
+            columns, rows, request.Page, request.PageSize, totalRows,
+            keyOrdinals is null ? null : identity,
+            rowKeys);
+    }
+
+    /// <summary>
+    /// Maps an identity's columns onto positions in the result, or returns <see langword="null"/>
+    /// when the result does not carry every identifying value.
+    /// </summary>
+    private static int[]? KeyOrdinals(RowIdentityInfo? identity, IReadOnlyList<ResultColumn> columns)
+    {
+        if (identity is null) return null;
+        var ordinals = new int[identity.Columns.Count];
+        for (var i = 0; i < ordinals.Length; i++)
+        {
+            var name = identity.Columns[i];
+            var ordinal = -1;
+            for (var candidate = 0; candidate < columns.Count; candidate++)
+            {
+                if (string.Equals(columns[candidate].Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    ordinal = candidate;
+                    break;
+                }
+            }
+
+            if (ordinal < 0) return null;
+            ordinals[i] = ordinal;
+        }
+
+        return ordinals;
     }
 
     private static async Task<(bool IsRowIdTable, string? Alias)> GetRowIdOrderingAsync(
@@ -112,23 +161,23 @@ public sealed class SqliteTableDataService : ITableDataService
         string table,
         CancellationToken cancellationToken)
     {
-        if (definition.Object.Type != DbObjectType.Table)
+        if (definition.Object.Type != DbObjectType.Table
+            || definition.Object.SubKind is "virtual" or "shadow")
         {
             return (false, null);
         }
 
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT sql FROM main.sqlite_schema WHERE type = 'table' AND name = @table;";
+            "SELECT wr FROM pragma_table_list WHERE schema = 'main' AND name = @table AND type = 'table';";
         command.Parameters.AddWithValue("@table", table);
-        var createSql = Convert.ToString(await command.ExecuteScalarAsync(cancellationToken));
-        if (SqliteSqlInspection.ContainsKeywordSequence(createSql, "WITHOUT", "ROWID"))
+        var withoutRowId = await command.ExecuteScalarAsync(cancellationToken);
+        if (withoutRowId is null or DBNull || Convert.ToInt64(withoutRowId) != 0)
         {
             return (false, null);
         }
 
-        string[] aliases = ["rowid", "_rowid_", "oid"];
-        return (true, aliases.FirstOrDefault(alias => definition.Columns.All(column =>
-            !string.Equals(column.Name, alias, StringComparison.OrdinalIgnoreCase))));
+        return (true, SqliteRowIdentity.RowIdAliases.FirstOrDefault(alias => definition.Columns.All(
+            column => !string.Equals(column.Name, alias, StringComparison.OrdinalIgnoreCase))));
     }
 }

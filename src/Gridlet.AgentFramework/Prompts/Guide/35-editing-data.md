@@ -4,7 +4,8 @@ the answer to lead with.
 
 - **Delete rows.** Select one or more rows by clicking the numbered gutter on the left of the grid,
   then press `Delete`. A confirmation dialog names how many rows will go and says it cannot be
-  undone; nothing is deleted until they confirm. Gridlet deletes each row by its primary key.
+  undone; nothing is deleted until they confirm. Gridlet deletes each row by the key that identifies
+  it.
 - **Edit a row.** Click any cell in it. The row opens in an editor where the values can be changed
   and saved. `Tab` at the end moves to the next row.
 - **Add a row.** The `＋ Row` button above the grid opens the same editor with an empty row.
@@ -17,9 +18,11 @@ these are the things to check in order:
 1. The object is a **table**. Views, procedures, and functions are read-only in the grid.
 2. The connection has **`AllowWrites` enabled**. It is on by default, but a developer may have
    turned it off for this connection — `describe_gridlet_deployment` reports which.
-3. The table has a **primary key**. Gridlet identifies the row to change by its key, so a table
-   without one gets a read-only grid even when writes are allowed. Adding a primary key is a
-   designer or DDL change.
+3. Gridlet can **identify a single row**. It uses the primary key when there is one. Without one it
+   falls back to a unique key over non-nullable columns on SQL Server, and to the `rowid` on SQLite,
+   so heaps and rowid tables are editable too. A table where none of those exist — a SQL Server heap
+   with no unique key, or a WITHOUT ROWID table with no usable primary key — gets a read-only grid
+   even when writes are allowed. Adding a primary key is a designer or DDL change.
 
 The SQL editor is the other route, and the one to use when the change is not a handful of rows a
 person can point at — a conditional update across many rows, a delete driven by a subquery, or

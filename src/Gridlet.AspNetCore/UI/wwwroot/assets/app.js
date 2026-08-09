@@ -1475,34 +1475,60 @@
         return;
       }
 
-      const pkColumns = structure
-        ? structure.columns.filter((c) => c.isPrimaryKey && !c.isHidden).map((c) => c.name)
-        : [];
+      // The server decides how a row is addressed: the primary key when there is one, otherwise a
+      // unique key over non-nullable columns or SQLite's rowid. Its values arrive with each row.
+      let identity = structure ? structure.rowIdentity : null;
+      const keysByRow = new WeakMap();
       const columnIndex = (columnName) =>
         data.columns.findIndex((c) => c.name.toLowerCase() === columnName.toLowerCase());
       const rowKey = (row) => {
+        const streamed = keysByRow.get(row);
+        if (streamed) return streamed;
+        if (!identity) return null;
         const key = {};
-        for (const pk of pkColumns) key[pk] = row[columnIndex(pk)];
+        for (const column of identity.columns) {
+          const index = columnIndex(column);
+          if (index < 0) return null;
+          key[column] = row[index];
+        }
         return key;
+      };
+      // Editing a column that is part of the key changes the key, so the stored copy is re-read from
+      // the row after a save. Values that are not visible columns - a rowid - never change.
+      rowKey.refresh = (row) => {
+        const key = keysByRow.get(row);
+        if (!key) return;
+        for (const column of Object.keys(key)) {
+          const index = columnIndex(column);
+          if (index >= 0) key[column] = row[index];
+        }
+      };
+      const describeRow = (row) => {
+        const key = rowKey(row);
+        return key
+          ? Object.entries(key).map(([column, value]) => `${column} = ${value}`).join(', ')
+          : 'this row';
       };
 
       let table;
       const editRow = (row, rowElement, selectedColumn, rowIndex) =>
         openRowEditor(
-          table, data.columns, structure, row, rowElement, columnIndex, selectedColumn, rowIndex + 1,
+          table, data.columns, structure, row, rowElement, columnIndex, rowKey, selectedColumn, rowIndex + 1,
           rowIndex + 1 < data.rows.length
             ? () => rowElement.nextElementSibling
               ?.querySelector('td:not(.row-selector)')?.click()
             : null);
-      const rowActions = structure && pkColumns.length ? {
+      const rowActions = structure && identity ? {
         onEdit: editRow,
         onDeleteSelected: (rows) => confirmModal(
           rows.length === 1 ? 'Delete row' : `Delete ${rows.length} rows`,
           rows.length === 1
-            ? `Delete the row where ${pkColumns.map((pk) => pk + ' = ' + rows[0][columnIndex(pk)]).join(', ')}?`
+            ? `Delete the row where ${describeRow(rows[0])}?`
             : `Delete the ${rows.length} selected rows? This cannot be undone.`,
           async () => {
-            await Promise.all(rows.map((row) => post(urls.rowsDelete(o.schema, o.name), { key: rowKey(row) })));
+            const keys = rows.map(rowKey);
+            if (keys.some((key) => !key)) throw new Error('This row cannot be identified, so it cannot be deleted.');
+            await Promise.all(keys.map((key) => post(urls.rowsDelete(o.schema, o.name), { key })));
             toast(rows.length === 1 ? 'Row deleted.' : `${rows.length} rows deleted.`, false);
             renderData();
           }),
@@ -1561,8 +1587,20 @@
       if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
       try {
         await streamNdjson(urls.dataStream(o.schema, o.name, params), { signal: controller.signal }, (event) => {
-          if (event.type === 'resultSet') gridView.setColumns(event.columns);
+          if (event.type === 'resultSet') {
+            if (event.rowIdentity) identity = event.rowIdentity;
+            gridView.setColumns(event.columns);
+          }
           else if (event.type === 'rows') {
+            if (identity && event.rowKeys) {
+              event.rows.forEach((row, index) => {
+                const values = event.rowKeys[index];
+                if (!values) return;
+                const key = {};
+                identity.columns.forEach((column, position) => { key[column] = values[position]; });
+                keysByRow.set(row, key);
+              });
+            }
             gridView.appendRows(event.rows);
             status.textContent = `${data.rows.length} row(s) - receiving…`;
           }
@@ -1579,7 +1617,7 @@
     };
 
     const openRowEditor = async (
-      table, dataColumns, structure, existingRow, existingRowElement, columnIndex,
+      table, dataColumns, structure, existingRow, existingRowElement, columnIndex, rowKey = null,
       selectedColumn = null, rowNumber = null, moveToNextRow = null) => {
       const isNew = existingRow === null;
       lockTableLayout(table);
@@ -1587,7 +1625,6 @@
       const editableByName = new Map(editable.map((c) => [c.name.toLowerCase(), c]));
       const fields = [];
       const focusableByName = new Map();
-      const pkColumns = structure.columns.filter((c) => c.isPrimaryKey && !c.isHidden).map((c) => c.name);
       const currentEditor = table.querySelector('tr.row-editor');
       if (currentEditor) {
         if (currentEditor === existingRowElement) return true;
@@ -1677,8 +1714,8 @@
           if (isNew) {
             await post(urls.rows(o.schema, o.name), { values });
           } else {
-            const key = {};
-            for (const pk of pkColumns) key[pk] = existingRow[columnIndex(pk)];
+            const key = rowKey?.(existingRow);
+            if (!key) throw new Error('This row cannot be identified, so it cannot be updated.');
             await post(urls.rowsUpdate(o.schema, o.name), { key, values });
           }
           toast(isNew ? 'Row inserted.' : `Row ${rowNumber} updated.`, false);
@@ -1686,6 +1723,7 @@
             renderData();
           } else {
             for (const [name, value] of Object.entries(values)) existingRow[columnIndex(name)] = value;
+            rowKey?.refresh?.(existingRow);
             existingRowElement.querySelectorAll('td:not(.row-selector)').forEach((cell, index) => {
               const rendered = renderCell(existingRow[index]);
               cell.className = rendered.className;

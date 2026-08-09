@@ -187,6 +187,31 @@ public sealed record UniqueConstraintInfo(
     int FillFactor = 0,
     bool IsDisabled = false);
 
+/// <summary>How a provider identifies one row of a table for editing.</summary>
+/// <param name="Kind">
+/// One of <see cref="RowIdentityKinds"/>: the declared primary key, a unique key over
+/// non-nullable columns, or a provider-supplied row identifier such as SQLite's <c>rowid</c>.
+/// </param>
+/// <param name="Columns">
+/// The identifying columns, in key order. For <see cref="RowIdentityKinds.RowId"/> the single
+/// entry is a pseudo-column that does not appear in <see cref="TableDefinition.Columns"/>.
+/// </param>
+/// <param name="Source">The constraint or index the identity was taken from, when it has a name.</param>
+public sealed record RowIdentityInfo(string Kind, IReadOnlyList<string> Columns, string? Source = null);
+
+/// <summary>The <see cref="RowIdentityInfo.Kind"/> values Gridlet understands.</summary>
+public static class RowIdentityKinds
+{
+    /// <summary>The table's declared primary key.</summary>
+    public const string PrimaryKey = "primaryKey";
+
+    /// <summary>A unique constraint or unique index whose key columns are all non-nullable.</summary>
+    public const string UniqueKey = "uniqueKey";
+
+    /// <summary>A provider row identifier that is not one of the table's columns.</summary>
+    public const string RowId = "rowId";
+}
+
 /// <summary>One column pairing within a foreign key.</summary>
 public sealed record ForeignKeyColumnPair(string Column, string ReferencedColumn);
 
@@ -200,21 +225,38 @@ public sealed record ForeignKeyInfo(
     string OnUpdate = "NO_ACTION");
 
 /// <summary>Full structural description of a table or view.</summary>
+/// <param name="RowIdentity">
+/// How a single row of this object can be addressed for editing, or <see langword="null"/> when the
+/// provider cannot identify one row reliably.
+/// </param>
 public sealed record TableDefinition(
     DbObjectInfo Object,
     IReadOnlyList<ColumnInfo> Columns,
     IReadOnlyList<IndexInfo> Indexes,
     IReadOnlyList<ForeignKeyInfo> ForeignKeys,
     IReadOnlyList<CheckConstraintInfo> CheckConstraints,
-    IReadOnlyList<UniqueConstraintInfo> UniqueConstraints)
+    IReadOnlyList<UniqueConstraintInfo> UniqueConstraints,
+    RowIdentityInfo? RowIdentity = null)
 {
+    /// <summary>Creates the six-field table-definition shape without relying on optional-parameter ABI.</summary>
+    public TableDefinition(
+        DbObjectInfo @object,
+        IReadOnlyList<ColumnInfo> columns,
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ForeignKeyInfo> foreignKeys,
+        IReadOnlyList<CheckConstraintInfo> checkConstraints,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, null)
+    {
+    }
+
     /// <summary>Creates a definition for callers that do not yet supply CHECK or UNIQUE metadata.</summary>
     public TableDefinition(
         DbObjectInfo @object,
         IReadOnlyList<ColumnInfo> columns,
         IReadOnlyList<IndexInfo> indexes,
         IReadOnlyList<ForeignKeyInfo> foreignKeys)
-        : this(@object, columns, indexes, foreignKeys, [], [])
+        : this(@object, columns, indexes, foreignKeys, [], [], null)
     {
     }
 

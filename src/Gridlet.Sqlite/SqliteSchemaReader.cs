@@ -78,13 +78,15 @@ public sealed class SqliteSchemaReader : ISchemaReader
     {
         string objectType;
         bool isInternal;
+        bool withoutRowId;
         string? createSql;
         await using (var objectCommand = connection.CreateCommand())
         {
             objectCommand.CommandText =
                 """
                 SELECT tl.type, s.sql,
-                       CASE WHEN tl.type = 'shadow' OR tl.name GLOB 'sqlite_*' THEN 1 ELSE 0 END
+                       CASE WHEN tl.type = 'shadow' OR tl.name GLOB 'sqlite_*' THEN 1 ELSE 0 END,
+                       tl.wr
                 FROM pragma_table_list AS tl
                 LEFT JOIN main.sqlite_schema AS s ON s.name = tl.name AND s.type IN ('table', 'view')
                 WHERE tl.schema = 'main' AND tl.name = @name;
@@ -99,6 +101,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
             objectType = objectReader.GetString(0);
             createSql = objectReader.IsDBNull(1) ? null : objectReader.GetString(1);
             isInternal = objectReader.GetInt64(2) != 0;
+            withoutRowId = objectReader.GetInt64(3) != 0;
         }
 
         var rawColumns = new List<(string Name, string Type, bool Nullable, string? Default, int PkOrdinal, int Hidden)>();
@@ -147,6 +150,14 @@ public sealed class SqliteSchemaReader : ISchemaReader
         var parsedTable = SqliteCreateSqlParser.ParseTable(createSql);
         var indexes = await LoadIndexesAsync(connection, name, columns, cancellationToken);
         var foreignKeys = await LoadForeignKeysAsync(connection, name, cancellationToken);
+        var rowIdentity = SqliteRowIdentity.Resolve(
+            objectType,
+            isInternal,
+            withoutRowId,
+            rawColumns
+                .Select(column => new SqliteRowIdentity.Column(
+                    column.Name, column.Type, !column.Nullable, column.PkOrdinal))
+                .ToArray());
 
         return new TableDefinition(
             new DbObjectInfo(SqliteIdentifier.MainSchema, name,
@@ -157,7 +168,8 @@ public sealed class SqliteSchemaReader : ISchemaReader
             indexes,
             foreignKeys,
             parsedTable.Checks,
-            parsedTable.Uniques);
+            parsedTable.Uniques,
+            rowIdentity);
     }
 
     public async Task<string?> GetObjectDefinitionAsync(

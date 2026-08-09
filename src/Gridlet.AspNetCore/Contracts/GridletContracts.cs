@@ -49,14 +49,26 @@ public sealed record TableStructureResponse(
     IReadOnlyList<IndexInfo> Indexes,
     IReadOnlyList<ForeignKeyInfo> ForeignKeys,
     IReadOnlyList<CheckConstraintInfo> CheckConstraints,
-    IReadOnlyList<UniqueConstraintInfo> UniqueConstraints)
+    IReadOnlyList<UniqueConstraintInfo> UniqueConstraints,
+    RowIdentityInfo? RowIdentity = null)
 {
     public TableStructureResponse(
         DbObjectDto @object,
         IReadOnlyList<ColumnInfo> columns,
         IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ForeignKeyInfo> foreignKeys,
+        IReadOnlyList<CheckConstraintInfo> checkConstraints,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, null)
+    {
+    }
+
+    public TableStructureResponse(
+        DbObjectDto @object,
+        IReadOnlyList<ColumnInfo> columns,
+        IReadOnlyList<IndexInfo> indexes,
         IReadOnlyList<ForeignKeyInfo> foreignKeys)
-        : this(@object, columns, indexes, foreignKeys, [], [])
+        : this(@object, columns, indexes, foreignKeys, [], [], null)
     {
     }
 

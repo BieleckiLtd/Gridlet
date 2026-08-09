@@ -65,6 +65,7 @@ public sealed class FakeGridletProvider :
         [
             new DbObjectInfo("dbo", "Customers", DbObjectType.Table),
             new DbObjectInfo("dbo", "NoKeys", DbObjectType.Table),
+            new DbObjectInfo("dbo", "Heap", DbObjectType.Table),
             new DbObjectInfo("dbo", "SearchIndex", DbObjectType.Table, "VirtualTable"),
             new DbObjectInfo("dbo", "Customers_fts_data", DbObjectType.Table, "Shadow", IsInternal: true),
             new DbObjectInfo("dbo", "vw_Orders", DbObjectType.View),
@@ -83,9 +84,22 @@ public sealed class FakeGridletProvider :
 
     public Task<TableDefinition> GetTableDefinitionAsync(
         GridletConnectionContext context, string schema, string name, CancellationToken cancellationToken = default)
-        => name == "Missing"
-            ? Task.FromException<TableDefinition>(new GridletObjectNotFoundException($"{schema}.{name}"))
-            : Task.FromResult(new TableDefinition(
+        => name switch
+        {
+            "Missing" => Task.FromException<TableDefinition>(
+                new GridletObjectNotFoundException($"{schema}.{name}")),
+
+            // A heap: no primary key, and the value that identifies a row is not one of its columns.
+            "Heap" => Task.FromResult(new TableDefinition(
+                new DbObjectInfo(schema, name, DbObjectType.Table),
+                [new ColumnInfo("Name", "nvarchar(100)", false, false, false, false, null, 0)],
+                [],
+                [],
+                [],
+                [],
+                new RowIdentityInfo(RowIdentityKinds.RowId, ["rowid"]))),
+
+            _ => Task.FromResult(new TableDefinition(
             new DbObjectInfo(schema, name, DbObjectType.Table),
             [
                 new ColumnInfo("Id", "int", false, true, false, name != "NoKeys", null, 0),
@@ -108,7 +122,11 @@ public sealed class FakeGridletProvider :
              new CheckConstraintInfo(null, "[Id] > 0", Ordinal: 0)],
             [new UniqueConstraintInfo("UQ_" + name + "_Name", [
                 new IndexKeyInfo("Name", 1, IsDescending: true, Collation: "NOCASE")],
-                IsClustered: true, FillFactor: 90, IsDisabled: true)]));
+                IsClustered: true, FillFactor: 90, IsDisabled: true)],
+            name == "NoKeys"
+                ? null
+                : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]))),
+        };
 
     public Task<string?> GetObjectDefinitionAsync(
         GridletConnectionContext context, string schema, string name, CancellationToken cancellationToken = default)
@@ -121,12 +139,23 @@ public sealed class FakeGridletProvider :
     public Task<TableDataPage> GetPageAsync(
         GridletConnectionContext context, string schema, string name, TableDataRequest request,
         CancellationToken cancellationToken = default)
-        => Task.FromResult(new TableDataPage(
-            [new ResultColumn("Id", "int"), new ResultColumn("Name", "nvarchar(100)")],
-            [[1, "Ada"], [2, "Grace"]],
-            request.Page,
-            request.PageSize,
-            TotalRows: 2));
+        => Task.FromResult(name == "Heap"
+            ? new TableDataPage(
+                [new ResultColumn("Name", "nvarchar(100)")],
+                [["Ada"], ["Grace"]],
+                request.Page,
+                request.PageSize,
+                TotalRows: 2,
+                RowIdentity: new RowIdentityInfo(RowIdentityKinds.RowId, ["rowid"]),
+                RowKeys: [[101], [102]])
+            : new TableDataPage(
+                [new ResultColumn("Id", "int"), new ResultColumn("Name", "nvarchar(100)")],
+                [[1, "Ada"], [2, "Grace"]],
+                request.Page,
+                request.PageSize,
+                TotalRows: 2,
+                RowIdentity: name == "NoKeys" ? null : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+                RowKeys: name == "NoKeys" ? null : [[1], [2]]));
 
     // ---- queries ----
 

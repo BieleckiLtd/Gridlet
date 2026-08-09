@@ -386,11 +386,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 reader.GetBoolean(5)));
         }
 
-        return new TableDefinition(
-            dbObject,
-            columns,
-            indexOrder
-                .Select(n => new IndexInfo(
+        var indexInfos = indexOrder
+            .Select(n => new IndexInfo(
                     n,
                     indexes[n].Kind,
                     indexes[n].IsUnique,
@@ -404,21 +401,72 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                     indexes[n].FillFactor,
                     indexes[n].IsDisabled,
                     indexes[n].IsOrderedColumnstore))
-                .ToArray(),
+            .ToArray();
+        var uniqueConstraintInfos = uniqueConstraintOrder
+            .Select(n => new UniqueConstraintInfo(
+                n,
+                uniqueConstraints[n].Columns,
+                uniqueConstraints[n].Ordinal,
+                uniqueConstraints[n].IsClustered,
+                uniqueConstraints[n].FillFactor,
+                uniqueConstraints[n].IsDisabled))
+            .ToArray();
+
+        return new TableDefinition(
+            dbObject,
+            columns,
+            indexInfos,
             foreignKeyOrder
                 .Select(n => new ForeignKeyInfo(n, foreignKeys[n].ReferencedSchema, foreignKeys[n].ReferencedTable,
                     foreignKeys[n].Columns, foreignKeys[n].OnDelete, foreignKeys[n].OnUpdate))
                 .ToArray(),
             checkConstraints,
-            uniqueConstraintOrder
-                .Select(n => new UniqueConstraintInfo(
-                    n,
-                    uniqueConstraints[n].Columns,
-                    uniqueConstraints[n].Ordinal,
-                    uniqueConstraints[n].IsClustered,
-                    uniqueConstraints[n].FillFactor,
-                    uniqueConstraints[n].IsDisabled))
-                .ToArray());
+            uniqueConstraintInfos,
+            objectType == DbObjectType.Table
+                ? SqlServerRowIdentity.Resolve(
+                    PrimaryKeyColumnsInKeyOrder(indexInfos, columns),
+                    UniqueKeyCandidates(indexInfos, uniqueConstraintInfos),
+                    columns.ToDictionary(c => c.Name, c => c.IsNullable, StringComparer.OrdinalIgnoreCase))
+                : null);
+    }
+
+    /// <summary>Returns the primary-key columns in key order, preferring the index's own ordering.</summary>
+    private static IReadOnlyList<string> PrimaryKeyColumnsInKeyOrder(
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ColumnInfo> columns)
+    {
+        var primaryKey = indexes.FirstOrDefault(index => index.IsPrimaryKey);
+        return primaryKey is not null
+            ? primaryKey.Columns
+            : columns.Where(c => c.IsPrimaryKey).Select(c => c.Name).ToArray();
+    }
+
+    /// <summary>Returns the unique constraints and unique indexes that could identify a row.</summary>
+    private static IEnumerable<SqlServerRowIdentity.UniqueKey> UniqueKeyCandidates(
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints)
+    {
+        foreach (var constraint in uniqueConstraints.Where(c => c.Name is not null))
+        {
+            yield return new SqlServerRowIdentity.UniqueKey(
+                constraint.Name!,
+                constraint.Columns
+                    .OrderBy(column => column.Ordinal)
+                    .Select(column => column.Column)
+                    .Where(column => column is not null)
+                    .Select(column => column!)
+                    .ToArray(),
+                constraint.IsDisabled);
+        }
+
+        foreach (var index in indexes.Where(i => i.IsUnique && !i.IsPrimaryKey && !i.IsColumnstore))
+        {
+            yield return new SqlServerRowIdentity.UniqueKey(
+                index.Name,
+                index.Columns,
+                index.IsDisabled,
+                !string.IsNullOrWhiteSpace(index.FilterDefinition));
+        }
     }
 
     public async Task<string?> GetObjectDefinitionAsync(

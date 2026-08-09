@@ -188,6 +188,21 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Structure_exposes_how_a_row_is_addressed()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var keyed = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/structure");
+        var unkeyed = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/NoKeys/structure");
+
+        Assert.Contains("\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]", keyed);
+        Assert.Contains("\"rowIdentity\":null", unkeyed);
+    }
+
+    [Fact]
     public async Task Data_endpoint_returns_a_page()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();
@@ -214,6 +229,22 @@ public class GridletEndpointTests
         Assert.Contains("\"type\":\"resultSet\"", body);
         Assert.Contains("\"type\":\"rows\"", body);
         Assert.Contains("\"type\":\"completed\"", body);
+    }
+
+    [Fact]
+    public async Task Data_stream_carries_the_row_identity_and_a_key_per_row()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var body = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream?maxRows=100");
+        var events = body.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        var resultSet = Assert.Single(events, line => line.Contains("\"type\":\"resultSet\""));
+        Assert.Contains("\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]", resultSet);
+        var rows = Assert.Single(events, line => line.Contains("\"type\":\"rows\""));
+        Assert.Contains("\"rowKeys\":[[1],[2]]", rows);
     }
 
     [Fact]

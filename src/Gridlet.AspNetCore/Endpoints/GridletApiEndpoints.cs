@@ -253,9 +253,13 @@ internal static partial class GridletApiEndpoints
                 var data = await resolved.Provider.Data.GetPageAsync(resolved.Context, schema, name,
                     new TableDataRequest(page, Math.Min(pageSize, cap - emitted), sort, direction), cancellationToken);
                 totalRows = data.TotalRows;
-                if (page == 1) await WriteAsync(new QueryStreamEvent("resultSet", 0, data.Columns));
+                if (page == 1)
+                {
+                    await WriteAsync(new QueryStreamEvent(
+                        "resultSet", 0, data.Columns, RowIdentity: data.RowIdentity));
+                }
                 if (data.Rows.Count == 0) break;
-                await WriteAsync(new QueryStreamEvent("rows", 0, Rows: data.Rows));
+                await WriteAsync(new QueryStreamEvent("rows", 0, Rows: data.Rows, RowKeys: data.RowKeys));
                 emitted += data.Rows.Count;
                 page++;
             }
@@ -308,7 +312,7 @@ internal static partial class GridletApiEndpoints
                 resolved.Context, schema, name, cancellationToken);
             return Results.Ok(new TableStructureResponse(
                 ToDto(definition.Object), definition.Columns, definition.Indexes, definition.ForeignKeys,
-                definition.CheckConstraints, definition.UniqueConstraints));
+                definition.CheckConstraints, definition.UniqueConstraints, definition.RowIdentity));
         });
 
     private static Task<IResult> GetObjectDefinition(

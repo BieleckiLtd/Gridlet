@@ -1446,6 +1446,48 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    /// <summary>
+    /// A heap has no primary key, so the row is addressed by a key the server streams alongside the
+    /// rows - here a rowid, which is not one of the columns on screen.
+    /// </summary>
+    [Fact]
+    public async Task Edits_a_row_of_a_table_that_has_no_primary_key()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.Heap").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await panel.Locator("tbody tr").Nth(1).Locator("td:not(.row-selector)").First.ClickAsync();
+        var name = panel.GetByLabel("Name", new() { Exact = true });
+        await name.FillAsync("Grace Hopper");
+        await name.PressAsync("Control+Enter");
+
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText("Row 2 updated.", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        Assert.Contains("update dbo.Heap key(rowid) set(Name)", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>A table whose rows cannot be addressed at all stays read-only.</summary>
+    [Fact]
+    public async Task Offers_no_row_editing_when_the_server_cannot_identify_a_row()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.NoKeys").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").First.ClickAsync();
+
+        await Assertions.Expect(panel.Locator("tr.row-editor")).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     [Fact]
     public async Task Table_definition_is_one_editable_highlighted_SQL_editor()
     {
@@ -1701,7 +1743,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GotoAsync("/gridlet/");
 
         var tables = page.Locator("#tree summary").Filter(new() { HasText = "Tables" });
-        await Assertions.Expect(tables).ToContainTextAsync("3");
+        await Assertions.Expect(tables).ToContainTextAsync("4");
 
         await page.GetByTitle("dbo.NoKeys").ClickAsync();
         var panel = ActivePanel(page);
