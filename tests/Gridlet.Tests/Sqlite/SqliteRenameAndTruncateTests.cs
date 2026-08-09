@@ -103,6 +103,23 @@ public sealed class SqliteRenameAndTruncateTests : IAsyncLifetime
         Assert.Contains(definition.Indexes, i => i.Name == "UX_Customers_Name");
     }
 
+    /// <summary>
+    /// Surrounding whitespace is almost always a paste artefact, and quoting it would create an
+    /// object nobody can name again without reproducing the spaces exactly.
+    /// </summary>
+    [Fact]
+    public async Task Surrounding_whitespace_is_trimmed_rather_than_becoming_part_of_the_name()
+    {
+        await provider.Ddl.RenameObjectAsync(context, "main", "Customers", DbObjectType.Table, "  Clients  ");
+        await provider.Ddl.RenameIndexAsync(
+            context, "main", "Clients", "UX_Customers_Name", " UX_Clients_Name ");
+
+        var objects = await provider.Schema.GetObjectsAsync(context);
+        Assert.Contains(objects, o => o.Name == "Clients");
+        var definition = await provider.Schema.GetTableDefinitionAsync(context, "main", "Clients");
+        Assert.Equal("UX_Clients_Name", Assert.Single(definition.Indexes, i => !i.IsPrimaryKey).Name);
+    }
+
     [Fact]
     public async Task An_empty_new_name_is_refused()
         => await Assert.ThrowsAsync<GridletValidationException>(() =>

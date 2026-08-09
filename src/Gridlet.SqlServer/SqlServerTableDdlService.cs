@@ -313,7 +313,9 @@ public sealed class SqlServerTableDdlService : ITableDdlService
                 "Moving between schemas is a different operation.");
         }
 
-        return newName;
+        // Trimmed, not just validated: sp_rename would take " Clients " literally and leave an
+        // object nobody can refer to without quoting the spaces.
+        return newName.Trim();
     }
 
     private static async Task RenameAsync(

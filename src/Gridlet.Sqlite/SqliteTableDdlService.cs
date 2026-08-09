@@ -412,7 +412,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
         CancellationToken cancellationToken = default)
     {
         SqliteIdentifier.RequireMainSchema(schema);
-        RequireUnqualified(newName, "object");
+        var target = RequireUnqualified(newName, "object");
         if (type != DbObjectType.Table)
         {
             throw new GridletValidationException(
@@ -429,7 +429,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
         }
 
         await ExecuteAsync(connection, transaction: null,
-            $"ALTER TABLE {SqliteIdentifier.Quote(name)} RENAME TO {SqliteIdentifier.Quote(newName)};",
+            $"ALTER TABLE {SqliteIdentifier.Quote(name)} RENAME TO {SqliteIdentifier.Quote(target)};",
             cancellationToken);
     }
 
@@ -446,7 +446,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
         CancellationToken cancellationToken = default)
     {
         SqliteIdentifier.RequireMainSchema(schema);
-        RequireUnqualified(newName, "index");
+        var target = RequireUnqualified(newName, "index");
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
         var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, table, cancellationToken);
         var index = definition.Indexes.FirstOrDefault(candidate =>
@@ -465,7 +465,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
                 .ToArray()
             : index.Columns.Select(column => new IndexKeyDesign(column)).ToArray();
         var design = new IndexDesign(
-            newName,
+            target,
             keys,
             index.IsUnique,
             FilterExpression: index.FilterDefinition);
