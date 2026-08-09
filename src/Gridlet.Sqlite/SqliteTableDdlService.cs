@@ -449,6 +449,15 @@ public sealed class SqliteTableDdlService : ITableDdlService
         var target = RequireUnqualified(newName, "index");
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
         var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, table, cancellationToken);
+
+        // Renaming here means dropping and recreating, which an internal table's own indexes cannot
+        // survive: a virtual table's shadow tables are maintained by its module, not by us.
+        if (definition.Object.IsInternal || definition.Object.SubKind is "virtual" or "shadow")
+        {
+            throw new GridletValidationException(
+                $"Indexes on internal SQLite table {schema}.{table} cannot be renamed.");
+        }
+
         var index = definition.Indexes.FirstOrDefault(candidate =>
             string.Equals(candidate.Name, indexName, StringComparison.OrdinalIgnoreCase))
             ?? throw new GridletObjectNotFoundException($"{schema}.{table}.{indexName}");

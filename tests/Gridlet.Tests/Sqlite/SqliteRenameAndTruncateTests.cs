@@ -71,6 +71,33 @@ public sealed class SqliteRenameAndTruncateTests : IAsyncLifetime
         Assert.Contains("Region", index.FilterDefinition!, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Renaming an index means dropping and recreating it, and a virtual table's shadow tables are
+    /// the module's own storage: rewriting anything on them is how a full-text index stops working.
+    /// The other operations on internal tables are already refused; this one has to be too.
+    /// </summary>
+    [Fact]
+    public async Task An_index_on_an_internal_table_cannot_be_renamed()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE VIRTUAL TABLE SearchDocs USING fts5(Body);
+            INSERT INTO SearchDocs (Body) VALUES ('keep me');
+            CREATE INDEX IX_SearchDocs_Data ON SearchDocs_data (id);
+            """,
+            new QueryRequestOptions(10, 30));
+
+        var exception = await Assert.ThrowsAsync<GridletValidationException>(() => provider.Ddl.RenameIndexAsync(
+            context, "main", "SearchDocs_data", "IX_SearchDocs_Data", "IX_Renamed"));
+
+        Assert.Contains("internal", exception.Message, StringComparison.OrdinalIgnoreCase);
+
+        // Nothing was dropped on the way to refusing, so the table still works.
+        var result = await provider.Query.ExecuteAsync(context,
+            "SELECT Body FROM SearchDocs WHERE SearchDocs MATCH 'keep';", new QueryRequestOptions(10, 30));
+        Assert.Equal("keep me", Assert.Single(Assert.Single(result.ResultSets).Rows)[0]);
+    }
+
     [Fact]
     public async Task A_view_says_what_to_do_instead_of_being_renamed_badly()
     {
