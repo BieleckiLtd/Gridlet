@@ -6,26 +6,25 @@ namespace Gridlet.Sqlite;
 /// <summary>Builds SQLite DDL while validating every identifier and designer-supplied type.</summary>
 public static partial class SqliteDdlBuilder
 {
-    private static readonly HashSet<string> AllowedTypeNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "integer", "int", "tinyint", "smallint", "mediumint", "bigint", "unsignedbigint", "int2", "int8",
-        "text", "character", "varchar", "varyingcharacter", "nchar", "nativecharacter", "nvarchar", "clob",
-        "blob", "real", "double", "doubleprecision", "float", "numeric", "decimal", "boolean", "date", "datetime",
-    };
-
-    [GeneratedRegex(@"^(?<name>[a-zA-Z][a-zA-Z ]*)(?:\s*\(\s*(?<args>\d{1,4}(?:\s*,\s*\d{1,4})?)\s*\))?$")]
+    /// <summary>
+    /// SQLite has no fixed set of type names: a declared type is text, and only its affinity is
+    /// derived from it. So the rule is about shape, not vocabulary - letters, digits, underscores and
+    /// single spaces, with an optional numeric length. That admits ANY on a STRICT table and any
+    /// application-specific affinity, while leaving no way for a type string to carry SQL.
+    /// </summary>
+    [GeneratedRegex(
+        @"^(?<name>[a-zA-Z_][a-zA-Z0-9_]*(?: [a-zA-Z_][a-zA-Z0-9_]*)*)" +
+        @"(?:\s*\(\s*(?<args>\d{1,4}(?:\s*,\s*\d{1,4})?)\s*\))?$")]
     private static partial Regex DataTypePattern();
 
     public static string NormalizeDataType(string dataType)
     {
         var match = DataTypePattern().Match(dataType?.Trim() ?? "");
-        var compactName = match.Success
-            ? Regex.Replace(match.Groups["name"].Value, @"\s+", "").ToLowerInvariant()
-            : "";
-        if (!match.Success || !AllowedTypeNames.Contains(compactName))
+        if (!match.Success)
         {
             throw new GridletValidationException(
-                $"'{dataType}' is not a supported SQLite data type. Use a type such as INTEGER, TEXT, REAL, BLOB, NUMERIC, or VARCHAR(100).");
+                $"'{dataType}' is not a usable SQLite data type. Use a name such as INTEGER, TEXT, REAL, " +
+                "BLOB, NUMERIC, ANY, or VARCHAR(100).");
         }
 
         var displayName = match.Groups["name"].Value.Trim().ToUpperInvariant();

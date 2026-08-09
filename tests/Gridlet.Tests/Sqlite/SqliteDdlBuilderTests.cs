@@ -20,14 +20,23 @@ public sealed class SqliteDdlBuilderTests
     [InlineData("VARCHAR ( 100 )", "VARCHAR(100)")]
     [InlineData("decimal(10, 2)", "DECIMAL(10,2)")]
     [InlineData("double precision", "DOUBLE PRECISION")]
+    // SQLite derives affinity from the declared text and accepts any name, so the designer does
+    // too: ANY belongs to STRICT tables, and an application is free to invent the rest.
+    [InlineData("any", "ANY")]
+    [InlineData("json", "JSON")]
+    [InlineData("varchar2(30)", "VARCHAR2(30)")]
+    [InlineData("my_type", "MY_TYPE")]
     public void Normalises_supported_types(string input, string expected)
         => Assert.Equal(expected, SqliteDdlBuilder.NormalizeDataType(input));
 
     [Theory]
     [InlineData("")]
     [InlineData("TEXT; DROP TABLE widgets")]
-    [InlineData("frobnicator")]
-    public void Rejects_unsafe_or_unknown_types(string input)
+    [InlineData("TEXT DEFAULT 'x', y INTEGER")]
+    [InlineData("TEXT) --")]
+    [InlineData("\"TEXT\"")]
+    [InlineData("TEXT(1,2,3)")]
+    public void Rejects_unsafe_or_malformed_types(string input)
         => Assert.Throws<GridletValidationException>(() => SqliteDdlBuilder.NormalizeDataType(input));
 
     [Fact]

@@ -11,7 +11,30 @@ public class SqlServerDdlBuilderTests
     [InlineData("NVARCHAR(100)", "nvarchar(100)")]
     [InlineData("nvarchar ( max )", "nvarchar(max)")]
     [InlineData("decimal(10, 2)", "decimal(10,2)")]
+    // Types the designer used to refuse outright, all of them ordinary SQL Server built-ins.
+    [InlineData("SQL_VARIANT", "sql_variant")]
+    [InlineData("text", "text")]
+    [InlineData("image", "image")]
+    [InlineData("geography", "geography")]
+    [InlineData("hierarchyid", "hierarchyid")]
+    [InlineData("json", "json")]
+    [InlineData("vector(1536)", "vector(1536)")]
     public void Normalises_valid_data_types(string input, string expected)
+    {
+        Assert.Equal(expected, SqlServerDdlBuilder.NormalizeDataType(input));
+    }
+
+    /// <summary>
+    /// Alias, CLR and table types are per-database, so there is no list to check them against. They
+    /// are quoted instead, which keeps them harmless and leaves an unknown name for the engine to
+    /// reject with its own message.
+    /// </summary>
+    [Theory]
+    [InlineData("AccountNumber", "[AccountNumber]")]
+    [InlineData("dbo.AccountNumber", "[dbo].[AccountNumber]")]
+    [InlineData("[dbo].[Account Number]", "[dbo].[Account Number]")]
+    [InlineData("frobnicator", "[frobnicator]")]
+    public void Quotes_user_defined_types(string input, string expected)
     {
         Assert.Equal(expected, SqlServerDdlBuilder.NormalizeDataType(input));
     }
@@ -19,9 +42,11 @@ public class SqlServerDdlBuilderTests
     [Theory]
     [InlineData("int; DROP TABLE x")]
     [InlineData("nvarchar(100)) AS SELECT 1 --")]
-    [InlineData("frobnicator")]
+    [InlineData("nvarchar(100) NOT NULL, [x] int")]
+    [InlineData("dbo.Type; DROP TABLE x")]
+    [InlineData("frobnicator(1,2,3)")]
     [InlineData("")]
-    public void Rejects_hostile_or_unknown_data_types(string input)
+    public void Rejects_hostile_or_malformed_data_types(string input)
     {
         Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.NormalizeDataType(input));
     }

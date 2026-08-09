@@ -10,32 +10,63 @@ namespace Gridlet.SqlServer;
 /// </summary>
 public static partial class SqlServerDdlBuilder
 {
-    private static readonly HashSet<string> AllowedTypeNames = new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>
+    /// The built-in types, written bare and lower-cased. Anything else is treated as a user-defined
+    /// or alias type and emitted as a quoted identifier, which is both how SQL Server writes it and
+    /// what keeps a type string from smuggling SQL.
+    /// </summary>
+    private static readonly HashSet<string> BuiltInTypeNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "bigint", "int", "smallint", "tinyint", "bit",
         "decimal", "numeric", "money", "smallmoney", "float", "real",
         "date", "time", "datetime", "datetime2", "smalldatetime", "datetimeoffset",
-        "char", "varchar", "nchar", "nvarchar",
-        "binary", "varbinary", "uniqueidentifier", "xml", "rowversion",
+        "char", "varchar", "nchar", "nvarchar", "text", "ntext", "image",
+        "binary", "varbinary", "uniqueidentifier", "xml", "rowversion", "timestamp",
+        "sql_variant", "sysname", "hierarchyid", "geography", "geometry", "json", "vector",
     };
 
-    [GeneratedRegex(@"^(?<name>[a-zA-Z][a-zA-Z0-9]*)(?:\s*\(\s*(?<args>max|\d{1,4}(?:\s*,\s*\d{1,3})?)\s*\))?$")]
-    private static partial Regex DataTypePattern();
+    [GeneratedRegex(
+        @"^(?<name>[a-zA-Z_][a-zA-Z0-9_]*)(?:\s*\(\s*(?<args>max|\d{1,4}(?:\s*,\s*\d{1,3})?)\s*\))?$")]
+    private static partial Regex BuiltInDataTypePattern();
 
-    /// <summary>Validates and canonicalises a designer-supplied data type like <c>nvarchar(100)</c> or <c>decimal(10,2)</c>.</summary>
+    /// <summary>A one- or two-part type name, bracketed or not: <c>MyType</c>, <c>[dbo].[My type]</c>.</summary>
+    [GeneratedRegex(
+        @"^(?:(?:\[(?<schema>[^\]]+)\]|(?<schema>[a-zA-Z_][a-zA-Z0-9_@$#]*))\s*\.\s*)?" +
+        @"(?:\[(?<name>[^\]]+)\]|(?<name>[a-zA-Z_][a-zA-Z0-9_@$#]*))$")]
+    private static partial Regex UserDefinedTypePattern();
+
+    /// <summary>
+    /// Validates and canonicalises a designer-supplied data type such as <c>nvarchar(100)</c>,
+    /// <c>decimal(10,2)</c>, <c>geography</c> or <c>[dbo].[AccountNumber]</c>.
+    /// </summary>
     public static string NormalizeDataType(string dataType)
     {
-        var match = DataTypePattern().Match(dataType?.Trim() ?? "");
-        if (!match.Success || !AllowedTypeNames.Contains(match.Groups["name"].Value))
+        var trimmed = dataType?.Trim() ?? "";
+        var builtIn = BuiltInDataTypePattern().Match(trimmed);
+        if (builtIn.Success && BuiltInTypeNames.Contains(builtIn.Groups["name"].Value))
         {
-            throw new GridletValidationException(
-                $"'{dataType}' is not a supported data type. Use a SQL Server type such as int, nvarchar(100), decimal(10,2), or datetime2.");
+            var name = builtIn.Groups["name"].Value.ToLowerInvariant();
+            return builtIn.Groups["args"].Success
+                ? $"{name}({Regex.Replace(builtIn.Groups["args"].Value.ToLowerInvariant(), @"\s+", "")})"
+                : name;
         }
 
-        var name = match.Groups["name"].Value.ToLowerInvariant();
-        return match.Groups["args"].Success
-            ? $"{name}({Regex.Replace(match.Groups["args"].Value.ToLowerInvariant(), @"\s+", "")})"
-            : name;
+        // Alias, CLR and other user-defined types are per-database, so there is no list to check
+        // them against. Quoting each part keeps the string harmless; an unknown type is then the
+        // engine's error to report, with its own message, rather than a guess made here.
+        var userDefined = UserDefinedTypePattern().Match(trimmed);
+        if (userDefined.Success)
+        {
+            var schema = userDefined.Groups["schema"];
+            var name = userDefined.Groups["name"].Value;
+            return schema.Success
+                ? SqlServerIdentifier.QuoteQualified(schema.Value, name)
+                : SqlServerIdentifier.Quote(name);
+        }
+
+        throw new GridletValidationException(
+            $"'{dataType}' is not a usable data type. Use a SQL Server type such as int, nvarchar(100), " +
+            "decimal(10,2) or datetime2, or a user-defined type such as [dbo].[AccountNumber].");
     }
 
     public static string BuildCreateTable(TableDesign design)
