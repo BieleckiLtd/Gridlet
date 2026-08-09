@@ -132,6 +132,24 @@ public sealed class SqlServerRoutineScriptBuilderTests
         Assert.Contains("@Items = @MyItems", script, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Raw SQL is the escape hatch for a table-valued parameter, which has to be a variable. On any
+    /// other parameter it would let the caller write the statement rather than the value, so it is
+    /// refused even though the caller could write that statement themselves in the editor.
+    /// </summary>
+    [Theory]
+    [InlineData("int", "1; DROP TABLE Customers")]
+    [InlineData("nvarchar(50)", "@SomeVariable")]
+    public void Raw_sql_is_refused_for_a_parameter_that_takes_a_value(string dataType, string value)
+    {
+        var routine = WithParameters(Procedure, new RoutineParameterInfo("@Value", dataType, 1));
+
+        var exception = Assert.Throws<GridletValidationException>(() => SqlServerRoutineScriptBuilder.Build(
+            routine, Arguments(("@Value", new RoutineArgument(value, IsRawSql: true)))));
+
+        Assert.Contains("not a SQL expression", exception.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void A_scalar_function_is_selected_and_a_table_valued_function_is_queried()
     {

@@ -122,7 +122,14 @@ public static class SqlServerRoutineScriptBuilder
 
         if (argument.IsRawSql)
         {
-            return argument.Value;
+            // Raw SQL exists for the one kind of argument a text box cannot express: a table-valued
+            // parameter, which has to be a variable. Everywhere else a value is quoted for its type,
+            // and allowing raw text would let the caller write the statement instead of the value.
+            return parameter.IsTableType
+                ? argument.Value
+                : throw new GridletValidationException(
+                    $"Parameter {parameter.Name} takes {parameter.DataType}, so its argument is a value, " +
+                    "not a SQL expression. Only a table-valued parameter takes one.");
         }
 
         var value = argument.Value;

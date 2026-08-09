@@ -133,9 +133,15 @@ internal static partial class GridletApiEndpoints
         // session, and a connection whose SQL execution has since been turned off out of the NDJSON
         // stream, where they could only be reported as a trailing error event.
         GridletSessionInfo session;
+        IResult? denial;
         try
         {
             session = await sessions.GetAsync(sessionId, UserName(httpContext), cancellationToken);
+
+            // Resolving the session's connection belongs inside this block: a session outlives the
+            // configuration it was opened against, so the connection can be gone by now, and that
+            // has to reach the caller as a 404 rather than as an unhandled failure.
+            denial = DenyWhenSqlExecutionDisabled(resolver, session);
         }
         catch (GridletSessionNotFoundException ex)
         {
@@ -153,7 +159,6 @@ internal static partial class GridletApiEndpoints
             return;
         }
 
-        var denial = DenyWhenSqlExecutionDisabled(resolver, session);
         if (denial is not null)
         {
             await denial.ExecuteAsync(httpContext);

@@ -62,6 +62,30 @@ public sealed class SessionEndpointTests
         Assert.Contains("no longer open", await query.Content.ReadAsStringAsync());
     }
 
+    /// <summary>
+    /// A session outlives the configuration it was opened against. If the connection is removed
+    /// while it is open, the next statement has to come back as a clean 404 before the NDJSON
+    /// stream starts, not as an unhandled failure.
+    /// </summary>
+    [Fact]
+    public async Task A_session_whose_connection_has_gone_answers_404()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var opened = await ReadAsync(await client.PostAsync($"{Base}/sessions", null));
+        var id = opened.GetProperty("id").GetString()!;
+
+        var options = app.Services
+            .GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<GridletOptions>>();
+        options.CurrentValue.Connections.Clear();
+
+        var query = await client.PostAsJsonAsync(
+            $"/gridlet/api/sessions/{id}/query", new { sql = "SELECT 42" });
+
+        Assert.Equal(HttpStatusCode.NotFound, query.StatusCode);
+        Assert.Contains("Main", await query.Content.ReadAsStringAsync());
+    }
+
     [Fact]
     public async Task An_unknown_session_id_is_not_confirmed()
     {
