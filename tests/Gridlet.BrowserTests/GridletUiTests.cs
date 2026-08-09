@@ -1984,6 +1984,42 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
 
     /// <summary>
+    /// A filter has to reach the database: filtering the page already fetched would only ever search
+    /// the rows on screen.
+    /// </summary>
+    [Fact]
+    public async Task Filters_table_data_in_the_database()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var dataRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/data/stream", StringComparison.Ordinal)) dataRequests.Add(request.Url);
+        };
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await panel.GetByTestId("add-filter").ClickAsync();
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Filter rows" });
+        await dialog.GetByLabel("Filter column").SelectOptionAsync("Name");
+        await dialog.GetByLabel("Filter operator").SelectOptionAsync("contains");
+        await dialog.GetByLabel("Filter value").FillAsync("ada");
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Apply", Exact = true }).ClickAsync();
+
+        await Assertions.Expect(panel.GetByTestId("filter-chip")).ToHaveTextAsync("Name contains ada×");
+        Assert.Contains(dataRequests, url => Uri.UnescapeDataString(url)
+            .Contains("""filter=[{"column":"Name","operator":"contains","value":"ada"}]""", StringComparison.Ordinal));
+
+        await panel.GetByTestId("filter-chip").GetByRole(AriaRole.Button).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("filter-chip")).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// "Why is this slow" is the question results cannot answer. The plan renders as a tree with the
     /// operator, what it touches, the numbers that matter, and any warning attached to it.
     /// </summary>

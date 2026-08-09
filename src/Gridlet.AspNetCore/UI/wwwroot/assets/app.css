@@ -2234,6 +2234,33 @@ td.cell-actions, th.cell-actions { white-space: nowrap; width: 1%; }
 .result-meta { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .toolbar-slot { display: contents; }
 .toolbar-group { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+}
+.filter-chip .chip-remove {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  padding: 0 4px;
+  cursor: pointer;
+  line-height: 1;
+}
+.filter-chip .chip-remove:hover { color: var(--danger); }
 .plan-panel { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; min-height: 0; overflow: auto; }
 .plan-tree { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .plan-node {

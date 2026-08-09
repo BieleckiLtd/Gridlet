@@ -205,6 +205,7 @@ internal static partial class GridletApiEndpoints
         int? pageSize,
         string? sort,
         string? dir,
+        string? filter,
         IGridletConnectionResolver resolver,
         IOptionsMonitor<GridletOptions> options,
         CancellationToken cancellationToken)
@@ -217,7 +218,8 @@ internal static partial class GridletApiEndpoints
                 SortColumn: string.IsNullOrWhiteSpace(sort) ? null : sort,
                 SortDirection: string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase)
                     ? SortDirection.Descending
-                    : SortDirection.Ascending);
+                    : SortDirection.Ascending,
+                Filters: ParseFilters(filter));
 
             var resolved = resolver.Resolve(connection, database);
             var dataPage = await resolved.Provider.Data.GetPageAsync(
@@ -227,7 +229,7 @@ internal static partial class GridletApiEndpoints
 
     private static async Task StreamObjectData(
         string connection, string database, string schema, string name,
-        int? maxRows, string? sort, string? dir,
+        int? maxRows, string? sort, string? dir, string? filter,
         IGridletConnectionResolver resolver, IOptionsMonitor<GridletOptions> options,
         ILoggerFactory loggerFactory, HttpContext httpContext, CancellationToken cancellationToken)
     {
@@ -247,6 +249,7 @@ internal static partial class GridletApiEndpoints
 
         try
         {
+            var filters = ParseFilters(filter);
             var resolved = resolver.Resolve(connection, database);
             var emitted = 0;
             var page = 1;
@@ -254,7 +257,8 @@ internal static partial class GridletApiEndpoints
             do
             {
                 var data = await resolved.Provider.Data.GetPageAsync(resolved.Context, schema, name,
-                    new TableDataRequest(page, Math.Min(pageSize, cap - emitted), sort, direction), cancellationToken);
+                    new TableDataRequest(page, Math.Min(pageSize, cap - emitted), sort, direction, filters),
+                    cancellationToken);
                 totalRows = data.TotalRows;
                 if (page == 1)
                 {
@@ -299,6 +303,49 @@ internal static partial class GridletApiEndpoints
             await TryWriteStreamEventAsync(
                 httpContext, new QueryStreamEvent("error", Message: clientMessage));
         }
+    }
+
+    /// <summary>
+    /// Reads the <c>filter</c> query parameter, a JSON array of conditions. JSON rather than a
+    /// delimited string because a filter value is arbitrary text and would otherwise have to be
+    /// escaped against whatever separator was chosen.
+    /// </summary>
+    private static IReadOnlyList<TableDataFilter>? ParseFilters(string? filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter))
+        {
+            return null;
+        }
+
+        List<TableDataFilterBody>? parsed;
+        try
+        {
+            parsed = JsonSerializer.Deserialize<List<TableDataFilterBody>>(filter, JsonSerializerOptions.Web);
+        }
+        catch (JsonException ex)
+        {
+            throw new GridletValidationException($"The filter could not be read: {ex.Message}");
+        }
+
+        if (parsed is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        return parsed.Select(entry =>
+        {
+            if (string.IsNullOrWhiteSpace(entry.Column))
+            {
+                throw new GridletValidationException("Every filter needs a column.");
+            }
+
+            if (!Enum.TryParse<FilterOperator>(entry.Operator, ignoreCase: true, out var @operator))
+            {
+                throw new GridletValidationException($"'{entry.Operator}' is not a filter operator.");
+            }
+
+            return new TableDataFilter(entry.Column, @operator, entry.Value);
+        }).ToArray();
     }
 
     private static Task<IResult> GetObjectStructure(

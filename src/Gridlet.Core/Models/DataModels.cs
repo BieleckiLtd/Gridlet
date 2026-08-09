@@ -6,12 +6,57 @@ public enum SortDirection
     Descending,
 }
 
+/// <summary>How a filter compares a column against a value.</summary>
+public enum FilterOperator
+{
+    Equals,
+    NotEquals,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    Contains,
+    NotContains,
+    StartsWith,
+    EndsWith,
+    IsNull,
+    IsNotNull,
+}
+
+/// <summary>
+/// One condition on a column. The provider turns it into SQL with the value as a parameter, so a
+/// filter can never carry SQL of its own.
+/// </summary>
+/// <param name="Column">The column to compare. Providers reject a name the object does not have.</param>
+/// <param name="Operator">The comparison.</param>
+/// <param name="Value">
+/// The value to compare against, or <see langword="null"/> for <see cref="FilterOperator.IsNull"/>
+/// and <see cref="FilterOperator.IsNotNull"/>.
+/// </param>
+public sealed record TableDataFilter(string Column, FilterOperator Operator, string? Value = null);
+
 /// <summary>A request for one page of table/view data.</summary>
+/// <param name="Filters">
+/// Conditions every returned row must satisfy, combined with AND. They also apply to the reported
+/// total, so paging stays consistent with what is on screen.
+/// </param>
 public sealed record TableDataRequest(
     int Page,
     int PageSize,
     string? SortColumn = null,
-    SortDirection SortDirection = SortDirection.Ascending);
+    SortDirection SortDirection = SortDirection.Ascending,
+    IReadOnlyList<TableDataFilter>? Filters = null)
+{
+    /// <summary>Creates the legacy four-field request shape without relying on optional-parameter ABI.</summary>
+    public TableDataRequest(
+        int page,
+        int pageSize,
+        string? sortColumn,
+        SortDirection sortDirection)
+        : this(page, pageSize, sortColumn, sortDirection, null)
+    {
+    }
+}
 
 /// <summary>A column of a result set, with the provider's type name for display.</summary>
 public sealed record ResultColumn(string Name, string DataTypeName);

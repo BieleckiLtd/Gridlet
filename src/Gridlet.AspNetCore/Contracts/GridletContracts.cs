@@ -105,6 +105,16 @@ public sealed record RoutineScriptResponse(string Sql);
 
 public sealed record QueryRequestBody(string? Sql, int? MaxRows = null);
 
+/// <summary>One condition in the <c>filter</c> query parameter of the table-data routes.</summary>
+/// <param name="Column">The column to compare.</param>
+/// <param name="Operator">
+/// One of <c>equals</c>, <c>notEquals</c>, <c>lessThan</c>, <c>lessThanOrEqual</c>,
+/// <c>greaterThan</c>, <c>greaterThanOrEqual</c>, <c>contains</c>, <c>notContains</c>,
+/// <c>startsWith</c>, <c>endsWith</c>, <c>isNull</c> or <c>isNotNull</c>.
+/// </param>
+/// <param name="Value">The value to compare against; omitted for the null checks.</param>
+public sealed record TableDataFilterBody(string? Column, string? Operator, string? Value = null);
+
 /// <summary>Body for an execution-plan request.</summary>
 /// <param name="Sql">The statement to explain.</param>
 /// <param name="Mode">

@@ -1515,7 +1515,7 @@
     const urls = urlsFor(scope);
     const currentConn = () => connectionFor(scope);
     const currentCapabilities = () => capabilitiesFor(scope);
-    const grid = { sort: null, dir: 'asc' };
+    const grid = { sort: null, dir: 'asc', filters: [] };
     const views = ['Data', 'Structure', 'Definition'];
     const viewBar = h('div', { class: 'viewbar' });
     const body = h('div', { class: 'panel-body' });
@@ -1632,6 +1632,81 @@
           }),
       } : null;
 
+      // Filtering happens in SQL, on every row of the object, not on the page already fetched -
+      // otherwise "find the row" would only ever search the first few hundred rows.
+      const filterOperators = [
+        ['equals', '='], ['notEquals', '≠'],
+        ['contains', 'contains'], ['notContains', 'does not contain'],
+        ['startsWith', 'starts with'], ['endsWith', 'ends with'],
+        ['lessThan', '<'], ['lessThanOrEqual', '≤'],
+        ['greaterThan', '>'], ['greaterThanOrEqual', '≥'],
+        ['isNull', 'is null'], ['isNotNull', 'is not null'],
+      ];
+      const operatorLabel = (name) =>
+        (filterOperators.find(([value]) => value === name) || [name, name])[1];
+      const needsValue = (name) => name !== 'isNull' && name !== 'isNotNull';
+
+      const openFilterDialog = () => {
+        const columns = data.columns.length ? data.columns : (structure?.columns || []);
+        if (!columns.length) { toast('Wait for the columns to load first.'); return; }
+        const column = h('select', { 'aria-label': 'Filter column' },
+          ...columns.map((c) => h('option', { value: c.name, text: c.name })));
+        const operator = h('select', { 'aria-label': 'Filter operator' },
+          ...filterOperators.map(([value, label]) => h('option', { value, text: label })));
+        const value = h('input', { type: 'text', 'aria-label': 'Filter value' });
+        const syncValue = () => { value.disabled = !needsValue(operator.value); };
+        operator.addEventListener('change', syncValue);
+        syncValue();
+        modal('Filter rows', h('div', { class: 'form-grid' },
+          h('label', { class: 'field-label', text: 'Column' }), h('div', { class: 'field-input' }, column),
+          h('label', { class: 'field-label', text: 'Condition' }), h('div', { class: 'field-input' }, operator),
+          h('label', { class: 'field-label', text: 'Value' }), h('div', { class: 'field-input' }, value)), [
+          { label: 'Cancel', onClick: (close) => close() },
+          {
+            label: 'Apply', primary: true,
+            onClick: (close) => {
+              grid.filters = [...grid.filters, {
+                column: column.value,
+                operator: operator.value,
+                value: needsValue(operator.value) ? value.value : null,
+              }];
+              close();
+              renderData();
+            },
+          },
+        ]);
+        value.focus();
+      };
+
+      const filterBar = () => {
+        const bar = h('div', { class: 'filter-bar', 'data-testid': 'filter-bar' },
+          h('button', {
+            class: 'ghost', 'data-testid': 'add-filter', title: 'Filter rows in the database',
+            onclick: openFilterDialog,
+          }, '⧩ Filter'));
+        grid.filters.forEach((filter, index) => {
+          bar.append(h('span', { class: 'filter-chip', 'data-testid': 'filter-chip' },
+            h('span', {
+              text: `${filter.column} ${operatorLabel(filter.operator)}`
+                + (needsValue(filter.operator) ? ` ${filter.value}` : ''),
+            }),
+            h('button', {
+              class: 'chip-remove', title: 'Remove this filter', 'aria-label': 'Remove filter',
+              onclick: () => {
+                grid.filters = grid.filters.filter((_, position) => position !== index);
+                renderData();
+              },
+            }, '×')));
+        });
+        if (grid.filters.length > 1) {
+          bar.append(h('button', {
+            class: 'ghost', 'data-testid': 'clear-filters',
+            onclick: () => { grid.filters = []; renderData(); },
+          }, 'Clear all'));
+        }
+        return bar;
+      };
+
       const serverMaxRows = state.meta.maxQueryResultRows;
       let savedMaxRows = serverMaxRows;
       try { savedMaxRows = Number(localStorage.getItem('gridlet.queryMaxRows')) || serverMaxRows; } catch { /* unavailable */ }
@@ -1665,7 +1740,7 @@
           class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
         }) : null,
       ].filter(Boolean));
-      body.replaceChildren(scroll);
+      body.replaceChildren(filterBar(), scroll);
       const gridView = progressiveDataGrid(scroll, {
         columns: data.columns,
         rows: data.rows,
@@ -1683,6 +1758,7 @@
 
       const params = new URLSearchParams({ maxRows: capInput.value });
       if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
+      if (grid.filters.length) params.set('filter', JSON.stringify(grid.filters));
       try {
         await streamNdjson(urls.dataStream(o.schema, o.name, params), { signal: controller.signal }, (event) => {
           if (event.type === 'resultSet') {

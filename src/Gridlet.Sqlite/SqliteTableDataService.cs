@@ -26,8 +26,11 @@ public sealed class SqliteTableDataService : ITableDataService
                     $"Sort column '{request.SortColumn}' does not exist on {qualifiedName}.");
         }
 
+        var filter = SqliteFilterBuilder.Build(request.Filters, definition.Columns);
+
         await using var countCommand = connection.CreateCommand();
-        countCommand.CommandText = $"SELECT COUNT(*) FROM {qualifiedName};";
+        countCommand.CommandText = $"SELECT COUNT(*) FROM {qualifiedName}{filter.Clause};";
+        AddFilterParameters(countCommand, filter.Parameters);
         var totalRows = Convert.ToInt64(await countCommand.ExecuteScalarAsync(cancellationToken));
 
         await using var command = connection.CreateCommand();
@@ -90,9 +93,10 @@ public sealed class SqliteTableDataService : ITableDataService
         var rowIdKey = identity?.Kind == RowIdentityKinds.RowId ? identity.Columns[0] : null;
         var selectList = rowIdKey is null ? "*" : $"*, {SqliteIdentifier.Quote(rowIdKey)}";
         command.CommandText =
-            $"SELECT {selectList} FROM {qualifiedName}{orderBy} LIMIT @pageSize OFFSET @offset;";
+            $"SELECT {selectList} FROM {qualifiedName}{filter.Clause}{orderBy} LIMIT @pageSize OFFSET @offset;";
         command.Parameters.AddWithValue("@pageSize", request.PageSize);
         command.Parameters.AddWithValue("@offset", (long)(request.Page - 1) * request.PageSize);
+        AddFilterParameters(command, filter.Parameters);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var visibleFieldCount = reader.FieldCount - (rowIdKey is null ? 0 : 1);
@@ -125,6 +129,16 @@ public sealed class SqliteTableDataService : ITableDataService
             columns, rows, request.Page, request.PageSize, totalRows,
             keyOrdinals is null ? null : identity,
             rowKeys);
+    }
+
+    private static void AddFilterParameters(
+        Microsoft.Data.Sqlite.SqliteCommand command,
+        IReadOnlyList<(string Name, object? Value)> parameters)
+    {
+        foreach (var (parameterName, value) in parameters)
+        {
+            command.Parameters.AddWithValue(parameterName, value ?? DBNull.Value);
+        }
     }
 
     /// <summary>

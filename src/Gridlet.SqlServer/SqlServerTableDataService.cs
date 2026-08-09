@@ -113,10 +113,13 @@ public sealed class SqlServerTableDataService : ITableDataService
                     $"Sort column '{request.SortColumn}' does not exist on {qualifiedName}.");
         }
 
+        var filter = SqlServerSqlBuilder.BuildFilterClause(request.Filters, columnNames);
+
         long totalRows;
         await using (var countCommand = connection.CreateCommand())
         {
-            countCommand.CommandText = SqlServerSqlBuilder.BuildCountSql(schema, name);
+            countCommand.CommandText = SqlServerSqlBuilder.BuildCountSql(schema, name, filter.Clause);
+            AddFilterParameters(countCommand, filter.Parameters);
             totalRows = (long)(await countCommand.ExecuteScalarAsync(cancellationToken))!;
         }
 
@@ -128,9 +131,11 @@ public sealed class SqlServerTableDataService : ITableDataService
             request.SortDirection,
             // The identity columns are unique and non-nullable, so they order pages deterministically
             // even on a heap, where there is no primary key to fall back on.
-            rowIdentity?.Columns);
+            rowIdentity?.Columns,
+            filter.Clause);
         command.Parameters.AddWithValue("@Offset", (long)(request.Page - 1) * request.PageSize);
         command.Parameters.AddWithValue("@PageSize", request.PageSize);
+        AddFilterParameters(command, filter.Parameters);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
@@ -159,6 +164,16 @@ public sealed class SqlServerTableDataService : ITableDataService
             columns, rows, request.Page, request.PageSize, totalRows,
             keyOrdinals is null ? null : rowIdentity,
             rowKeys);
+    }
+
+    private static void AddFilterParameters(
+        Microsoft.Data.SqlClient.SqlCommand command,
+        IReadOnlyList<(string Name, object? Value)> parameters)
+    {
+        foreach (var (parameterName, value) in parameters)
+        {
+            command.Parameters.AddWithValue(parameterName, value ?? DBNull.Value);
+        }
     }
 
     /// <summary>

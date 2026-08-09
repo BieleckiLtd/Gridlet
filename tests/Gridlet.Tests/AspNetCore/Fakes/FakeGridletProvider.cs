@@ -174,9 +174,18 @@ public sealed class FakeGridletProvider :
 
     // ---- data ----
 
+    /// <summary>The filters the most recent page request carried, so their parsing can be asserted.</summary>
+    public IReadOnlyList<TableDataFilter>? LastDataFilters { get; private set; }
+
     public Task<TableDataPage> GetPageAsync(
         GridletConnectionContext context, string schema, string name, TableDataRequest request,
         CancellationToken cancellationToken = default)
+    {
+        LastDataFilters = request.Filters;
+        return GetPageCore(name, request);
+    }
+
+    private static Task<TableDataPage> GetPageCore(string name, TableDataRequest request)
         => Task.FromResult(name == "Heap"
             ? new TableDataPage(
                 [new ResultColumn("Name", "nvarchar(100)")],
