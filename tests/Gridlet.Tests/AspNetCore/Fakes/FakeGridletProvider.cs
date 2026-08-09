@@ -34,7 +34,10 @@ public sealed class FakeGridletProvider :
         SelectExample: "SELECT TOP (100) * FROM {object};",
         CreateTriggerExample:
             "CREATE TRIGGER dbo.NewTrigger\nON dbo.Customers\nAFTER INSERT\nAS\nBEGIN\n    SELECT 1;\nEND;",
-        ObjectEditMode: "Alter");
+        ObjectEditMode: "Alter",
+        SupportsCheckConstraints: true,
+        SupportsUniqueConstraints: true,
+        SupportsIndexes: true);
 
     public ISchemaReader Schema => this;
 
@@ -62,6 +65,8 @@ public sealed class FakeGridletProvider :
         [
             new DbObjectInfo("dbo", "Customers", DbObjectType.Table),
             new DbObjectInfo("dbo", "NoKeys", DbObjectType.Table),
+            new DbObjectInfo("dbo", "SearchIndex", DbObjectType.Table, "VirtualTable"),
+            new DbObjectInfo("dbo", "Customers_fts_data", DbObjectType.Table, "Shadow", IsInternal: true),
             new DbObjectInfo("dbo", "vw_Orders", DbObjectType.View),
             new DbObjectInfo("dbo", "RefreshOrders", DbObjectType.StoredProcedure),
             new DbObjectInfo("dbo", "OrderCount", DbObjectType.ScalarFunction),
@@ -85,14 +90,25 @@ public sealed class FakeGridletProvider :
             [
                 new ColumnInfo("Id", "int", false, true, false, name != "NoKeys", null, 0),
                 new ColumnInfo("Name", "nvarchar(100)", false, false, false, false, null, 1),
+                new ColumnInfo("SysStart", "datetime2", false, false, true, false, null, 2,
+                    "GENERATED ALWAYS", IsHidden: true),
             ],
             name == "NoKeys"
                 ? []
                 : [
                     new IndexInfo("PK_" + name, "CLUSTERED", true, true, ["Id"]),
-                    new IndexInfo("IX_" + name + "_Name", "NONCLUSTERED", false, false, ["Name"]),
+                    new IndexInfo("IX_" + name + "_Name", "NONCLUSTERED", false, false, ["Name"],
+                        [new IndexKeyInfo("Name", 1, IsDescending: true, Collation: "Latin1_General_CI_AS")],
+                        ["Id"], "[Name] IS NOT NULL", IsClustered: false, IsColumnstore: false,
+                        FillFactor: 80, IsDisabled: true),
                 ],
-            []));
+            [],
+            [new CheckConstraintInfo("CK_" + name + "_Name", "length([Name]) > 0", IsDisabled: true,
+                IsTrusted: false),
+             new CheckConstraintInfo(null, "[Id] > 0", Ordinal: 0)],
+            [new UniqueConstraintInfo("UQ_" + name + "_Name", [
+                new IndexKeyInfo("Name", 1, IsDescending: true, Collation: "NOCASE")],
+                IsClustered: true, FillFactor: 90, IsDisabled: true)]));
 
     public Task<string?> GetObjectDefinitionAsync(
         GridletConnectionContext context, string schema, string name, CancellationToken cancellationToken = default)
@@ -293,6 +309,54 @@ public sealed class FakeGridletProvider :
         CancellationToken cancellationToken = default)
     {
         Calls.Add($"addPrimaryKey {schema}.{table}.{primaryKey.Name}");
+        return Task.CompletedTask;
+    }
+
+    public Task AddCheckConstraintAsync(
+        GridletConnectionContext context, string schema, string table, CheckConstraintDesign checkConstraint,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"addCheckConstraint {schema}.{table}.{checkConstraint.Name ?? "(unnamed)"} expression={checkConstraint.Expression}");
+        return Task.CompletedTask;
+    }
+
+    public Task DropCheckConstraintAsync(
+        GridletConnectionContext context, string schema, string table, ConstraintReference constraint,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"dropCheckConstraint {schema}.{table}.{constraint.Name ?? $"#{constraint.Ordinal}"}");
+        return Task.CompletedTask;
+    }
+
+    public Task AddUniqueConstraintAsync(
+        GridletConnectionContext context, string schema, string table, UniqueConstraintDesign uniqueConstraint,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"addUniqueConstraint {schema}.{table}.{uniqueConstraint.Name ?? "(unnamed)"} ({string.Join(",", uniqueConstraint.Columns.Select(c => c.Column))})");
+        return Task.CompletedTask;
+    }
+
+    public Task DropUniqueConstraintAsync(
+        GridletConnectionContext context, string schema, string table, ConstraintReference constraint,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"dropUniqueConstraint {schema}.{table}.{constraint.Name ?? $"#{constraint.Ordinal}"}");
+        return Task.CompletedTask;
+    }
+
+    public Task CreateIndexAsync(
+        GridletConnectionContext context, string schema, string table, IndexDesign index,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"createIndex {schema}.{table}.{index.Name} ({string.Join(",", index.KeyColumns.Select(c => $"{c.Column}:{(c.IsDescending ? "DESC" : "ASC")}"))}) unique={index.IsUnique} filter={index.FilterExpression}");
+        return Task.CompletedTask;
+    }
+
+    public Task DropIndexAsync(
+        GridletConnectionContext context, string schema, string table, string indexName,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"dropIndex {schema}.{table}.{indexName}");
         return Task.CompletedTask;
     }
 

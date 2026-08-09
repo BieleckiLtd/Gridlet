@@ -77,6 +77,9 @@ public sealed class SqliteProviderTests : IAsyncLifetime
         Assert.False(provider.Capabilities.SupportsClusteredPrimaryKeys);
         Assert.Contains("LIMIT 100", provider.Capabilities.SelectExample);
         Assert.Equal("Recreate", provider.Capabilities.ObjectEditMode);
+        Assert.True(provider.Capabilities.SupportsCheckConstraints);
+        Assert.True(provider.Capabilities.SupportsUniqueConstraints);
+        Assert.True(provider.Capabilities.SupportsIndexes);
     }
 
     [Fact]
@@ -327,7 +330,7 @@ public sealed class SqliteProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Refuses_rebuilds_that_would_drop_table_constraints_or_options()
+    public async Task Preserves_check_constraints_but_refuses_strict_and_without_rowid_rebuilds()
     {
         await provider.Query.ExecuteAsync(context,
             """
@@ -345,7 +348,6 @@ public sealed class SqliteProviderTests : IAsyncLifetime
         var guarded = await Assert.ThrowsAsync<GridletValidationException>(() =>
             provider.Ddl.AlterColumnAsync(context, "main", "Guarded", "Value",
                 new ColumnDesign("RenamedValue", "INTEGER")));
-        Assert.Contains("CHECK", guarded.Message);
         Assert.Contains("STRICT", guarded.Message);
 
         var compact = await Assert.ThrowsAsync<GridletValidationException>(() =>
@@ -390,7 +392,7 @@ public sealed class SqliteProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Refuses_rebuilds_that_would_change_index_direction_or_collation()
+    public async Task Preserves_index_direction_and_collation_during_rebuild()
     {
         await provider.Query.ExecuteAsync(context,
             """
@@ -399,13 +401,278 @@ public sealed class SqliteProviderTests : IAsyncLifetime
             """,
             new QueryRequestOptions(10, 30));
 
-        var exception = await Assert.ThrowsAsync<GridletValidationException>(() =>
-            provider.Ddl.AlterColumnAsync(context, "main", "IndexedValues", "Other",
-                new ColumnDesign("Description", "TEXT")));
+        await provider.Ddl.AlterColumnAsync(context, "main", "IndexedValues", "Other",
+            new ColumnDesign("Description", "TEXT"));
 
-        Assert.Contains("IX_IndexedValues_Name", exception.Message);
-        var definition = await provider.Schema.GetObjectDefinitionAsync(context, "main", "IndexedValues");
-        Assert.Contains("Other", definition);
+        var definition = await provider.Schema.GetTableDefinitionAsync(context, "main", "IndexedValues");
+        var index = Assert.Single(definition.Indexes, item => item.Name == "IX_IndexedValues_Name");
+        var key = Assert.Single(index.KeyColumns!);
+        Assert.True(key.IsDescending);
+        Assert.Equal("NOCASE", key.Collation);
+        Assert.Contains("Description", await provider.Schema.GetObjectDefinitionAsync(context, "main", "IndexedValues"));
+    }
+
+    [Fact]
+    public async Task Classifies_fts5_virtual_and_shadow_tables_and_refuses_shadow_writes_or_rebuilds()
+    {
+        await provider.Query.ExecuteAsync(context,
+            "CREATE VIRTUAL TABLE SearchDocs USING fts5(Body); INSERT INTO SearchDocs (Body) VALUES ('keep me');",
+            new QueryRequestOptions(10, 30));
+
+        var objects = await provider.Schema.GetObjectsAsync(context);
+        var virtualTable = Assert.Single(objects, item => item.Name == "SearchDocs");
+        Assert.Equal("virtual", virtualTable.SubKind);
+        Assert.False(virtualTable.IsInternal);
+        var shadow = Assert.Single(objects, item => item.Name == "SearchDocs_data");
+        Assert.Equal("shadow", shadow.SubKind);
+        Assert.True(shadow.IsInternal);
+
+        var ftsDefinition = await provider.Schema.GetTableDefinitionAsync(context, "main", "SearchDocs");
+        Assert.Contains(ftsDefinition.Columns, column => column.IsHidden);
+        await Assert.ThrowsAsync<GridletValidationException>(() => provider.Writes.InsertRowAsync(
+            context, "main", "SearchDocs_data", new Dictionary<string, object?> { ["id"] = 99L }));
+        await Assert.ThrowsAsync<GridletValidationException>(() => provider.Writes.UpdateRowAsync(
+            context, "main", "SearchDocs_data", new Dictionary<string, object?> { ["id"] = 1L },
+            new Dictionary<string, object?> { ["block"] = Array.Empty<byte>() }));
+        await Assert.ThrowsAsync<GridletValidationException>(() => provider.Writes.DeleteRowAsync(
+            context, "main", "SearchDocs_data", new Dictionary<string, object?> { ["id"] = 1L }));
+        await Assert.ThrowsAsync<GridletValidationException>(() => provider.Writes.UpdateRowAsync(
+            context, "main", "sqlite_sequence", new Dictionary<string, object?> { ["name"] = "Customers" },
+            new Dictionary<string, object?> { ["seq"] = 999L }));
+        await Assert.ThrowsAsync<GridletValidationException>(() => provider.Ddl.AlterColumnAsync(
+            context, "main", "SearchDocs", "Body", new ColumnDesign("Text", "TEXT")));
+        await Assert.ThrowsAsync<GridletValidationException>(() => provider.Ddl.AlterColumnAsync(
+            context, "main", "SearchDocs_data", "block", new ColumnDesign("payload", "BLOB")));
+        await Assert.ThrowsAsync<GridletValidationException>(() => provider.Ddl.DropTableAsync(
+            context, "main", "SearchDocs_data"));
+        await Assert.ThrowsAsync<GridletValidationException>(() => provider.Ddl.DropObjectAsync(
+            context, "main", "SearchDocs_data", DbObjectType.Table));
+
+        var result = await provider.Query.ExecuteAsync(context,
+            "SELECT Body FROM SearchDocs WHERE SearchDocs MATCH 'keep';", new QueryRequestOptions(10, 30));
+        Assert.Equal("keep me", Assert.Single(Assert.Single(result.ResultSets).Rows)[0]);
+
+        await provider.Ddl.DropTableAsync(context, "main", "SearchDocs");
+        Assert.DoesNotContain(await provider.Schema.GetObjectsAsync(context), item =>
+            item.Name.StartsWith("SearchDocs", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Parses_single_quoted_sqlite_identifiers_for_constraints()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE 'Single Quoted' (
+                'Id' INTEGER PRIMARY KEY,
+                'Value' TEXT,
+                CONSTRAINT 'CK single' CHECK ("Value" <> ''),
+                CONSTRAINT 'UQ single' UNIQUE ('Value')
+            );
+            INSERT INTO 'Single Quoted' VALUES (1, 'kept');
+            """,
+            new QueryRequestOptions(10, 30));
+
+        var definition = await provider.Schema.GetTableDefinitionAsync(context, "main", "Single Quoted");
+        Assert.Contains(definition.CheckConstraints, check => check.Name == "CK single");
+        Assert.Contains(definition.UniqueConstraints, unique => unique.Name == "UQ single" &&
+            unique.Columns.Single().Column == "Value");
+
+        await provider.Ddl.AlterColumnAsync(context, "main", "Single Quoted", "Value",
+            new ColumnDesign("Text", "TEXT"));
+        definition = await provider.Schema.GetTableDefinitionAsync(context, "main", "Single Quoted");
+        Assert.Contains(definition.CheckConstraints, check => check.Name == "CK single" &&
+            check.Definition.Contains("Text", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(definition.UniqueConstraints, unique => unique.Name == "UQ single" &&
+            unique.Columns.Single().Column == "Text");
+    }
+
+    [Fact]
+    public async Task Renaming_a_column_updates_other_generated_column_expressions()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE GeneratedRename (
+                Id INTEGER PRIMARY KEY,
+                Source TEXT,
+                Derived TEXT AS (upper(Source) || ':' || Source) STORED
+            );
+            INSERT INTO GeneratedRename (Id, Source) VALUES (1, 'value');
+            """,
+            new QueryRequestOptions(10, 30));
+
+        await provider.Ddl.AlterColumnAsync(context, "main", "GeneratedRename", "Source",
+            new ColumnDesign("Input", "TEXT"));
+        var definition = await provider.Schema.GetTableDefinitionAsync(context, "main", "GeneratedRename");
+        var generated = definition.Columns.Single(column => column.Name == "Derived");
+        Assert.Contains("Input", generated.ComputedDefinition);
+        var result = await provider.Query.ExecuteAsync(context,
+            "SELECT Input, Derived FROM GeneratedRename;", new QueryRequestOptions(10, 30));
+        Assert.Equal(["value", "VALUE:value"], Assert.Single(Assert.Single(result.ResultSets).Rows));
+    }
+
+    [Fact]
+    public async Task Renaming_a_column_does_not_rename_same_named_index_functions()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE FunctionNames (Id INTEGER PRIMARY KEY, lower TEXT, Name TEXT);
+            CREATE INDEX IX_FunctionNames_Mixed ON FunctionNames (lower, lower(Name));
+            INSERT INTO FunctionNames VALUES (1, 'column', 'Name');
+            """,
+            new QueryRequestOptions(10, 30));
+
+        await provider.Ddl.AlterColumnAsync(context, "main", "FunctionNames", "lower",
+            new ColumnDesign("LowerValue", "TEXT"));
+        var definition = await provider.Schema.GetTableDefinitionAsync(context, "main", "FunctionNames");
+        var keys = definition.Indexes.Single(index => index.Name == "IX_FunctionNames_Mixed").KeyColumns!;
+        Assert.Equal("LowerValue", keys[0].Column);
+        Assert.Equal("lower(Name)", keys[1].Expression);
+    }
+
+    [Fact]
+    public async Task Models_and_manages_named_and_unnamed_check_and_unique_constraints()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE ConstrainedValues (
+                Id INTEGER PRIMARY KEY,
+                Code TEXT CONSTRAINT UQ_Constrained_Code UNIQUE,
+                Alternative TEXT UNIQUE,
+                Score INTEGER CONSTRAINT CK_Constrained_Score CHECK (Score /* nested syntax: ), */ > 0 AND instr('a,b', ',') > 0),
+                /* a comma and nested calls must not split this constraint */
+                CONSTRAINT CK_Constrained_Total CHECK ((Score + length(coalesce(Alternative, ''))) < 100)
+            );
+            INSERT INTO ConstrainedValues VALUES (1, 'one', 'alt', 2);
+            """,
+            new QueryRequestOptions(10, 30));
+
+        var before = await provider.Schema.GetTableDefinitionAsync(context, "main", "ConstrainedValues");
+        Assert.Equal(2, before.CheckConstraints.Count);
+        Assert.Contains(before.CheckConstraints, check => check.Name == "CK_Constrained_Score" && check.Column == "Score");
+        Assert.Equal(2, before.UniqueConstraints.Count);
+        Assert.Contains(before.UniqueConstraints, unique => unique.Name == "UQ_Constrained_Code");
+        Assert.Contains(before.UniqueConstraints, unique => unique.Name is null);
+        Assert.DoesNotContain(before.Indexes, index => index.Name.StartsWith("sqlite_autoindex_", StringComparison.Ordinal));
+
+        await provider.Ddl.AlterColumnAsync(context, "main", "ConstrainedValues", "Score",
+            new ColumnDesign("Points", "INTEGER"));
+        var rebuilt = await provider.Schema.GetTableDefinitionAsync(context, "main", "ConstrainedValues");
+        Assert.Contains(rebuilt.CheckConstraints, check => check.Name == "CK_Constrained_Score" &&
+            check.Definition.Contains("Points", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(rebuilt.UniqueConstraints, unique => unique.Name == "UQ_Constrained_Code");
+        Assert.Contains(rebuilt.UniqueConstraints, unique => unique.Name is null);
+        Assert.Contains("CONSTRAINT \"UQ_Constrained_Code\" UNIQUE", await provider.Schema.GetObjectDefinitionAsync(
+            context, "main", "ConstrainedValues"), StringComparison.OrdinalIgnoreCase);
+
+        await provider.Ddl.AddCheckConstraintAsync(context, "main", "ConstrainedValues",
+            new CheckConstraintDesign(null, "Points < 50"));
+        rebuilt = await provider.Schema.GetTableDefinitionAsync(context, "main", "ConstrainedValues");
+        var addedCheck = rebuilt.CheckConstraints.Single(check => check.Name is null);
+        await provider.Ddl.DropCheckConstraintAsync(context, "main", "ConstrainedValues",
+            new ConstraintReference(Ordinal: addedCheck.Ordinal));
+
+        await provider.Ddl.AddUniqueConstraintAsync(context, "main", "ConstrainedValues",
+            new UniqueConstraintDesign("UQ_Constrained_Pair",
+                [new IndexKeyDesign("Code"), new IndexKeyDesign("Alternative", IsDescending: true)]));
+        rebuilt = await provider.Schema.GetTableDefinitionAsync(context, "main", "ConstrainedValues");
+        Assert.Contains(rebuilt.UniqueConstraints, unique => unique.Name == "UQ_Constrained_Pair" &&
+            unique.Columns[1].IsDescending);
+        await provider.Ddl.DropUniqueConstraintAsync(context, "main", "ConstrainedValues",
+            new ConstraintReference("UQ_Constrained_Pair"));
+
+        var result = await provider.Query.ExecuteAsync(context,
+            "SELECT Code, Alternative, Points FROM ConstrainedValues;", new QueryRequestOptions(10, 30));
+        Assert.Equal(["one", "alt", 2L], Assert.Single(Assert.Single(result.ResultSets).Rows));
+    }
+
+    [Fact]
+    public async Task Loads_rebuilds_creates_and_drops_rich_ordinary_indexes()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE RichIndexes (Id INTEGER PRIMARY KEY, Name TEXT, Other TEXT);
+            CREATE UNIQUE INDEX IX_Rich_Expression ON RichIndexes
+                (lower(/* nested: ), */ Name) COLLATE NOCASE DESC, Other ASC)
+                WHERE Name IS NOT NULL AND Other <> 'x,y';
+            INSERT INTO RichIndexes VALUES (1, 'One', 'kept');
+            """,
+            new QueryRequestOptions(10, 30));
+
+        var definition = await provider.Schema.GetTableDefinitionAsync(context, "main", "RichIndexes");
+        var rich = Assert.Single(definition.Indexes, index => index.Name == "IX_Rich_Expression");
+        Assert.True(rich.IsUnique);
+        Assert.Contains("lower", rich.KeyColumns![0].Expression);
+        Assert.True(rich.KeyColumns[0].IsDescending);
+        Assert.Equal("NOCASE", rich.KeyColumns[0].Collation);
+        Assert.Equal("Other", rich.KeyColumns[1].Column);
+        Assert.Contains("Other <> 'x,y'", rich.FilterDefinition);
+
+        await provider.Ddl.AlterColumnAsync(context, "main", "RichIndexes", "Other",
+            new ColumnDesign("Details", "TEXT"));
+        definition = await provider.Schema.GetTableDefinitionAsync(context, "main", "RichIndexes");
+        rich = Assert.Single(definition.Indexes, index => index.Name == "IX_Rich_Expression");
+        Assert.Equal("Details", rich.KeyColumns![1].Column);
+        Assert.Contains("Details", rich.FilterDefinition);
+        Assert.Equal("kept", (await provider.Data.GetPageAsync(
+            context, "main", "RichIndexes", new TableDataRequest(1, 10))).Rows[0][2]);
+
+        await provider.Ddl.CreateIndexAsync(context, "main", "RichIndexes", new IndexDesign(
+            "IX_Rich_Created", [new IndexKeyDesign(null, Expression: "length(Details)", IsDescending: true)],
+            FilterExpression: "Details IS NOT NULL"));
+        definition = await provider.Schema.GetTableDefinitionAsync(context, "main", "RichIndexes");
+        Assert.Contains(definition.Indexes, index => index.Name == "IX_Rich_Created" &&
+            index.KeyColumns![0].Expression == "length(Details)" && index.KeyColumns[0].IsDescending);
+        await provider.Ddl.DropIndexAsync(context, "main", "RichIndexes", "IX_Rich_Created");
+        Assert.DoesNotContain((await provider.Schema.GetTableDefinitionAsync(context, "main", "RichIndexes")).Indexes,
+            index => index.Name == "IX_Rich_Created");
+    }
+
+    [Fact]
+    public async Task Uses_table_list_not_keywords_to_detect_strict_and_without_rowid_options()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE KeywordNames (Id INTEGER PRIMARY KEY, STRICT TEXT, WITHOUT TEXT, ROWID TEXT);
+            CREATE TABLE ActuallyStrict (Id INTEGER PRIMARY KEY, Value TEXT) STRICT;
+            CREATE TABLE ActuallyCompact (Id TEXT PRIMARY KEY, Value TEXT) WITHOUT ROWID;
+            """,
+            new QueryRequestOptions(10, 30));
+
+        await provider.Ddl.AlterColumnAsync(context, "main", "KeywordNames", "STRICT",
+            new ColumnDesign("StrictValue", "TEXT"));
+        await Assert.ThrowsAsync<GridletValidationException>(() => provider.Ddl.AlterColumnAsync(
+            context, "main", "ActuallyStrict", "Value", new ColumnDesign("Text", "TEXT")));
+        await Assert.ThrowsAsync<GridletValidationException>(() => provider.Ddl.AlterColumnAsync(
+            context, "main", "ActuallyCompact", "Value", new ColumnDesign("Text", "TEXT")));
+    }
+
+    [Fact]
+    public async Task Allows_unique_key_collations_but_still_guards_column_collations()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE UniqueCollations (Id INTEGER PRIMARY KEY, Code TEXT);
+            INSERT INTO UniqueCollations VALUES (1, 'same');
+            CREATE TABLE ColumnCollations (Id INTEGER PRIMARY KEY, Code TEXT COLLATE NOCASE, Other TEXT);
+            """,
+            new QueryRequestOptions(10, 30));
+
+        await provider.Ddl.AddUniqueConstraintAsync(context, "main", "UniqueCollations",
+            new UniqueConstraintDesign("UQ_UniqueCollations_Code",
+                [new IndexKeyDesign("Code", Collation: "NOCASE")]));
+        var definition = await provider.Schema.GetTableDefinitionAsync(context, "main", "UniqueCollations");
+        Assert.Equal("NOCASE", definition.UniqueConstraints.Single().Columns.Single().Collation);
+        await Assert.ThrowsAsync<GridletQueryException>(() => provider.Query.ExecuteAsync(context,
+            "INSERT INTO UniqueCollations VALUES (2, 'SAME');", new QueryRequestOptions(10, 30)));
+
+        await provider.Ddl.DropUniqueConstraintAsync(context, "main", "UniqueCollations",
+            new ConstraintReference("UQ_UniqueCollations_Code"));
+        await provider.Query.ExecuteAsync(context,
+            "INSERT INTO UniqueCollations VALUES (2, 'SAME');", new QueryRequestOptions(10, 30));
+
+        var exception = await Assert.ThrowsAsync<GridletValidationException>(() => provider.Ddl.AlterColumnAsync(
+            context, "main", "ColumnCollations", "Other", new ColumnDesign("Details", "TEXT")));
+        Assert.Contains("column collations", exception.Message);
     }
 
     [Fact]

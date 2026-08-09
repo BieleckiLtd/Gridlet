@@ -38,6 +38,14 @@ public static partial class SqliteDdlBuilder
         TableDesign design,
         string? primaryKeyName = null,
         IReadOnlyList<ForeignKeyDesign>? foreignKeys = null)
+        => BuildCreateTable(design, primaryKeyName, foreignKeys, null, null);
+
+    internal static string BuildCreateTable(
+        TableDesign design,
+        string? primaryKeyName,
+        IReadOnlyList<ForeignKeyDesign>? foreignKeys,
+        IReadOnlyList<CheckConstraintDesign>? checkConstraints,
+        IReadOnlyList<UniqueConstraintDesign>? uniqueConstraints)
     {
         SqliteIdentifier.RequireMainSchema(design.Schema);
         if (design.Columns is not { Count: > 0 })
@@ -72,6 +80,16 @@ public static partial class SqliteDdlBuilder
         if (foreignKeys is not null)
         {
             lines.AddRange(foreignKeys.Select(BuildForeignKeyDefinition));
+        }
+
+        if (checkConstraints is not null)
+        {
+            lines.AddRange(checkConstraints.Select(BuildCheckConstraintDefinition));
+        }
+
+        if (uniqueConstraints is not null)
+        {
+            lines.AddRange(uniqueConstraints.Select(BuildUniqueConstraintDefinition));
         }
 
         return $"CREATE TABLE {SqliteIdentifier.QuoteQualified(design.Schema, design.Name)} (\n" +
@@ -121,6 +139,32 @@ public static partial class SqliteDdlBuilder
                $"{SqliteIdentifier.Quote(table)} ({string.Join(", ", columns.Select(SqliteIdentifier.Quote))});";
     }
 
+    public static string BuildCreateIndex(string schema, string table, IndexDesign index)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        if (index.KeyColumns is not { Count: > 0 })
+        {
+            throw new GridletValidationException("An index needs at least one key.");
+        }
+        if (index.IncludedColumns is { Count: > 0 } || index.IsClustered || index.IsColumnstore ||
+            index.FillFactor != 0 || index.IsDisabled)
+        {
+            throw new GridletValidationException("SQLite does not support included columns, clustered or columnstore indexes, fill factor, or disabled indexes.");
+        }
+
+        var filter = string.IsNullOrWhiteSpace(index.FilterExpression)
+            ? ""
+            : $" WHERE {SqliteExpressionSafety.RequireSingleExpression(index.FilterExpression, "index filter")}";
+        return $"CREATE {(index.IsUnique ? "UNIQUE " : "")}INDEX {SqliteIdentifier.Quote(index.Name)} ON " +
+               $"{SqliteIdentifier.Quote(table)} ({string.Join(", ", index.KeyColumns.Select(BuildIndexKey))}){filter};";
+    }
+
+    public static string BuildDropIndex(string schema, string name)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        return $"DROP INDEX {SqliteIdentifier.QuoteQualified(schema, name)};";
+    }
+
     public static string BuildForeignKeyDefinition(ForeignKeyDesign foreignKey)
     {
         SqliteIdentifier.RequireMainSchema(foreignKey.ReferencedSchema);
@@ -135,6 +179,54 @@ public static partial class SqliteDdlBuilder
                $"{SqliteIdentifier.Quote(foreignKey.ReferencedTable)} ({referenced}) " +
                $"ON DELETE {NormalizeReferentialAction(foreignKey.OnDelete)} " +
                $"ON UPDATE {NormalizeReferentialAction(foreignKey.OnUpdate)}";
+    }
+
+    private static string BuildCheckConstraintDefinition(CheckConstraintDesign check)
+    {
+        if (check.IsDisabled || check.IsNotForReplication)
+        {
+            throw new GridletValidationException("SQLite does not support disabled or NOT FOR REPLICATION CHECK constraints.");
+        }
+        var name = string.IsNullOrWhiteSpace(check.Name)
+            ? ""
+            : $"CONSTRAINT {SqliteIdentifier.Quote(check.Name)} ";
+        return $"{name}CHECK ({SqliteExpressionSafety.RequireSingleExpression(check.Expression, "check")})";
+    }
+
+    private static string BuildUniqueConstraintDefinition(UniqueConstraintDesign unique)
+    {
+        if (unique.Columns is not { Count: > 0 })
+        {
+            throw new GridletValidationException("A unique constraint needs at least one key.");
+        }
+        if (unique.IsClustered || unique.FillFactor != 0 || unique.IsDisabled)
+        {
+            throw new GridletValidationException("SQLite does not support clustered, fill-factor, or disabled UNIQUE constraints.");
+        }
+        var name = string.IsNullOrWhiteSpace(unique.Name)
+            ? ""
+            : $"CONSTRAINT {SqliteIdentifier.Quote(unique.Name)} ";
+        return $"{name}UNIQUE ({string.Join(", ", unique.Columns.Select(BuildIndexKey))})";
+    }
+
+    private static string BuildIndexKey(IndexKeyDesign key)
+    {
+        var hasColumn = !string.IsNullOrWhiteSpace(key.Column);
+        var hasExpression = !string.IsNullOrWhiteSpace(key.Expression);
+        if (hasColumn == hasExpression)
+        {
+            throw new GridletValidationException("Each index key must specify exactly one column or expression.");
+        }
+
+        var result = hasColumn
+            ? SqliteIdentifier.Quote(key.Column!)
+            : SqliteExpressionSafety.RequireSingleExpression(key.Expression!, "index key");
+        if (!string.IsNullOrWhiteSpace(key.Collation))
+        {
+            result += $" COLLATE {SqliteIdentifier.Quote(key.Collation)}";
+        }
+        if (key.IsDescending) result += " DESC";
+        return result;
     }
 
     private static string BuildColumnDefinition(ColumnDesign column)

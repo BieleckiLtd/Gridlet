@@ -26,7 +26,10 @@ public sealed class SqlServerGridletProvider :
         SelectExample: "SELECT TOP (100) * FROM {object};",
         CreateTriggerExample:
             "CREATE TRIGGER dbo.NewTrigger\nON dbo.SomeTable\nAFTER INSERT, UPDATE, DELETE\nAS\nBEGIN\n    SET NOCOUNT ON;\nEND;",
-        ObjectEditMode: "Alter");
+        ObjectEditMode: "Alter",
+        SupportsCheckConstraints: true,
+        SupportsUniqueConstraints: true,
+        SupportsIndexes: true);
 
     public ISchemaReader Schema { get; } = new SqlServerSchemaReader();
 

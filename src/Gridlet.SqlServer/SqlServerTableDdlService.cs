@@ -202,6 +202,40 @@ public sealed class SqlServerTableDdlService : ITableDdlService
         CancellationToken cancellationToken = default)
         => ExecuteAsync(context, SqlServerDdlBuilder.BuildAddPrimaryKey(schema, table, primaryKey), cancellationToken);
 
+    public Task AddCheckConstraintAsync(
+        GridletConnectionContext context, string schema, string table, CheckConstraintDesign checkConstraint,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(context,
+            SqlServerDdlBuilder.BuildAddCheckConstraint(schema, table, checkConstraint), cancellationToken);
+
+    public Task DropCheckConstraintAsync(
+        GridletConnectionContext context, string schema, string table, ConstraintReference constraint,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(context,
+            SqlServerDdlBuilder.BuildDropCheckConstraint(schema, table, constraint), cancellationToken);
+
+    public Task AddUniqueConstraintAsync(
+        GridletConnectionContext context, string schema, string table, UniqueConstraintDesign uniqueConstraint,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(context,
+            SqlServerDdlBuilder.BuildAddUniqueConstraint(schema, table, uniqueConstraint), cancellationToken);
+
+    public Task DropUniqueConstraintAsync(
+        GridletConnectionContext context, string schema, string table, ConstraintReference constraint,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(context,
+            SqlServerDdlBuilder.BuildDropUniqueConstraint(schema, table, constraint), cancellationToken);
+
+    public Task CreateIndexAsync(
+        GridletConnectionContext context, string schema, string table, IndexDesign index,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(context, SqlServerDdlBuilder.BuildCreateIndex(schema, table, index), cancellationToken);
+
+    public Task DropIndexAsync(
+        GridletConnectionContext context, string schema, string table, string indexName,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(context, SqlServerDdlBuilder.BuildDropIndex(schema, table, indexName), cancellationToken);
+
     public Task AddForeignKeyAsync(
         GridletConnectionContext context, string schema, string table, ForeignKeyDesign foreignKey,
         CancellationToken cancellationToken = default)

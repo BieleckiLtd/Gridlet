@@ -72,6 +72,28 @@ public class GridletEndpointTests
         Assert.Contains("\"defaultSchema\":\"dbo\"", body);
         Assert.Contains("\"supportsStoredProcedures\":true", body);
         Assert.Contains("\"supportsTriggers\":true", body);
+        Assert.Contains("\"supportsCheckConstraints\":true", body);
+        Assert.Contains("\"supportsUniqueConstraints\":true", body);
+        Assert.Contains("\"supportsIndexes\":true", body);
+    }
+
+    [Fact]
+    public async Task Meta_defaults_portable_ddl_capabilities_off_for_legacy_providers()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+                options.Security.AllowAnonymous = true;
+            },
+            services => services.AddSingleton<IGridletProvider>(new MetadataFreeProvider()));
+        await using var _ = app;
+
+        var body = await client.GetStringAsync("/gridlet/api/meta");
+
+        Assert.Contains("\"supportsCheckConstraints\":false", body);
+        Assert.Contains("\"supportsUniqueConstraints\":false", body);
+        Assert.Contains("\"supportsIndexes\":false", body);
     }
 
     [Fact]
@@ -141,6 +163,28 @@ public class GridletEndpointTests
         Assert.Contains("\"Table\"", body);
         Assert.Contains("\"View\"", body);
         Assert.Contains("\"Trigger\"", body);
+        Assert.Contains("\"subKind\":\"VirtualTable\"", body);
+        Assert.Contains("\"isInternal\":true", body);
+    }
+
+    [Fact]
+    public async Task Structure_exposes_hidden_and_rich_constraint_and_index_metadata()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var body = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/structure");
+
+        Assert.Contains("\"isHidden\":true", body);
+        Assert.Contains("\"checkConstraints\"", body);
+        Assert.Contains("CK_Customers_Name", body);
+        Assert.Contains("\"uniqueConstraints\"", body);
+        Assert.Contains("UQ_Customers_Name", body);
+        Assert.Contains("Latin1_General_CI_AS", body);
+        Assert.Contains("\"isDescending\":true", body);
+        Assert.Contains("\"includedColumns\":[\"Id\"]", body);
+        Assert.Contains("\"filterDefinition\":\"[Name] IS NOT NULL\"", body);
     }
 
     [Fact]
@@ -319,5 +363,17 @@ public class GridletEndpointTests
 
         public ResolvedConnection Resolve(string connectionName, string? database = null)
             => throw new InvalidOperationException(Secret);
+    }
+
+    private sealed class MetadataFreeProvider : IGridletProvider
+    {
+        private readonly FakeGridletProvider inner = new();
+
+        public GridletProviderNames ProviderName => FakeGridletProvider.Name;
+        public ISchemaReader Schema => inner.Schema;
+        public ITableDataService Data => inner.Data;
+        public IQueryRunner Query => inner.Query;
+        public ITableWriteService Writes => inner.Writes;
+        public ITableDdlService Ddl => inner.Ddl;
     }
 }
