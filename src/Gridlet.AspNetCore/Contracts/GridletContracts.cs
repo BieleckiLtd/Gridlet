@@ -9,7 +9,8 @@ public sealed record GridletMetaResponse(
     IReadOnlyList<GridletConnectionSummary> Connections,
     int MaxQueryResultRows,
     GridletAgentInfo? Agent = null,
-    string PublishedApiSegment = "pub");
+    string PublishedApiSegment = "pub",
+    GridletVoiceInfo? Voice = null);
 
 public sealed record GridletConnectionSummary(
     string Name,

@@ -21,6 +21,7 @@ the host application's authentication, authorisation, routing, logging and deplo
 - Query, save and export data; optionally enable row editing and schema design.
 - Publish queries as protected HTTP endpoints with typed parameters.
 - Add natural-language database exploration through the optional AI package.
+- Read agent responses aloud with the browser's own voice.
 - Reuse the host application's ASP.NET Core security and operational infrastructure.
 
 ## Multiple databases, one interface
@@ -164,6 +165,7 @@ UI can map `MapGridletApi` or `MapGridletPublished` instead.
 | [`Gridlet.SqlServer`](https://www.nuget.org/packages/Gridlet.SqlServer) | SQL Server provider. |
 | [`Gridlet.Sqlite`](https://www.nuget.org/packages/Gridlet.Sqlite) | SQLite provider. |
 | [`Gridlet.AgentFramework`](https://www.nuget.org/packages/Gridlet.AgentFramework) | Optional prerelease AI integration. |
+| [`Gridlet.Voice`](https://www.nuget.org/packages/Gridlet.Voice) | Optional read-aloud support for agent responses. |
 | [`Gridlet.Core`](https://www.nuget.org/packages/Gridlet.Core) | Provider abstractions, models, options and auditing. |
 
 ## Provider support

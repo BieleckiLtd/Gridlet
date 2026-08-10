@@ -163,7 +163,8 @@ internal static partial class GridletApiEndpoints
             connections,
             options.CurrentValue.Limits.MaxQueryResultRows,
             services.GetService<IGridletAgentService>()?.Info,
-            options.CurrentValue.PublishedApiSegment));
+            options.CurrentValue.PublishedApiSegment,
+            services.GetService<IGridletVoiceService>()?.Info));
     }
 
     private static Task<IResult> GetDatabases(

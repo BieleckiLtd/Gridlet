@@ -845,6 +845,13 @@
     }
 
     $('#version').textContent = 'v' + state.meta.version;
+    // Browsers populate the installed voice list asynchronously; asking for it early means a
+    // configured voice preference can be honoured on the first response rather than the second.
+    if (state.meta.voice && speechSupported()) {
+      window.speechSynthesis.getVoices();
+      // Some browsers keep speaking after the page goes away; stop at the last moment we own.
+      window.addEventListener('pagehide', stopSpeaking);
+    }
     refreshAgentAvailability();
     navigationOverflow.refresh();
 
@@ -1475,6 +1482,7 @@
       const cleanup = tab?.onClose?.();
       cleanup?.catch?.(() => {});
     } catch { /* tab cleanup must never block closing */ }
+    stopSpeakingIfDetached();
   }
 
   async function closeTab(id, skipTabGuard = false) {
@@ -2966,6 +2974,158 @@
     return failed(content);
   };
 
+  // Read-aloud support. The host opts in with AddVoice(); the browser's own synthesizer produces
+  // the audio, so nothing is sent to the server or to any third party when a response is spoken.
+  const speechSupported = () =>
+    typeof window !== 'undefined' && 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
+
+  const voiceSettings = () => (speechSupported() ? state.meta?.voice || null : null);
+
+  // Markdown is written to be read, not heard. Fences, tables and link targets turn into long
+  // runs of punctuation, so they are removed before the text reaches the synthesizer.
+  const speechTextFrom = (markdown, speakCode = false) => {
+    if (!markdown) return '';
+    let text = String(markdown).replace(/\r\n/g, '\n');
+    text = text.replace(/```([^\n`]*)\n([\s\S]*?)(?:```|$)/g, (_, language, code) => {
+      if (!speakCode) {
+        const named = String(language || '').trim().split(/\s+/)[0];
+        return `\n(${named ? `${named} code block` : 'code block'} omitted)\n`;
+      }
+      return `\n${code}\n`;
+    });
+    text = text
+      .replace(/^\s*\|.*\|\s*$/gm, '')
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+      .replace(/^\s{0,3}>\s?/gm, '')
+      .replace(/^\s{0,3}([-*_])\s*\1\s*\1[\s\S]*?$/gm, '')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .replace(/(\*\*|__)(.*?)\1/g, '$2')
+      // Captures the character before the opening marker rather than looking behind it: lookbehind
+      // is a parse-time syntax error in older browsers, which would take the whole file down.
+      .replace(/(^|[^*\w])\*(?!\s)([^*]*[^*\s])\*(?!\w)/g, '$1$2')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n');
+    return text.trim();
+  };
+
+  // Chromium stops a long utterance part way through, so the text is queued as short chunks split
+  // on sentence boundaries.
+  const speechChunks = (text, limit = 200) => {
+    const chunks = [];
+    for (const paragraph of text.split(/\n{2,}/)) {
+      // A sentence ends at terminal punctuation that is followed by whitespace. Lookahead is
+      // used rather than lookbehind, which is a parse-time syntax error in older browsers and
+      // would take the whole file down with it.
+      const sentences = (paragraph.trim().match(/\S[\s\S]*?[.!?;:](?=\s)|\S[\s\S]*$/g) || [])
+        .map((sentence) => sentence.trim())
+        .filter(Boolean);
+      let current = '';
+      for (const sentence of sentences) {
+        for (let rest = sentence; rest.length > 0;) {
+          const piece = rest.length <= limit ? rest : rest.slice(0, limit);
+          rest = rest.slice(piece.length);
+          if (current && current.length + piece.length + 1 > limit) {
+            chunks.push(current);
+            current = '';
+          }
+          current = current ? `${current} ${piece}` : piece;
+        }
+      }
+      if (current) chunks.push(current);
+    }
+    return chunks;
+  };
+
+  // The natural-sounding voices a browser offers are usually cloud services, so choosing one sends
+  // the response text to the browser vendor. Unless the host allowed that, only voices the browser
+  // reports as local are considered, and a preferred voice name cannot escape the restriction.
+  const pickSpeechVoice = (settings) => {
+    const all = window.speechSynthesis.getVoices() || [];
+    if (!all.length) return null;
+    const allowNetwork = settings.allowNetworkVoices === true;
+    const voices = allowNetwork ? all : all.filter((voice) => voice.localService);
+    if (!voices.length) return null;
+
+    const preferred = settings.preferredVoice?.toLowerCase();
+    if (preferred) {
+      const named = voices.find((voice) => voice.name?.toLowerCase() === preferred)
+        || voices.find((voice) => voice.name?.toLowerCase().includes(preferred));
+      if (named) return named;
+    }
+
+    // Where several voices speak the language, the remote ones sound markedly better, so they win
+    // once the host has allowed them.
+    const byQuality = (candidates) => candidates.find((voice) => !voice.localService)
+      || candidates[0]
+      || null;
+    const language = settings.language?.toLowerCase();
+    if (language) {
+      const exact = voices.filter((voice) => voice.lang?.toLowerCase() === language);
+      const prefix = voices.filter(
+        (voice) => voice.lang?.toLowerCase().startsWith(language.split('-')[0]));
+      const chosen = byQuality(exact) || byQuality(prefix);
+      if (chosen) return chosen;
+    }
+
+    // With no language preference the browser default is the right answer, but only if using it
+    // would not quietly send the text to a remote service.
+    const fallback = voices.find((voice) => voice.default);
+    if (fallback) return fallback;
+    return allowNetwork ? null : voices[0];
+  };
+
+  let activeSpeech = null;
+
+  const stopSpeaking = () => {
+    const speaking = activeSpeech;
+    activeSpeech = null;
+    if (speaking) speaking.onStopped();
+    if (speechSupported()) window.speechSynthesis.cancel();
+  };
+
+  // Only one response is ever spoken at a time: starting another stops the first.
+  const speak = (markdown, button, onStopped) => {
+    const settings = voiceSettings();
+    if (!settings) return false;
+    const text = speechTextFrom(markdown, settings.speakCode);
+    if (!text) return false;
+    stopSpeaking();
+    const chunks = speechChunks(text);
+    if (!chunks.length) return false;
+    const session = { button, onStopped };
+    activeSpeech = session;
+    const voice = pickSpeechVoice(settings);
+    // Chromium ignores a speak() issued in the same task as the cancel() above, so the queue is
+    // filled on the next tick.
+    setTimeout(() => {
+      if (activeSpeech !== session) return;
+      chunks.forEach((chunk, index) => {
+        const utterance = new SpeechSynthesisUtterance(chunk);
+        if (voice) utterance.voice = voice;
+        if (settings.language) utterance.lang = settings.language;
+        utterance.rate = settings.rate ?? 1;
+        utterance.pitch = settings.pitch ?? 1;
+        utterance.volume = settings.volume ?? 1;
+        if (index === chunks.length - 1) {
+          utterance.onend = () => { if (activeSpeech === session) stopSpeaking(); };
+        }
+        utterance.onerror = () => { if (activeSpeech === session) stopSpeaking(); };
+        window.speechSynthesis.speak(utterance);
+      });
+    }, 0);
+    return true;
+  };
+
+  // Closing the tab that owns a response takes its button off the page; the voice must not keep
+  // reading a response the person can no longer see or stop.
+  const stopSpeakingIfDetached = () => {
+    if (activeSpeech && activeSpeech.button && !activeSpeech.button.isConnected) stopSpeaking();
+  };
+
   function renderAgentContent(host, content, scope = state) {
     host.replaceChildren();
     const fenced = /```([^\r\n`]*)\r?\n([\s\S]*?)(?:```|$)/g;
@@ -4032,6 +4192,54 @@
         },
       }, copyIcon);
       copyMessage.hidden = !lastContentValue;
+      // The speaker button exists only for agent responses, and only when the host registered a
+      // voice service and this browser can actually synthesize speech.
+      const speakMessage = role === 'assistant' && voiceSettings() ? (() => {
+        const speakIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        speakIcon.setAttribute('class', 'agent-message-speak-icon');
+        speakIcon.setAttribute('viewBox', '0 0 24 24');
+        speakIcon.setAttribute('aria-hidden', 'true');
+        speakIcon.setAttribute('focusable', 'false');
+        const speakerCone = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        speakerCone.setAttribute('d', 'M11 5.5 6.5 9H4v6h2.5L11 18.5z');
+        const speakerWaveNear = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        speakerWaveNear.setAttribute('class', 'agent-message-speak-wave');
+        speakerWaveNear.setAttribute('d', 'M14.5 9.5a3.5 3.5 0 010 5');
+        const speakerWaveFar = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        speakerWaveFar.setAttribute('class', 'agent-message-speak-wave');
+        speakerWaveFar.setAttribute('d', 'M17 7a7 7 0 010 10');
+        speakIcon.append(speakerCone, speakerWaveNear, speakerWaveFar);
+        const button = h('button', {
+          class: 'agent-message-speak', type: 'button',
+          title: 'Read this response aloud',
+          'aria-label': 'Read this response aloud',
+          'aria-pressed': 'false',
+          'data-testid': 'agent-message-speak',
+        }, speakIcon);
+        const markStopped = () => {
+          button.classList.remove('is-speaking');
+          button.setAttribute('aria-pressed', 'false');
+          button.title = 'Read this response aloud';
+          button.setAttribute('aria-label', 'Read this response aloud');
+        };
+        button.addEventListener('click', () => {
+          if (button.classList.contains('is-speaking')) {
+            stopSpeaking();
+            return;
+          }
+          if (!lastContentValue) return;
+          if (!speak(lastContentValue, button, markStopped)) {
+            toast('Nothing to read aloud in this response.');
+            return;
+          }
+          button.classList.add('is-speaking');
+          button.setAttribute('aria-pressed', 'true');
+          button.title = 'Stop reading';
+          button.setAttribute('aria-label', 'Stop reading this response');
+        });
+        button.hidden = !lastContentValue;
+        return button;
+      })() : null;
       const createdAt = new Date();
       const messageFooter = h('div', {
         class: 'agent-message-footer', 'data-testid': 'agent-message-footer',
@@ -4042,6 +4250,7 @@
         role === 'assistant' && assistantLabel
           ? h('span', { class: 'agent-message-role-detail', text: `· ${assistantLabel}` })
           : null,
+        speakMessage,
         copyMessage);
       const body = h('div', { class: 'agent-message-content' });
       const error = h('div', { class: 'agent-message-error', hidden: '' });
@@ -4138,6 +4347,7 @@
       if (role === 'assistant' && content) {
         lastContentValue = content;
         copyMessage.hidden = false;
+        if (speakMessage) speakMessage.hidden = false;
         appendAnswerDelta(content);
       }
 
@@ -4149,6 +4359,7 @@
             : value;
           lastContentValue = value;
           copyMessage.hidden = !value;
+          if (speakMessage) speakMessage.hidden = !value;
           appendAnswerDelta(delta);
           scrollMessages();
         },
