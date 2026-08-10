@@ -2637,7 +2637,9 @@
       .replace(/^\s{0,3}([-*_])\s*\1\s*\1[\s\S]*?$/gm, '')
       .replace(/^\s*[-*+]\s+/gm, '')
       .replace(/(\*\*|__)(.*?)\1/g, '$2')
-      .replace(/(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)/g, '$1')
+      // Captures the character before the opening marker rather than looking behind it: lookbehind
+      // is a parse-time syntax error in older browsers, which would take the whole file down.
+      .replace(/(^|[^*\w])\*(?!\s)([^*]*[^*\s])\*(?!\w)/g, '$1$2')
       .replace(/<[^>]+>/g, ' ')
       .replace(/[ \t]+/g, ' ')
       .replace(/\n{3,}/g, '\n\n');
@@ -2649,7 +2651,12 @@
   const speechChunks = (text, limit = 200) => {
     const chunks = [];
     for (const paragraph of text.split(/\n{2,}/)) {
-      const sentences = paragraph.trim().split(/(?<=[.!?;:])\s+/).filter(Boolean);
+      // A sentence ends at terminal punctuation that is followed by whitespace. Lookahead is
+      // used rather than lookbehind, which is a parse-time syntax error in older browsers and
+      // would take the whole file down with it.
+      const sentences = (paragraph.trim().match(/\S[\s\S]*?[.!?;:](?=\s)|\S[\s\S]*$/g) || [])
+        .map((sentence) => sentence.trim())
+        .filter(Boolean);
       let current = '';
       for (const sentence of sentences) {
         for (let rest = sentence; rest.length > 0;) {
