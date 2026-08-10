@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <IsPackable>true</IsPackable>
+    <Description>Read-aloud support for Gridlet. Adds a speaker button to agent responses that speaks them through the browser's own speech synthesizer, with no audio generated or sent by the server.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Gridlet.Core\Gridlet.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Gridlet.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -60,6 +60,10 @@ internal static partial class GridletApiEndpoints
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/structure", GetObjectStructure);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/definition", GetObjectDefinition);
         api.MapPost("/connections/{connection}/databases/{database}/query", ExecuteQuery);
+        MapSessions(api);
+        MapRoutines(api);
+        MapPlans(api);
+        MapScripts(api);
 
         // Optional Microsoft Agent Framework integration. The routes stay dormant when no
         // IGridletAgentService has been registered by the host.
@@ -117,6 +121,9 @@ internal static partial class GridletApiEndpoints
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-keys", AddForeignKey);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/constraints/{constraint}", DropConstraint);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}", DropObject);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/rename", RenameObject);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/indexes/{index}/rename", RenameIndex);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/truncate", TruncateTable);
 
         // Saved queries.
         api.MapGet("/queries", GetSavedQueries);
@@ -156,7 +163,8 @@ internal static partial class GridletApiEndpoints
             connections,
             options.CurrentValue.Limits.MaxQueryResultRows,
             services.GetService<IGridletAgentService>()?.Info,
-            options.CurrentValue.PublishedApiSegment));
+            options.CurrentValue.PublishedApiSegment,
+            services.GetService<IGridletVoiceService>()?.Info));
     }
 
     private static Task<IResult> GetDatabases(
@@ -202,6 +210,7 @@ internal static partial class GridletApiEndpoints
         int? pageSize,
         string? sort,
         string? dir,
+        string? filter,
         IGridletConnectionResolver resolver,
         IOptionsMonitor<GridletOptions> options,
         CancellationToken cancellationToken)
@@ -214,7 +223,8 @@ internal static partial class GridletApiEndpoints
                 SortColumn: string.IsNullOrWhiteSpace(sort) ? null : sort,
                 SortDirection: string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase)
                     ? SortDirection.Descending
-                    : SortDirection.Ascending);
+                    : SortDirection.Ascending,
+                Filters: ParseFilters(filter));
 
             var resolved = resolver.Resolve(connection, database);
             var dataPage = await resolved.Provider.Data.GetPageAsync(
@@ -224,7 +234,7 @@ internal static partial class GridletApiEndpoints
 
     private static async Task StreamObjectData(
         string connection, string database, string schema, string name,
-        int? maxRows, string? sort, string? dir,
+        int? maxRows, string? sort, string? dir, string? filter,
         IGridletConnectionResolver resolver, IOptionsMonitor<GridletOptions> options,
         ILoggerFactory loggerFactory, HttpContext httpContext, CancellationToken cancellationToken)
     {
@@ -244,6 +254,7 @@ internal static partial class GridletApiEndpoints
 
         try
         {
+            var filters = ParseFilters(filter);
             var resolved = resolver.Resolve(connection, database);
             var emitted = 0;
             var page = 1;
@@ -251,11 +262,16 @@ internal static partial class GridletApiEndpoints
             do
             {
                 var data = await resolved.Provider.Data.GetPageAsync(resolved.Context, schema, name,
-                    new TableDataRequest(page, Math.Min(pageSize, cap - emitted), sort, direction), cancellationToken);
+                    new TableDataRequest(page, Math.Min(pageSize, cap - emitted), sort, direction, filters),
+                    cancellationToken);
                 totalRows = data.TotalRows;
-                if (page == 1) await WriteAsync(new QueryStreamEvent("resultSet", 0, data.Columns));
+                if (page == 1)
+                {
+                    await WriteAsync(new QueryStreamEvent(
+                        "resultSet", 0, data.Columns, RowIdentity: data.RowIdentity));
+                }
                 if (data.Rows.Count == 0) break;
-                await WriteAsync(new QueryStreamEvent("rows", 0, Rows: data.Rows));
+                await WriteAsync(new QueryStreamEvent("rows", 0, Rows: data.Rows, RowKeys: data.RowKeys));
                 emitted += data.Rows.Count;
                 page++;
             }
@@ -294,6 +310,49 @@ internal static partial class GridletApiEndpoints
         }
     }
 
+    /// <summary>
+    /// Reads the <c>filter</c> query parameter, a JSON array of conditions. JSON rather than a
+    /// delimited string because a filter value is arbitrary text and would otherwise have to be
+    /// escaped against whatever separator was chosen.
+    /// </summary>
+    private static IReadOnlyList<TableDataFilter>? ParseFilters(string? filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter))
+        {
+            return null;
+        }
+
+        List<TableDataFilterBody>? parsed;
+        try
+        {
+            parsed = JsonSerializer.Deserialize<List<TableDataFilterBody>>(filter, JsonSerializerOptions.Web);
+        }
+        catch (JsonException ex)
+        {
+            throw new GridletValidationException($"The filter could not be read: {ex.Message}");
+        }
+
+        if (parsed is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        return parsed.Select(entry =>
+        {
+            if (string.IsNullOrWhiteSpace(entry.Column))
+            {
+                throw new GridletValidationException("Every filter needs a column.");
+            }
+
+            if (!Enum.TryParse<FilterOperator>(entry.Operator, ignoreCase: true, out var @operator))
+            {
+                throw new GridletValidationException($"'{entry.Operator}' is not a filter operator.");
+            }
+
+            return new TableDataFilter(entry.Column, @operator, entry.Value);
+        }).ToArray();
+    }
+
     private static Task<IResult> GetObjectStructure(
         string connection,
         string database,
@@ -308,7 +367,8 @@ internal static partial class GridletApiEndpoints
                 resolved.Context, schema, name, cancellationToken);
             return Results.Ok(new TableStructureResponse(
                 ToDto(definition.Object), definition.Columns, definition.Indexes, definition.ForeignKeys,
-                definition.CheckConstraints, definition.UniqueConstraints));
+                definition.CheckConstraints, definition.UniqueConstraints, definition.RowIdentity,
+                definition.TableOptions));
         });
 
     private static Task<IResult> GetObjectDefinition(
@@ -937,14 +997,34 @@ internal static partial class GridletApiEndpoints
         var limits = options.CurrentValue.Limits;
         var maxRows = Math.Clamp(body.MaxRows ?? limits.MaxQueryResultRows, 1, limits.MaxQueryResultRows);
         var sql = body.Sql ?? "";
+        await WriteQueryStreamAsync(
+            httpContext, audit, loggerFactory, connection, database, sql,
+            token => resolved.Provider.Query.StreamAsync(
+                resolved.Context, sql,
+                new QueryRequestOptions(maxRows, limits.CommandTimeoutSeconds),
+                parameters: null, token),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Writes a query's events to the response as NDJSON, audits the execution, and reports failures
+    /// either as a status code (before the response starts) or as a final <c>error</c> event.
+    /// </summary>
+    private static async Task WriteQueryStreamAsync(
+        HttpContext httpContext,
+        IGridletAuditSink audit,
+        ILoggerFactory loggerFactory,
+        string connection,
+        string? database,
+        string sql,
+        Func<CancellationToken, IAsyncEnumerable<QueryStreamEvent>> stream,
+        CancellationToken cancellationToken)
+    {
         var stopwatch = Stopwatch.StartNew();
         httpContext.Response.ContentType = "application/x-ndjson; charset=utf-8";
         try
         {
-            await foreach (var queryEvent in resolved.Provider.Query.StreamAsync(
-                resolved.Context, sql,
-                new QueryRequestOptions(maxRows, limits.CommandTimeoutSeconds),
-                parameters: null, cancellationToken))
+            await foreach (var queryEvent in stream(cancellationToken))
             {
                 await JsonSerializer.SerializeAsync(httpContext.Response.Body, queryEvent,
                     JsonSerializerOptions.Web, cancellationToken);
@@ -971,7 +1051,9 @@ internal static partial class GridletApiEndpoints
             {
                 var statusCode = ex switch
                 {
-                    GridletUnknownConnectionException or GridletObjectNotFoundException => StatusCodes.Status404NotFound,
+                    GridletUnknownConnectionException or GridletObjectNotFoundException
+                        or GridletSessionNotFoundException => StatusCodes.Status404NotFound,
+                    GridletSessionBusyException => StatusCodes.Status409Conflict,
                     GridletValidationException or GridletQueryException => StatusCodes.Status400BadRequest,
                     _ => StatusCodes.Status500InternalServerError,
                 };
@@ -989,7 +1071,8 @@ internal static partial class GridletApiEndpoints
                 return;
             }
             var isExpected = ex is GridletValidationException or GridletQueryException or
-                GridletUnknownConnectionException or GridletObjectNotFoundException;
+                GridletUnknownConnectionException or GridletObjectNotFoundException or
+                GridletSessionNotFoundException or GridletSessionBusyException;
             var streamedMessage = isExpected ? ex.Message : UnexpectedErrorMessage;
             if (!isExpected)
             {
@@ -1255,6 +1338,63 @@ internal static partial class GridletApiEndpoints
             (resolved, ct) => resolved.Provider.Ddl.DropObjectAsync(
                 resolved.Context, schema, name, type ?? DbObjectType.Table, ct),
             cancellationToken);
+
+    private static Task<IResult> RenameObject(
+        string connection, string database, string schema, string name, RenameRequest body,
+        DbObjectType? type,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}", "ddl.renameObject", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.RenameObjectAsync(
+                resolved.Context, schema, name, type ?? DbObjectType.Table, RequireNewName(body), ct),
+            cancellationToken);
+
+    private static Task<IResult> RenameIndex(
+        string connection, string database, string schema, string name, string index, RenameRequest body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}.{index}", "ddl.renameIndex", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.RenameIndexAsync(
+                resolved.Context, schema, name, index, RequireNewName(body), ct),
+            cancellationToken);
+
+    /// <summary>
+    /// Emptying a table destroys data but changes no schema, so it is gated on writes rather than
+    /// DDL - the same permission that lets somebody delete the rows one at a time.
+    /// </summary>
+    private static Task<IResult> TruncateTable(
+        string connection, string database, string schema, string name,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            if (!resolved.Context.Connection.AllowWrites)
+            {
+                return Forbidden($"Writes are disabled for connection '{resolved.Context.ConnectionName}'.");
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                await resolved.Provider.Ddl.TruncateTableAsync(
+                    resolved.Context, schema, name, cancellationToken);
+                await AuditAsync(audit, httpContext, "data.truncate", connection, database,
+                    $"{schema}.{name}", null, succeeded: true, stopwatch.ElapsedMilliseconds, null);
+                return Results.NoContent();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                await AuditAsync(audit, httpContext, "data.truncate", connection, database,
+                    $"{schema}.{name}", null, succeeded: false, stopwatch.ElapsedMilliseconds, ex.Message);
+                throw;
+            }
+        });
+
+    private static string RequireNewName(RenameRequest body)
+        => string.IsNullOrWhiteSpace(body?.NewName)
+            ? throw new GridletValidationException("The new name must not be empty.")
+            : body.NewName.Trim();
 
     private static Task<IResult> Ddl(
         string connection, string database, string objectName, string action,

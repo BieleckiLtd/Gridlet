@@ -365,6 +365,151 @@ public sealed class SqliteTableDdlService : ITableDdlService
             ? DropTableAsync(context, schema, name, cancellationToken)
             : ExecuteAsync(context, SqliteDdlBuilder.BuildDropObject(schema, name, type), cancellationToken);
 
+    public string BuildDropScript(DbObjectInfo @object)
+        => @object.Type == DbObjectType.Table
+            ? SqliteDdlBuilder.BuildDropTable(SqliteIdentifier.MainSchema, @object.Name)
+            : SqliteDdlBuilder.BuildDropObject(SqliteIdentifier.MainSchema, @object.Name, @object.Type);
+
+    public string BuildInsertScript(
+        TableDefinition table,
+        IReadOnlyList<ResultColumn> columns,
+        IReadOnlyList<object?[]> rows)
+        => SqliteInsertScriptBuilder.Build(table, columns, rows);
+
+    /// <summary>
+    /// A new name is always unqualified: a rename changes the name, it does not move the object.
+    /// Quoting would happily accept a dotted name and produce an object whose name only looks
+    /// qualified, which is worse than refusing it.
+    /// </summary>
+    private static string RequireUnqualified(string newName, string kind)
+    {
+        if (string.IsNullOrWhiteSpace(newName))
+        {
+            throw new GridletValidationException($"The new {kind} name must not be empty.");
+        }
+
+        if (newName.Contains('.', StringComparison.Ordinal))
+        {
+            throw new GridletValidationException(
+                $"A rename changes the name only, so give the new {kind} name without a schema. " +
+                "SQLite has one schema for user objects anyway.");
+        }
+
+        return newName.Trim();
+    }
+
+    /// <summary>
+    /// Renames a table. SQLite has no rename for views, triggers or routines - they would have to be
+    /// dropped and recreated from their source, which is the person's decision to make in the
+    /// editor, not something to do to their definition behind their back.
+    /// </summary>
+    public async Task RenameObjectAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        DbObjectType type,
+        string newName,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        var target = RequireUnqualified(newName, "object");
+        if (type != DbObjectType.Table)
+        {
+            throw new GridletValidationException(
+                $"SQLite cannot rename a {type.ToString().ToLowerInvariant()}. " +
+                "Edit its definition instead: drop it and create it under the new name.");
+        }
+
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, name, cancellationToken);
+        if (definition.Object.IsInternal || definition.Object.SubKind == "shadow")
+        {
+            throw new GridletValidationException(
+                $"Internal SQLite table {schema}.{name} cannot be renamed.");
+        }
+
+        await ExecuteAsync(connection, transaction: null,
+            $"ALTER TABLE {SqliteIdentifier.Quote(name)} RENAME TO {SqliteIdentifier.Quote(target)};",
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Renames an index by recreating it: SQLite has no ALTER INDEX. The definition is read back from
+    /// the database rather than rewritten as text, so the new index is the same index.
+    /// </summary>
+    public async Task RenameIndexAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        string indexName,
+        string newName,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        var target = RequireUnqualified(newName, "index");
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, table, cancellationToken);
+
+        // Renaming here means dropping and recreating, which an internal table's own indexes cannot
+        // survive: a virtual table's shadow tables are maintained by its module, not by us.
+        if (definition.Object.IsInternal || definition.Object.SubKind is "virtual" or "shadow")
+        {
+            throw new GridletValidationException(
+                $"Indexes on internal SQLite table {schema}.{table} cannot be renamed.");
+        }
+
+        var index = definition.Indexes.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, indexName, StringComparison.OrdinalIgnoreCase))
+            ?? throw new GridletObjectNotFoundException($"{schema}.{table}.{indexName}");
+        if (index.IsPrimaryKey)
+        {
+            throw new GridletValidationException(
+                "The primary-key index is part of the table definition and has no name to change.");
+        }
+
+        var keys = index.KeyColumns is { Count: > 0 }
+            ? index.KeyColumns
+                .OrderBy(key => key.Ordinal)
+                .Select(key => new IndexKeyDesign(key.Column, key.IsDescending, key.Expression, key.Collation))
+                .ToArray()
+            : index.Columns.Select(column => new IndexKeyDesign(column)).ToArray();
+        var design = new IndexDesign(
+            target,
+            keys,
+            index.IsUnique,
+            FilterExpression: index.FilterDefinition);
+
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await ExecuteAsync(connection, transaction,
+            SqliteDdlBuilder.BuildDropIndex(schema, indexName), cancellationToken);
+        await ExecuteAsync(connection, transaction,
+            SqliteDdlBuilder.BuildCreateIndex(schema, table, design), cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Empties a table. SQLite has no TRUNCATE; an unqualified DELETE is its equivalent and the
+    /// engine optimises it into the same wholesale drop of the table's pages.
+    /// </summary>
+    public async Task TruncateTableAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireMainSchema(schema);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, table, cancellationToken);
+        if (definition.Object.Type != DbObjectType.Table || definition.Object.IsInternal
+            || definition.Object.SubKind == "shadow")
+        {
+            throw new GridletValidationException($"{schema}.{table} is not a table Gridlet can empty.");
+        }
+
+        await ExecuteAsync(connection, transaction: null,
+            $"DELETE FROM {SqliteIdentifier.QuoteQualified(schema, table)};", cancellationToken);
+    }
+
     internal static async Task RebuildTableAsync(
         SqliteConnection connection,
         TableDefinition definition,
@@ -382,7 +527,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         await EnsureTableCanBeRebuiltAsync(connection, schema, table, cancellationToken);
         var tempTable = $"__gridlet_{table}_{Guid.NewGuid():N}";
         var keyName = primaryKeyName ?? definition.Indexes.FirstOrDefault(i => i.IsPrimaryKey)?.Name;
-        var tempDesign = new TableDesign(schema, tempTable, columns);
+        // The rebuilt table has to be the same kind of table: dropping WITHOUT ROWID or STRICT would
+        // silently change how the engine stores and checks every row.
+        var tempDesign = new TableDesign(schema, tempTable, columns, definition.TableOptions);
         checkConstraints ??= ToCheckDesigns(definition, renamedColumns, columns);
         uniqueConstraints ??= ToUniqueDesigns(definition, renamedColumns, columns);
         ordinaryIndexes ??= ToIndexDesigns(definition, renamedColumns, columns);
@@ -500,19 +647,15 @@ public sealed class SqliteTableDdlService : ITableDdlService
         CancellationToken cancellationToken)
     {
         string tableType;
-        bool withoutRowId;
-        bool strict;
         await using (var classification = connection.CreateCommand())
         {
             classification.CommandText =
-                "SELECT type, wr, strict FROM pragma_table_list WHERE schema = 'main' AND name = @table;";
+                "SELECT type FROM pragma_table_list WHERE schema = 'main' AND name = @table;";
             classification.Parameters.AddWithValue("@table", table);
             await using var reader = await classification.ExecuteReaderAsync(cancellationToken);
             if (!await reader.ReadAsync(cancellationToken))
                 throw new GridletObjectNotFoundException($"{schema}.{table}");
             tableType = reader.GetString(0);
-            withoutRowId = reader.GetInt64(1) != 0;
-            strict = reader.GetInt64(2) != 0;
         }
 
         if (tableType is "virtual" or "shadow")
@@ -532,9 +675,6 @@ public sealed class SqliteTableDdlService : ITableDdlService
         }
 
         var unsupported = new List<string>();
-        if (strict) unsupported.Add("STRICT tables");
-        if (withoutRowId) unsupported.Add("WITHOUT ROWID tables");
-        if (SqliteCreateSqlParser.ParseTable(source).HasColumnCollation) unsupported.Add("column collations");
         if (SqliteSqlInspection.ContainsKeywordSequence(source, "ON", "CONFLICT")) unsupported.Add("ON CONFLICT policies");
 
         await using (var primaryKey = connection.CreateCommand())
@@ -716,7 +856,8 @@ public sealed class SqliteTableDdlService : ITableDdlService
             column.ComputedDefinition,
             column.IsPersisted,
             column.IdentitySeed ?? 1,
-            column.IdentityIncrement ?? 1);
+            column.IdentityIncrement ?? 1,
+            column.Collation);
 
     private static ForeignKeyDesign[] ToForeignKeyDesigns(TableDefinition definition)
         => definition.ForeignKeys.Select(fk => new ForeignKeyDesign(

@@ -23,6 +23,16 @@ public static class SqlServerSqlBuilder
         string? sortColumn,
         SortDirection sortDirection,
         IReadOnlyList<string>? primaryKeyColumns)
+        => BuildPageSql(schema, name, sortColumn, sortDirection, primaryKeyColumns, whereClause: "");
+
+    /// <summary>Builds a paged <c>SELECT</c> restricted by <paramref name="whereClause"/>.</summary>
+    public static string BuildPageSql(
+        string schema,
+        string name,
+        string? sortColumn,
+        SortDirection sortDirection,
+        IReadOnlyList<string>? primaryKeyColumns,
+        string whereClause)
     {
         var target = SqlServerIdentifier.QuoteQualified(schema, name);
         var orderByColumns = new List<string>();
@@ -50,10 +60,106 @@ public static class SqlServerSqlBuilder
             ? "(SELECT NULL)"
             : string.Join(", ", orderByColumns);
 
-        return $"SELECT * FROM {target} ORDER BY {orderBy} OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;";
+        return $"SELECT * FROM {target}{whereClause} ORDER BY {orderBy} " +
+            "OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;";
     }
 
     /// <summary>Builds a total row count query for a table or view.</summary>
     public static string BuildCountSql(string schema, string name)
-        => $"SELECT COUNT_BIG(*) FROM {SqlServerIdentifier.QuoteQualified(schema, name)};";
+        => BuildCountSql(schema, name, whereClause: "");
+
+    /// <summary>
+    /// Builds a total row count restricted by <paramref name="whereClause"/>, so the total matches
+    /// the rows the same filter returns.
+    /// </summary>
+    public static string BuildCountSql(string schema, string name, string whereClause)
+        => $"SELECT COUNT_BIG(*) FROM {SqlServerIdentifier.QuoteQualified(schema, name)}{whereClause};";
+
+    /// <summary>
+    /// Translates column filters into a WHERE clause and its parameters. Column names are matched
+    /// against <paramref name="columns"/> and then bracket-quoted; every value is a parameter, so a
+    /// filter cannot carry SQL.
+    /// </summary>
+    /// <param name="filters">The conditions, combined with AND. Null or empty yields no clause.</param>
+    /// <param name="columns">The object's column names, used to resolve and validate each filter.</param>
+    /// <returns>
+    /// The clause including its leading <c>WHERE</c>, or an empty string, and the parameters to add
+    /// to the command.
+    /// </returns>
+    public static (string Clause, IReadOnlyList<(string Name, object? Value)> Parameters) BuildFilterClause(
+        IReadOnlyList<TableDataFilter>? filters,
+        IReadOnlyList<string> columns)
+    {
+        if (filters is not { Count: > 0 })
+        {
+            return ("", []);
+        }
+
+        var predicates = new List<string>(filters.Count);
+        var parameters = new List<(string, object?)>();
+        foreach (var filter in filters)
+        {
+            var column = columns.FirstOrDefault(
+                candidate => string.Equals(candidate, filter.Column, StringComparison.OrdinalIgnoreCase))
+                ?? throw new GridletValidationException(
+                    $"Filter column '{filter.Column}' does not exist.");
+            var quoted = SqlServerIdentifier.Quote(column);
+            var parameterName = "@f" + parameters.Count;
+
+            switch (filter.Operator)
+            {
+                case FilterOperator.IsNull:
+                    predicates.Add($"{quoted} IS NULL");
+                    continue;
+                case FilterOperator.IsNotNull:
+                    predicates.Add($"{quoted} IS NOT NULL");
+                    continue;
+            }
+
+            var value = filter.Value
+                ?? throw new GridletValidationException(
+                    $"Filter on '{column}' needs a value. Use 'is null' to match rows without one.");
+            var (predicate, parameterValue) = filter.Operator switch
+            {
+                FilterOperator.Equals => ($"{quoted} = {parameterName}", (object?)value),
+                FilterOperator.NotEquals => ($"{quoted} <> {parameterName}", value),
+                FilterOperator.LessThan => ($"{quoted} < {parameterName}", value),
+                FilterOperator.LessThanOrEqual => ($"{quoted} <= {parameterName}", value),
+                FilterOperator.GreaterThan => ($"{quoted} > {parameterName}", value),
+                FilterOperator.GreaterThanOrEqual => ($"{quoted} >= {parameterName}", value),
+                FilterOperator.Contains =>
+                    ($"{quoted} LIKE {parameterName}", $"%{EscapeLike(value)}%"),
+                FilterOperator.NotContains =>
+                    ($"{quoted} NOT LIKE {parameterName}", $"%{EscapeLike(value)}%"),
+                FilterOperator.StartsWith =>
+                    ($"{quoted} LIKE {parameterName}", $"{EscapeLike(value)}%"),
+                FilterOperator.EndsWith =>
+                    ($"{quoted} LIKE {parameterName}", $"%{EscapeLike(value)}"),
+                _ => throw new GridletValidationException(
+                    $"Filter operator '{filter.Operator}' is not supported."),
+            };
+
+            predicates.Add(predicate);
+            parameters.Add((parameterName, parameterValue));
+        }
+
+        return (" WHERE " + string.Join(" AND ", predicates), parameters);
+    }
+
+    /// <summary>
+    /// Escapes the characters LIKE treats as wildcards by putting each in a character class, which
+    /// is the form SQL Server documents for matching one literally.
+    /// </summary>
+    /// <remarks>
+    /// A class is used rather than an ESCAPE character because it is unambiguous for <c>[</c>, which
+    /// opens a class of its own: <c>[[]</c> matches one literal bracket whatever the escape rules
+    /// say. It also leaves a backslash in the search text as an ordinary character rather than a
+    /// second thing to escape. The bracket is replaced first, since the other replacements introduce
+    /// brackets of their own.
+    /// </remarks>
+    private static string EscapeLike(string value)
+        => value
+            .Replace("[", "[[]")
+            .Replace("%", "[%]")
+            .Replace("_", "[_]");
 }

@@ -1,6 +1,7 @@
 using Gridlet;
 using Gridlet.Abstractions;
 using Gridlet.Auditing;
+using Gridlet.Sessions;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 
@@ -29,6 +30,8 @@ public static class GridletCoreServiceCollectionExtensions
         services.TryAddSingleton<IGridletProviderRegistry, GridletProviderRegistry>();
         services.TryAddSingleton<IGridletConnectionResolver, GridletConnectionResolver>();
         services.TryAddSingleton<IGridletAuditSink, LoggingGridletAuditSink>();
+        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<GridletQuerySessionManager>();
 
         return new GridletBuilder(services);
     }

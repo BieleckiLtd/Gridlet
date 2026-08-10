@@ -18,8 +18,83 @@ public sealed record GridletProviderCapabilities(
     string ObjectEditMode,
     bool SupportsCheckConstraints = false,
     bool SupportsUniqueConstraints = false,
-    bool SupportsIndexes = false)
+    bool SupportsIndexes = false,
+    bool SupportsSessions = false,
+    bool SupportsQueryPlans = false,
+    IReadOnlyList<string>? SupportedTableOptions = null)
 {
+    /// <summary>Creates the sixteen-field capability shape without relying on optional-parameter ABI.</summary>
+    public GridletProviderCapabilities(
+        string defaultSchema,
+        bool supportsSchemas,
+        bool supportsViews,
+        bool supportsStoredProcedures,
+        bool supportsFunctions,
+        bool supportsTriggers,
+        bool supportsClusteredPrimaryKeys,
+        IReadOnlyList<string> suggestedDataTypes,
+        string selectExample,
+        string createTriggerExample,
+        string objectEditMode,
+        bool supportsCheckConstraints,
+        bool supportsUniqueConstraints,
+        bool supportsIndexes,
+        bool supportsSessions,
+        bool supportsQueryPlans)
+        : this(defaultSchema, supportsSchemas, supportsViews, supportsStoredProcedures,
+            supportsFunctions, supportsTriggers, supportsClusteredPrimaryKeys, suggestedDataTypes,
+            selectExample, createTriggerExample, objectEditMode, supportsCheckConstraints,
+            supportsUniqueConstraints, supportsIndexes, supportsSessions, supportsQueryPlans, null)
+    {
+    }
+
+    /// <summary>Creates the fifteen-field capability shape without relying on optional-parameter ABI.</summary>
+    public GridletProviderCapabilities(
+        string defaultSchema,
+        bool supportsSchemas,
+        bool supportsViews,
+        bool supportsStoredProcedures,
+        bool supportsFunctions,
+        bool supportsTriggers,
+        bool supportsClusteredPrimaryKeys,
+        IReadOnlyList<string> suggestedDataTypes,
+        string selectExample,
+        string createTriggerExample,
+        string objectEditMode,
+        bool supportsCheckConstraints,
+        bool supportsUniqueConstraints,
+        bool supportsIndexes,
+        bool supportsSessions)
+        : this(defaultSchema, supportsSchemas, supportsViews, supportsStoredProcedures,
+            supportsFunctions, supportsTriggers, supportsClusteredPrimaryKeys, suggestedDataTypes,
+            selectExample, createTriggerExample, objectEditMode, supportsCheckConstraints,
+            supportsUniqueConstraints, supportsIndexes, supportsSessions, false, null)
+    {
+    }
+
+    /// <summary>Creates the fourteen-field capability shape without relying on optional-parameter ABI.</summary>
+    public GridletProviderCapabilities(
+        string defaultSchema,
+        bool supportsSchemas,
+        bool supportsViews,
+        bool supportsStoredProcedures,
+        bool supportsFunctions,
+        bool supportsTriggers,
+        bool supportsClusteredPrimaryKeys,
+        IReadOnlyList<string> suggestedDataTypes,
+        string selectExample,
+        string createTriggerExample,
+        string objectEditMode,
+        bool supportsCheckConstraints,
+        bool supportsUniqueConstraints,
+        bool supportsIndexes)
+        : this(defaultSchema, supportsSchemas, supportsViews, supportsStoredProcedures,
+            supportsFunctions, supportsTriggers, supportsClusteredPrimaryKeys, suggestedDataTypes,
+            selectExample, createTriggerExample, objectEditMode, supportsCheckConstraints,
+            supportsUniqueConstraints, supportsIndexes, false, false, null)
+    {
+    }
+
     /// <summary>Creates the legacy eleven-field capability shape without relying on optional-parameter ABI.</summary>
     public GridletProviderCapabilities(
         string defaultSchema,
@@ -35,7 +110,7 @@ public sealed record GridletProviderCapabilities(
         string objectEditMode)
         : this(defaultSchema, supportsSchemas, supportsViews, supportsStoredProcedures,
             supportsFunctions, supportsTriggers, supportsClusteredPrimaryKeys, suggestedDataTypes,
-            selectExample, createTriggerExample, objectEditMode, false, false, false)
+            selectExample, createTriggerExample, objectEditMode, false, false, false, false, false, null)
     {
     }
 

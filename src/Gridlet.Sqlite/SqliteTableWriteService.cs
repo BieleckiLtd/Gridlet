@@ -95,9 +95,21 @@ public sealed class SqliteTableWriteService : ITableWriteService
         bool forWrite)
     {
         if (requested is null) return null;
+        var rowIdKey = !forWrite && definition.RowIdentity?.Kind == RowIdentityKinds.RowId
+            ? definition.RowIdentity.Columns[0]
+            : null;
         var result = new List<string>(requested.Count);
         foreach (var requestedName in requested.Keys)
         {
+            // The rowid identity addresses a row that has no usable primary key; it is a real
+            // SQLite column reference even though it is not part of the table's column list.
+            if (rowIdKey is not null
+                && string.Equals(rowIdKey, requestedName, StringComparison.OrdinalIgnoreCase))
+            {
+                result.Add(rowIdKey);
+                continue;
+            }
+
             var column = definition.Columns.FirstOrDefault(
                 c => string.Equals(c.Name, requestedName, StringComparison.OrdinalIgnoreCase))
                 ?? throw new GridletValidationException(

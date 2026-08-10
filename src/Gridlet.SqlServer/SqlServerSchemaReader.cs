@@ -104,7 +104,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             SELECT c.name, t.name AS type_name, c.max_length, c.precision, c.scale,
                    c.is_nullable, c.is_identity, c.is_computed, dc.definition AS default_definition,
                    cc.definition AS computed_definition, cc.is_persisted,
-                   CONVERT(bigint, ic.seed_value), CONVERT(bigint, ic.increment_value)
+                   CONVERT(bigint, ic.seed_value), CONVERT(bigint, ic.increment_value),
+                   c.collation_name
             FROM sys.columns c
             JOIN sys.types t ON t.user_type_id = c.user_type_id
             LEFT JOIN sys.default_constraints dc
@@ -231,7 +232,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 ComputedDefinition: reader.IsDBNull(9) ? null : reader.GetString(9),
                 IsPersisted: !reader.IsDBNull(10) && reader.GetBoolean(10),
                 IdentitySeed: reader.IsDBNull(11) ? null : reader.GetInt64(11),
-                IdentityIncrement: reader.IsDBNull(12) ? null : reader.GetInt64(12)));
+                IdentityIncrement: reader.IsDBNull(12) ? null : reader.GetInt64(12),
+                Collation: reader.IsDBNull(13) ? null : reader.GetString(13)));
         }
 
         // Result set 3: primary key columns.
@@ -386,11 +388,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 reader.GetBoolean(5)));
         }
 
-        return new TableDefinition(
-            dbObject,
-            columns,
-            indexOrder
-                .Select(n => new IndexInfo(
+        var indexInfos = indexOrder
+            .Select(n => new IndexInfo(
                     n,
                     indexes[n].Kind,
                     indexes[n].IsUnique,
@@ -404,21 +403,72 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                     indexes[n].FillFactor,
                     indexes[n].IsDisabled,
                     indexes[n].IsOrderedColumnstore))
-                .ToArray(),
+            .ToArray();
+        var uniqueConstraintInfos = uniqueConstraintOrder
+            .Select(n => new UniqueConstraintInfo(
+                n,
+                uniqueConstraints[n].Columns,
+                uniqueConstraints[n].Ordinal,
+                uniqueConstraints[n].IsClustered,
+                uniqueConstraints[n].FillFactor,
+                uniqueConstraints[n].IsDisabled))
+            .ToArray();
+
+        return new TableDefinition(
+            dbObject,
+            columns,
+            indexInfos,
             foreignKeyOrder
                 .Select(n => new ForeignKeyInfo(n, foreignKeys[n].ReferencedSchema, foreignKeys[n].ReferencedTable,
                     foreignKeys[n].Columns, foreignKeys[n].OnDelete, foreignKeys[n].OnUpdate))
                 .ToArray(),
             checkConstraints,
-            uniqueConstraintOrder
-                .Select(n => new UniqueConstraintInfo(
-                    n,
-                    uniqueConstraints[n].Columns,
-                    uniqueConstraints[n].Ordinal,
-                    uniqueConstraints[n].IsClustered,
-                    uniqueConstraints[n].FillFactor,
-                    uniqueConstraints[n].IsDisabled))
-                .ToArray());
+            uniqueConstraintInfos,
+            objectType == DbObjectType.Table
+                ? SqlServerRowIdentity.Resolve(
+                    PrimaryKeyColumnsInKeyOrder(indexInfos, columns),
+                    UniqueKeyCandidates(indexInfos, uniqueConstraintInfos),
+                    columns.ToDictionary(c => c.Name, c => c.IsNullable, StringComparer.OrdinalIgnoreCase))
+                : null);
+    }
+
+    /// <summary>Returns the primary-key columns in key order, preferring the index's own ordering.</summary>
+    private static IReadOnlyList<string> PrimaryKeyColumnsInKeyOrder(
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ColumnInfo> columns)
+    {
+        var primaryKey = indexes.FirstOrDefault(index => index.IsPrimaryKey);
+        return primaryKey is not null
+            ? primaryKey.Columns
+            : columns.Where(c => c.IsPrimaryKey).Select(c => c.Name).ToArray();
+    }
+
+    /// <summary>Returns the unique constraints and unique indexes that could identify a row.</summary>
+    private static IEnumerable<SqlServerRowIdentity.UniqueKey> UniqueKeyCandidates(
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints)
+    {
+        foreach (var constraint in uniqueConstraints.Where(c => c.Name is not null))
+        {
+            yield return new SqlServerRowIdentity.UniqueKey(
+                constraint.Name!,
+                constraint.Columns
+                    .OrderBy(column => column.Ordinal)
+                    .Select(column => column.Column)
+                    .Where(column => column is not null)
+                    .Select(column => column!)
+                    .ToArray(),
+                constraint.IsDisabled);
+        }
+
+        foreach (var index in indexes.Where(i => i.IsUnique && !i.IsPrimaryKey && !i.IsColumnstore))
+        {
+            yield return new SqlServerRowIdentity.UniqueKey(
+                index.Name,
+                index.Columns,
+                index.IsDisabled,
+                !string.IsNullOrWhiteSpace(index.FilterDefinition));
+        }
     }
 
     public async Task<string?> GetObjectDefinitionAsync(
@@ -456,6 +506,116 @@ public sealed class SqlServerSchemaReader : ISchemaReader
 
         return null;
     }
+
+    /// <summary>
+    /// Reads a routine's parameters. For a procedure the return value is synthesised, because every
+    /// procedure returns an int and SQL Server does not list it; for a scalar function the engine
+    /// reports it as parameter 0.
+    /// </summary>
+    public async Task<RoutineDefinition> GetRoutineDefinitionAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql =
+            """
+            SELECT o.type, s.name, o.name
+            FROM sys.objects o
+            JOIN sys.schemas s ON s.schema_id = o.schema_id
+            WHERE o.object_id = OBJECT_ID(@name);
+
+            SELECT p.name, t.name AS type_name, p.max_length, p.precision, p.scale,
+                   p.parameter_id, p.is_output, p.has_default_value,
+                   CONVERT(nvarchar(4000), p.default_value) AS default_text,
+                   p.is_readonly, t.is_table_type, SCHEMA_NAME(t.schema_id) AS type_schema
+            FROM sys.parameters p
+            JOIN sys.types t ON t.user_type_id = p.user_type_id
+            WHERE p.object_id = OBJECT_ID(@name)
+            ORDER BY p.parameter_id;
+            """;
+
+        var qualifiedName = SqlServerIdentifier.QuoteQualified(schema, name);
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@name", qualifiedName);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            throw new GridletObjectNotFoundException(qualifiedName);
+        }
+
+        var objectType = MapObjectType(reader.GetString(0));
+        if (objectType is not (DbObjectType.StoredProcedure or DbObjectType.ScalarFunction
+            or DbObjectType.TableValuedFunction))
+        {
+            throw new GridletValidationException(
+                $"{qualifiedName} is not a stored procedure or function.");
+        }
+
+        var routine = new DbObjectInfo(reader.GetString(1), reader.GetString(2), objectType.Value);
+
+        await reader.NextResultAsync(cancellationToken);
+        var parameters = new List<RoutineParameterInfo>();
+        if (objectType == DbObjectType.StoredProcedure)
+        {
+            parameters.Add(new RoutineParameterInfo(
+                "@ReturnValue", "int", 0, IsOutput: true, IsReturnValue: true));
+        }
+
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var parameterId = reader.GetInt32(5);
+            var isTableType = !reader.IsDBNull(10) && reader.GetBoolean(10);
+            var typeName = ParameterTypeName(
+                isTableType,
+                reader.IsDBNull(11) ? "dbo" : reader.GetString(11),
+                reader.GetString(1),
+                reader.GetInt16(2),
+                reader.GetByte(3),
+                reader.GetByte(4));
+            parameters.Add(new RoutineParameterInfo(
+                Name: ParameterName(reader.IsDBNull(0) ? null : reader.GetString(0)),
+                DataType: typeName,
+                Ordinal: parameterId,
+                IsOutput: reader.GetBoolean(6) && parameterId > 0,
+                IsReturnValue: parameterId == 0,
+                HasDefault: reader.GetBoolean(7),
+                DefaultDefinition: reader.IsDBNull(8) ? null : reader.GetString(8),
+                IsReadOnly: reader.GetBoolean(9),
+                IsTableType: isTableType));
+        }
+
+        return new RoutineDefinition(routine, parameters);
+    }
+
+    /// <summary>
+    /// Names the return-value row of a function, which SQL Server reports with no name of its own.
+    /// Both an empty name and a missing one are treated the same way, so the caller does not depend
+    /// on which the engine returns.
+    /// </summary>
+    internal static string ParameterName(string? name)
+        => string.IsNullOrEmpty(name) ? "@ReturnValue" : name;
+
+    /// <summary>
+    /// Names a parameter's type for the generated script. Only the built-in types are written bare
+    /// with their length; a type the database owns - a table type, an alias type, a CLR type - is
+    /// named in full, because the script can be run by somebody whose default schema is not the one
+    /// the type lives in, where an unqualified name would not resolve.
+    /// </summary>
+    internal static string ParameterTypeName(
+        bool isTableType, string typeSchema, string typeName, int maxLength, byte precision, byte scale)
+        => isTableType || !string.Equals(typeSchema, "sys", StringComparison.OrdinalIgnoreCase)
+            ? SqlServerIdentifier.QuoteQualified(typeSchema, typeName)
+            : SqlServerDataTypeFormatter.Format(typeName, maxLength, precision, scale);
+
+    /// <inheritdoc />
+    public string BuildRoutineExecuteScript(
+        RoutineDefinition routine,
+        IReadOnlyDictionary<string, RoutineArgument> arguments)
+        => SqlServerRoutineScriptBuilder.Build(routine, arguments);
 
     private static DbObjectType? MapObjectType(string type)
         => type.Trim() switch

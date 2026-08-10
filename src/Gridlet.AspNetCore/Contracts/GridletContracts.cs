@@ -9,7 +9,8 @@ public sealed record GridletMetaResponse(
     IReadOnlyList<GridletConnectionSummary> Connections,
     int MaxQueryResultRows,
     GridletAgentInfo? Agent = null,
-    string PublishedApiSegment = "pub");
+    string PublishedApiSegment = "pub",
+    GridletVoiceInfo? Voice = null);
 
 public sealed record GridletConnectionSummary(
     string Name,
@@ -49,14 +50,40 @@ public sealed record TableStructureResponse(
     IReadOnlyList<IndexInfo> Indexes,
     IReadOnlyList<ForeignKeyInfo> ForeignKeys,
     IReadOnlyList<CheckConstraintInfo> CheckConstraints,
-    IReadOnlyList<UniqueConstraintInfo> UniqueConstraints)
+    IReadOnlyList<UniqueConstraintInfo> UniqueConstraints,
+    RowIdentityInfo? RowIdentity = null,
+    IReadOnlyList<string>? TableOptions = null)
 {
     public TableStructureResponse(
         DbObjectDto @object,
         IReadOnlyList<ColumnInfo> columns,
         IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ForeignKeyInfo> foreignKeys,
+        IReadOnlyList<CheckConstraintInfo> checkConstraints,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints,
+        RowIdentityInfo? rowIdentity)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints,
+            rowIdentity, null)
+    {
+    }
+
+    public TableStructureResponse(
+        DbObjectDto @object,
+        IReadOnlyList<ColumnInfo> columns,
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ForeignKeyInfo> foreignKeys,
+        IReadOnlyList<CheckConstraintInfo> checkConstraints,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, null, null)
+    {
+    }
+
+    public TableStructureResponse(
+        DbObjectDto @object,
+        IReadOnlyList<ColumnInfo> columns,
+        IReadOnlyList<IndexInfo> indexes,
         IReadOnlyList<ForeignKeyInfo> foreignKeys)
-        : this(@object, columns, indexes, foreignKeys, [], [])
+        : this(@object, columns, indexes, foreignKeys, [], [], null, null)
     {
     }
 
@@ -75,7 +102,61 @@ public sealed record TableStructureResponse(
 
 public sealed record ObjectDefinitionResponse(string? Definition);
 
+/// <summary>Body for scripting an object.</summary>
+/// <param name="Include">Any of <c>drop</c>, <c>create</c> and <c>data</c>; defaults to create.</param>
+/// <param name="MaxRows">How many rows to script, clamped to the server's query row limit.</param>
+public sealed record ObjectScriptRequest(List<string?>? Include, int? MaxRows = null);
+
+/// <summary>A generated script, ready for the query editor.</summary>
+public sealed record ObjectScriptResponse(string Sql);
+
+/// <summary>The parameters a stored procedure or function is called with.</summary>
+public sealed record RoutineDefinitionResponse(
+    DbObjectDto Object,
+    IReadOnlyList<RoutineParameterInfo> Parameters);
+
+/// <summary>Body for scripting a call: one entry per parameter the caller supplies a value for.</summary>
+public sealed record RoutineScriptRequest(Dictionary<string, RoutineArgumentBody>? Arguments);
+
+/// <param name="Value">The value as typed, quoted for the parameter's type unless <paramref name="IsRawSql"/>.</param>
+/// <param name="IsNull">Pass NULL explicitly, which is not the same as omitting the argument.</param>
+/// <param name="IsRawSql">Place the value in the script as written, for types a text box cannot express.</param>
+public sealed record RoutineArgumentBody(string? Value, bool IsNull = false, bool IsRawSql = false);
+
+/// <summary>A script that calls a routine, ready for the query editor.</summary>
+public sealed record RoutineScriptResponse(string Sql);
+
 public sealed record QueryRequestBody(string? Sql, int? MaxRows = null);
+
+/// <summary>One condition in the <c>filter</c> query parameter of the table-data routes.</summary>
+/// <param name="Column">The column to compare.</param>
+/// <param name="Operator">
+/// One of <c>equals</c>, <c>notEquals</c>, <c>lessThan</c>, <c>lessThanOrEqual</c>,
+/// <c>greaterThan</c>, <c>greaterThanOrEqual</c>, <c>contains</c>, <c>notContains</c>,
+/// <c>startsWith</c>, <c>endsWith</c>, <c>isNull</c> or <c>isNotNull</c>.
+/// </param>
+/// <param name="Value">The value to compare against; omitted for the null checks.</param>
+public sealed record TableDataFilterBody(string? Column, string? Operator, string? Value = null);
+
+/// <summary>Body for an execution-plan request.</summary>
+/// <param name="Sql">The statement to explain.</param>
+/// <param name="Mode">
+/// <c>estimated</c> (the default) compiles the statement without running it; <c>actual</c> runs it
+/// and reports the plan the engine used.
+/// </param>
+public sealed record QueryPlanRequestBody(string? Sql, string? Mode = null);
+
+/// <summary>An execution plan. <paramref name="Mode"/> is <c>estimated</c> or <c>actual</c>.</summary>
+public sealed record QueryPlanResponse(
+    string Mode,
+    string Format,
+    IReadOnlyList<QueryPlanNode> Roots,
+    string? RawText,
+    IReadOnlyList<string> Messages);
+
+/// <summary>Body for a transaction control request on a pinned session.</summary>
+/// <param name="Command">One of <c>begin</c>, <c>commit</c> or <c>rollback</c>.</param>
+public sealed record SessionTransactionRequest(string? Command);
 
 public sealed record AgentCredentialRequestBody(string? ApiKey);
 
@@ -119,6 +200,9 @@ public sealed record RowWriteRequest(
     Dictionary<string, JsonElement>? Values);
 
 public sealed record RowWriteResponse(int RowsAffected);
+
+/// <summary>Body for a rename. The new name is always unqualified: a rename never moves an object.</summary>
+public sealed record RenameRequest(string? NewName);
 
 public sealed record SavedQuerySaveRequest(
     string? Id, string Name, string ConnectionName, string? Database, string Sql);

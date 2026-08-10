@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using Gridlet.Tests.AspNetCore.Fakes;
 using Gridlet.Abstractions;
+using Gridlet.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -163,7 +164,7 @@ public class GridletEndpointTests
         Assert.Contains("\"Table\"", body);
         Assert.Contains("\"View\"", body);
         Assert.Contains("\"Trigger\"", body);
-        Assert.Contains("\"subKind\":\"VirtualTable\"", body);
+        Assert.Contains("\"subKind\":\"virtual\"", body);
         Assert.Contains("\"isInternal\":true", body);
     }
 
@@ -185,6 +186,21 @@ public class GridletEndpointTests
         Assert.Contains("\"isDescending\":true", body);
         Assert.Contains("\"includedColumns\":[\"Id\"]", body);
         Assert.Contains("\"filterDefinition\":\"[Name] IS NOT NULL\"", body);
+    }
+
+    [Fact]
+    public async Task Structure_exposes_how_a_row_is_addressed()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var keyed = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/structure");
+        var unkeyed = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/NoKeys/structure");
+
+        Assert.Contains("\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]", keyed);
+        Assert.Contains("\"rowIdentity\":null", unkeyed);
     }
 
     [Fact]
@@ -214,6 +230,66 @@ public class GridletEndpointTests
         Assert.Contains("\"type\":\"resultSet\"", body);
         Assert.Contains("\"type\":\"rows\"", body);
         Assert.Contains("\"type\":\"completed\"", body);
+    }
+
+    [Fact]
+    public async Task Data_requests_carry_filters_to_the_provider()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        var filter = Uri.EscapeDataString(
+            """[{"column":"Name","operator":"contains","value":"ad a"},{"column":"Notes","operator":"isNull"}]""");
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data?filter=" + filter);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Collection(fake.LastDataFilters!,
+            first =>
+            {
+                Assert.Equal("Name", first.Column);
+                Assert.Equal(FilterOperator.Contains, first.Operator);
+                Assert.Equal("ad a", first.Value);
+            },
+            second =>
+            {
+                Assert.Equal("Notes", second.Column);
+                Assert.Equal(FilterOperator.IsNull, second.Operator);
+                Assert.Null(second.Value);
+            });
+    }
+
+    [Fact]
+    public async Task An_unreadable_filter_is_rejected()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var badOperator = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data?filter="
+            + Uri.EscapeDataString("""[{"column":"Name","operator":"drop"}]"""));
+        var notJson = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data?filter=%7Bnope");
+
+        Assert.Equal(HttpStatusCode.BadRequest, badOperator.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, notJson.StatusCode);
+    }
+
+    [Fact]
+    public async Task Data_stream_carries_the_row_identity_and_a_key_per_row()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var body = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream?maxRows=100");
+        var events = body.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        var resultSet = Assert.Single(events, line => line.Contains("\"type\":\"resultSet\""));
+        Assert.Contains("\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]", resultSet);
+        var rows = Assert.Single(events, line => line.Contains("\"type\":\"rows\""));
+        Assert.Contains("\"rowKeys\":[[1],[2]]", rows);
     }
 
     [Fact]

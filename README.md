@@ -21,6 +21,7 @@ the host application's authentication, authorisation, routing, logging and deplo
 - Query, save and export data; optionally enable row editing and schema design.
 - Publish queries as protected HTTP endpoints with typed parameters.
 - Add natural-language database exploration through the optional AI package.
+- Read agent responses aloud with the browser's own voice.
 - Reuse the host application's ASP.NET Core security and operational infrastructure.
 
 ## Multiple databases, one interface
@@ -44,6 +45,10 @@ builder.Services
 Run SQL with streamed results, save useful queries, and export CSV or JSON. Per-connection feature
 gates can enable or hide row editing, ad-hoc SQL and schema-changing tools, while the database
 identity remains the final permission boundary.
+
+A query tab can also pin its connection as a session, so an explicit transaction spans several
+executions: begin, run the change, look at the result, then commit or roll back. The toolbar shows
+whether a transaction is open, and closing the session or the tab rolls it back.
 
 <p align="center">
   <img src="assets/screenshot-3.png" width="100%" alt="Gridlet query editor showing order summary results" />
@@ -160,6 +165,7 @@ UI can map `MapGridletApi` or `MapGridletPublished` instead.
 | [`Gridlet.SqlServer`](https://www.nuget.org/packages/Gridlet.SqlServer) | SQL Server provider. |
 | [`Gridlet.Sqlite`](https://www.nuget.org/packages/Gridlet.Sqlite) | SQLite provider. |
 | [`Gridlet.AgentFramework`](https://www.nuget.org/packages/Gridlet.AgentFramework) | Optional prerelease AI integration. |
+| [`Gridlet.Voice`](https://www.nuget.org/packages/Gridlet.Voice) | Optional read-aloud support for agent responses. |
 | [`Gridlet.Core`](https://www.nuget.org/packages/Gridlet.Core) | Provider abstractions, models, options and auditing. |
 
 ## Provider support
