@@ -8,6 +8,7 @@
     <Project Path="src/Gridlet.Core/Gridlet.Core.csproj" />
     <Project Path="src/Gridlet.Sqlite/Gridlet.Sqlite.csproj" />
     <Project Path="src/Gridlet.SqlServer/Gridlet.SqlServer.csproj" />
+    <Project Path="src/Gridlet.Voice/Gridlet.Voice.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Gridlet.BrowserTests/Gridlet.BrowserTests.csproj" />

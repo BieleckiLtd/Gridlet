@@ -1036,6 +1036,46 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+.agent-message-speak {
+  display: inline-flex;
+  width: 22px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  border-radius: 4px;
+}
+.agent-message-speak:hover,
+.agent-message-speak:focus-visible {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.agent-message-speak.is-speaking { color: var(--accent); }
+.agent-message-speak-icon {
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.agent-message-speak-wave { fill: none; }
+/* While speaking, the outer arcs pulse so the button reads as active without a spinner. */
+.agent-message-speak.is-speaking .agent-message-speak-wave {
+  animation: agent-speak-pulse 1.1s ease-in-out infinite;
+}
+.agent-message-speak.is-speaking .agent-message-speak-wave:last-child { animation-delay: 180ms; }
+@keyframes agent-speak-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-message-speak.is-speaking .agent-message-speak-wave { animation: none; }
+}
 @media (hover: none) {
   .agent-message-footer { opacity: 1; pointer-events: auto; }
 }
