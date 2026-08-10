@@ -71,6 +71,20 @@ gridlet.AddAgentFramework(agents =>
             .AllowReasoningEffortSelection();
     });
 
+// Puts a speaker button on every agent response. The browser's own synthesizer speaks it, so no
+// audio is generated on the server and nothing leaves the machine.
+gridlet.AddVoice(voice =>
+    {
+        voice.Language = "en-GB";
+        // Slightly quicker than the default: schema explanations are long.
+        voice.Rate = 1.05;
+        // Demo only. This opts into the browser's cloud voices, which sound far better than the
+        // legacy voices installed on a typical Windows machine but send the text of every spoken
+        // response to the browser vendor. Remove these two lines to keep speech on the device.
+        voice.AllowNetworkVoices = true;
+        voice.PreferredVoice = "Microsoft Sonia Online (Natural)";
+    });
+
 var app = builder.Build();
 
 // Demo only.
