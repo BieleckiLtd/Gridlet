@@ -46,6 +46,10 @@ Run SQL with streamed results, save useful queries, and export CSV or JSON. Per-
 gates can enable or hide row editing, ad-hoc SQL and schema-changing tools, while the database
 identity remains the final permission boundary.
 
+A query tab can also pin its connection as a session, so an explicit transaction spans several
+executions: begin, run the change, look at the result, then commit or roll back. The toolbar shows
+whether a transaction is open, and closing the session or the tab rolls it back.
+
 <p align="center">
   <img src="assets/screenshot-3.png" width="100%" alt="Gridlet query editor showing order summary results" />
 </p>

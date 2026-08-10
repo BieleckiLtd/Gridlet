@@ -1,14 +1,216 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text;
 using Gridlet.Abstractions;
 using Gridlet.Models;
 using Microsoft.Data.SqlClient;
 
 namespace Gridlet.SqlServer;
 
-public sealed class SqlServerQueryRunner : IQueryRunner
+public sealed class SqlServerQueryRunner : IQueryRunner, IQuerySessionRunner, IQueryPlanRunner
 {
     private const int BatchSize = 100;
+
+    /// <summary>The column SQL Server returns a plan in, whichever SET option produced it.</summary>
+    private const string ShowPlanColumnMarker = "Showplan";
+
+    /// <summary>
+    /// Asks SQL Server for a plan. An estimated plan comes from SHOWPLAN_XML, which compiles the
+    /// batch and returns the plan instead of running it - safe even for a DELETE. An actual plan
+    /// comes from STATISTICS XML, so the batch does run; STATISTICS IO and TIME are turned on with
+    /// it, because "how many reads did that take" is the other half of the same question.
+    /// </summary>
+    public async Task<QueryPlan> GetPlanAsync(
+        GridletConnectionContext context,
+        string sql,
+        QueryPlanMode mode,
+        QueryRequestOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(sql))
+        {
+            throw new GridletValidationException("Query text must not be empty.");
+        }
+
+        var messages = new ConcurrentQueue<string>();
+        var plans = new StringBuilder();
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        connection.InfoMessage += (_, e) =>
+        {
+            foreach (SqlError error in e.Errors) messages.Enqueue(error.Message);
+        };
+
+        var settings = mode == QueryPlanMode.Estimated
+            ? new[] { "SET SHOWPLAN_XML ON;" }
+            : ["SET STATISTICS XML ON;", "SET STATISTICS IO, TIME ON;"];
+        var teardown = mode == QueryPlanMode.Estimated
+            ? new[] { "SET SHOWPLAN_XML OFF;" }
+            : ["SET STATISTICS XML OFF;", "SET STATISTICS IO, TIME OFF;"];
+
+        try
+        {
+            // Each SET option has to be its own batch, which is why they are not prefixed onto the
+            // statement itself.
+            foreach (var setting in settings)
+            {
+                await ExecuteSettingAsync(connection, setting, options, cancellationToken);
+            }
+
+            try
+            {
+                foreach (var batch in SqlServerBatchSplitter.Split(sql))
+                {
+                    for (var repetition = 0; repetition < batch.RepeatCount; repetition++)
+                    {
+                        await CollectPlansAsync(connection, batch.Sql, options, plans, cancellationToken);
+                    }
+                }
+            }
+            finally
+            {
+                foreach (var setting in teardown)
+                {
+                    await ExecuteSettingAsync(connection, setting, options, CancellationToken.None);
+                }
+            }
+        }
+        catch (SqlException ex)
+        {
+            throw new GridletQueryException(ex.Message, ex);
+        }
+
+        var xml = plans.ToString();
+        return new QueryPlan(
+            mode,
+            "showplan-xml",
+            SqlServerShowPlanParser.Parse(xml),
+            string.IsNullOrWhiteSpace(xml) ? null : xml,
+            messages.ToArray());
+    }
+
+    private static async Task ExecuteSettingAsync(
+        SqlConnection connection,
+        string setting,
+        QueryRequestOptions options,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = setting;
+        command.CommandTimeout = options.CommandTimeoutSeconds;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Runs one batch and keeps only its plan result sets. With STATISTICS XML the statement's own
+    /// result sets come back too and are read past: the caller asked for the plan, not the rows.
+    /// </summary>
+    private static async Task CollectPlansAsync(
+        SqlConnection connection,
+        string sql,
+        QueryRequestOptions options,
+        StringBuilder plans,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.CommandTimeout = options.CommandTimeoutSeconds;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        do
+        {
+            if (reader.FieldCount != 1
+                || !reader.GetName(0).Contains(ShowPlanColumnMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (!reader.IsDBNull(0))
+                {
+                    plans.Append(reader.GetString(0));
+                }
+            }
+        }
+        while (await reader.NextResultAsync(cancellationToken));
+    }
+
+    async Task<System.Data.Common.DbConnection> IQuerySessionRunner.OpenSessionAsync(
+        GridletConnectionContext context,
+        CancellationToken cancellationToken)
+        => await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+
+    IAsyncEnumerable<QueryStreamEvent> IQuerySessionRunner.StreamAsync(
+        System.Data.Common.DbConnection connection,
+        string sql,
+        QueryRequestOptions options,
+        CancellationToken cancellationToken)
+        => StreamOnAsync(RequireSqlConnection(connection), sql, options, parameters: null, cancellationToken);
+
+    async Task<TransactionStatus> IQuerySessionRunner.GetTransactionStatusAsync(
+        System.Data.Common.DbConnection connection,
+        CancellationToken cancellationToken)
+        => await ReadTransactionStatusAsync(RequireSqlConnection(connection), cancellationToken);
+
+    async Task<TransactionStatus> IQuerySessionRunner.RunTransactionCommandAsync(
+        System.Data.Common.DbConnection connection,
+        TransactionCommand command,
+        CancellationToken cancellationToken)
+    {
+        var sqlConnection = RequireSqlConnection(connection);
+        var statement = command switch
+        {
+            TransactionCommand.Begin => "BEGIN TRANSACTION;",
+            TransactionCommand.Commit => "COMMIT TRANSACTION;",
+            TransactionCommand.Rollback => "ROLLBACK TRANSACTION;",
+            _ => throw new GridletValidationException($"Unsupported transaction command '{command}'."),
+        };
+
+        try
+        {
+            await using var statementCommand = sqlConnection.CreateCommand();
+            statementCommand.CommandText = statement;
+            await statementCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (SqlException ex)
+        {
+            throw new GridletQueryException(ex.Message, ex);
+        }
+
+        return await ReadTransactionStatusAsync(sqlConnection, cancellationToken);
+    }
+
+    private static SqlConnection RequireSqlConnection(System.Data.Common.DbConnection connection)
+        => connection as SqlConnection
+            ?? throw new GridletValidationException(
+                "This session was not opened by the SQL Server provider.");
+
+    /// <summary>
+    /// Reads the connection's transaction state. <c>@@TRANCOUNT</c> gives the nesting depth, and
+    /// <c>XACT_STATE()</c> of -1 means the transaction is doomed: it can only be rolled back.
+    /// </summary>
+    private static async Task<TransactionStatus> ReadTransactionStatusAsync(
+        SqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT @@TRANCOUNT, CONVERT(int, XACT_STATE());";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                return TransactionStatus.None;
+            }
+
+            var depth = reader.GetInt32(0);
+            var xactState = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
+            return new TransactionStatus(depth > 0, depth, xactState == -1);
+        }
+        catch (SqlException ex)
+        {
+            throw new GridletQueryException(ex.Message, ex);
+        }
+    }
 
     public async Task<QueryResult> ExecuteAsync(
         GridletConnectionContext context,
@@ -97,75 +299,106 @@ public sealed class SqlServerQueryRunner : IQueryRunner
             throw new GridletValidationException("Query text must not be empty.");
         }
 
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        await foreach (var streamEvent in StreamOnAsync(connection, sql, options, parameters, cancellationToken))
+        {
+            yield return streamEvent;
+        }
+    }
+
+    /// <summary>
+    /// Streams a query on a connection somebody else owns. A pinned session reuses one connection
+    /// across executions, so this must not open or close it.
+    /// </summary>
+    private static async IAsyncEnumerable<QueryStreamEvent> StreamOnAsync(
+        SqlConnection connection,
+        string sql,
+        QueryRequestOptions options,
+        IReadOnlyDictionary<string, object?>? parameters,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(sql))
+        {
+            throw new GridletValidationException("Query text must not be empty.");
+        }
+
         var stopwatch = Stopwatch.StartNew();
         var messages = new ConcurrentQueue<string>();
         var batches = SqlServerBatchSplitter.Split(sql);
-        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
-        connection.InfoMessage += (_, e) =>
+        void CollectMessages(object sender, SqlInfoMessageEventArgs e)
         {
             foreach (SqlError error in e.Errors) messages.Enqueue(error.Message);
-        };
-
-        yield return new QueryStreamEvent("started");
-        var resultSetIndex = 0;
-        var recordsAffected = -1;
-        foreach (var batch in batches)
-        {
-            for (var repetition = 0; repetition < batch.RepeatCount; repetition++)
-            {
-                await using var command = CreateCommand(connection, batch.Sql, options, parameters);
-                await using var reader = await ExecuteReaderAsync(command, cancellationToken);
-                do
-                {
-                    if (reader.FieldCount == 0) continue;
-                    var columns = ReadColumns(reader);
-                    yield return new QueryStreamEvent("resultSet", resultSetIndex, columns);
-
-                    var rows = new List<object?[]>(BatchSize);
-                    var rowCount = 0;
-                    var truncated = false;
-                    while (await ReadAsync(reader, cancellationToken))
-                    {
-                        if (options.MaxRowsPerResultSet > 0 && rowCount >= options.MaxRowsPerResultSet)
-                        {
-                            truncated = true;
-                            break;
-                        }
-
-                        rows.Add(ReadRow(reader));
-                        rowCount++;
-                        if (rows.Count == BatchSize)
-                        {
-                            yield return new QueryStreamEvent("rows", resultSetIndex, Rows: rows.ToArray());
-                            rows.Clear();
-                            while (messages.TryDequeue(out var message))
-                            {
-                                yield return new QueryStreamEvent("message", Message: message);
-                            }
-                        }
-                    }
-
-                    if (rows.Count > 0)
-                    {
-                        yield return new QueryStreamEvent("rows", resultSetIndex, Rows: rows.ToArray());
-                    }
-
-                    yield return new QueryStreamEvent("resultSetCompleted", resultSetIndex, Truncated: truncated);
-                    resultSetIndex++;
-                }
-                while (await NextResultAsync(reader, cancellationToken));
-
-                recordsAffected = MergeRecordsAffected(recordsAffected, reader.RecordsAffected);
-                while (messages.TryDequeue(out var message))
-                {
-                    yield return new QueryStreamEvent("message", Message: message);
-                }
-            }
         }
 
-        while (messages.TryDequeue(out var message)) yield return new QueryStreamEvent("message", Message: message);
-        stopwatch.Stop();
-        yield return new QueryStreamEvent("completed", RecordsAffected: recordsAffected, DurationMs: stopwatch.ElapsedMilliseconds);
+        connection.InfoMessage += CollectMessages;
+        try
+        {
+            yield return new QueryStreamEvent("started");
+            var resultSetIndex = 0;
+            var recordsAffected = -1;
+            foreach (var batch in batches)
+            {
+                for (var repetition = 0; repetition < batch.RepeatCount; repetition++)
+                {
+                    await using var command = CreateCommand(connection, batch.Sql, options, parameters);
+                    await using var reader = await ExecuteReaderAsync(command, cancellationToken);
+                    do
+                    {
+                        if (reader.FieldCount == 0) continue;
+                        var columns = ReadColumns(reader);
+                        yield return new QueryStreamEvent("resultSet", resultSetIndex, columns);
+
+                        var rows = new List<object?[]>(BatchSize);
+                        var rowCount = 0;
+                        var truncated = false;
+                        while (await ReadAsync(reader, cancellationToken))
+                        {
+                            if (options.MaxRowsPerResultSet > 0 && rowCount >= options.MaxRowsPerResultSet)
+                            {
+                                truncated = true;
+                                break;
+                            }
+
+                            rows.Add(ReadRow(reader));
+                            rowCount++;
+                            if (rows.Count == BatchSize)
+                            {
+                                yield return new QueryStreamEvent("rows", resultSetIndex, Rows: rows.ToArray());
+                                rows.Clear();
+                                while (messages.TryDequeue(out var message))
+                                {
+                                    yield return new QueryStreamEvent("message", Message: message);
+                                }
+                            }
+                        }
+
+                        if (rows.Count > 0)
+                        {
+                            yield return new QueryStreamEvent("rows", resultSetIndex, Rows: rows.ToArray());
+                        }
+
+                        yield return new QueryStreamEvent("resultSetCompleted", resultSetIndex, Truncated: truncated);
+                        resultSetIndex++;
+                    }
+                    while (await NextResultAsync(reader, cancellationToken));
+
+                    recordsAffected = MergeRecordsAffected(recordsAffected, reader.RecordsAffected);
+                    while (messages.TryDequeue(out var message))
+                    {
+                        yield return new QueryStreamEvent("message", Message: message);
+                    }
+                }
+            }
+
+            while (messages.TryDequeue(out var message)) yield return new QueryStreamEvent("message", Message: message);
+            stopwatch.Stop();
+            yield return new QueryStreamEvent(
+                "completed", RecordsAffected: recordsAffected, DurationMs: stopwatch.ElapsedMilliseconds);
+        }
+        finally
+        {
+            connection.InfoMessage -= CollectMessages;
+        }
     }
 
     private static SqlCommand CreateCommand(

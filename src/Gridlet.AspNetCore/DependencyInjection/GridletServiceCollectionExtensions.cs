@@ -1,6 +1,7 @@
 using Gridlet;
 using Gridlet.Abstractions;
 using Gridlet.AspNetCore.Agents;
+using Gridlet.AspNetCore.Sessions;
 using Gridlet.AspNetCore.Storage;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -57,6 +58,9 @@ public static class GridletServiceCollectionExtensions
         // Lets an agent turn call this installation's own GET endpoints and show the real response.
         // The accessor supplies the address and the caller's credentials; the mount path is filled
         // in by MapGridlet, which is the only place that knows the prefix the host chose.
+        // Rolls back and closes pinned query sessions that have gone idle.
+        services.AddHostedService<GridletQuerySessionSweeper>();
+
         services.AddHttpContextAccessor();
         services.TryAddSingleton<GridletMountPath>();
         services.AddHttpClient(GridletPublishedEndpointInvoker.HttpClientName);

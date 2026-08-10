@@ -31,6 +31,23 @@ public sealed class GridletObjectNotFoundException(string objectName)
 /// <summary>Thrown when request input is invalid (bad sort column, malformed identifier, ...).</summary>
 public sealed class GridletValidationException(string message) : GridletException(message);
 
+/// <summary>
+/// Thrown when a query session id is unknown, has expired, or belongs to somebody else. All three
+/// are reported the same way so a response never confirms that an id exists.
+/// </summary>
+public sealed class GridletSessionNotFoundException(string sessionId)
+    : GridletException("That query session is no longer open. Open a new one to continue.")
+{
+    public string SessionId { get; } = sessionId;
+}
+
+/// <summary>Thrown when a session is asked to run a statement while it is already running one.</summary>
+public sealed class GridletSessionBusyException(string sessionId)
+    : GridletException("The session is still running a statement. Wait for it to finish or cancel it.")
+{
+    public string SessionId { get; } = sessionId;
+}
+
 /// <summary>Thrown when the database rejects a user-authored query. Carries a user-presentable message.</summary>
 public sealed class GridletQueryException(string message, Exception? innerException = null)
     : GridletException(message, innerException);

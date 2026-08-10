@@ -255,6 +255,93 @@ public sealed class SqlServerTableDdlService : ITableDdlService
         CancellationToken cancellationToken = default)
         => ExecuteAsync(context, SqlServerDdlBuilder.BuildDropObject(schema, name, type), cancellationToken);
 
+    public string BuildDropScript(DbObjectInfo @object)
+        => SqlServerDdlBuilder.BuildDropObject(@object.Schema, @object.Name, @object.Type);
+
+    public string BuildInsertScript(
+        TableDefinition table,
+        IReadOnlyList<ResultColumn> columns,
+        IReadOnlyList<object?[]> rows)
+        => SqlServerInsertScriptBuilder.Build(table, columns, rows);
+
+    public Task RenameObjectAsync(
+        GridletConnectionContext context, string schema, string name, DbObjectType type, string newName,
+        CancellationToken cancellationToken = default)
+        // sp_rename takes both names as parameters, so neither reaches dynamic SQL. The new name is
+        // unqualified by definition: sp_rename cannot move an object between schemas.
+        => RenameAsync(
+            context,
+            SqlServerIdentifier.QuoteQualified(schema, name),
+            RequireUnqualified(newName, "object"),
+            "OBJECT",
+            cancellationToken);
+
+    public Task RenameIndexAsync(
+        GridletConnectionContext context, string schema, string table, string indexName, string newName,
+        CancellationToken cancellationToken = default)
+        => RenameAsync(
+            context,
+            $"{SqlServerIdentifier.QuoteQualified(schema, table)}.{SqlServerIdentifier.Quote(indexName)}",
+            RequireUnqualified(newName, "index"),
+            "INDEX",
+            cancellationToken);
+
+    /// <summary>
+    /// Empties a table with TRUNCATE, which SQL Server refuses when the table is referenced by a
+    /// foreign key. That refusal is reported rather than worked around: a DELETE in its place would
+    /// quietly do something slower, log more, and fire triggers the caller did not ask for.
+    /// </summary>
+    public Task TruncateTableAsync(
+        GridletConnectionContext context, string schema, string table,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(
+            context,
+            $"TRUNCATE TABLE {SqlServerIdentifier.QuoteQualified(schema, table)};",
+            cancellationToken);
+
+    private static string RequireUnqualified(string newName, string kind)
+    {
+        if (string.IsNullOrWhiteSpace(newName))
+        {
+            throw new GridletValidationException($"The new {kind} name must not be empty.");
+        }
+
+        if (newName.Contains('.', StringComparison.Ordinal))
+        {
+            throw new GridletValidationException(
+                $"A rename changes the name only, so give the new {kind} name without a schema. " +
+                "Moving between schemas is a different operation.");
+        }
+
+        // Trimmed, not just validated: sp_rename would take " Clients " literally and leave an
+        // object nobody can refer to without quoting the spaces.
+        return newName.Trim();
+    }
+
+    private static async Task RenameAsync(
+        GridletConnectionContext context,
+        string currentName,
+        string newName,
+        string objectType,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "EXEC sp_rename @objname, @newname, @objtype;";
+        command.Parameters.AddWithValue("@objname", currentName);
+        command.Parameters.AddWithValue("@newname", newName);
+        command.Parameters.AddWithValue("@objtype", objectType);
+
+        try
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (SqlException ex)
+        {
+            throw new GridletQueryException(ex.Message, ex);
+        }
+    }
+
     private static async Task ExecuteAsync(
         GridletConnectionContext context, string sql, CancellationToken cancellationToken)
     {

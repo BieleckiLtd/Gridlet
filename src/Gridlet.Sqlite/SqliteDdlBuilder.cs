@@ -6,29 +6,53 @@ namespace Gridlet.Sqlite;
 /// <summary>Builds SQLite DDL while validating every identifier and designer-supplied type.</summary>
 public static partial class SqliteDdlBuilder
 {
-    private static readonly HashSet<string> AllowedTypeNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "integer", "int", "tinyint", "smallint", "mediumint", "bigint", "unsignedbigint", "int2", "int8",
-        "text", "character", "varchar", "varyingcharacter", "nchar", "nativecharacter", "nvarchar", "clob",
-        "blob", "real", "double", "doubleprecision", "float", "numeric", "decimal", "boolean", "date", "datetime",
-    };
-
-    [GeneratedRegex(@"^(?<name>[a-zA-Z][a-zA-Z ]*)(?:\s*\(\s*(?<args>\d{1,4}(?:\s*,\s*\d{1,4})?)\s*\))?$")]
+    /// <summary>
+    /// SQLite has no fixed set of type names: a declared type is text, and only its affinity is
+    /// derived from it. So the rule is about shape, not vocabulary - letters, digits, underscores and
+    /// spaces, with an optional numeric length. That admits ANY on a STRICT table and any
+    /// application-specific affinity, while leaving no way for a type string to carry SQL. Runs of
+    /// whitespace between words are a paste artefact rather than a different type, so they are
+    /// accepted and written out as one space.
+    /// </summary>
+    [GeneratedRegex(
+        @"^(?<name>[a-zA-Z_][a-zA-Z0-9_]*(?:\s+[a-zA-Z_][a-zA-Z0-9_]*)*)" +
+        @"(?:\s*\(\s*(?<args>\d{1,4}(?:\s*,\s*\d{1,4})?)\s*\))?$")]
     private static partial Regex DataTypePattern();
+
+    /// <summary>
+    /// Words that begin or belong to a column constraint rather than a type name. A multi-word type
+    /// is legitimate - DOUBLE PRECISION, UNSIGNED BIG INT - so the shape alone cannot tell a type
+    /// from "TEXT NOT NULL" or "TEXT REFERENCES Other", and the type field is not the place to
+    /// declare a constraint the designer already has its own fields for.
+    /// </summary>
+    private static readonly HashSet<string> ConstraintWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "constraint", "primary", "key", "not", "null", "unique", "check", "default", "collate",
+        "references", "foreign", "generated", "always", "as", "stored", "virtual", "autoincrement",
+        "asc", "desc", "on", "conflict", "deferrable", "initially", "deferred", "immediate", "match",
+        "hidden",
+    };
 
     public static string NormalizeDataType(string dataType)
     {
         var match = DataTypePattern().Match(dataType?.Trim() ?? "");
-        var compactName = match.Success
-            ? Regex.Replace(match.Groups["name"].Value, @"\s+", "").ToLowerInvariant()
-            : "";
-        if (!match.Success || !AllowedTypeNames.Contains(compactName))
+        if (!match.Success)
         {
             throw new GridletValidationException(
-                $"'{dataType}' is not a supported SQLite data type. Use a type such as INTEGER, TEXT, REAL, BLOB, NUMERIC, or VARCHAR(100).");
+                $"'{dataType}' is not a usable SQLite data type. Use a name such as INTEGER, TEXT, REAL, " +
+                "BLOB, NUMERIC, ANY, or VARCHAR(100).");
         }
 
-        var displayName = match.Groups["name"].Value.Trim().ToUpperInvariant();
+        var words = match.Groups["name"].Value.Split(
+            (char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (words.FirstOrDefault(ConstraintWords.Contains) is { } constraintWord)
+        {
+            throw new GridletValidationException(
+                $"'{dataType}' is a type followed by a column constraint, not a type. Remove " +
+                $"'{constraintWord}' and set the constraint with its own field instead.");
+        }
+
+        var displayName = string.Join(' ', words).ToUpperInvariant();
         return match.Groups["args"].Success
             ? $"{displayName}({Regex.Replace(match.Groups["args"].Value, @"\s+", "")})"
             : displayName;
@@ -92,8 +116,9 @@ public static partial class SqliteDdlBuilder
             lines.AddRange(uniqueConstraints.Select(BuildUniqueConstraintDefinition));
         }
 
+        var options = SqliteTableOptions.BuildClause(design.Options, design.Columns);
         return $"CREATE TABLE {SqliteIdentifier.QuoteQualified(design.Schema, design.Name)} (\n" +
-               $"    {string.Join(",\n    ", lines)}\n);";
+               $"    {string.Join(",\n    ", lines)}\n){options};";
     }
 
     public static string BuildAddColumn(string schema, string table, ColumnDesign column)
@@ -229,6 +254,31 @@ public static partial class SqliteDdlBuilder
         return result;
     }
 
+    /// <summary>
+    /// Validates a collation name and returns the clause. SQLite resolves a collation by name -
+    /// BINARY, NOCASE, RTRIM, or one the host registered - so the name is checked for shape rather
+    /// than quoted as a value.
+    /// </summary>
+    internal static string NormalizeCollation(string? collation)
+    {
+        if (string.IsNullOrWhiteSpace(collation))
+        {
+            return "";
+        }
+
+        var trimmed = collation.Trim();
+        if (!CollationPattern().IsMatch(trimmed))
+        {
+            throw new GridletValidationException(
+                $"'{collation}' is not a collation name. Use BINARY, NOCASE, RTRIM, or one registered by the host.");
+        }
+
+        return " COLLATE " + trimmed;
+    }
+
+    [GeneratedRegex(@"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")]
+    private static partial Regex CollationPattern();
+
     private static string BuildColumnDefinition(ColumnDesign column)
     {
         if (!string.IsNullOrWhiteSpace(column.ComputedExpression))
@@ -243,7 +293,8 @@ public static partial class SqliteDdlBuilder
                    (column.IsPersisted ? "STORED" : "VIRTUAL");
         }
 
-        var definition = $"{SqliteIdentifier.Quote(column.Name)} {NormalizeDataType(column.DataType)}";
+        var definition = $"{SqliteIdentifier.Quote(column.Name)} {NormalizeDataType(column.DataType)}" +
+            NormalizeCollation(column.Collation);
         if (column.IsIdentity)
         {
             definition += " PRIMARY KEY AUTOINCREMENT";

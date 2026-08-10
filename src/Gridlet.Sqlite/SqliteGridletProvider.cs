@@ -28,7 +28,10 @@ public sealed class SqliteGridletProvider :
         ObjectEditMode: "Recreate",
         SupportsCheckConstraints: true,
         SupportsUniqueConstraints: true,
-        SupportsIndexes: true);
+        SupportsIndexes: true,
+        SupportsSessions: true,
+        SupportsQueryPlans: true,
+        SupportedTableOptions: [SqliteTableOptions.WithoutRowId, SqliteTableOptions.Strict]);
 
     public ISchemaReader Schema { get; } = new SqliteSchemaReader();
 

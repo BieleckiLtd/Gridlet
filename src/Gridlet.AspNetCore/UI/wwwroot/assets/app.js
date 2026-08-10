@@ -495,7 +495,14 @@
       dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
       structure: (s, n) => `${objBase(s, n)}/structure`,
       definition: (s, n) => `${objBase(s, n)}/definition`,
+      routine: (s, n) => `${objBase(s, n)}/routine`,
+      routineScript: (s, n) => `${objBase(s, n)}/routine/script`,
       query: () => `${dbBase()}/query`,
+      queryPlan: () => `${dbBase()}/query/plan`,
+      sessions: () => `${dbBase()}/sessions`,
+      session: (id) => `api/sessions/${enc(id)}`,
+      sessionQuery: (id) => `api/sessions/${enc(id)}/query`,
+      sessionTransaction: (id) => `api/sessions/${enc(id)}/transaction`,
       rows: (s, n) => `${objBase(s, n)}/rows`,
       rowsUpdate: (s, n) => `${objBase(s, n)}/rows/update`,
       rowsDelete: (s, n) => `${objBase(s, n)}/rows/delete`,
@@ -512,6 +519,10 @@
       foreignKeys: (s, n) => `${objBase(s, n)}/foreign-keys`,
       constraint: (s, n, constraint) => `${objBase(s, n)}/constraints/${enc(constraint)}`,
       dropObject: (s, n, type) => `${objBase(s, n)}?type=${enc(type)}`,
+      renameObject: (s, n, type) => `${objBase(s, n)}/rename?type=${enc(type)}`,
+      renameIndex: (s, n, index) => `${objBase(s, n)}/indexes/${enc(index)}/rename`,
+      truncate: (s, n) => `${objBase(s, n)}/truncate`,
+      script: (s, n) => `${objBase(s, n)}/script`,
       queries: () => 'api/queries',
       savedQuery: (id) => `api/queries/${enc(id)}`,
       published: () => 'api/published',
@@ -1226,6 +1237,87 @@
       onclick: () => openQueryTab(objectQuerySql(o, scope), `Use ${o.name}`, scope),
     }, 'Use in query') : null;
 
+  const isRoutine = (o) =>
+    ['StoredProcedure', 'ScalarFunction', 'TableValuedFunction'].includes(o?.type);
+
+  const executeRoutineButton = (o, scope = state) =>
+    isRoutine(o) && connectionFor(scope).allowSqlExecution ? h('button', {
+      class: 'primary', 'data-testid': 'execute-routine', title: 'Call this routine with arguments',
+      onclick: () => openRoutineExecuteDialog(o, scope),
+    }, 'Execute…') : null;
+
+  // Filling in arguments and reading back what came out is the part a text stub cannot do. The
+  // dialog collects the values; the server turns them into a script, which is what actually runs -
+  // so the call is visible, editable and repeatable rather than hidden inside the tool.
+  async function openRoutineExecuteDialog(o, scope = state) {
+    let routine;
+    try {
+      routine = await api(urlsFor(scope).routine(o.schema, o.name));
+    } catch (err) {
+      toast(err.message);
+      return;
+    }
+
+    const parameters = routine.parameters.filter((p) => !p.isReturnValue);
+    const rows = parameters.map((parameter) => {
+      const input = h('input', {
+        type: 'text', 'aria-label': `${parameter.name} value`,
+        placeholder: parameter.isTableType ? '@TableVariable' : parameter.dataType,
+      });
+      const mode = h('select', { 'aria-label': `${parameter.name} argument` },
+        h('option', { value: 'value', text: parameter.isTableType ? 'SQL expression' : 'Value' }),
+        parameter.isTableType ? null : h('option', { value: 'null', text: 'NULL' }),
+        h('option', { value: 'omit', text: parameter.isOutput ? 'Leave unset' : 'Omit (use default)' }));
+      mode.value = parameter.isOutput || parameter.isTableType ? 'omit' : 'value';
+      const syncMode = () => { input.disabled = mode.value !== 'value'; };
+      mode.addEventListener('change', syncMode);
+      syncMode();
+      return { parameter, input, mode };
+    });
+
+    const form = h('div', { class: 'form-grid routine-parameters' });
+    if (!rows.length) {
+      form.append(h('p', { class: 'muted', text: 'This routine takes no parameters.' }));
+    }
+    for (const row of rows) {
+      form.append(
+        h('label', { class: 'field-label' },
+          row.parameter.name,
+          h('span', { class: 'muted', text: ` ${row.parameter.dataType}` }),
+          row.parameter.isOutput ? h('span', { class: 'badge', text: 'OUT' }) : null),
+        h('div', { class: 'field-input routine-parameter' }, row.mode, row.input));
+    }
+
+    const buildArguments = () => {
+      const args = {};
+      for (const { parameter, input, mode } of rows) {
+        if (mode.value === 'omit') continue;
+        args[parameter.name] = mode.value === 'null'
+          ? { isNull: true }
+          : { value: input.value, isRawSql: parameter.isTableType };
+      }
+      return args;
+    };
+
+    const script = async (autoRun, close, showError) => {
+      try {
+        const built = await post(urlsFor(scope).routineScript(o.schema, o.name),
+          { arguments: buildArguments() });
+        close();
+        openQueryTab(built.sql, `Execute ${o.name}`, scope, { autoRun });
+      } catch (err) {
+        showError(err.message);
+      }
+    };
+
+    modal(`Execute ${displayName(o, scope)}`, form, [
+      { label: 'Cancel', onClick: (close) => close() },
+      { label: 'Script only', onClick: (close, showError) => script(false, close, showError) },
+      { label: 'Execute', primary: true, onClick: (close, showError) => script(true, close, showError) },
+    ]);
+    rows[0]?.input?.focus();
+  }
+
   const objectTabKey = (o, scope) => `${scopeKey(scope)} ${o.type}:${o.schema}.${o.name}`;
 
   function deleteObject(o, scope = state) {
@@ -1242,10 +1334,116 @@
       }, `Delete ${kind}`);
   }
 
+  // Renaming does not rewrite what refers to the object, so the dialog says so rather than
+  // implying the database will follow along.
+  function renameObject(o, scope = state) {
+    const target = { connection: scope.connection, database: scope.database };
+    const input = h('input', { type: 'text', value: o.name, 'data-testid': 'rename-name', 'aria-label': 'New name' });
+    modal(`Rename ${displayName(o, target)}`, h('div', {},
+      h('div', { class: 'form-grid' },
+        h('label', { class: 'field-label', text: 'New name' }),
+        h('div', { class: 'field-input' }, input)),
+      h('p', { class: 'muted', text: 'Views, procedures and other code that names this object are not updated.' })), [
+      { label: 'Cancel', onClick: (close) => close() },
+      {
+        label: 'Rename', primary: true,
+        onClick: async (close, showError) => {
+          const newName = input.value.trim();
+          if (!newName || newName === o.name) { showError('Give the object a different name.'); return; }
+          try {
+            await post(urlsFor(target).renameObject(o.schema, o.name, o.type), { newName });
+          } catch (err) {
+            showError(err.message);
+            return;
+          }
+          close();
+          const tab = state.tabs.find((candidate) => candidate.key === objectTabKey(o, target));
+          if (tab) closeTab(tab.id, true);
+          await refreshObjects(target);
+          toast(`Renamed to ${newName}.`, false);
+        },
+      },
+    ]);
+    input.focus();
+    input.select();
+  }
+
+  // Scripting is the way out when the designer will not do something: the script opens in a query
+  // tab, where it can be read and edited before anything runs.
+  function openScriptDialog(o, scope = state) {
+    const target = { connection: scope.connection, database: scope.database };
+    const part = (value, label, checked) => {
+      const box = h('input', { type: 'checkbox', 'aria-label': label, 'data-testid': `script-${value}` });
+      box.checked = checked;
+      return { value, box, row: h('label', { class: 'checkbox-row' }, box, label) };
+    };
+    const hasRows = o.type === 'Table' || o.type === 'View';
+    const parts = [
+      part('drop', 'DROP statement', false),
+      part('create', 'CREATE statement', true),
+      ...(hasRows ? [part('data', 'INSERT statements for the rows', false)] : []),
+    ];
+    const rowLimit = h('input', {
+      type: 'number', min: '1', max: String(state.meta.maxQueryResultRows),
+      value: String(Math.min(1000, state.meta.maxQueryResultRows)), 'aria-label': 'Rows to script',
+    });
+
+    modal(`Script ${displayName(o, target)}`, h('div', {},
+      ...parts.map((entry) => entry.row),
+      hasRows ? h('label', { class: 'checkbox-row' }, 'Rows at most ', rowLimit) : null), [
+      { label: 'Cancel', onClick: (close) => close() },
+      {
+        label: 'Script', primary: true,
+        onClick: async (close, showError) => {
+          const include = parts.filter((entry) => entry.box.checked).map((entry) => entry.value);
+          if (!include.length) { showError('Choose at least one part to script.'); return; }
+          try {
+            const scripted = await post(urlsFor(target).script(o.schema, o.name),
+              { include, maxRows: Number(rowLimit.value) || undefined });
+            close();
+            openQueryTab(scripted.sql, `Script ${o.name}`, target);
+          } catch (err) {
+            showError(err.message);
+          }
+        },
+      },
+    ]);
+  }
+
+  function emptyTable(o, scope = state, onDone = null) {
+    const target = { connection: scope.connection, database: scope.database };
+    confirmModal('Empty table',
+      `Delete every row of ${displayName(o, target)}? The table stays; its data does not. This cannot be undone.`,
+      async () => {
+        await post(urlsFor(target).truncate(o.schema, o.name), {});
+        toast(`${displayName(o, target)} emptied.`, false);
+        onDone?.();
+      }, 'Delete all rows');
+  }
+
   function objectContextItems(o) {
     const items = [{ label: 'Open', action: () => openObjectTab(o) }];
     if (o.type === 'Table' || o.type === 'View') {
       items.push({ label: 'Query data', action: () => openQueryTab(objectQuerySql(o), displayName(o)) });
+    }
+    if (isRoutine(o) && currentConn().allowSqlExecution) {
+      items.push({ label: 'Execute…', action: () => openRoutineExecuteDialog(o) });
+    }
+    if (currentConn().allowSqlExecution && o.type !== 'Trigger') {
+      items.push({ label: 'Script…', action: () => openScriptDialog(o) });
+    }
+    if (currentConn().allowDdl && canDropObject(o)) {
+      items.push({ label: 'Rename…', action: () => renameObject(o) });
+    }
+    if (o.type === 'Table' && currentConn().allowWrites && canDropObject(o)) {
+      items.push({
+        label: 'Empty table…',
+        danger: true,
+        action: () => emptyTable(o, state, () => {
+          const tab = state.tabs.find((candidate) => candidate.key === objectTabKey(o, state));
+          if (tab?.refreshData) tab.refreshData();
+        }),
+      });
     }
     if (currentConn().allowDdl && canDropObject(o)) {
       items.push({ separator: true }, { label: `Delete ${o.type === 'View' ? 'view' : 'object'}…`, danger: true, action: () => deleteObject(o) });
@@ -1272,6 +1470,13 @@
     return !tab?.beforeLeave || await tab.beforeLeave();
   }
 
+  // Closing a tab is more final than switching away from it: a tab may hold state, such as a
+  // pinned session's open transaction, that survives a switch but not a close.
+  async function canCloseTab(tab) {
+    if (!await canLeaveTab(tab)) return false;
+    return !tab?.beforeClose || await tab.beforeClose();
+  }
+
   function disposeTab(tab) {
     try {
       const cleanup = tab?.onClose?.();
@@ -1283,7 +1488,7 @@
   async function closeTab(id, skipTabGuard = false) {
     const index = state.tabs.findIndex((t) => t.id === id);
     if (index < 0) return false;
-    if (!skipTabGuard && !await canLeaveTab(state.tabs[index])) return false;
+    if (!skipTabGuard && !await canCloseTab(state.tabs[index])) return false;
     const [closed] = state.tabs.splice(index, 1);
     disposeTab(closed);
     if (state.activeTabId === id) {
@@ -1294,7 +1499,7 @@
   }
 
   async function closeAllTabs() {
-    for (const tab of state.tabs) if (!await canLeaveTab(tab)) return false;
+    for (const tab of state.tabs) if (!await canCloseTab(tab)) return false;
     const closed = state.tabs;
     state.tabs = [];
     state.activeTabId = null;
@@ -1322,7 +1527,7 @@
           { label: 'Close', action: () => closeTab(tab.id) },
           { label: 'Close other tabs', action: async () => {
             for (const candidate of state.tabs) {
-              if (candidate.id !== tab.id && !await canLeaveTab(candidate)) return;
+              if (candidate.id !== tab.id && !await canCloseTab(candidate)) return;
             }
             const closed = state.tabs.filter((candidate) => candidate.id !== tab.id);
             state.tabs = state.tabs.filter((candidate) => candidate.id === tab.id);
@@ -1425,7 +1630,7 @@
     const urls = urlsFor(scope);
     const currentConn = () => connectionFor(scope);
     const currentCapabilities = () => capabilitiesFor(scope);
-    const grid = { sort: null, dir: 'asc' };
+    const grid = { sort: null, dir: 'asc', filters: [] };
     const views = ['Data', 'Structure', 'Definition'];
     const viewBar = h('div', { class: 'viewbar' });
     const body = h('div', { class: 'panel-body' });
@@ -1469,6 +1674,7 @@
     };
 
     const renderData = async () => {
+      tab.refreshData = renderData;
       activeDataLoad?.abort();
       const controller = new AbortController();
       activeDataLoad = controller;
@@ -1483,38 +1689,139 @@
         return;
       }
 
-      const pkColumns = structure
-        ? structure.columns.filter((c) => c.isPrimaryKey && !c.isHidden).map((c) => c.name)
-        : [];
+      // The server decides how a row is addressed: the primary key when there is one, otherwise a
+      // unique key over non-nullable columns or SQLite's rowid. Its values arrive with each row.
+      let identity = structure ? structure.rowIdentity : null;
+      const keysByRow = new WeakMap();
       const columnIndex = (columnName) =>
         data.columns.findIndex((c) => c.name.toLowerCase() === columnName.toLowerCase());
       const rowKey = (row) => {
+        const streamed = keysByRow.get(row);
+        if (streamed) return streamed;
+        if (!identity) return null;
         const key = {};
-        for (const pk of pkColumns) key[pk] = row[columnIndex(pk)];
+        for (const column of identity.columns) {
+          const index = columnIndex(column);
+          if (index < 0) return null;
+          key[column] = row[index];
+        }
         return key;
+      };
+      // Editing a column that is part of the key changes the key, so the stored copy is re-read from
+      // the row after a save. Values that are not visible columns - a rowid - never change.
+      rowKey.refresh = (row) => {
+        const key = keysByRow.get(row);
+        if (!key) return;
+        for (const column of Object.keys(key)) {
+          const index = columnIndex(column);
+          if (index >= 0) key[column] = row[index];
+        }
+      };
+      const describeRow = (row) => {
+        const key = rowKey(row);
+        return key
+          ? Object.entries(key).map(([column, value]) => `${column} = ${value}`).join(', ')
+          : 'this row';
       };
 
       let table;
       const editRow = (row, rowElement, selectedColumn, rowIndex) =>
         openRowEditor(
-          table, data.columns, structure, row, rowElement, columnIndex, selectedColumn, rowIndex + 1,
+          table, data.columns, structure, row, rowElement, columnIndex, rowKey, selectedColumn, rowIndex + 1,
           rowIndex + 1 < data.rows.length
             ? () => rowElement.nextElementSibling
               ?.querySelector('td:not(.row-selector)')?.click()
             : null);
-      const rowActions = structure && pkColumns.length ? {
+      const rowActions = structure && identity ? {
         onEdit: editRow,
         onDeleteSelected: (rows) => confirmModal(
           rows.length === 1 ? 'Delete row' : `Delete ${rows.length} rows`,
           rows.length === 1
-            ? `Delete the row where ${pkColumns.map((pk) => pk + ' = ' + rows[0][columnIndex(pk)]).join(', ')}?`
+            ? `Delete the row where ${describeRow(rows[0])}?`
             : `Delete the ${rows.length} selected rows? This cannot be undone.`,
           async () => {
-            await Promise.all(rows.map((row) => post(urls.rowsDelete(o.schema, o.name), { key: rowKey(row) })));
+            const keys = rows.map(rowKey);
+            if (keys.some((key) => !key)) throw new Error('This row cannot be identified, so it cannot be deleted.');
+            await Promise.all(keys.map((key) => post(urls.rowsDelete(o.schema, o.name), { key })));
             toast(rows.length === 1 ? 'Row deleted.' : `${rows.length} rows deleted.`, false);
             renderData();
           }),
       } : null;
+
+      // Filtering happens in SQL, on every row of the object, not on the page already fetched -
+      // otherwise "find the row" would only ever search the first few hundred rows.
+      const filterOperators = [
+        ['equals', '='], ['notEquals', '≠'],
+        ['contains', 'contains'], ['notContains', 'does not contain'],
+        ['startsWith', 'starts with'], ['endsWith', 'ends with'],
+        ['lessThan', '<'], ['lessThanOrEqual', '≤'],
+        ['greaterThan', '>'], ['greaterThanOrEqual', '≥'],
+        ['isNull', 'is null'], ['isNotNull', 'is not null'],
+      ];
+      const operatorLabel = (name) =>
+        (filterOperators.find(([value]) => value === name) || [name, name])[1];
+      const needsValue = (name) => name !== 'isNull' && name !== 'isNotNull';
+
+      const openFilterDialog = () => {
+        const columns = data.columns.length ? data.columns : (structure?.columns || []);
+        if (!columns.length) { toast('Wait for the columns to load first.'); return; }
+        const column = h('select', { 'aria-label': 'Filter column' },
+          ...columns.map((c) => h('option', { value: c.name, text: c.name })));
+        const operator = h('select', { 'aria-label': 'Filter operator' },
+          ...filterOperators.map(([value, label]) => h('option', { value, text: label })));
+        const value = h('input', { type: 'text', 'aria-label': 'Filter value' });
+        const syncValue = () => { value.disabled = !needsValue(operator.value); };
+        operator.addEventListener('change', syncValue);
+        syncValue();
+        modal('Filter rows', h('div', { class: 'form-grid' },
+          h('label', { class: 'field-label', text: 'Column' }), h('div', { class: 'field-input' }, column),
+          h('label', { class: 'field-label', text: 'Condition' }), h('div', { class: 'field-input' }, operator),
+          h('label', { class: 'field-label', text: 'Value' }), h('div', { class: 'field-input' }, value)), [
+          { label: 'Cancel', onClick: (close) => close() },
+          {
+            label: 'Apply', primary: true,
+            onClick: (close) => {
+              grid.filters = [...grid.filters, {
+                column: column.value,
+                operator: operator.value,
+                value: needsValue(operator.value) ? value.value : null,
+              }];
+              close();
+              renderData();
+            },
+          },
+        ]);
+        value.focus();
+      };
+
+      const filterBar = () => {
+        const bar = h('div', { class: 'filter-bar', 'data-testid': 'filter-bar' },
+          h('button', {
+            class: 'ghost', 'data-testid': 'add-filter', title: 'Filter rows in the database',
+            onclick: openFilterDialog,
+          }, '⧩ Filter'));
+        grid.filters.forEach((filter, index) => {
+          bar.append(h('span', { class: 'filter-chip', 'data-testid': 'filter-chip' },
+            h('span', {
+              text: `${filter.column} ${operatorLabel(filter.operator)}`
+                + (needsValue(filter.operator) ? ` ${filter.value}` : ''),
+            }),
+            h('button', {
+              class: 'chip-remove', title: 'Remove this filter', 'aria-label': 'Remove filter',
+              onclick: () => {
+                grid.filters = grid.filters.filter((_, position) => position !== index);
+                renderData();
+              },
+            }, '×')));
+        });
+        if (grid.filters.length > 1) {
+          bar.append(h('button', {
+            class: 'ghost', 'data-testid': 'clear-filters',
+            onclick: () => { grid.filters = []; renderData(); },
+          }, 'Clear all'));
+        }
+        return bar;
+      };
 
       const serverMaxRows = state.meta.maxQueryResultRows;
       let savedMaxRows = serverMaxRows;
@@ -1545,11 +1852,17 @@
             : null),
         h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
         status,
+        o.type === 'Table' && currentConn().allowWrites && !o.isInternal && canDropObject(o)
+          ? h('button', {
+            class: 'danger', text: 'Empty table…', 'data-testid': 'empty-table',
+            onclick: () => emptyTable(o, scope, () => renderData()),
+          })
+          : null,
         o.type === 'View' && currentConn().allowDdl && canDropObject(o) ? h('button', {
           class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
         }) : null,
       ].filter(Boolean));
-      body.replaceChildren(scroll);
+      body.replaceChildren(filterBar(), scroll);
       const gridView = progressiveDataGrid(scroll, {
         columns: data.columns,
         rows: data.rows,
@@ -1567,10 +1880,23 @@
 
       const params = new URLSearchParams({ maxRows: capInput.value });
       if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
+      if (grid.filters.length) params.set('filter', JSON.stringify(grid.filters));
       try {
         await streamNdjson(urls.dataStream(o.schema, o.name, params), { signal: controller.signal }, (event) => {
-          if (event.type === 'resultSet') gridView.setColumns(event.columns);
+          if (event.type === 'resultSet') {
+            if (event.rowIdentity) identity = event.rowIdentity;
+            gridView.setColumns(event.columns);
+          }
           else if (event.type === 'rows') {
+            if (identity && event.rowKeys) {
+              event.rows.forEach((row, index) => {
+                const values = event.rowKeys[index];
+                if (!values) return;
+                const key = {};
+                identity.columns.forEach((column, position) => { key[column] = values[position]; });
+                keysByRow.set(row, key);
+              });
+            }
             gridView.appendRows(event.rows);
             status.textContent = `${data.rows.length} row(s) - receiving…`;
           }
@@ -1587,7 +1913,7 @@
     };
 
     const openRowEditor = async (
-      table, dataColumns, structure, existingRow, existingRowElement, columnIndex,
+      table, dataColumns, structure, existingRow, existingRowElement, columnIndex, rowKey = null,
       selectedColumn = null, rowNumber = null, moveToNextRow = null) => {
       const isNew = existingRow === null;
       lockTableLayout(table);
@@ -1595,7 +1921,6 @@
       const editableByName = new Map(editable.map((c) => [c.name.toLowerCase(), c]));
       const fields = [];
       const focusableByName = new Map();
-      const pkColumns = structure.columns.filter((c) => c.isPrimaryKey && !c.isHidden).map((c) => c.name);
       const currentEditor = table.querySelector('tr.row-editor');
       if (currentEditor) {
         if (currentEditor === existingRowElement) return true;
@@ -1685,8 +2010,8 @@
           if (isNew) {
             await post(urls.rows(o.schema, o.name), { values });
           } else {
-            const key = {};
-            for (const pk of pkColumns) key[pk] = existingRow[columnIndex(pk)];
+            const key = rowKey?.(existingRow);
+            if (!key) throw new Error('This row cannot be identified, so it cannot be updated.');
             await post(urls.rowsUpdate(o.schema, o.name), { key, values });
           }
           toast(isNew ? 'Row inserted.' : `Row ${rowNumber} updated.`, false);
@@ -1694,6 +2019,7 @@
             renderData();
           } else {
             for (const [name, value] of Object.entries(values)) existingRow[columnIndex(name)] = value;
+            rowKey?.refresh?.(existingRow);
             existingRowElement.querySelectorAll('td:not(.row-selector)').forEach((cell, index) => {
               const rendered = renderCell(existingRow[index]);
               cell.className = rendered.className;
@@ -1763,6 +2089,12 @@
         canCheckConstraints ? h('button', { onclick: () => openCheckConstraintDialog() }, '＋ Check') : null,
         canUniqueConstraints ? h('button', { onclick: () => openUniqueConstraintDialog() }, '＋ Unique') : null,
         canIndexes ? h('button', { onclick: () => openIndexDialog() }, '＋ Index') : null,
+        canDrop ? h('button', {
+          text: 'Rename…', 'data-testid': 'rename-object', onclick: () => renameObject(o, scope),
+        }) : null,
+        currentConn().allowSqlExecution ? h('button', {
+          text: 'Script…', 'data-testid': 'script-object', onclick: () => openScriptDialog(o, scope),
+        }) : null,
         useInQueryButton(o, scope),
         h('span', { class: 'spacer' }),
         canDrop && o.type === 'Table' ? h('button', {
@@ -1809,6 +2141,10 @@
           type: 'text', placeholder: 'e.g. 0 or SYSUTCDATETIME()',
           value: existing?.defaultDefinition || '',
         });
+        const collationInput = h('input', {
+          type: 'text', placeholder: 'collation', 'data-testid': 'column-collation',
+          'aria-label': 'Collation', value: existing?.collation || '',
+        });
         const syncColumnKind = () => {
           const computed = computedToggle.checked;
           typeInput.disabled = computed;
@@ -1816,6 +2152,7 @@
           identityToggle.disabled = !!existing || computed;
           identitySeed.disabled = identityIncrement.disabled = !!existing || computed || !identityToggle.checked;
           defaultInput.disabled = computed;
+          collationInput.disabled = computed;
           computedInput.disabled = persistedToggle.disabled = !computed;
           if (computed) nullableToggle.checked = true;
           if (identityToggle.checked) nullableToggle.checked = false;
@@ -1837,6 +2174,7 @@
             h('label', { class: 'null-toggle' }, computedToggle, 'Computed'), computedInput,
             h('label', { class: 'null-toggle' }, persistedToggle, 'Persisted'))),
           h('td', {}, defaultInput),
+          h('td', {}, collationInput),
           h('td', { class: 'cell-actions' },
             h('button', { class: 'mini-btn', title: 'Save', onclick: async () => {
               const design = {
@@ -1849,6 +2187,9 @@
                 isPersisted: computedToggle.checked && persistedToggle.checked,
                 identitySeed: Number(identitySeed.value || 1),
                 identityIncrement: Number(identityIncrement.value || 1),
+                collation: !computedToggle.checked && collationInput.value.trim()
+                  ? collationInput.value.trim()
+                  : null,
               };
               try {
                 if (isNew) {
@@ -2112,6 +2453,7 @@
         h('td', { text: c.isIdentity ? 'yes' : '' }),
         h('td', { class: 'mono', text: c.computedDefinition || '' }),
         h('td', { class: 'mono muted', text: c.defaultDefinition || '' }),
+        h('td', { class: 'mono muted', text: c.collation || '' }),
         canDesign ? h('td', { class: 'cell-actions' },
           h('button', { class: 'mini-btn', title: 'Edit column inline', onclick: () => row.replaceWith(makeColumnEditor(c)) }, '✎'),
           h('button', {
@@ -2127,11 +2469,17 @@
         return row;
       });
 
-      const headers = ['', 'Column', 'Type', 'Nullable', 'Identity', 'Computed', 'Default'];
+      const headers = ['', 'Column', 'Type', 'Nullable', 'Identity', 'Computed', 'Default', 'Collation'];
       if (canDesign) headers.push('');
 
       const columnsBody = h('tbody', {}, columnRows);
       const sections = [
+        // WITHOUT ROWID and STRICT change how every row is stored and checked, so they belong at
+        // the top of the structure rather than being invisible.
+        s.tableOptions?.length
+          ? h('div', { class: 'table-options muted', 'data-testid': 'table-options' },
+            ...s.tableOptions.map((option) => h('span', { class: 'badge', text: option })))
+          : null,
         h('h3', { text: 'Columns' }),
         h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
           h('thead', {}, h('tr', {}, headers.map((t) => h('th', { text: t })))),
@@ -2314,7 +2662,11 @@
     const canEdit = connectionFor(scope).allowDdl && canExecute && canDesignObject(o);
     if (!canEdit) {
       const useButton = canExecute ? useInQueryButton(o, scope) : null;
-      if (toolbar && useButton) toolbar.append(useButton);
+      const executeButton = executeRoutineButton(o, scope);
+      if (toolbar) {
+        if (useButton) toolbar.append(useButton);
+        if (executeButton) toolbar.append(executeButton);
+      }
       const editor = createSqlEditor(definition, '', {
         readOnly: true,
         label: `${o.name} definition`,
@@ -2322,8 +2674,8 @@
         scope,
       });
       body.replaceChildren(...[
-        toolbar ? null : (useButton ? h('div', { class: 'inline-form' },
-          h('span', { class: 'spacer' }), useButton) : null),
+        toolbar || !(useButton || executeButton) ? null : h('div', { class: 'inline-form' },
+          h('span', { class: 'spacer' }), useButton, executeButton),
         h('div', { class: 'definition-section definition-readonly' }, editor),
       ].filter(Boolean));
       return;
@@ -2390,12 +2742,15 @@
       });
     };
     const useButton = useInQueryButton(o, scope);
+    const executeButton = executeRoutineButton(o, scope);
     if (toolbar) {
       if (useButton) toolbar.append(useButton);
+      if (executeButton) toolbar.append(executeButton);
       toolbar.append(save);
     }
     body.replaceChildren(h('div', { class: 'inline-editor' },
-      toolbar ? null : h('div', { class: 'inline-form' }, h('span', { class: 'spacer' }), useButton, save),
+      toolbar ? null : h('div', { class: 'inline-form' },
+        h('span', { class: 'spacer' }), useButton, executeButton, save),
       editor, error));
   }
 
@@ -2484,10 +2839,18 @@
       panel: null,
     };
 
+    // WITHOUT ROWID and STRICT change what the table is, not how it looks, so they belong beside
+    // the name rather than buried in a column row.
+    const tableOptions = (capabilities.supportedTableOptions || []).map((option) => {
+      const box = h('input', { type: 'checkbox', 'aria-label': option, 'data-testid': `table-option-${option.replace(/\s+/g, '-').toLowerCase()}` });
+      return { option, box, label: h('label', { class: 'checkbox-row' }, box, option) };
+    });
+
     const create = async () => {
       const design = {
         schema: schemaInput.value.trim() || capabilities.defaultSchema,
         name: nameInput.value.trim(),
+        options: tableOptions.filter((entry) => entry.box.checked).map((entry) => entry.option),
         columns: rows
           .filter((r) => r.name.value.trim())
           .map((r) => ({
@@ -2524,6 +2887,9 @@
         h('span', { class: 'muted', text: 'Name' }), nameInput,
         h('span', { class: 'spacer' }),
         h('button', { class: 'primary', onclick: create, 'data-testid': 'create-table' }, 'Create table')),
+      tableOptions.length
+        ? h('div', { class: 'designer-header table-options' }, ...tableOptions.map((entry) => entry.label))
+        : null,
       h('div', { class: 'designer-header muted' },
         'Columns - define regular, identity, primary-key, defaulted, or computed (optionally persisted) columns.'),
       columnsHost,
@@ -4658,7 +5024,7 @@
 
   // ---- query tabs -----------------------------------------------------------------
 
-  function openQueryTab(initialSql = '', initialTitle = null, scope = scopeOf()) {
+  function openQueryTab(initialSql = '', initialTitle = null, scope = scopeOf(), { autoRun = false } = {}) {
     if (!scope.database) {
       toast('Select a database first.');
       return;
@@ -4695,6 +5061,101 @@
     let savedQueries = [];
     let selectedSavedId = null;
     let activeQuery = null;
+
+    // ---- pinned session -----------------------------------------------------------------
+    // Without one, every execution gets its own connection and an explicit transaction is
+    // rolled back the moment the statement ends. With one, BEGIN, the statements after it, and
+    // COMMIT or ROLLBACK are the same unit of work, and its state is on screen throughout.
+
+    let session = null;
+    const sessionToggle = h('button', {
+      text: 'Session', title: 'Keep one connection open so a transaction spans executions',
+      'data-testid': 'session-toggle', 'aria-pressed': 'false',
+    });
+    const sessionState = h('span', { class: 'muted session-state', 'data-testid': 'session-state' });
+    const txButton = (label, command, testId) => h('button', {
+      text: label, 'data-testid': testId, hidden: '',
+      onclick: () => runTransactionCommand(command),
+    });
+    const beginButton = txButton('Begin', 'begin', 'transaction-begin');
+    const commitButton = txButton('Commit', 'commit', 'transaction-commit');
+    const rollbackButton = txButton('Rollback', 'rollback', 'transaction-rollback');
+
+    const renderSession = () => {
+      const open = Boolean(session);
+      const inTransaction = open && session.transaction && session.transaction.isOpen;
+      sessionToggle.setAttribute('aria-pressed', String(open));
+      sessionToggle.classList.toggle('active', open);
+      for (const button of [beginButton, commitButton, rollbackButton]) button.hidden = !open;
+      beginButton.disabled = inTransaction;
+      commitButton.disabled = !inTransaction || session.transaction.isUncommittable;
+      rollbackButton.disabled = !inTransaction;
+      sessionState.textContent = !open
+        ? ''
+        : inTransaction
+          ? (session.transaction.isUncommittable
+            ? 'transaction open - can only be rolled back'
+            : `transaction open${session.transaction.depth > 1 ? ` (depth ${session.transaction.depth})` : ''}`)
+          : 'session - no transaction';
+      sessionState.classList.toggle('transaction-open', Boolean(inTransaction));
+    };
+
+    const refreshSession = async () => {
+      if (!session) return;
+      try {
+        session = await api(urls.session(session.id));
+      } catch (err) {
+        // The session is gone (closed elsewhere, or timed out); fall back to plain execution.
+        session = null;
+        toast(err.message);
+      }
+      renderSession();
+    };
+
+    const runTransactionCommand = async (command) => {
+      if (!session) return;
+      try {
+        session = await post(urls.sessionTransaction(session.id), { command });
+        toast(command === 'begin' ? 'Transaction started.' : `Transaction ${command}ted.`, false);
+      } catch (err) {
+        toast(err.message);
+        await refreshSession();
+        return;
+      }
+      renderSession();
+    };
+
+    const closeSession = async ({ silent = false } = {}) => {
+      const closing = session;
+      session = null;
+      renderSession();
+      if (!closing) return;
+      try {
+        await del(urls.session(closing.id));
+        if (!silent) toast('Session closed. Any open transaction was rolled back.', false);
+      } catch { /* already gone on the server */ }
+    };
+
+    sessionToggle.addEventListener('click', async () => {
+      if (session) {
+        if (session.transaction?.isOpen) {
+          confirmModal('Close session',
+            'This session has an open transaction. Closing it rolls the transaction back.',
+            () => closeSession(), 'Close session');
+          return;
+        }
+        await closeSession();
+        return;
+      }
+
+      try {
+        session = await post(urls.sessions(), {});
+        renderSession();
+        toast('Session open. Statements now share one connection.', false);
+      } catch (err) {
+        toast(err.message);
+      }
+    });
 
     const refreshSaved = async (selectId = null) => {
       try {
@@ -4780,6 +5241,31 @@
       panel: null,
     };
 
+    // ---- execution plans ----------------------------------------------------------------
+    // The plan answers the question results cannot: why the query costs what it does. An estimated
+    // plan compiles without running, so it is safe on a DELETE; an actual plan runs the statement
+    // and reports what really happened, which is why it is a separate, explicit action.
+
+    const showPlan = async (mode) => {
+      const sql = editor.value.trim();
+      if (!sql) return;
+      runButton.disabled = true;
+      status.textContent = mode === 'actual' ? 'Running for actual plan…' : 'Explaining…';
+      results.replaceChildren();
+      results.classList.remove('single-result');
+      try {
+        const plan = await post(urls.queryPlan(), { sql, mode });
+        results.replaceChildren(renderQueryPlan(plan));
+        status.textContent = plan.mode === 'actual' ? 'Actual plan' : 'Estimated plan';
+        await refreshSession();
+      } catch (err) {
+        results.replaceChildren(errorBox(err.message));
+        status.textContent = 'Failed';
+      } finally {
+        runButton.disabled = false;
+      }
+    };
+
     const run = async () => {
       const sql = editor.value.trim();
       if (!sql) return;
@@ -4852,7 +5338,7 @@
       };
 
       try {
-        await streamNdjson(urls.query(), {
+        await streamNdjson(session ? urls.sessionQuery(session.id) : urls.query(), {
           method: 'POST', body: JSON.stringify({ sql, maxRows: Number(maxRowsInput.value) }), signal: controller.signal,
         }, addEvent);
         if (completedSuccessfully && /\b(?:CREATE(?:\s+OR\s+ALTER)?|ALTER|DROP)\s+(?:VIEW|TABLE|PROCEDURE|PROC|FUNCTION|SCHEMA)\b/i.test(sql)) {
@@ -4862,6 +5348,8 @@
         if (err.name === 'AbortError') status.textContent = 'Cancelled';
         else { results.append(errorBox(err.message)); status.textContent = 'Failed'; }
       } finally {
+        // The statement may have been BEGIN or COMMIT itself, so the state is re-read either way.
+        await refreshSession();
         clearInterval(timer);
         if (activeQuery === controller) {
           activeQuery = null;
@@ -4874,6 +5362,22 @@
 
     runButton.addEventListener('click', run);
     cancelButton.addEventListener('click', () => activeQuery?.abort());
+
+    // Closing the tab ends the session, so an unfinished transaction is rolled back now rather
+    // than left holding locks until it times out.
+    tab.onClose = () => closeSession({ silent: true });
+
+    tab.beforeClose = () => {
+      if (!session?.transaction?.isOpen) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        let decision = false;
+        modal('Transaction still open',
+          h('p', { text: `${tab.title} has an open transaction. Closing the tab rolls it back; nothing it changed will be kept.` }), [
+          { label: 'Keep tab open', onClick: (close) => close() },
+          { label: 'Roll back and close', danger: true, onClick: (close) => { decision = true; close(); } },
+        ], () => resolve(decision));
+      });
+    };
 
     tab.beforeLeave = () => {
       if (!tab.isRunning) return Promise.resolve(true);
@@ -4898,15 +5402,40 @@
 
     const savedActions = h('span', { class: 'toolbar-group saved-query-actions' },
       h('span', { class: 'toolbar-divider' }), savedSelect, saveButton, deleteButton);
+    const planActions = capabilities.supportsQueryPlans && currentConn().allowSqlExecution
+      ? h('span', { class: 'toolbar-group plan-actions' },
+        h('span', { class: 'toolbar-divider' }),
+        h('button', {
+          text: 'Plan', 'data-testid': 'query-plan-estimated',
+          title: 'Show the plan without running the query',
+          onclick: () => showPlan('estimated'),
+        }),
+        h('button', {
+          text: 'Plan + run', 'data-testid': 'query-plan-actual',
+          title: 'Run the query and show the plan it actually used',
+          onclick: () => showPlan('actual'),
+        }))
+      : null;
+    const sessionActions = capabilities.supportsSessions && currentConn().allowSqlExecution
+      ? h('span', { class: 'toolbar-group session-actions' },
+        h('span', { class: 'toolbar-divider' }),
+        sessionToggle, beginButton, commitButton, rollbackButton, sessionState)
+      : null;
     const limitActions = h('span', { class: 'toolbar-group' },
       h('label', { class: 'query-limit-label', title: maxRowsInput.title }, 'Row cap ', maxRowsInput));
     const queryToolbar = h('div', { class: 'query-toolbar', 'data-testid': 'query-toolbar' },
         runButton, cancelButton,
         savedActions,
+        planActions,
+        sessionActions,
         h('span', { class: 'spacer' }),
         limitActions,
         status);
-    setupOverflowToolbar(queryToolbar, [savedActions, limitActions], 'More query actions');
+    setupOverflowToolbar(
+      queryToolbar,
+      [savedActions, planActions, sessionActions, limitActions].filter(Boolean),
+      'More query actions');
+    renderSession();
     tab.panel = h('div', { class: 'panel query-panel' },
       resizableQueryEditor(editor),
       results,
@@ -4915,6 +5444,7 @@
     addTab(tab);
     refreshSaved();
     editor.focus();
+    if (autoRun) run();
   }
 
   // ---- publishing -----------------------------------------------------------------
@@ -5860,6 +6390,63 @@
     for (const th of table.querySelectorAll('thead th')) th.style.width = th.offsetWidth + 'px';
     table.style.width = width + 'px';
     table.style.tableLayout = 'fixed';
+  }
+
+  // Plans are trees of operators with a cost each. The rendering keeps the shape and the numbers
+  // that decide where to look - cost share, and estimate against reality - and leaves the engine's
+  // own text underneath for anything it does not show.
+  function renderQueryPlan(plan) {
+    const roots = plan.roots || [];
+    const totalCost = roots.reduce((sum, node) => sum + (node.estimatedCost || 0), 0);
+    const number = (value) => value == null
+      ? null
+      : Math.abs(value) >= 1000 || Number.isInteger(value)
+        ? Math.round(value).toLocaleString()
+        : value.toFixed(3);
+
+    const renderNode = (node, depth) => {
+      const share = totalCost > 0 && node.estimatedCost != null
+        ? Math.round((node.estimatedCost / totalCost) * 100)
+        : null;
+      const facts = [
+        node.actualRows != null ? `${number(node.actualRows)} rows` : null,
+        node.estimatedRows != null
+          ? `${node.actualRows != null ? 'est. ' : ''}${number(node.estimatedRows)} rows`
+          : null,
+        node.estimatedCost != null ? `cost ${number(node.estimatedCost)}` : null,
+        share != null && depth === 0 ? null : share != null ? `${share}%` : null,
+      ].filter(Boolean);
+      const row = h('div', { class: 'plan-node', style: `--plan-depth:${depth}` },
+        h('span', { class: 'plan-op', text: node.operation }),
+        node.detail ? h('span', { class: 'plan-detail', text: node.detail, title: node.detail }) : null,
+        facts.length ? h('span', { class: 'plan-facts muted', text: facts.join(' · ') }) : null,
+        ...(node.warnings || []).map((warning) =>
+          h('span', { class: 'plan-warning', text: warning, title: warning })));
+      return [row, ...(node.children || []).flatMap((child) => renderNode(child, depth + 1))];
+    };
+
+    const body = h('div', { class: 'plan-tree', 'data-testid': 'query-plan' },
+      ...roots.flatMap((root) => renderNode(root, 0)));
+    if (!roots.length) {
+      body.append(h('div', { class: 'muted', text: 'The provider returned no plan for this statement.' }));
+    }
+
+    const sections = [
+      h('div', { class: 'result-meta muted' },
+        h('span', { text: plan.mode === 'actual' ? 'Actual execution plan' : 'Estimated execution plan' })),
+      body,
+    ];
+    for (const message of plan.messages || []) {
+      sections.push(h('div', { class: 'message mono', text: message }));
+    }
+    if (plan.rawText) {
+      const raw = h('details', { class: 'plan-raw' },
+        h('summary', { text: 'Plan as the engine returned it' }),
+        h('pre', { class: 'mono', text: plan.rawText }));
+      sections.push(raw);
+    }
+
+    return h('div', { class: 'plan-panel' }, ...sections);
   }
 
   function renderCell(value) {

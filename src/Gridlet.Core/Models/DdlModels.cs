@@ -4,6 +4,9 @@ namespace Gridlet.Models;
 public sealed record SchemaDesign(string Name, string? Owner = null);
 
 /// <summary>A column definition used by the table designer (create table, add/alter column).</summary>
+// The compatibility constructor below leaves the serializer with two candidates, so the shape a
+// request body binds to is named explicitly.
+[method: System.Text.Json.Serialization.JsonConstructor]
 public sealed record ColumnDesign(
     string Name,
     string DataType,
@@ -14,7 +17,26 @@ public sealed record ColumnDesign(
     string? ComputedExpression = null,
     bool IsPersisted = false,
     long IdentitySeed = 1,
-    long IdentityIncrement = 1);
+    long IdentityIncrement = 1,
+    string? Collation = null)
+{
+    /// <summary>Creates the legacy ten-field column shape without relying on optional-parameter ABI.</summary>
+    public ColumnDesign(
+        string name,
+        string dataType,
+        bool isNullable,
+        bool isIdentity,
+        bool isPrimaryKey,
+        string? defaultExpression,
+        string? computedExpression,
+        bool isPersisted,
+        long identitySeed,
+        long identityIncrement)
+        : this(name, dataType, isNullable, isIdentity, isPrimaryKey, defaultExpression,
+            computedExpression, isPersisted, identitySeed, identityIncrement, null)
+    {
+    }
+}
 
 /// <summary>A primary-key constraint designed in the structure editor.</summary>
 public sealed record PrimaryKeyDesign(
@@ -75,7 +97,23 @@ public sealed record ForeignKeyDesign(
     string OnUpdate = "NO ACTION");
 
 /// <summary>A new table as designed in the UI.</summary>
+/// <param name="Options">
+/// Table-level options the engine accepts after the column list, such as SQLite's
+/// <c>WITHOUT ROWID</c> and <c>STRICT</c>. Providers reject anything they do not recognise.
+/// </param>
+// The compatibility constructor below leaves the serializer with two candidates, so the shape a
+// request body binds to is named explicitly.
+[method: System.Text.Json.Serialization.JsonConstructor]
 public sealed record TableDesign(
     string Schema,
     string Name,
-    IReadOnlyList<ColumnDesign> Columns);
+    IReadOnlyList<ColumnDesign> Columns,
+    IReadOnlyList<string>? Options = null)
+{
+
+    /// <summary>Creates the legacy three-field design shape without relying on optional-parameter ABI.</summary>
+    public TableDesign(string schema, string name, IReadOnlyList<ColumnDesign> columns)
+        : this(schema, name, columns, null)
+    {
+    }
+}
