@@ -163,7 +163,7 @@ public class GridletEndpointTests
         Assert.Contains("\"Table\"", body);
         Assert.Contains("\"View\"", body);
         Assert.Contains("\"Trigger\"", body);
-        Assert.Contains("\"subKind\":\"VirtualTable\"", body);
+        Assert.Contains("\"subKind\":\"virtual\"", body);
         Assert.Contains("\"isInternal\":true", body);
     }
 

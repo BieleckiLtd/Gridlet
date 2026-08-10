@@ -187,7 +187,7 @@ public class SqlServerDdlBuilderTests
     }
 
     [Fact]
-    public void Parenthesises_filter_so_index_options_cannot_be_injected()
+    public void Parenthesizes_filter_so_index_options_cannot_be_injected()
     {
         var sql = SqlServerDdlBuilder.BuildCreateIndex(
             "dbo", "T",

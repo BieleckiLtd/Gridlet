@@ -65,8 +65,8 @@ public sealed class FakeGridletProvider :
         [
             new DbObjectInfo("dbo", "Customers", DbObjectType.Table),
             new DbObjectInfo("dbo", "NoKeys", DbObjectType.Table),
-            new DbObjectInfo("dbo", "SearchIndex", DbObjectType.Table, "VirtualTable"),
-            new DbObjectInfo("dbo", "Customers_fts_data", DbObjectType.Table, "Shadow", IsInternal: true),
+            new DbObjectInfo("dbo", "SearchIndex", DbObjectType.Table, "virtual"),
+            new DbObjectInfo("dbo", "Customers_fts_data", DbObjectType.Table, "shadow", IsInternal: true),
             new DbObjectInfo("dbo", "vw_Orders", DbObjectType.View),
             new DbObjectInfo("dbo", "RefreshOrders", DbObjectType.StoredProcedure),
             new DbObjectInfo("dbo", "OrderCount", DbObjectType.ScalarFunction),
