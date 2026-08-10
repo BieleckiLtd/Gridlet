@@ -781,7 +781,7 @@ public sealed class SqliteProviderTests : IAsyncLifetime
         }
         finally
         {
-                if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path)) File.Delete(path);
         }
     }
 

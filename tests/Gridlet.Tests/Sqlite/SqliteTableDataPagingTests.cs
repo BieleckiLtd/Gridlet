@@ -224,7 +224,7 @@ public sealed class SqliteTableDataPagingTests
     {
         public void Dispose()
         {
-                if (File.Exists(Path))
+            if (File.Exists(Path))
             {
                 File.Delete(Path);
             }
