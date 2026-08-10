@@ -145,7 +145,7 @@ public sealed class SqliteTableDataPagingTests
     private static async Task<Fixture> CreateFixtureAsync()
     {
         var path = Path.Combine(Path.GetTempPath(), $"gridlet-paging-{Guid.NewGuid():N}.db");
-        var connectionString = new SqliteConnectionStringBuilder { DataSource = path }.ToString();
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
         await using (var connection = new SqliteConnection(connectionString))
         {
             await connection.OpenAsync();
@@ -224,7 +224,6 @@ public sealed class SqliteTableDataPagingTests
     {
         public void Dispose()
         {
-            SqliteConnection.ClearAllPools();
             if (File.Exists(Path))
             {
                 File.Delete(Path);

@@ -17,6 +17,7 @@ public sealed class SqliteProviderTests : IAsyncLifetime
         var connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = databasePath,
+            Pooling = false,
             ForeignKeys = true,
         }.ToString();
         context = new GridletConnectionContext(new GridletConnectionOptions
@@ -60,7 +61,6 @@ public sealed class SqliteProviderTests : IAsyncLifetime
 
     public Task DisposeAsync()
     {
-        SqliteConnection.ClearAllPools();
         if (File.Exists(databasePath)) File.Delete(databasePath);
         return Task.CompletedTask;
     }
@@ -746,6 +746,7 @@ public sealed class SqliteProviderTests : IAsyncLifetime
         var connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = path,
+            Pooling = false,
             ForeignKeys = false,
         }.ToString();
 
@@ -780,7 +781,6 @@ public sealed class SqliteProviderTests : IAsyncLifetime
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
             if (File.Exists(path)) File.Delete(path);
         }
     }

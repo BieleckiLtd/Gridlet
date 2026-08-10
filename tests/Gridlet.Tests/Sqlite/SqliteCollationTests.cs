@@ -17,7 +17,7 @@ public sealed class SqliteCollationTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var connectionString = new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString();
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = databasePath, Pooling = false }.ToString();
         context = new GridletConnectionContext(
             new GridletConnectionOptions
             {
@@ -42,7 +42,6 @@ public sealed class SqliteCollationTests : IAsyncLifetime
 
     public Task DisposeAsync()
     {
-        SqliteConnection.ClearAllPools();
         if (File.Exists(databasePath)) File.Delete(databasePath);
         return Task.CompletedTask;
     }
