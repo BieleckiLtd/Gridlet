@@ -128,13 +128,13 @@ public static class SqlServerSqlBuilder
                 FilterOperator.GreaterThan => ($"{quoted} > {parameterName}", value),
                 FilterOperator.GreaterThanOrEqual => ($"{quoted} >= {parameterName}", value),
                 FilterOperator.Contains =>
-                    ($"{quoted} LIKE {parameterName} ESCAPE '\\'", $"%{EscapeLike(value)}%"),
+                    ($"{quoted} LIKE {parameterName}", $"%{EscapeLike(value)}%"),
                 FilterOperator.NotContains =>
-                    ($"{quoted} NOT LIKE {parameterName} ESCAPE '\\'", $"%{EscapeLike(value)}%"),
+                    ($"{quoted} NOT LIKE {parameterName}", $"%{EscapeLike(value)}%"),
                 FilterOperator.StartsWith =>
-                    ($"{quoted} LIKE {parameterName} ESCAPE '\\'", $"{EscapeLike(value)}%"),
+                    ($"{quoted} LIKE {parameterName}", $"{EscapeLike(value)}%"),
                 FilterOperator.EndsWith =>
-                    ($"{quoted} LIKE {parameterName} ESCAPE '\\'", $"%{EscapeLike(value)}"),
+                    ($"{quoted} LIKE {parameterName}", $"%{EscapeLike(value)}"),
                 _ => throw new GridletValidationException(
                     $"Filter operator '{filter.Operator}' is not supported."),
             };
@@ -146,11 +146,20 @@ public static class SqlServerSqlBuilder
         return (" WHERE " + string.Join(" AND ", predicates), parameters);
     }
 
-    /// <summary>Escapes the characters LIKE treats as wildcards, including the escape character itself.</summary>
+    /// <summary>
+    /// Escapes the characters LIKE treats as wildcards by putting each in a character class, which
+    /// is the form SQL Server documents for matching one literally.
+    /// </summary>
+    /// <remarks>
+    /// A class is used rather than an ESCAPE character because it is unambiguous for <c>[</c>, which
+    /// opens a class of its own: <c>[[]</c> matches one literal bracket whatever the escape rules
+    /// say. It also leaves a backslash in the search text as an ordinary character rather than a
+    /// second thing to escape. The bracket is replaced first, since the other replacements introduce
+    /// brackets of their own.
+    /// </remarks>
     private static string EscapeLike(string value)
         => value
-            .Replace("\\", "\\\\")
-            .Replace("%", "\\%")
-            .Replace("_", "\\_")
-            .Replace("[", "\\[");
+            .Replace("[", "[[]")
+            .Replace("%", "[%]")
+            .Replace("_", "[_]");
 }

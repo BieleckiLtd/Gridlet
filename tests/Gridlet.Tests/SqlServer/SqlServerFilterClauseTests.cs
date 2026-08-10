@@ -32,10 +32,10 @@ public sealed class SqlServerFilterClauseTests
     }
 
     [Theory]
-    [InlineData(FilterOperator.Contains, "[Name] LIKE @f0 ESCAPE '\\'", "%ada%")]
-    [InlineData(FilterOperator.NotContains, "[Name] NOT LIKE @f0 ESCAPE '\\'", "%ada%")]
-    [InlineData(FilterOperator.StartsWith, "[Name] LIKE @f0 ESCAPE '\\'", "ada%")]
-    [InlineData(FilterOperator.EndsWith, "[Name] LIKE @f0 ESCAPE '\\'", "%ada")]
+    [InlineData(FilterOperator.Contains, "[Name] LIKE @f0", "%ada%")]
+    [InlineData(FilterOperator.NotContains, "[Name] NOT LIKE @f0", "%ada%")]
+    [InlineData(FilterOperator.StartsWith, "[Name] LIKE @f0", "ada%")]
+    [InlineData(FilterOperator.EndsWith, "[Name] LIKE @f0", "%ada")]
     public void Text_matching_uses_LIKE_with_the_pattern_as_a_parameter(
         FilterOperator @operator, string expectedPredicate, string expectedValue)
     {
@@ -48,7 +48,10 @@ public sealed class SqlServerFilterClauseTests
 
     /// <summary>
     /// A value containing LIKE wildcards has to match those characters literally, or searching for
-    /// "50%" would match every row.
+    /// "50%" would match every row. Each one becomes a character class, which is the form SQL Server
+    /// documents: an opening bracket starts a class of its own, so there is no reading of the escape
+    /// rules under which <c>[[]</c> is anything but one literal bracket. A closing bracket outside a
+    /// class is already literal, and a backslash is now just a character in the search text.
     /// </summary>
     [Fact]
     public void Wildcards_in_the_value_are_escaped()
@@ -56,7 +59,7 @@ public sealed class SqlServerFilterClauseTests
         var (_, parameters) = SqlServerSqlBuilder.BuildFilterClause(
             [new TableDataFilter("Notes", FilterOperator.Contains, @"50% [a_b] \x")], Columns);
 
-        Assert.Equal(@"%50\% \[a\_b] \\x%", Assert.Single(parameters).Value);
+        Assert.Equal(@"%50[%] [[]a[_]b] \x%", Assert.Single(parameters).Value);
     }
 
     [Fact]
