@@ -1742,8 +1742,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var page = browserPage.Page;
         await page.GotoAsync("/gridlet/");
 
+        // Every table the fake provider lists except the internal one, which the tree hides.
         var tables = page.Locator("#tree summary").Filter(new() { HasText = "Tables" });
-        await Assertions.Expect(tables).ToContainTextAsync("4");
+        await Assertions.Expect(tables).ToContainTextAsync("6");
 
         await page.GetByTitle("dbo.NoKeys").ClickAsync();
         var panel = ActivePanel(page);
