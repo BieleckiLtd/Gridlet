@@ -9,11 +9,13 @@ public static partial class SqliteDdlBuilder
     /// <summary>
     /// SQLite has no fixed set of type names: a declared type is text, and only its affinity is
     /// derived from it. So the rule is about shape, not vocabulary - letters, digits, underscores and
-    /// single spaces, with an optional numeric length. That admits ANY on a STRICT table and any
-    /// application-specific affinity, while leaving no way for a type string to carry SQL.
+    /// spaces, with an optional numeric length. That admits ANY on a STRICT table and any
+    /// application-specific affinity, while leaving no way for a type string to carry SQL. Runs of
+    /// whitespace between words are a paste artefact rather than a different type, so they are
+    /// accepted and written out as one space.
     /// </summary>
     [GeneratedRegex(
-        @"^(?<name>[a-zA-Z_][a-zA-Z0-9_]*(?: [a-zA-Z_][a-zA-Z0-9_]*)*)" +
+        @"^(?<name>[a-zA-Z_][a-zA-Z0-9_]*(?:\s+[a-zA-Z_][a-zA-Z0-9_]*)*)" +
         @"(?:\s*\(\s*(?<args>\d{1,4}(?:\s*,\s*\d{1,4})?)\s*\))?$")]
     private static partial Regex DataTypePattern();
 
@@ -41,7 +43,8 @@ public static partial class SqliteDdlBuilder
                 "BLOB, NUMERIC, ANY, or VARCHAR(100).");
         }
 
-        var words = match.Groups["name"].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var words = match.Groups["name"].Value.Split(
+            (char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (words.FirstOrDefault(ConstraintWords.Contains) is { } constraintWord)
         {
             throw new GridletValidationException(
@@ -49,7 +52,7 @@ public static partial class SqliteDdlBuilder
                 $"'{constraintWord}' and set the constraint with its own field instead.");
         }
 
-        var displayName = match.Groups["name"].Value.Trim().ToUpperInvariant();
+        var displayName = string.Join(' ', words).ToUpperInvariant();
         return match.Groups["args"].Success
             ? $"{displayName}({Regex.Replace(match.Groups["args"].Value, @"\s+", "")})"
             : displayName;

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Gridlet.Tests.AspNetCore.Fakes;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Gridlet.Tests.AspNetCore;
@@ -55,6 +56,65 @@ public sealed class ScriptEndpointTests
         var sql = await ScriptAsync(client, new { include = new[] { "data" }, maxRows = 1 });
 
         Assert.Contains("-- Stopped at 1 rows.", sql, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Paging only holds together while every page comes from the same order, and the providers get
+    /// that order from the row identity. A table that has none is read in one request instead: two
+    /// pages of an unordered table can repeat rows from the first and skip others, which would
+    /// script rows the table never held in that combination.
+    /// </summary>
+    [Fact]
+    public async Task A_table_that_cannot_be_ordered_is_read_in_one_request()
+    {
+        var (app, client, fake) = await PagedHostAsync();
+        await using var _ = app;
+
+        var sql = await ScriptAsync(client,
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/LedgerHeap/script",
+            new { include = new[] { "data" }, maxRows = 10 });
+
+        var request = Assert.Single(fake.DataPageRequests);
+        Assert.Equal((1, 10), request);
+        Assert.Equal(4, sql.Split("INSERT INTO", StringSplitOptions.None).Length - 1);
+    }
+
+    /// <summary>A table that can be ordered still pages, so the fix costs nothing where it is safe.</summary>
+    [Fact]
+    public async Task A_table_that_can_be_ordered_is_still_read_a_page_at_a_time()
+    {
+        var (app, client, fake) = await PagedHostAsync();
+        await using var _ = app;
+
+        var sql = await ScriptAsync(client,
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Ledger/script",
+            new { include = new[] { "data" }, maxRows = 10 });
+
+        Assert.Equal([(1, 2), (2, 2)], fake.DataPageRequests);
+        Assert.Equal(4, sql.Split("INSERT INTO", StringSplitOptions.None).Length - 1);
+    }
+
+    private static async Task<(Microsoft.AspNetCore.Builder.WebApplication App, HttpClient Client,
+        FakeGridletProvider Fake)> PagedHostAsync()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Security.AllowAnonymous = true;
+            options.Limits.DefaultPageSize = 2;
+            options.Limits.MaxPageSize = 2;
+        });
+        var fake = (FakeGridletProvider)app.Services
+            .GetRequiredService<Gridlet.Abstractions.IGridletProvider>();
+        return (app, client, fake);
+    }
+
+    private static async Task<string> ScriptAsync(HttpClient client, string url, object body)
+    {
+        var response = await client.PostAsJsonAsync(url, body);
+        response.EnsureSuccessStatusCode();
+        return JsonDocument.Parse(await response.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("sql").GetString()!;
     }
 
     /// <summary>

@@ -120,12 +120,19 @@ internal static partial class GridletApiEndpoints
     {
         // Rows are read a page at a time, so scripting a large table does not depend on one
         // enormous result, and stops at the same cap the grid uses.
+        //
+        // Paging only holds together while every page comes from the same order, which the providers
+        // get from the row identity. A table that has none - a heap with no unique, non-nullable key
+        // - has no order to page by, and its second page can repeat rows from the first and skip
+        // others entirely. Those rows are read in one request instead, so the script is at least a
+        // consistent snapshot of the rows it did read.
+        var pagesAreOrdered = definition.RowIdentity is not null;
         var columns = Array.Empty<ResultColumn>();
         var rows = new List<object?[]>();
         var page = 1;
         while (rows.Count < maxRows)
         {
-            var pageSize = Math.Min(maxPageSize, maxRows - rows.Count);
+            var pageSize = pagesAreOrdered ? Math.Min(maxPageSize, maxRows - rows.Count) : maxRows;
             var data = await resolved.Provider.Data.GetPageAsync(
                 resolved.Context, schema, name, new TableDataRequest(page, pageSize), cancellationToken);
             if (page == 1)
@@ -139,7 +146,7 @@ internal static partial class GridletApiEndpoints
             }
 
             rows.AddRange(data.Rows);
-            if (rows.Count >= data.TotalRows)
+            if (!pagesAreOrdered || rows.Count >= data.TotalRows)
             {
                 break;
             }

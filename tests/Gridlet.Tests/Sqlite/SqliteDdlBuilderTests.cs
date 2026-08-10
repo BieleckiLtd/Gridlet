@@ -61,13 +61,17 @@ public sealed class SqliteDdlBuilderTests
         Assert.Contains("column constraint", exception.Message, StringComparison.Ordinal);
     }
 
-    /// <summary>The refusal is about constraint words, not about spaces: real type names still pass.</summary>
+    /// <summary>
+    /// The refusal is about constraint words, not about spaces: real type names still pass, and the
+    /// extra spaces a paste leaves behind are written out as one rather than rejected.
+    /// </summary>
     [Theory]
-    [InlineData("double precision")]
-    [InlineData("unsigned big int")]
-    [InlineData("varying character(20)")]
-    public void Still_accepts_a_type_name_written_as_several_words(string input)
-        => SqliteDdlBuilder.NormalizeDataType(input);
+    [InlineData("double precision", "DOUBLE PRECISION")]
+    [InlineData("double  precision", "DOUBLE PRECISION")]
+    [InlineData("unsigned big int", "UNSIGNED BIG INT")]
+    [InlineData("varying\tcharacter(20)", "VARYING CHARACTER(20)")]
+    public void Still_accepts_a_type_name_written_as_several_words(string input, string expected)
+        => Assert.Equal(expected, SqliteDdlBuilder.NormalizeDataType(input));
 
     [Fact]
     public void Builds_identity_primary_key_defaults_and_foreign_keys()

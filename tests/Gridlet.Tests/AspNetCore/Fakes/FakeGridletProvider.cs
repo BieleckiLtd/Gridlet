@@ -68,6 +68,11 @@ public sealed class FakeGridletProvider :
         [
             new DbObjectInfo("dbo", "Customers", DbObjectType.Table),
             new DbObjectInfo("dbo", "NoKeys", DbObjectType.Table),
+
+            // Two tables with more rows than one page, one addressable and one not, so paging can
+            // be told apart from reading everything at once.
+            new DbObjectInfo("dbo", "Ledger", DbObjectType.Table),
+            new DbObjectInfo("dbo", "LedgerHeap", DbObjectType.Table),
             new DbObjectInfo("dbo", "Heap", DbObjectType.Table),
             new DbObjectInfo("dbo", "SearchIndex", DbObjectType.Table, "VirtualTable"),
             new DbObjectInfo("dbo", "Customers_fts_data", DbObjectType.Table, "Shadow", IsInternal: true),
@@ -131,7 +136,7 @@ public sealed class FakeGridletProvider :
             [new UniqueConstraintInfo("UQ_" + name + "_Name", [
                 new IndexKeyInfo("Name", 1, IsDescending: true, Collation: "NOCASE")],
                 IsClustered: true, FillFactor: 90, IsDisabled: true)],
-            name == "NoKeys"
+            name is "NoKeys" or "LedgerHeap"
                 ? null
                 : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]))),
         };
@@ -182,15 +187,51 @@ public sealed class FakeGridletProvider :
     /// <summary>The filters the most recent page request carried, so their parsing can be asserted.</summary>
     public IReadOnlyList<TableDataFilter>? LastDataFilters { get; private set; }
 
+    /// <summary>Every page asked for, in order, so a caller's paging can be asserted.</summary>
+    public List<(int Page, int PageSize)> DataPageRequests { get; } = [];
+
     public Task<TableDataPage> GetPageAsync(
         GridletConnectionContext context, string schema, string name, TableDataRequest request,
         CancellationToken cancellationToken = default)
     {
         LastDataFilters = request.Filters;
+        DataPageRequests.Add((request.Page, request.PageSize));
         return GetPageCore(name, request);
     }
 
+    /// <summary>
+    /// Four rows served a page at a time, from a table that can be addressed and one that cannot.
+    /// A caller that pages through the second one is reading an unordered table twice.
+    /// </summary>
+    private static TableDataPage LedgerPage(string name, TableDataRequest request)
+    {
+        object?[][] all = [[1, "Ada"], [2, "Grace"], [3, "Edsger"], [4, "Alan"]];
+        var taken = all
+            .Skip((request.Page - 1) * request.PageSize)
+            .Take(request.PageSize)
+            .ToArray();
+        return new TableDataPage(
+            [new ResultColumn("Id", "int"), new ResultColumn("Name", "nvarchar(100)")],
+            taken,
+            request.Page,
+            request.PageSize,
+            TotalRows: all.Length,
+            RowIdentity: name == "LedgerHeap"
+                ? null
+                : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]));
+    }
+
     private static Task<TableDataPage> GetPageCore(string name, TableDataRequest request)
+    {
+        if (name is "Ledger" or "LedgerHeap")
+        {
+            return Task.FromResult(LedgerPage(name, request));
+        }
+
+        return GetFixedPage(name, request);
+    }
+
+    private static Task<TableDataPage> GetFixedPage(string name, TableDataRequest request)
         => Task.FromResult(name == "Heap"
             ? new TableDataPage(
                 [new ResultColumn("Name", "nvarchar(100)")],
