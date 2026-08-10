@@ -23,6 +23,13 @@ public sealed record QueryResult(
     long DurationMs);
 
 /// <summary>A progressive event emitted while an interactive query is executing.</summary>
+/// <param name="RowIdentity">
+/// On a <c>resultSet</c> event for table data, how one row can be addressed for editing.
+/// </param>
+/// <param name="RowKeys">
+/// On a <c>rows</c> event for table data, the identifying values for each row in <paramref name="Rows"/>,
+/// ordered by <see cref="RowIdentityInfo.Columns"/>.
+/// </param>
 public sealed record QueryStreamEvent(
     string Type,
     int? ResultSetIndex = null,
@@ -31,4 +38,6 @@ public sealed record QueryStreamEvent(
     bool? Truncated = null,
     string? Message = null,
     int? RecordsAffected = null,
-    long? DurationMs = null);
+    long? DurationMs = null,
+    RowIdentityInfo? RowIdentity = null,
+    IReadOnlyList<object?[]>? RowKeys = null);

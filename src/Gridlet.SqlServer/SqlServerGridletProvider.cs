@@ -29,7 +29,9 @@ public sealed class SqlServerGridletProvider :
         ObjectEditMode: "Alter",
         SupportsCheckConstraints: true,
         SupportsUniqueConstraints: true,
-        SupportsIndexes: true);
+        SupportsIndexes: true,
+        SupportsSessions: true,
+        SupportsQueryPlans: true);
 
     public ISchemaReader Schema { get; } = new SqlServerSchemaReader();
 

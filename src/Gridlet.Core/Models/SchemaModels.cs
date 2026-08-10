@@ -54,8 +54,30 @@ public sealed record ColumnInfo(
     bool IsPersisted = false,
     long? IdentitySeed = null,
     long? IdentityIncrement = null,
-    bool IsHidden = false)
+    bool IsHidden = false,
+    string? Collation = null)
 {
+    /// <summary>Creates the thirteen-field column shape without relying on optional-parameter ABI.</summary>
+    public ColumnInfo(
+        string name,
+        string dataType,
+        bool isNullable,
+        bool isIdentity,
+        bool isComputed,
+        bool isPrimaryKey,
+        string? defaultDefinition,
+        int ordinal,
+        string? computedDefinition,
+        bool isPersisted,
+        long? identitySeed,
+        long? identityIncrement,
+        bool isHidden)
+        : this(name, dataType, isNullable, isIdentity, isComputed, isPrimaryKey,
+            defaultDefinition, ordinal, computedDefinition, isPersisted, identitySeed,
+            identityIncrement, isHidden, null)
+    {
+    }
+
     /// <summary>Creates the legacy twelve-field column shape without relying on optional-parameter ABI.</summary>
     public ColumnInfo(
         string name,
@@ -72,7 +94,7 @@ public sealed record ColumnInfo(
         long? identityIncrement)
         : this(name, dataType, isNullable, isIdentity, isComputed, isPrimaryKey,
             defaultDefinition, ordinal, computedDefinition, isPersisted, identitySeed,
-            identityIncrement, false)
+            identityIncrement, false, null)
     {
     }
 
@@ -187,6 +209,73 @@ public sealed record UniqueConstraintInfo(
     int FillFactor = 0,
     bool IsDisabled = false);
 
+/// <summary>How a provider identifies one row of a table for editing.</summary>
+/// <param name="Kind">
+/// One of <see cref="RowIdentityKinds"/>: the declared primary key, a unique key over
+/// non-nullable columns, or a provider-supplied row identifier such as SQLite's <c>rowid</c>.
+/// </param>
+/// <param name="Columns">
+/// The identifying columns, in key order. For <see cref="RowIdentityKinds.RowId"/> the single
+/// entry is a pseudo-column that does not appear in <see cref="TableDefinition.Columns"/>.
+/// </param>
+/// <param name="Source">The constraint or index the identity was taken from, when it has a name.</param>
+public sealed record RowIdentityInfo(string Kind, IReadOnlyList<string> Columns, string? Source = null);
+
+/// <summary>The <see cref="RowIdentityInfo.Kind"/> values Gridlet understands.</summary>
+public static class RowIdentityKinds
+{
+    /// <summary>The table's declared primary key.</summary>
+    public const string PrimaryKey = "primaryKey";
+
+    /// <summary>A unique constraint or unique index whose key columns are all non-nullable.</summary>
+    public const string UniqueKey = "uniqueKey";
+
+    /// <summary>A provider row identifier that is not one of the table's columns.</summary>
+    public const string RowId = "rowId";
+}
+
+/// <summary>One parameter of a stored procedure or function.</summary>
+/// <param name="Name">The parameter name as the engine declares it, including any leading marker.</param>
+/// <param name="DataType">The declared type, formatted for display and for a DECLARE statement.</param>
+/// <param name="Ordinal">The one-based position, or 0 for a return value.</param>
+/// <param name="IsOutput">Whether the caller gets a value back through this parameter.</param>
+/// <param name="IsReturnValue">Whether this is the routine's return value rather than a parameter.</param>
+/// <param name="HasDefault">Whether the routine supplies a default when the argument is omitted.</param>
+/// <param name="DefaultDefinition">The default value, where the engine exposes it.</param>
+/// <param name="IsReadOnly">Whether the parameter is READONLY, as table-valued parameters must be.</param>
+/// <param name="IsTableType">
+/// Whether the parameter takes a table type. Such a parameter cannot be filled in from a simple
+/// value, so callers offer it as something to script rather than something to type.
+/// </param>
+public sealed record RoutineParameterInfo(
+    string Name,
+    string DataType,
+    int Ordinal,
+    bool IsOutput = false,
+    bool IsReturnValue = false,
+    bool HasDefault = false,
+    string? DefaultDefinition = null,
+    bool IsReadOnly = false,
+    bool IsTableType = false);
+
+/// <summary>A stored procedure or function and the parameters it is called with.</summary>
+public sealed record RoutineDefinition(
+    DbObjectInfo Object,
+    IReadOnlyList<RoutineParameterInfo> Parameters);
+
+/// <summary>One argument supplied for a call to a routine.</summary>
+/// <param name="Value">
+/// The value as typed by the person, to be quoted for the parameter's declared type. Ignored when
+/// <paramref name="IsNull"/> or <paramref name="IsRawSql"/> apply.
+/// </param>
+/// <param name="IsNull">Whether the argument is explicitly NULL.</param>
+/// <param name="IsRawSql">
+/// Whether <paramref name="Value"/> is already a SQL expression and should be placed in the script
+/// as written. This is the escape hatch for types a text box cannot express, such as a table-valued
+/// parameter variable.
+/// </param>
+public sealed record RoutineArgument(string? Value, bool IsNull = false, bool IsRawSql = false);
+
 /// <summary>One column pairing within a foreign key.</summary>
 public sealed record ForeignKeyColumnPair(string Column, string ReferencedColumn);
 
@@ -200,21 +289,52 @@ public sealed record ForeignKeyInfo(
     string OnUpdate = "NO_ACTION");
 
 /// <summary>Full structural description of a table or view.</summary>
+/// <param name="RowIdentity">
+/// How a single row of this object can be addressed for editing, or <see langword="null"/> when the
+/// provider cannot identify one row reliably.
+/// </param>
 public sealed record TableDefinition(
     DbObjectInfo Object,
     IReadOnlyList<ColumnInfo> Columns,
     IReadOnlyList<IndexInfo> Indexes,
     IReadOnlyList<ForeignKeyInfo> ForeignKeys,
     IReadOnlyList<CheckConstraintInfo> CheckConstraints,
-    IReadOnlyList<UniqueConstraintInfo> UniqueConstraints)
+    IReadOnlyList<UniqueConstraintInfo> UniqueConstraints,
+    RowIdentityInfo? RowIdentity = null,
+    IReadOnlyList<string>? TableOptions = null)
 {
+    /// <summary>Creates the seven-field table-definition shape without relying on optional-parameter ABI.</summary>
+    public TableDefinition(
+        DbObjectInfo @object,
+        IReadOnlyList<ColumnInfo> columns,
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ForeignKeyInfo> foreignKeys,
+        IReadOnlyList<CheckConstraintInfo> checkConstraints,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints,
+        RowIdentityInfo? rowIdentity)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, rowIdentity, null)
+    {
+    }
+
+    /// <summary>Creates the six-field table-definition shape without relying on optional-parameter ABI.</summary>
+    public TableDefinition(
+        DbObjectInfo @object,
+        IReadOnlyList<ColumnInfo> columns,
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ForeignKeyInfo> foreignKeys,
+        IReadOnlyList<CheckConstraintInfo> checkConstraints,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, null, null)
+    {
+    }
+
     /// <summary>Creates a definition for callers that do not yet supply CHECK or UNIQUE metadata.</summary>
     public TableDefinition(
         DbObjectInfo @object,
         IReadOnlyList<ColumnInfo> columns,
         IReadOnlyList<IndexInfo> indexes,
         IReadOnlyList<ForeignKeyInfo> foreignKeys)
-        : this(@object, columns, indexes, foreignKeys, [], [])
+        : this(@object, columns, indexes, foreignKeys, [], [], null, null)
     {
     }
 

@@ -1446,6 +1446,48 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    /// <summary>
+    /// A heap has no primary key, so the row is addressed by a key the server streams alongside the
+    /// rows - here a rowid, which is not one of the columns on screen.
+    /// </summary>
+    [Fact]
+    public async Task Edits_a_row_of_a_table_that_has_no_primary_key()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.Heap").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await panel.Locator("tbody tr").Nth(1).Locator("td:not(.row-selector)").First.ClickAsync();
+        var name = panel.GetByLabel("Name", new() { Exact = true });
+        await name.FillAsync("Grace Hopper");
+        await name.PressAsync("Control+Enter");
+
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText("Row 2 updated.", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        Assert.Contains("update dbo.Heap key(rowid) set(Name)", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>A table whose rows cannot be addressed at all stays read-only.</summary>
+    [Fact]
+    public async Task Offers_no_row_editing_when_the_server_cannot_identify_a_row()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.NoKeys").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").First.ClickAsync();
+
+        await Assertions.Expect(panel.Locator("tr.row-editor")).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     [Fact]
     public async Task Table_definition_is_one_editable_highlighted_SQL_editor()
     {
@@ -1700,8 +1742,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var page = browserPage.Page;
         await page.GotoAsync("/gridlet/");
 
+        // Every table the fake provider lists except the internal one, which the tree hides.
         var tables = page.Locator("#tree summary").Filter(new() { HasText = "Tables" });
-        await Assertions.Expect(tables).ToContainTextAsync("3");
+        await Assertions.Expect(tables).ToContainTextAsync("6");
 
         await page.GetByTitle("dbo.NoKeys").ClickAsync();
         var panel = ActivePanel(page);
@@ -1940,6 +1983,245 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
+
+    /// <summary>
+    /// WITHOUT ROWID and STRICT change what a table is, so the designer offers them where the
+    /// provider has them and leaves them out where it does not.
+    /// </summary>
+    [Fact]
+    public async Task Offers_table_options_only_where_the_provider_has_them()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("Create table").ClickAsync();
+        var sqlServerPanel = ActivePanel(page);
+        await Assertions.Expect(sqlServerPanel.GetByTestId("table-option-strict")).ToHaveCountAsync(0);
+
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
+        await page.GetByTitle("Create table").ClickAsync();
+        var sqlitePanel = ActivePanel(page);
+        await Assertions.Expect(sqlitePanel.GetByTestId("table-option-strict")).ToBeVisibleAsync();
+        await Assertions.Expect(sqlitePanel.GetByTestId("table-option-without-rowid")).ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Scripting is the way out of anything the designer will not do, so the script has to land
+    /// somewhere it can be read and edited before it runs.
+    /// </summary>
+    [Fact]
+    public async Task Scripts_an_object_into_a_query_tab()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await panel.GetByTestId("script-object").ClickAsync();
+
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Script dbo.Customers" });
+        await dialog.GetByTestId("script-drop").CheckAsync();
+        await dialog.GetByTestId("script-data").CheckAsync();
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Script", Exact = true }).ClickAsync();
+
+        var editor = ActivePanel(page).GetByTestId("sql-editor");
+        await Assertions.Expect(editor).ToBeVisibleAsync();
+        var sql = await editor.InputValueAsync();
+        Assert.Contains("DROP TABLE dbo.Customers;", sql, StringComparison.Ordinal);
+        Assert.Contains("CREATE VIEW dbo.Customers", sql, StringComparison.Ordinal);
+        Assert.Contains("INSERT INTO dbo.Customers", sql, StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Renames_an_object_and_empties_a_table()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await panel.GetByTestId("empty-table").ClickAsync();
+        var emptyDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Empty table" });
+        await Assertions.Expect(emptyDialog).ToContainTextAsync("cannot be undone");
+        await emptyDialog.GetByRole(AriaRole.Button, new() { Name = "Delete all rows", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "dbo.Customers emptied.", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.Contains("truncate dbo.Customers", fixture.Provider.Calls);
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await panel.GetByTestId("rename-object").ClickAsync();
+        var renameDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Rename dbo.Customers" });
+        await Assertions.Expect(renameDialog).ToContainTextAsync("are not updated");
+        await renameDialog.GetByTestId("rename-name").FillAsync("Clients");
+        await renameDialog.GetByRole(AriaRole.Button, new() { Name = "Rename", Exact = true }).ClickAsync();
+
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "Renamed to Clients.", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.Contains("renameObject Table dbo.Customers -> Clients", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A filter has to reach the database: filtering the page already fetched would only ever search
+    /// the rows on screen.
+    /// </summary>
+    [Fact]
+    public async Task Filters_table_data_in_the_database()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var dataRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/data/stream", StringComparison.Ordinal)) dataRequests.Add(request.Url);
+        };
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await panel.GetByTestId("add-filter").ClickAsync();
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Filter rows" });
+        await dialog.GetByLabel("Filter column").SelectOptionAsync("Name");
+        await dialog.GetByLabel("Filter operator").SelectOptionAsync("contains");
+        await dialog.GetByLabel("Filter value").FillAsync("ada");
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Apply", Exact = true }).ClickAsync();
+
+        await Assertions.Expect(panel.GetByTestId("filter-chip")).ToHaveTextAsync("Name contains ada×");
+        Assert.Contains(dataRequests, url => Uri.UnescapeDataString(url)
+            .Contains("""filter=[{"column":"Name","operator":"contains","value":"ada"}]""", StringComparison.Ordinal));
+
+        await panel.GetByTestId("filter-chip").GetByRole(AriaRole.Button).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("filter-chip")).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// "Why is this slow" is the question results cannot answer. The plan renders as a tree with the
+    /// operator, what it touches, the numbers that matter, and any warning attached to it.
+    /// </summary>
+    [Fact]
+    public async Task Shows_an_execution_plan_for_a_query()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT 1");
+        var panel = ActivePanel(page);
+
+        await panel.GetByTestId("query-plan-estimated").ClickAsync();
+
+        var plan = panel.GetByTestId("query-plan");
+        await Assertions.Expect(plan).ToBeVisibleAsync();
+        await Assertions.Expect(plan).ToContainTextAsync("Clustered Index Scan");
+        await Assertions.Expect(plan).ToContainTextAsync("Customers.PK_Customers");
+        await Assertions.Expect(plan).ToContainTextAsync("Missing index on Customers (Name)");
+        await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("Estimated plan");
+
+        await panel.GetByTestId("query-plan-actual").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("Actual plan");
+        await Assertions.Expect(panel.GetByText("logical reads 3")).ToBeVisibleAsync();
+        Assert.Contains("plan.actual SELECT 1", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A procedure used to open as the bare text <c>EXEC dbo.Proc;</c>. It now offers a form for its
+    /// arguments, and what runs is a script the person can see and keep.
+    /// </summary>
+    [Fact]
+    public async Task Executes_a_stored_procedure_with_arguments()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("summary").Filter(new() { HasText = "Stored procedures" }).ClickAsync();
+        await page.GetByTitle("dbo.RefreshOrders").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByTestId("execute-routine").ClickAsync();
+
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Execute dbo.RefreshOrders" });
+        await Assertions.Expect(dialog).ToBeVisibleAsync();
+        // The return value is not something to fill in, and the output parameter starts unset.
+        await Assertions.Expect(dialog.GetByLabel("@ReturnValue value")).ToHaveCountAsync(0);
+        await Assertions.Expect(dialog.GetByLabel("@RowsChanged argument")).ToHaveValueAsync("omit");
+        await dialog.GetByLabel("@Since value").FillAsync("2026-01-01");
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Execute", Exact = true }).ClickAsync();
+
+        var queryPanel = ActivePanel(page);
+        await Assertions.Expect(queryPanel.GetByTestId("sql-editor"))
+            .ToHaveValueAsync("EXEC dbo.RefreshOrders @Since = 2026-01-01;");
+        await Assertions.Expect(queryPanel.GetByTestId("query-status")).ToContainTextAsync("ms");
+        Assert.Contains("script dbo.RefreshOrders (@Since = 2026-01-01)", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A pinned session is the only way an explicit transaction survives from one execution to the
+    /// next, so the toolbar has to show whether one is open and let the person end it.
+    /// </summary>
+    [Fact]
+    public async Task Runs_a_transaction_across_executions_in_a_pinned_session()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT 42");
+        var panel = ActivePanel(page);
+        var state = panel.GetByTestId("session-state");
+
+        await panel.GetByTestId("session-toggle").ClickAsync();
+        await Assertions.Expect(state).ToHaveTextAsync("session - no transaction");
+        await Assertions.Expect(panel.GetByTestId("transaction-commit")).ToBeDisabledAsync();
+
+        await panel.GetByTestId("transaction-begin").ClickAsync();
+        await Assertions.Expect(state).ToHaveTextAsync("transaction open");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("query-status")).Not.ToHaveTextAsync("Running…");
+
+        // The transaction is still open after the execution: that is the whole point of a session.
+        await Assertions.Expect(state).ToHaveTextAsync("transaction open");
+        Assert.Contains("session.query SELECT 42", fixture.Provider.Calls);
+
+        await panel.GetByTestId("transaction-commit").ClickAsync();
+        await Assertions.Expect(state).ToHaveTextAsync("session - no transaction");
+        Assert.Contains("session.commit", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Closing_a_tab_with_an_open_transaction_asks_first_and_rolls_back()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT 42");
+        var panel = ActivePanel(page);
+        await panel.GetByTestId("session-toggle").ClickAsync();
+        await panel.GetByTestId("transaction-begin").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("session-state")).ToHaveTextAsync("transaction open");
+
+        await page.Locator("#tabbar .tab.active .tab-close").ClickAsync();
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Transaction still open" });
+        await Assertions.Expect(dialog).ToBeVisibleAsync();
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Keep tab open", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#tabbar .tab")).ToHaveCountAsync(1);
+
+        await page.Locator("#tabbar .tab.active .tab-close").ClickAsync();
+        await page.GetByRole(AriaRole.Dialog, new() { Name = "Transaction still open" })
+            .GetByRole(AriaRole.Button, new() { Name = "Roll back and close", Exact = true }).ClickAsync();
+
+        await Assertions.Expect(page.Locator("#tabbar .tab")).ToHaveCountAsync(0);
+        Assert.Contains("session.rollback", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
 
     private static async Task OpenQueryAsync(IPage page, string sql)
     {

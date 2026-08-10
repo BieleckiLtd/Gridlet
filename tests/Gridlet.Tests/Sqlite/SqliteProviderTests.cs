@@ -330,7 +330,7 @@ public sealed class SqliteProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Preserves_check_constraints_but_refuses_strict_and_without_rowid_rebuilds()
+    public async Task Rebuilds_keep_check_constraints_strict_and_without_rowid()
     {
         await provider.Query.ExecuteAsync(context,
             """
@@ -345,18 +345,19 @@ public sealed class SqliteProviderTests : IAsyncLifetime
             """,
             new QueryRequestOptions(10, 30));
 
-        var guarded = await Assert.ThrowsAsync<GridletValidationException>(() =>
-            provider.Ddl.AlterColumnAsync(context, "main", "Guarded", "Value",
-                new ColumnDesign("RenamedValue", "INTEGER")));
-        Assert.Contains("STRICT", guarded.Message);
+        await provider.Ddl.AlterColumnAsync(context, "main", "Guarded", "Value",
+            new ColumnDesign("RenamedValue", "INTEGER"));
+        await provider.Ddl.AlterColumnAsync(context, "main", "Compact", "Value",
+            new ColumnDesign("RenamedValue", "TEXT"));
 
-        var compact = await Assert.ThrowsAsync<GridletValidationException>(() =>
-            provider.Ddl.AlterColumnAsync(context, "main", "Compact", "Value",
-                new ColumnDesign("RenamedValue", "TEXT")));
-        Assert.Contains("WITHOUT ROWID", compact.Message);
-
-        Assert.Contains("CHECK", await provider.Schema.GetObjectDefinitionAsync(context, "main", "Guarded"));
-        Assert.Contains("WITHOUT ROWID", await provider.Schema.GetObjectDefinitionAsync(context, "main", "Compact"));
+        // What the table is has to survive the rebuild, not just what it contains.
+        var guarded = await provider.Schema.GetObjectDefinitionAsync(context, "main", "Guarded");
+        var compact = await provider.Schema.GetObjectDefinitionAsync(context, "main", "Compact");
+        Assert.Contains("CHECK", guarded);
+        Assert.Contains("STRICT", guarded);
+        Assert.Contains("RenamedValue", guarded);
+        Assert.Contains("WITHOUT ROWID", compact);
+        Assert.Contains("RenamedValue", compact);
     }
 
     [Fact]
@@ -640,14 +641,23 @@ public sealed class SqliteProviderTests : IAsyncLifetime
 
         await provider.Ddl.AlterColumnAsync(context, "main", "KeywordNames", "STRICT",
             new ColumnDesign("StrictValue", "TEXT"));
-        await Assert.ThrowsAsync<GridletValidationException>(() => provider.Ddl.AlterColumnAsync(
-            context, "main", "ActuallyStrict", "Value", new ColumnDesign("Text", "TEXT")));
-        await Assert.ThrowsAsync<GridletValidationException>(() => provider.Ddl.AlterColumnAsync(
-            context, "main", "ActuallyCompact", "Value", new ColumnDesign("Text", "TEXT")));
+        await provider.Ddl.AlterColumnAsync(
+            context, "main", "ActuallyStrict", "Value", new ColumnDesign("Text", "TEXT"));
+        await provider.Ddl.AlterColumnAsync(
+            context, "main", "ActuallyCompact", "Value", new ColumnDesign("Text", "TEXT"));
+
+        // A column called STRICT does not make the table strict, and rebuilding a table that really
+        // is strict keeps it that way.
+        var keywordNames = await provider.Schema.GetTableDefinitionAsync(context, "main", "KeywordNames");
+        var strict = await provider.Schema.GetTableDefinitionAsync(context, "main", "ActuallyStrict");
+        var compact = await provider.Schema.GetTableDefinitionAsync(context, "main", "ActuallyCompact");
+        Assert.Empty(keywordNames.TableOptions!);
+        Assert.Equal(["STRICT"], strict.TableOptions);
+        Assert.Equal(["WITHOUT ROWID"], compact.TableOptions);
     }
 
     [Fact]
-    public async Task Allows_unique_key_collations_but_still_guards_column_collations()
+    public async Task Keeps_unique_key_and_column_collations_through_a_rebuild()
     {
         await provider.Query.ExecuteAsync(context,
             """
@@ -670,9 +680,12 @@ public sealed class SqliteProviderTests : IAsyncLifetime
         await provider.Query.ExecuteAsync(context,
             "INSERT INTO UniqueCollations VALUES (2, 'SAME');", new QueryRequestOptions(10, 30));
 
-        var exception = await Assert.ThrowsAsync<GridletValidationException>(() => provider.Ddl.AlterColumnAsync(
-            context, "main", "ColumnCollations", "Other", new ColumnDesign("Details", "TEXT")));
-        Assert.Contains("column collations", exception.Message);
+        // Rebuilding a table with a column collation used to be refused; now the collation is kept.
+        await provider.Ddl.AlterColumnAsync(
+            context, "main", "ColumnCollations", "Other", new ColumnDesign("Details", "TEXT"));
+        var rebuilt = await provider.Schema.GetTableDefinitionAsync(context, "main", "ColumnCollations");
+        Assert.Equal("NOCASE", rebuilt.Columns.Single(column => column.Name == "Code").Collation);
+        Assert.Contains(rebuilt.Columns, column => column.Name == "Details");
     }
 
     [Fact]

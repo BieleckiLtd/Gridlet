@@ -22,6 +22,15 @@ internal static class GridletEndpointHelpers
         {
             return Results.NotFound(new GridletErrorResponse(ex.Message));
         }
+        catch (GridletSessionNotFoundException ex)
+        {
+            return Results.NotFound(new GridletErrorResponse(ex.Message));
+        }
+        catch (GridletSessionBusyException ex)
+        {
+            return Results.Json(
+                new GridletErrorResponse(ex.Message), statusCode: StatusCodes.Status409Conflict);
+        }
         catch (GridletValidationException ex)
         {
             return Results.BadRequest(new GridletErrorResponse(ex.Message));

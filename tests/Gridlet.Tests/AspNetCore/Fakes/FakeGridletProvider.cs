@@ -1,3 +1,4 @@
+using System.Data.Common;
 using Gridlet.Abstractions;
 using Gridlet.Models;
 
@@ -6,7 +7,7 @@ namespace Gridlet.Tests.AspNetCore.Fakes;
 /// <summary>An in-memory provider so endpoint behaviour can be tested without a database.</summary>
 public sealed class FakeGridletProvider :
     IGridletProvider, IGridletProviderMetadata, ISchemaReader, ITableDataService, IQueryRunner,
-    ITableWriteService, ITableDdlService
+    IQuerySessionRunner, IQueryPlanRunner, ITableWriteService, ITableDdlService
 {
     public const GridletProviderNames Name = GridletProviderNames.SqlServer;
 
@@ -37,7 +38,9 @@ public sealed class FakeGridletProvider :
         ObjectEditMode: "Alter",
         SupportsCheckConstraints: true,
         SupportsUniqueConstraints: true,
-        SupportsIndexes: true);
+        SupportsIndexes: true,
+        SupportsSessions: true,
+        SupportsQueryPlans: true);
 
     public ISchemaReader Schema => this;
 
@@ -65,6 +68,11 @@ public sealed class FakeGridletProvider :
         [
             new DbObjectInfo("dbo", "Customers", DbObjectType.Table),
             new DbObjectInfo("dbo", "NoKeys", DbObjectType.Table),
+            // Two tables with more rows than one page, one addressable and one not, so paging can
+            // be told apart from reading everything at once.
+            new DbObjectInfo("dbo", "Ledger", DbObjectType.Table),
+            new DbObjectInfo("dbo", "LedgerHeap", DbObjectType.Table),
+            new DbObjectInfo("dbo", "Heap", DbObjectType.Table),
             new DbObjectInfo("dbo", "SearchIndex", DbObjectType.Table, "virtual"),
             new DbObjectInfo("dbo", "Customers_fts_data", DbObjectType.Table, "shadow", IsInternal: true),
             new DbObjectInfo("dbo", "vw_Orders", DbObjectType.View),
@@ -83,9 +91,27 @@ public sealed class FakeGridletProvider :
 
     public Task<TableDefinition> GetTableDefinitionAsync(
         GridletConnectionContext context, string schema, string name, CancellationToken cancellationToken = default)
-        => name == "Missing"
-            ? Task.FromException<TableDefinition>(new GridletObjectNotFoundException($"{schema}.{name}"))
-            : Task.FromResult(new TableDefinition(
+        => name switch
+        {
+            "Missing" => Task.FromException<TableDefinition>(
+                new GridletObjectNotFoundException($"{schema}.{name}")),
+
+            // A routine is not a table, and a strict provider says so rather than returning an
+            // empty definition. Anything that only needs the object's identity must not ask.
+            "RefreshOrders" or "OrderCount" => Task.FromException<TableDefinition>(
+                new GridletValidationException($"{schema}.{name} is not a table or view.")),
+
+            // A heap: no primary key, and the value that identifies a row is not one of its columns.
+            "Heap" => Task.FromResult(new TableDefinition(
+                new DbObjectInfo(schema, name, DbObjectType.Table),
+                [new ColumnInfo("Name", "nvarchar(100)", false, false, false, false, null, 0)],
+                [],
+                [],
+                [],
+                [],
+                new RowIdentityInfo(RowIdentityKinds.RowId, ["rowid"]))),
+
+            _ => Task.FromResult(new TableDefinition(
             new DbObjectInfo(schema, name, DbObjectType.Table),
             [
                 new ColumnInfo("Id", "int", false, true, false, name != "NoKeys", null, 0),
@@ -108,7 +134,11 @@ public sealed class FakeGridletProvider :
              new CheckConstraintInfo(null, "[Id] > 0", Ordinal: 0)],
             [new UniqueConstraintInfo("UQ_" + name + "_Name", [
                 new IndexKeyInfo("Name", 1, IsDescending: true, Collation: "NOCASE")],
-                IsClustered: true, FillFactor: 90, IsDisabled: true)]));
+                IsClustered: true, FillFactor: 90, IsDisabled: true)],
+            name is "NoKeys" or "LedgerHeap"
+                ? null
+                : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]))),
+        };
 
     public Task<string?> GetObjectDefinitionAsync(
         GridletConnectionContext context, string schema, string name, CancellationToken cancellationToken = default)
@@ -116,17 +146,216 @@ public sealed class FakeGridletProvider :
             ? $"CREATE TRIGGER {schema}.{name} ON {schema}.Customers AFTER INSERT AS SELECT 1;"
             : $"CREATE VIEW {schema}.{name} AS SELECT 1 AS One;");
 
+    // ---- routines ----
+
+    public Task<RoutineDefinition> GetRoutineDefinitionAsync(
+        GridletConnectionContext context, string schema, string name,
+        CancellationToken cancellationToken = default)
+        => name switch
+        {
+            "RefreshOrders" => Task.FromResult(new RoutineDefinition(
+                new DbObjectInfo(schema, name, DbObjectType.StoredProcedure),
+                [
+                    new RoutineParameterInfo("@ReturnValue", "int", 0, IsOutput: true, IsReturnValue: true),
+                    new RoutineParameterInfo("@Since", "datetime2(7)", 1),
+                    new RoutineParameterInfo("@RowsChanged", "int", 2, IsOutput: true),
+                ])),
+            "OrderCount" => Task.FromResult(new RoutineDefinition(
+                new DbObjectInfo(schema, name, DbObjectType.ScalarFunction),
+                [
+                    new RoutineParameterInfo("@ReturnValue", "int", 0, IsReturnValue: true),
+                    new RoutineParameterInfo("@CustomerId", "int", 1),
+                ])),
+            _ => Task.FromException<RoutineDefinition>(
+                new GridletValidationException($"{schema}.{name} is not a stored procedure or function.")),
+        };
+
+    /// <summary>A stand-in script: enough to prove the arguments reached the provider.</summary>
+    public string BuildRoutineExecuteScript(
+        RoutineDefinition routine, IReadOnlyDictionary<string, RoutineArgument> arguments)
+    {
+        var rendered = arguments
+            .OrderBy(argument => argument.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(argument => $"{argument.Key} = {(argument.Value.IsNull ? "NULL" : argument.Value.Value)}");
+        Calls.Add($"script {routine.Object.Schema}.{routine.Object.Name} ({string.Join(", ", rendered)})");
+        return $"EXEC {routine.Object.Schema}.{routine.Object.Name} {string.Join(", ", rendered)};";
+    }
+
     // ---- data ----
+
+    /// <summary>The filters the most recent page request carried, so their parsing can be asserted.</summary>
+    public IReadOnlyList<TableDataFilter>? LastDataFilters { get; private set; }
+
+    /// <summary>Every page asked for, in order, so a caller's paging can be asserted.</summary>
+    public List<(int Page, int PageSize)> DataPageRequests { get; } = [];
 
     public Task<TableDataPage> GetPageAsync(
         GridletConnectionContext context, string schema, string name, TableDataRequest request,
         CancellationToken cancellationToken = default)
-        => Task.FromResult(new TableDataPage(
+    {
+        LastDataFilters = request.Filters;
+        DataPageRequests.Add((request.Page, request.PageSize));
+        return GetPageCore(name, request);
+    }
+
+    /// <summary>
+    /// Four rows served a page at a time, from a table that can be addressed and one that cannot.
+    /// A caller that pages through the second one is reading an unordered table twice.
+    /// </summary>
+    private static TableDataPage LedgerPage(string name, TableDataRequest request)
+    {
+        object?[][] all = [[1, "Ada"], [2, "Grace"], [3, "Edsger"], [4, "Alan"]];
+        var taken = all
+            .Skip((request.Page - 1) * request.PageSize)
+            .Take(request.PageSize)
+            .ToArray();
+        return new TableDataPage(
             [new ResultColumn("Id", "int"), new ResultColumn("Name", "nvarchar(100)")],
-            [[1, "Ada"], [2, "Grace"]],
+            taken,
             request.Page,
             request.PageSize,
-            TotalRows: 2));
+            TotalRows: all.Length,
+            RowIdentity: name == "LedgerHeap"
+                ? null
+                : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]));
+    }
+
+    private static Task<TableDataPage> GetPageCore(string name, TableDataRequest request)
+    {
+        if (name is "Ledger" or "LedgerHeap")
+        {
+            return Task.FromResult(LedgerPage(name, request));
+        }
+
+        return GetFixedPage(name, request);
+    }
+
+    private static Task<TableDataPage> GetFixedPage(string name, TableDataRequest request)
+        => Task.FromResult(name == "Heap"
+            ? new TableDataPage(
+                [new ResultColumn("Name", "nvarchar(100)")],
+                [["Ada"], ["Grace"]],
+                request.Page,
+                request.PageSize,
+                TotalRows: 2,
+                RowIdentity: new RowIdentityInfo(RowIdentityKinds.RowId, ["rowid"]),
+                RowKeys: [[101], [102]])
+            : new TableDataPage(
+                [new ResultColumn("Id", "int"), new ResultColumn("Name", "nvarchar(100)")],
+                [[1, "Ada"], [2, "Grace"]],
+                request.Page,
+                request.PageSize,
+                TotalRows: 2,
+                RowIdentity: name == "NoKeys" ? null : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+                RowKeys: name == "NoKeys" ? null : [[1], [2]]));
+
+    // ---- execution plans ----
+
+    public Task<QueryPlan> GetPlanAsync(
+        GridletConnectionContext context, string sql, QueryPlanMode mode,
+        QueryRequestOptions options, CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"plan.{mode.ToString().ToLowerInvariant()} {sql}");
+        if (sql == "boom")
+        {
+            throw new GridletQueryException("kaboom");
+        }
+
+        return Task.FromResult(new QueryPlan(
+            mode,
+            "showplan-xml",
+            [
+                new QueryPlanNode("SELECT", sql, EstimatedRows: 120, EstimatedCost: 0.04, Children:
+                [
+                    new QueryPlanNode("Clustered Index Scan", "Customers.PK_Customers",
+                        EstimatedRows: 120,
+                        ActualRows: mode == QueryPlanMode.Actual ? 118 : null,
+                        EstimatedCost: 0.04,
+                        Warnings: ["Missing index on Customers (Name)"]),
+                ]),
+            ],
+            "<ShowPlanXML />",
+            mode == QueryPlanMode.Actual ? ["Table 'Customers'. Scan count 1, logical reads 3."] : []));
+    }
+
+    // ---- pinned sessions ----
+    //
+    // The connection is a stand-in that only tracks open/closed, which is all Gridlet's session
+    // handling asks of it. The transaction depth is counted here, so a session's state behaves the
+    // way a database's would without needing one.
+
+    /// <summary>Transaction depth per session connection, so state survives across calls.</summary>
+    private readonly Dictionary<DbConnection, int> transactionDepths = [];
+
+    public Task<DbConnection> OpenSessionAsync(
+        GridletConnectionContext context, CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"session.open {context.ConnectionName}/{context.Database}");
+        DbConnection connection = new FakeSessionConnection();
+        connection.Open();
+        transactionDepths[connection] = 0;
+        return Task.FromResult(connection);
+    }
+
+    public IAsyncEnumerable<QueryStreamEvent> StreamAsync(
+        DbConnection connection, string sql, QueryRequestOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"session.query {sql}");
+        return StreamAsync(
+            new GridletConnectionContext(new GridletConnectionOptions { Name = "Session" }, null),
+            sql, options, parameters: null, cancellationToken);
+    }
+
+    public Task<TransactionStatus> GetTransactionStatusAsync(
+        DbConnection connection, CancellationToken cancellationToken = default)
+        => Task.FromResult(Status(transactionDepths.GetValueOrDefault(connection)));
+
+    public Task<TransactionStatus> RunTransactionCommandAsync(
+        DbConnection connection, TransactionCommand command, CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"session.{command.ToString().ToLowerInvariant()}");
+        var depth = transactionDepths.GetValueOrDefault(connection);
+        if (command != TransactionCommand.Begin && depth == 0)
+        {
+            throw new GridletQueryException("There is no transaction to end.");
+        }
+
+        depth = command == TransactionCommand.Begin ? depth + 1 : depth - 1;
+        transactionDepths[connection] = depth;
+        return Task.FromResult(Status(depth));
+    }
+
+    private static TransactionStatus Status(int depth)
+        => depth > 0 ? new TransactionStatus(true, depth) : TransactionStatus.None;
+
+    /// <summary>A connection that is only ever asked whether it is open, and then closed.</summary>
+    private sealed class FakeSessionConnection : DbConnection
+    {
+        private System.Data.ConnectionState state = System.Data.ConnectionState.Closed;
+
+        [System.Diagnostics.CodeAnalysis.AllowNull]
+        public override string ConnectionString { get; set; } = "fake";
+
+        public override string Database => "FakeDb";
+
+        public override string DataSource => "fake";
+
+        public override string ServerVersion => "1.0";
+
+        public override System.Data.ConnectionState State => state;
+
+        public override void ChangeDatabase(string databaseName) => throw new NotSupportedException();
+
+        public override void Close() => state = System.Data.ConnectionState.Closed;
+
+        public override void Open() => state = System.Data.ConnectionState.Open;
+
+        protected override DbTransaction BeginDbTransaction(System.Data.IsolationLevel isolationLevel)
+            => throw new NotSupportedException();
+
+        protected override DbCommand CreateDbCommand() => throw new NotSupportedException();
+    }
 
     // ---- queries ----
 
@@ -388,6 +617,40 @@ public sealed class FakeGridletProvider :
         CancellationToken cancellationToken = default)
     {
         Calls.Add($"dropObject {type} {schema}.{name}");
+        return Task.CompletedTask;
+    }
+
+    public string BuildDropScript(DbObjectInfo @object)
+        => $"DROP {@object.Type.ToString().ToUpperInvariant()} {@object.Schema}.{@object.Name};";
+
+    public string BuildInsertScript(
+        TableDefinition table, IReadOnlyList<ResultColumn> columns, IReadOnlyList<object?[]> rows)
+        => string.Join('\n', rows.Select(row =>
+            $"INSERT INTO {table.Object.Schema}.{table.Object.Name} "
+            + $"({string.Join(", ", columns.Select(column => column.Name))}) "
+            + $"VALUES ({string.Join(", ", row.Select(value => value ?? "NULL"))});"));
+
+    public Task RenameObjectAsync(
+        GridletConnectionContext context, string schema, string name, DbObjectType type, string newName,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"renameObject {type} {schema}.{name} -> {newName}");
+        return Task.CompletedTask;
+    }
+
+    public Task RenameIndexAsync(
+        GridletConnectionContext context, string schema, string table, string indexName, string newName,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"renameIndex {schema}.{table}.{indexName} -> {newName}");
+        return Task.CompletedTask;
+    }
+
+    public Task TruncateTableAsync(
+        GridletConnectionContext context, string schema, string table,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"truncate {schema}.{table}");
         return Task.CompletedTask;
     }
 }
