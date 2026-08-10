@@ -219,6 +219,23 @@ public sealed class SqlServerRoutineScriptBuilderTests
     public void A_parameter_with_no_name_of_its_own_is_the_return_value(string? name, string expected)
         => Assert.Equal(expected, SqlServerSchemaReader.ParameterName(name));
 
+    /// <summary>
+    /// A type the database owns has to be named in full. The script is text somebody can run in
+    /// their own session, where an unqualified alias or CLR type resolves against their default
+    /// schema - a different schema, or none at all.
+    /// </summary>
+    [Theory]
+    [InlineData(false, "sys", "nvarchar", 100, "nvarchar(50)")]
+    [InlineData(false, "sys", "int", 4, "int")]
+    [InlineData(false, "dbo", "AccountNumber", 100, "[dbo].[AccountNumber]")]
+    [InlineData(false, "billing", "Money AT", 100, "[billing].[Money AT]")]
+    [InlineData(true, "dbo", "ItemList", 0, "[dbo].[ItemList]")]
+    public void A_type_the_database_owns_is_named_with_its_schema(
+        bool isTableType, string typeSchema, string typeName, int maxLength, string expected)
+        => Assert.Equal(
+            expected,
+            SqlServerSchemaReader.ParameterTypeName(isTableType, typeSchema, typeName, maxLength, 0, 0));
+
     [Fact]
     public void A_table_or_view_cannot_be_called()
     {

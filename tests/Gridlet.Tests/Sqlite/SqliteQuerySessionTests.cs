@@ -168,6 +168,59 @@ public sealed class SqliteQuerySessionTests : IAsyncLifetime
         Assert.Equal(0L, await CountNotesOutsideTheSessionAsync());
     }
 
+    /// <summary>
+    /// The last-used time is stamped when a statement finishes, so a query that runs longer than the
+    /// idle timeout looks idle while it is still running. Sweeping it then would dispose the
+    /// connection underneath the query, which is why an in-flight session is left alone.
+    /// </summary>
+    [Fact]
+    public async Task A_session_running_a_statement_is_not_swept_out_from_under_it()
+    {
+        options.Limits.QuerySessionIdleTimeoutMinutes = 1;
+        var clock = new AdvanceableTimeProvider(DateTimeOffset.UnixEpoch);
+        await using var timed = new GridletQuerySessionManager(
+            new StaticOptionsMonitor<GridletOptions>(options), clock);
+        var session = await timed.OpenAsync(Resolved, owner: null);
+
+        var running = timed.StreamAsync(session.Id, null, "SELECT 1;", Request).GetAsyncEnumerator();
+        await running.MoveNextAsync();
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await timed.SweepAsync();
+
+        Assert.Equal(session.Id, Assert.Single(timed.List(null)).Id);
+        await Assert.ThrowsAsync<GridletSessionBusyException>(() => timed.GetAsync(session.Id, null));
+
+        // Once the statement finishes the session is idle again, and sweeping takes it.
+        while (await running.MoveNextAsync())
+        {
+        }
+
+        await running.DisposeAsync();
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await timed.SweepAsync();
+        Assert.Empty(timed.List(null));
+    }
+
+    /// <summary>
+    /// Nobody can use an expired session again, so it is let go the moment that is noticed rather
+    /// than kept - holding a connection and whatever it locks - until somebody opens another one.
+    /// </summary>
+    [Fact]
+    public async Task An_expired_session_is_let_go_when_it_is_next_reached_for()
+    {
+        options.Limits.QuerySessionIdleTimeoutMinutes = 1;
+        var clock = new AdvanceableTimeProvider(DateTimeOffset.UnixEpoch);
+        await using var timed = new GridletQuerySessionManager(
+            new StaticOptionsMonitor<GridletOptions>(options), clock);
+        var session = await timed.OpenAsync(Resolved, owner: null);
+        clock.Advance(TimeSpan.FromMinutes(2));
+
+        await Assert.ThrowsAsync<GridletSessionNotFoundException>(() => timed.GetAsync(session.Id, null));
+
+        Assert.Empty(timed.List(null));
+    }
+
     [Fact]
     public async Task An_unknown_session_is_rejected()
         => await Assert.ThrowsAsync<GridletSessionNotFoundException>(

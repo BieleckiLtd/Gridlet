@@ -569,11 +569,13 @@ public sealed class SqlServerSchemaReader : ISchemaReader
         {
             var parameterId = reader.GetInt32(5);
             var isTableType = !reader.IsDBNull(10) && reader.GetBoolean(10);
-            var typeName = isTableType
-                ? SqlServerIdentifier.QuoteQualified(
-                    reader.IsDBNull(11) ? "dbo" : reader.GetString(11), reader.GetString(1))
-                : SqlServerDataTypeFormatter.Format(
-                    reader.GetString(1), reader.GetInt16(2), reader.GetByte(3), reader.GetByte(4));
+            var typeName = ParameterTypeName(
+                isTableType,
+                reader.IsDBNull(11) ? "dbo" : reader.GetString(11),
+                reader.GetString(1),
+                reader.GetInt16(2),
+                reader.GetByte(3),
+                reader.GetByte(4));
             parameters.Add(new RoutineParameterInfo(
                 Name: ParameterName(reader.IsDBNull(0) ? null : reader.GetString(0)),
                 DataType: typeName,
@@ -596,6 +598,18 @@ public sealed class SqlServerSchemaReader : ISchemaReader
     /// </summary>
     internal static string ParameterName(string? name)
         => string.IsNullOrEmpty(name) ? "@ReturnValue" : name;
+
+    /// <summary>
+    /// Names a parameter's type for the generated script. Only the built-in types are written bare
+    /// with their length; a type the database owns - a table type, an alias type, a CLR type - is
+    /// named in full, because the script can be run by somebody whose default schema is not the one
+    /// the type lives in, where an unqualified name would not resolve.
+    /// </summary>
+    internal static string ParameterTypeName(
+        bool isTableType, string typeSchema, string typeName, int maxLength, byte precision, byte scale)
+        => isTableType || !string.Equals(typeSchema, "sys", StringComparison.OrdinalIgnoreCase)
+            ? SqlServerIdentifier.QuoteQualified(typeSchema, typeName)
+            : SqlServerDataTypeFormatter.Format(typeName, maxLength, precision, scale);
 
     /// <inheritdoc />
     public string BuildRoutineExecuteScript(

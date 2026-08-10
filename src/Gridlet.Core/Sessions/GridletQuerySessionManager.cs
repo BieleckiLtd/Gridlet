@@ -91,7 +91,7 @@ public sealed class GridletQuerySessionManager : IAsyncDisposable
         string? owner,
         CancellationToken cancellationToken = default)
     {
-        var session = Require(sessionId, owner);
+        var session = await RequireAsync(sessionId, owner, cancellationToken);
         using var lease = await LeaseAsync(session);
         await RefreshTransactionAsync(session, cancellationToken);
         return Describe(session);
@@ -105,7 +105,7 @@ public sealed class GridletQuerySessionManager : IAsyncDisposable
         QueryRequestOptions requestOptions,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var session = Require(sessionId, owner);
+        var session = await RequireAsync(sessionId, owner, cancellationToken);
         using var lease = await LeaseAsync(session);
         try
         {
@@ -137,7 +137,7 @@ public sealed class GridletQuerySessionManager : IAsyncDisposable
         TransactionCommand command,
         CancellationToken cancellationToken = default)
     {
-        var session = Require(sessionId, owner);
+        var session = await RequireAsync(sessionId, owner, cancellationToken);
         using var lease = await LeaseAsync(session);
         try
         {
@@ -181,18 +181,46 @@ public sealed class GridletQuerySessionManager : IAsyncDisposable
     /// <summary>Closes every session that has been idle past the configured timeout.</summary>
     public async Task SweepAsync(CancellationToken cancellationToken = default)
     {
-        var now = time.GetUtcNow();
         foreach (var session in sessions.Values)
         {
-            if (ExpiresAt(session) > now)
+            if (ExpiresAt(session) > time.GetUtcNow())
             {
                 continue;
             }
 
-            if (sessions.TryRemove(new KeyValuePair<string, Session>(session.Id, session)))
+            await TryCloseIdleAsync(session, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Closes a session that has run out of time, unless it is running a statement. The last-used
+    /// time is only stamped when a statement finishes, so a query that runs longer than the idle
+    /// timeout looks idle while it is still going; taking the session's own slot is what tells the
+    /// difference, and without it the connection could be disposed underneath a running query.
+    /// </summary>
+    private async Task<bool> TryCloseIdleAsync(Session session, CancellationToken cancellationToken)
+    {
+        if (!await session.Gate.WaitAsync(0))
+        {
+            return false;
+        }
+
+        try
+        {
+            // Re-read the expiry now the slot is held: the statement that just finished has stamped
+            // its own last-used time, and a session used a moment ago is not idle.
+            if (ExpiresAt(session) > time.GetUtcNow()
+                || !sessions.TryRemove(new KeyValuePair<string, Session>(session.Id, session)))
             {
-                await RollbackAndDisposeAsync(session, cancellationToken);
+                return false;
             }
+
+            await RollbackAndDisposeAsync(session, cancellationToken);
+            return true;
+        }
+        finally
+        {
+            session.Gate.Release();
         }
     }
 
@@ -208,7 +236,7 @@ public sealed class GridletQuerySessionManager : IAsyncDisposable
         }
     }
 
-    private Session Require(string sessionId, string? owner)
+    private async Task<Session> RequireAsync(string sessionId, string? owner, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         // An id that belongs to somebody else is reported the same way as one that does not exist,
@@ -222,7 +250,15 @@ public sealed class GridletQuerySessionManager : IAsyncDisposable
 
         if (ExpiresAt(session) <= time.GetUtcNow())
         {
-            throw new GridletSessionNotFoundException(sessionId);
+            // Nobody can use this session again, so its connection is let go here rather than left
+            // holding whatever it holds until somebody happens to open another session. A session
+            // that is still running a statement is in use, not idle, so it survives this and is
+            // reported as busy below rather than as gone - it would otherwise be declared missing
+            // and then come back to life the moment its statement finished.
+            if (await TryCloseIdleAsync(session, cancellationToken) || !sessions.ContainsKey(sessionId))
+            {
+                throw new GridletSessionNotFoundException(sessionId);
+            }
         }
 
         return session;
