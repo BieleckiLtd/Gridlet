@@ -29,7 +29,10 @@ public sealed class SqliteTableDdlService : ITableDdlService
         GridletConnectionContext context,
         TableDesign design,
         CancellationToken cancellationToken = default)
-        => ExecuteAsync(context, SqliteDdlBuilder.BuildCreateTable(design), cancellationToken);
+    {
+        SqliteIdentifier.RequireSelectedSchema(context, design.Schema);
+        return ExecuteAsync(context, SqliteDdlBuilder.BuildCreateTable(design), cancellationToken);
+    }
 
     public async Task AddColumnAsync(
         GridletConnectionContext context,
@@ -38,9 +41,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         ColumnDesign column,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        _ = await RequireOrdinaryTableAsync(connection, table, cancellationToken);
+        _ = await RequireOrdinaryTableAsync(connection, schema, table, cancellationToken);
         await ExecuteAsync(connection, transaction: null,
             SqliteDdlBuilder.BuildAddColumn(schema, table, column), cancellationToken);
     }
@@ -53,9 +56,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         ColumnDesign column,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
         var existing = FindColumn(definition, columnName);
         var replacement = string.IsNullOrWhiteSpace(column.DataType)
             ? ToDesign(existing) with { Name = column.Name }
@@ -100,9 +103,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         string columnName,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
         _ = FindColumn(definition, columnName);
         if (definition.Columns.Count == 1)
         {
@@ -129,14 +132,14 @@ public sealed class SqliteTableDdlService : ITableDdlService
         PrimaryKeyDesign primaryKey,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         if (primaryKey.Columns is not { Count: > 0 })
         {
             throw new GridletValidationException("A primary key needs at least one column.");
         }
 
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
         if (definition.Columns.Any(c => c.IsPrimaryKey))
         {
             throw new GridletValidationException($"Table {schema}.{table} already has a primary key.");
@@ -166,16 +169,17 @@ public sealed class SqliteTableDdlService : ITableDdlService
         ForeignKeyDesign foreignKey,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
-        SqliteIdentifier.RequireMainSchema(foreignKey.ReferencedSchema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
+        SqliteIdentifier.RequireSelectedSchema(context, foreignKey.ReferencedSchema);
         if (foreignKey.Columns is not { Count: > 0 })
         {
             throw new GridletValidationException("A foreign key needs at least one column pair.");
         }
 
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await RequireTableAsync(connection, table, cancellationToken);
-        var referenced = await RequireTableAsync(connection, foreignKey.ReferencedTable, cancellationToken);
+        var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
+        var referenced = await RequireTableAsync(connection, foreignKey.ReferencedSchema,
+            foreignKey.ReferencedTable, cancellationToken);
         foreach (var pair in foreignKey.Columns)
         {
             _ = FindColumn(definition, pair.Column);
@@ -194,9 +198,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         CheckConstraintDesign checkConstraint,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
         if (!string.IsNullOrWhiteSpace(checkConstraint.Name) && definition.CheckConstraints.Any(check =>
                 string.Equals(check.Name, checkConstraint.Name, StringComparison.OrdinalIgnoreCase)))
         {
@@ -215,9 +219,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         ConstraintReference constraint,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
         var target = FindConstraint(definition.CheckConstraints, constraint, item => item.Name, item => item.Ordinal,
             "CHECK", schema, table);
         await RebuildTableAsync(connection, definition, definition.Columns.Select(ToDesign).ToArray(),
@@ -232,11 +236,11 @@ public sealed class SqliteTableDdlService : ITableDdlService
         UniqueConstraintDesign uniqueConstraint,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         if (uniqueConstraint.Columns is not { Count: > 0 })
             throw new GridletValidationException("A unique constraint needs at least one key.");
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
         if (!string.IsNullOrWhiteSpace(uniqueConstraint.Name) && definition.UniqueConstraints.Any(unique =>
                 string.Equals(unique.Name, uniqueConstraint.Name, StringComparison.OrdinalIgnoreCase)))
         {
@@ -255,9 +259,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         ConstraintReference constraint,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
         var target = FindConstraint(definition.UniqueConstraints, constraint, item => item.Name, item => item.Ordinal,
             "UNIQUE", schema, table);
         await RebuildTableAsync(connection, definition, definition.Columns.Select(ToDesign).ToArray(),
@@ -272,9 +276,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         IndexDesign index,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await RequireOrdinaryTableAsync(connection, table, cancellationToken);
+        var definition = await RequireOrdinaryTableAsync(connection, schema, table, cancellationToken);
         ValidateIndexKeys(definition, index.KeyColumns);
         await ExecuteAsync(connection, transaction: null,
             SqliteDdlBuilder.BuildCreateIndex(schema, table, index), cancellationToken);
@@ -287,9 +291,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         string indexName,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await RequireOrdinaryTableAsync(connection, table, cancellationToken);
+        var definition = await RequireOrdinaryTableAsync(connection, schema, table, cancellationToken);
         if (!definition.Indexes.Any(index => string.Equals(index.Name, indexName, StringComparison.OrdinalIgnoreCase)))
         {
             throw new GridletValidationException($"Ordinary index '{indexName}' does not exist on {schema}.{table}.");
@@ -305,9 +309,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         string constraintName,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
         var primaryKey = definition.Indexes.FirstOrDefault(i => i.IsPrimaryKey);
         if (primaryKey is not null && string.Equals(primaryKey.Name, constraintName, StringComparison.OrdinalIgnoreCase))
         {
@@ -343,9 +347,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         string table,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
         if (definition.Object.IsInternal || definition.Object.SubKind == "shadow")
         {
             throw new GridletValidationException(
@@ -367,8 +371,8 @@ public sealed class SqliteTableDdlService : ITableDdlService
 
     public string BuildDropScript(DbObjectInfo @object)
         => @object.Type == DbObjectType.Table
-            ? SqliteDdlBuilder.BuildDropTable(SqliteIdentifier.MainSchema, @object.Name)
-            : SqliteDdlBuilder.BuildDropObject(SqliteIdentifier.MainSchema, @object.Name, @object.Type);
+            ? SqliteDdlBuilder.BuildDropTable(@object.Schema, @object.Name)
+            : SqliteDdlBuilder.BuildDropObject(@object.Schema, @object.Name, @object.Type);
 
     public string BuildInsertScript(
         TableDefinition table,
@@ -411,7 +415,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
         string newName,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         var target = RequireUnqualified(newName, "object");
         if (type != DbObjectType.Table)
         {
@@ -421,7 +425,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
         }
 
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, name, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, schema, name, cancellationToken);
         if (definition.Object.IsInternal || definition.Object.SubKind == "shadow")
         {
             throw new GridletValidationException(
@@ -429,7 +433,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
         }
 
         await ExecuteAsync(connection, transaction: null,
-            $"ALTER TABLE {SqliteIdentifier.Quote(name)} RENAME TO {SqliteIdentifier.Quote(target)};",
+            $"ALTER TABLE {SqliteIdentifier.QuoteQualified(schema, name)} RENAME TO {SqliteIdentifier.Quote(target)};",
             cancellationToken);
     }
 
@@ -445,10 +449,10 @@ public sealed class SqliteTableDdlService : ITableDdlService
         string newName,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         var target = RequireUnqualified(newName, "index");
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, table, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, schema, table, cancellationToken);
 
         // Renaming here means dropping and recreating, which an internal table's own indexes cannot
         // survive: a virtual table's shadow tables are maintained by its module, not by us.
@@ -497,9 +501,9 @@ public sealed class SqliteTableDdlService : ITableDdlService
         string table,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, table, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, schema, table, cancellationToken);
         if (definition.Object.Type != DbObjectType.Table || definition.Object.IsInternal
             || definition.Object.SubKind == "shadow")
         {
@@ -539,7 +543,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
             definition.Columns.Any(column => column.IsIdentity) &&
             columns.Any(column => column.IsIdentity);
 
-        var triggers = await LoadTriggerSqlAsync(connection, table, cancellationToken);
+        var triggers = await LoadTriggerSqlAsync(connection, schema, table, cancellationToken);
         if (triggers.Count > 0 && renamedColumns is { Count: > 0 })
         {
             throw new GridletValidationException(
@@ -551,7 +555,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
         // otherwise cascade-delete child rows. Enforcement must be disabled before the transaction;
         // foreign_key_check below prevents an invalid replacement schema from committing.
         var baselineForeignKeyViolations = await LoadForeignKeyViolationsAsync(
-            connection, transaction: null, cancellationToken);
+            connection, transaction: null, schema, cancellationToken);
         var foreignKeyEnforcementWasEnabled = await GetForeignKeyEnforcementAsync(connection, cancellationToken);
         await SetForeignKeyEnforcementAsync(connection, enabled: false, cancellationToken);
         try
@@ -560,7 +564,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
             try
             {
                 var originalSequence = preserveAutoincrementSequence
-                    ? await LoadSequenceAsync(connection, transaction, table, cancellationToken)
+                    ? await LoadSequenceAsync(connection, transaction, schema, table, cancellationToken)
                     : null;
                 await ExecuteAsync(connection, transaction, createSql, cancellationToken);
 
@@ -588,7 +592,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
                 if (originalSequence is not null)
                 {
                     await RestoreSequenceAsync(
-                        connection, transaction, table, originalSequence.Value, cancellationToken);
+                        connection, transaction, schema, table, originalSequence.Value, cancellationToken);
                 }
 
                 foreach (var index in ordinaryIndexes)
@@ -604,7 +608,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
                 }
 
                 await EnsureNoNewForeignKeyViolationsAsync(
-                    connection, transaction, baselineForeignKeyViolations, cancellationToken);
+                    connection, transaction, schema, baselineForeignKeyViolations, cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
             }
             catch (GridletException)
@@ -627,18 +631,33 @@ public sealed class SqliteTableDdlService : ITableDdlService
 
     private static async Task<IReadOnlyList<string>> LoadTriggerSqlAsync(
         SqliteConnection connection,
+        string schema,
         string table,
         CancellationToken cancellationToken)
     {
         var sql = new List<string>();
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT sql FROM main.sqlite_schema WHERE type = 'trigger' AND tbl_name = @table AND sql IS NOT NULL;";
+            $"SELECT name, sql FROM {SqliteIdentifier.Quote(schema)}.sqlite_schema WHERE type = 'trigger' AND tbl_name = @table AND sql IS NOT NULL;";
         command.Parameters.AddWithValue("@table", table);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken)) sql.Add(reader.GetString(0));
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var triggerName = reader.GetString(0);
+            var definition = reader.GetString(1);
+            var match = TriggerDeclaration.Match(definition);
+            if (!match.Success)
+                throw new GridletValidationException($"Trigger {schema}.{triggerName} has an unsupported definition.");
+            sql.Add($"CREATE TRIGGER {SqliteIdentifier.QuoteQualified(schema, triggerName)}" +
+                definition[match.Length..]);
+        }
         return sql;
     }
+
+    private static readonly System.Text.RegularExpressions.Regex TriggerDeclaration = new(
+        """^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]|[^\s.]+)(?:\s*\.\s*(?:"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]|[^\s.]+))?""",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase,
+        TimeSpan.FromSeconds(1));
 
     private static async Task EnsureTableCanBeRebuiltAsync(
         SqliteConnection connection,
@@ -650,7 +669,8 @@ public sealed class SqliteTableDdlService : ITableDdlService
         await using (var classification = connection.CreateCommand())
         {
             classification.CommandText =
-                "SELECT type FROM pragma_table_list WHERE schema = 'main' AND name = @table;";
+                "SELECT type FROM pragma_table_list WHERE schema = @schema AND name = @table;";
+            classification.Parameters.AddWithValue("@schema", schema);
             classification.Parameters.AddWithValue("@table", table);
             await using var reader = await classification.ExecuteReaderAsync(cancellationToken);
             if (!await reader.ReadAsync(cancellationToken))
@@ -669,7 +689,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
         string source;
         await using (var command = connection.CreateCommand())
         {
-            command.CommandText = "SELECT sql FROM main.sqlite_schema WHERE type = 'table' AND name = @table;";
+            command.CommandText = $"SELECT sql FROM {SqliteIdentifier.Quote(schema)}.sqlite_schema WHERE type = 'table' AND name = @table;";
             command.Parameters.AddWithValue("@table", table);
             source = Convert.ToString(await command.ExecuteScalarAsync(cancellationToken)) ?? "";
         }
@@ -682,13 +702,14 @@ public sealed class SqliteTableDdlService : ITableDdlService
             primaryKey.CommandText =
                 """
                 SELECT 1
-                FROM pragma_index_list(@table, 'main') AS il
-                JOIN pragma_index_xinfo(il.name, 'main') AS ix
+                FROM pragma_index_list(@table, @schema) AS il
+                JOIN pragma_index_xinfo(il.name, @schema) AS ix
                 WHERE il.origin = 'pk' AND ix.[key] <> 0
                   AND (ix.[desc] <> 0 OR UPPER(COALESCE(ix.coll, '')) <> 'BINARY')
                 LIMIT 1;
                 """;
             primaryKey.Parameters.AddWithValue("@table", table);
+            primaryKey.Parameters.AddWithValue("@schema", schema);
             if (await primaryKey.ExecuteScalarAsync(cancellationToken) is not null)
                 unsupported.Add("primary-key direction or collation");
         }
@@ -703,6 +724,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
     private static async Task EnsureNoNewForeignKeyViolationsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
+        string schema,
         IReadOnlyList<ForeignKeyViolation> baseline,
         CancellationToken cancellationToken)
     {
@@ -710,7 +732,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
             .GroupBy(violation => violation)
             .ToDictionary(group => group.Key, group => group.Count());
         foreach (var violation in await LoadForeignKeyViolationsAsync(
-                     connection, transaction, cancellationToken))
+                     connection, transaction, schema, cancellationToken))
         {
             if (baselineCounts.TryGetValue(violation, out var count) && count > 0)
             {
@@ -726,12 +748,13 @@ public sealed class SqliteTableDdlService : ITableDdlService
     private static async Task<IReadOnlyList<ForeignKeyViolation>> LoadForeignKeyViolationsAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
+        string schema,
         CancellationToken cancellationToken)
     {
         var violations = new List<ForeignKeyViolation>();
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "PRAGMA foreign_key_check;";
+        command.CommandText = $"PRAGMA {SqliteIdentifier.Quote(schema)}.foreign_key_check;";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -771,12 +794,13 @@ public sealed class SqliteTableDdlService : ITableDdlService
     private static async Task<long?> LoadSequenceAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
+        string schema,
         string table,
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT seq FROM main.sqlite_sequence WHERE name = @table;";
+        command.CommandText = $"SELECT seq FROM {SqliteIdentifier.Quote(schema)}.sqlite_sequence WHERE name = @table;";
         command.Parameters.AddWithValue("@table", table);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? null : Convert.ToInt64(result);
@@ -785,6 +809,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
     private static async Task RestoreSequenceAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
+        string schema,
         string table,
         long originalSequence,
         CancellationToken cancellationToken)
@@ -792,8 +817,8 @@ public sealed class SqliteTableDdlService : ITableDdlService
         await using var update = connection.CreateCommand();
         update.Transaction = transaction;
         update.CommandText =
-            """
-            UPDATE main.sqlite_sequence
+            $$"""
+            UPDATE {{SqliteIdentifier.Quote(schema)}}.sqlite_sequence
             SET seq = CASE WHEN seq IS NULL OR seq < @sequence THEN @sequence ELSE seq END
             WHERE name = @table;
             """;
@@ -806,7 +831,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
 
         await using var insert = connection.CreateCommand();
         insert.Transaction = transaction;
-        insert.CommandText = "INSERT INTO main.sqlite_sequence (name, seq) VALUES (@table, @sequence);";
+        insert.CommandText = $"INSERT INTO {SqliteIdentifier.Quote(schema)}.sqlite_sequence (name, seq) VALUES (@table, @sequence);";
         insert.Parameters.AddWithValue("@table", table);
         insert.Parameters.AddWithValue("@sequence", originalSequence);
         await insert.ExecuteNonQueryAsync(cancellationToken);
@@ -814,10 +839,11 @@ public sealed class SqliteTableDdlService : ITableDdlService
 
     private static async Task<TableDefinition> RequireTableAsync(
         SqliteConnection connection,
+        string schema,
         string table,
         CancellationToken cancellationToken)
     {
-        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, table, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, schema, table, cancellationToken);
         if (definition.Object.Type != DbObjectType.Table)
         {
             throw new GridletValidationException($"{definition.Object.Schema}.{table} is not a table.");
@@ -828,10 +854,11 @@ public sealed class SqliteTableDdlService : ITableDdlService
 
     private static async Task<TableDefinition> RequireOrdinaryTableAsync(
         SqliteConnection connection,
+        string schema,
         string table,
         CancellationToken cancellationToken)
     {
-        var definition = await RequireTableAsync(connection, table, cancellationToken);
+        var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
         if (definition.Object.IsInternal || definition.Object.SubKind is "virtual" or "shadow")
         {
             throw new GridletValidationException(

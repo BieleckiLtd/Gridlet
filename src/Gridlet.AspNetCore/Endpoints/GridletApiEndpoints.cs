@@ -12,6 +12,7 @@ using Gridlet.Auditing;
 using Gridlet.Models;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -62,6 +63,8 @@ internal static partial class GridletApiEndpoints
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", DeleteForeignKeyDisplay);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}/lookup", LookupForeignKeyDisplay);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/definition", GetObjectDefinition);
+        api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/dependencies", GetObjectDependencies);
+        api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/sequence", GetSequence);
         api.MapPost("/connections/{connection}/databases/{database}/query", ExecuteQuery);
         MapSessions(api);
         MapRoutines(api);
@@ -105,12 +108,19 @@ internal static partial class GridletApiEndpoints
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/rows", InsertRow);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/rows/update", UpdateRow);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/rows/delete", DeleteRow);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/import", ImportRows)
+            .DisableAntiforgery()
+            .WithMetadata(
+                new RequestSizeLimitAttribute(GridletImportParser.MaxRequestBytes),
+                new RequestFormLimitsAttribute { MultipartBodyLengthLimit = GridletImportParser.MaxBytes });
 
         // Table designer.
         api.MapPost("/connections/{connection}/databases/{database}/schemas", CreateSchema);
         api.MapPut("/connections/{connection}/databases/{database}/schemas/{schema}", AlterSchema);
         api.MapDelete("/connections/{connection}/databases/{database}/schemas/{schema}", DropSchema);
         api.MapPost("/connections/{connection}/databases/{database}/tables", CreateTable);
+        api.MapPost("/connections/{connection}/databases/{database}/sequences", CreateSequence);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/sequence/restart", RestartSequence);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns", AddColumn);
         api.MapPut("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns/{column}", AlterColumn);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns/{column}", DropColumn);
@@ -1329,6 +1339,92 @@ internal static partial class GridletApiEndpoints
             ? ToClrMap(map)
             : throw new GridletValidationException($"The request must include non-empty '{what}'.");
 
+    private static Task<IResult> ImportRows(
+        string connection, string database, string schema, string name,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpRequest request, HttpContext httpContext, CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            if (!resolved.Context.Connection.AllowWrites)
+                return Forbidden($"Writes are disabled for connection '{resolved.Context.ConnectionName}'.");
+            if (resolved.Provider is not ITableImportProvider importer)
+                throw new GridletValidationException("This provider does not support data import.");
+            if (!string.Equals(request.Headers["X-Gridlet-Request"], "1", StringComparison.Ordinal))
+                throw new GridletValidationException("Imports require the X-Gridlet-Request header.");
+            if (!request.HasFormContentType)
+                throw new GridletValidationException("An import must be sent as multipart form data.");
+
+            var form = await request.ReadFormAsync(cancellationToken);
+            var file = form.Files.GetFile("file")
+                ?? throw new GridletValidationException("The import form must include a 'file'.");
+            if (file.Length > GridletImportParser.MaxBytes)
+                throw new GridletValidationException("Import files may not exceed 10 MB.");
+            var format = Convert.ToString(form["format"]);
+            if (string.IsNullOrWhiteSpace(format))
+                format = Path.GetExtension(file.FileName).TrimStart('.');
+            Dictionary<string, string>? mapping = null;
+            var mappingJson = Convert.ToString(form["mapping"]);
+            if (!string.IsNullOrWhiteSpace(mappingJson))
+            {
+                try { mapping = JsonSerializer.Deserialize<Dictionary<string, string>>(mappingJson); }
+                catch (JsonException ex) { throw new GridletValidationException($"The import mapping is invalid: {ex.Message}"); }
+            }
+
+            string content;
+            await using (var stream = file.OpenReadStream())
+            using (var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+                content = await reader.ReadToEndAsync(cancellationToken);
+            var parsed = GridletImportParser.Parse(content, format ?? "", mapping);
+
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var result = await importer.ImportAsync(
+                    resolved.Context, schema, name, parsed, cancellationToken);
+                await AuditAsync(audit, httpContext, "data.import", connection, database,
+                    $"{schema}.{name}", null, true, stopwatch.ElapsedMilliseconds, null);
+                return Results.Ok(new TableImportResponse(result.RowsImported));
+            }
+            catch (Exception ex)
+            {
+                await AuditAsync(audit, httpContext, "data.import", connection, database,
+                    $"{schema}.{name}", null, false, stopwatch.ElapsedMilliseconds, ex.Message);
+                throw;
+            }
+        });
+
+    private static Task<IResult> GetObjectDependencies(
+        string connection, string database, string schema, string name,
+        IGridletConnectionResolver resolver, CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            var dependencies = await resolved.Provider.Schema.GetObjectDependenciesAsync(
+                resolved.Context, schema, name, cancellationToken);
+            return Results.Ok(dependencies.Select(dependency => new
+            {
+                dependency.Direction,
+                Object = ToDto(dependency.Object),
+                dependency.IsSchemaBound,
+                dependency.IsInferred,
+            }));
+        });
+
+    private static Task<IResult> GetSequence(
+        string connection, string database, string schema, string name,
+        IGridletConnectionResolver resolver, CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            var sequence = await resolved.Provider.Schema.GetSequenceAsync(
+                resolved.Context, schema, name, cancellationToken);
+            return Results.Ok(new SequenceDto(
+                ToDto(sequence.Object), sequence.DataType, sequence.StartValue,
+                sequence.Increment, sequence.MinimumValue, sequence.MaximumValue,
+                sequence.CurrentValue, sequence.IsCycling, sequence.IsCached, sequence.CacheSize));
+        });
+
     // ---- table designer ----
 
     private static Task<IResult> CreateSchema(
@@ -1361,6 +1457,31 @@ internal static partial class GridletApiEndpoints
         HttpContext httpContext, CancellationToken cancellationToken)
         => Ddl(connection, database, $"{body.Schema}.{body.Name}", "ddl.createTable", resolver, audit, httpContext,
             (resolved, ct) => resolved.Provider.Ddl.CreateTableAsync(resolved.Context, body, ct),
+            cancellationToken);
+
+    private static Task<IResult> CreateSequence(
+        string connection, string database, SequenceDesign body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{body.Schema}.{body.Name}", "ddl.createSequence",
+            resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider is ISequenceProvider sequences
+                ? sequences.CreateSequenceAsync(resolved.Context, body, ct)
+                : throw new GridletValidationException("This provider does not support sequences."),
+            cancellationToken);
+
+    private static Task<IResult> RestartSequence(
+        string connection, string database, string schema, string name, SequenceRestartRequest body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}", "ddl.restartSequence",
+            resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider is ISequenceProvider sequences
+                ? sequences.RestartSequenceAsync(resolved.Context, schema, name,
+                    string.IsNullOrWhiteSpace(body.Value)
+                        ? throw new GridletValidationException("A restart value is required.")
+                        : body.Value, ct)
+                : throw new GridletValidationException("This provider does not support sequences."),
             cancellationToken);
 
     private static Task<IResult> AddColumn(
@@ -1684,5 +1805,5 @@ internal static partial class GridletApiEndpoints
             : Results.NotFound(new GridletErrorResponse($"No published endpoint with id '{id}'.")));
 
     private static DbObjectDto ToDto(DbObjectInfo info)
-        => new(info.Schema, info.Name, info.Type.ToString(), info.SubKind, info.IsInternal);
+        => new(info.Schema, info.Name, info.Type.ToString(), info.SubKind, info.IsInternal, info.Description);
 }

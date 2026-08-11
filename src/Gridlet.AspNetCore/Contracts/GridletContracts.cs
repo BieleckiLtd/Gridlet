@@ -29,8 +29,14 @@ public sealed record DbObjectDto(
     string Name,
     string Type,
     string? SubKind = null,
-    bool IsInternal = false)
+    bool IsInternal = false,
+    string? Description = null)
 {
+    public DbObjectDto(string schema, string name, string type, string? subKind, bool isInternal)
+        : this(schema, name, type, subKind, isInternal, null)
+    {
+    }
+
     public DbObjectDto(string schema, string name, string type)
         : this(schema, name, type, null, false)
     {
@@ -43,6 +49,18 @@ public sealed record DbObjectDto(
         type = Type;
     }
 }
+
+public sealed record SequenceDto(
+    DbObjectDto Object,
+    string DataType,
+    string StartValue,
+    string Increment,
+    string MinimumValue,
+    string MaximumValue,
+    string? CurrentValue,
+    bool IsCycling,
+    bool IsCached,
+    long? CacheSize);
 
 public sealed record TableStructureResponse(
     DbObjectDto Object,
@@ -213,6 +231,10 @@ public sealed record RowWriteRequest(
     Dictionary<string, JsonElement>? Values);
 
 public sealed record RowWriteResponse(int RowsAffected);
+
+public sealed record TableImportResponse(int RowsImported);
+
+public sealed record SequenceRestartRequest(string? Value);
 
 /// <summary>Body for a rename. The new name is always unqualified: a rename never moves an object.</summary>
 public sealed record RenameRequest(string? NewName);

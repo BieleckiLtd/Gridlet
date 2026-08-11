@@ -422,8 +422,8 @@
   // Relative URLs resolve against <base href>, so this works at any mount path.
 
   async function api(path, options) {
-    const headers = { Accept: 'application/json' };
-    if (options && options.body) headers['Content-Type'] = 'application/json';
+    const headers = { Accept: 'application/json', 'X-Gridlet-Request': '1' };
+    if (options && options.body && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
     const res = await fetch(path, { headers, ...options });
     if (res.status === 204) return null;
     if (!res.ok) {
@@ -495,6 +495,7 @@
       dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
       structure: (s, n) => `${objBase(s, n)}/structure`,
       definition: (s, n) => `${objBase(s, n)}/definition`,
+      dependencies: (s, n) => `${objBase(s, n)}/dependencies`,
       routine: (s, n) => `${objBase(s, n)}/routine`,
       routineScript: (s, n) => `${objBase(s, n)}/routine/script`,
       query: () => `${dbBase()}/query`,
@@ -506,7 +507,11 @@
       rows: (s, n) => `${objBase(s, n)}/rows`,
       rowsUpdate: (s, n) => `${objBase(s, n)}/rows/update`,
       rowsDelete: (s, n) => `${objBase(s, n)}/rows/delete`,
+      importRows: (s, n) => `${objBase(s, n)}/import`,
       createTable: () => `${dbBase()}/tables`,
+      sequences: () => `${dbBase()}/sequences`,
+      sequence: (s, n) => `${objBase(s, n)}/sequence`,
+      restartSequence: (s, n) => `${objBase(s, n)}/sequence/restart`,
       columns: (s, n) => `${objBase(s, n)}/columns`,
       column: (s, n, col) => `${objBase(s, n)}/columns/${enc(col)}`,
       primaryKey: (s, n) => `${objBase(s, n)}/primary-key`,
@@ -657,10 +662,15 @@
     suggestedDataTypes: ['int', 'nvarchar(100)'], selectExample: 'SELECT TOP (100) * FROM {object};',
     createTriggerExample: 'CREATE TRIGGER dbo.NewTrigger ON dbo.SomeTable AFTER INSERT AS SELECT 1;',
     objectEditMode: 'Alter', supportsCheckConstraints: false,
-    supportsUniqueConstraints: false, supportsIndexes: false,
+    supportsUniqueConstraints: false, supportsIndexes: false, supportsSequences: false,
+    supportsImport: false,
   };
   const capabilitiesFor = (scope) => connectionFor(scope).capabilities || DEFAULT_CAPABILITIES;
   const currentCapabilities = () => capabilitiesFor(state);
+  const defaultSchemaFor = (scope) => {
+    const capabilities = capabilitiesFor(scope);
+    return capabilities.supportsSchemas ? capabilities.defaultSchema : scope.database;
+  };
 
   function refreshTypeSuggestions() {
     const list = $('#gridlet-types');
@@ -696,7 +706,7 @@
     for (const match of sql.matchAll(sourcePattern)) {
       const alias = unquoteSqlIdentifier(match[3]);
       if (alias.toLowerCase() !== qualifier.toLowerCase()) continue;
-      const schema = match[2] ? unquoteSqlIdentifier(match[1]) : capabilitiesFor(scope).defaultSchema;
+      const schema = match[2] ? unquoteSqlIdentifier(match[1]) : defaultSchemaFor(scope);
       const name = unquoteSqlIdentifier(match[2] || match[1]);
       object = known.find((o) => o.schema.toLowerCase() === schema.toLowerCase() && o.name.toLowerCase() === name.toLowerCase());
       if (object) break;
@@ -1065,6 +1075,7 @@
     ['Stored procedures', ['StoredProcedure'], 'P', 'supportsStoredProcedures'],
     ['Functions', ['ScalarFunction', 'TableValuedFunction'], 'F', 'supportsFunctions'],
     ['Triggers', ['Trigger'], 'R', 'supportsTriggers'],
+    ['Sequences', ['Sequence'], 'Q', 'supportsSequences'],
   ];
 
   const treeViewStorageKey = () => `gridlet.tree.${state.connection}.${state.database}`;
@@ -1128,7 +1139,8 @@
         types.includes(o.type) &&
         (!filter || (o.schema + '.' + o.name).toLowerCase().includes(filter)));
       const summary = h('summary', {}, label + ' ', h('span', { class: 'count', text: String(items.length) }));
-      const canCreate = currentConn().allowDdl && (badge === 'T' || currentConn().allowSqlExecution);
+      const canCreate = currentConn().allowDdl
+        && (badge === 'T' || badge === 'Q' || currentConn().allowSqlExecution);
       if (canCreate) {
         summary.append(h('button', {
           class: 'mini-btn summary-add',
@@ -1136,6 +1148,7 @@
           onclick: (e) => {
             e.preventDefault(); e.stopPropagation();
             if (badge === 'T') openTableDesignerTab();
+            else if (badge === 'Q') openSequenceDialog();
             else openNewSchemaObject(types[0]);
           },
         }, '＋'));
@@ -1144,7 +1157,7 @@
         h('div', { class: 'items' }, items.map((o) =>
           h('button', {
             class: 'tree-item',
-            title: `${o.schema}.${o.name}`,
+            title: `${o.schema}.${o.name}${o.description ? ` — ${o.description}` : ''}`,
             onclick: () => openObjectTab(o),
             oncontextmenu: (event) => showContextMenu(event, objectContextItems(o)),
           },
@@ -1219,6 +1232,48 @@
     }, 'Delete schema');
   }
 
+  function openSequenceDialog() {
+    const defaultSchema = currentCapabilities().defaultSchema;
+    const schema = h('select', {}, (state.schemas.length ? state.schemas : [{ name: defaultSchema }])
+      .map((item) => h('option', { value: item.name, text: item.name })));
+    schema.value = defaultSchema;
+    const name = h('input', { type: 'text', value: 'NewSequence', 'aria-label': 'Sequence name' });
+    const type = h('select', {}, ['bigint', 'int', 'smallint', 'tinyint', 'decimal(38,0)']
+      .map((value) => h('option', { value, text: value })));
+    const start = h('input', { type: 'text', value: '1', 'aria-label': 'Start value' });
+    const increment = h('input', { type: 'text', value: '1', 'aria-label': 'Increment' });
+    const minimum = h('input', { type: 'text', placeholder: 'engine default', 'aria-label': 'Minimum value' });
+    const maximum = h('input', { type: 'text', placeholder: 'engine default', 'aria-label': 'Maximum value' });
+    const cycle = h('input', { type: 'checkbox' });
+    const cached = h('input', { type: 'checkbox' }); cached.checked = true;
+    const cacheSize = h('input', { type: 'number', min: '1', placeholder: 'engine default' });
+    modal('New sequence', h('div', { class: 'form-grid' },
+      h('label', { class: 'field-label', text: 'Schema' }), schema,
+      h('label', { class: 'field-label', text: 'Name' }), name,
+      h('label', { class: 'field-label', text: 'Type' }), type,
+      h('label', { class: 'field-label', text: 'Start' }), start,
+      h('label', { class: 'field-label', text: 'Increment' }), increment,
+      h('label', { class: 'field-label', text: 'Minimum' }), minimum,
+      h('label', { class: 'field-label', text: 'Maximum' }), maximum,
+      h('label', { class: 'null-toggle' }, cycle, 'Cycle'), h('span'),
+      h('label', { class: 'null-toggle' }, cached, 'Cache'), cacheSize), [
+      { label: 'Cancel', onClick: (close) => close() },
+      { label: 'Create', primary: true, onClick: async (close, showError) => {
+        try {
+          await post(urls.sequences(), {
+            schema: schema.value, name: name.value.trim(), dataType: type.value,
+            startValue: start.value.trim(), increment: increment.value.trim(),
+            minimumValue: minimum.value.trim() || null, maximumValue: maximum.value.trim() || null,
+            isCycling: cycle.checked, isCached: cached.checked,
+            cacheSize: cacheSize.value ? Number(cacheSize.value) : null,
+          });
+          close(); await loadObjects(); toast(`Sequence ${name.value.trim()} created.`, false);
+        } catch (err) { showError(err.message); }
+      } },
+    ]);
+    name.focus(); name.select();
+  }
+
   function displayName(o, scope = state) {
     return capabilitiesFor(scope).supportsSchemas ? o.schema + '.' + o.name : o.name;
   }
@@ -1228,6 +1283,7 @@
   function objectQuerySql(o, scope = state) {
     if (o.type === 'StoredProcedure') return `EXEC ${sqlName(o)};`;
     if (o.type === 'ScalarFunction') return `SELECT ${sqlName(o)}(/* arguments */);`;
+    if (o.type === 'Sequence') return `SELECT NEXT VALUE FOR ${sqlName(o)} AS [NextValue];`;
     if (o.type === 'Table' || o.type === 'View') {
       return capabilitiesFor(scope).selectExample.replace('{object}', sqlName(o));
     }
@@ -1238,6 +1294,54 @@
     connectionFor(scope).allowSqlExecution && o.type !== 'Trigger' ? h('button', {
       onclick: () => openQueryTab(objectQuerySql(o, scope), `Use ${o.name}`, scope),
     }, 'Use in query') : null;
+
+  const dependenciesButton = (o, scope = state) => h('button', {
+    text: 'Dependencies…', 'data-testid': 'object-dependencies', onclick: async () => {
+      try {
+        const dependencies = await api(urlsFor(scope).dependencies(o.schema, o.name));
+        const group = (direction, title) => {
+          const items = dependencies.filter((item) => item.direction === direction);
+          return h('section', {}, h('h3', { text: `${title} (${items.length})` }),
+            items.length ? h('div', { class: 'dependency-list' }, items.map((item) =>
+              h('button', {
+                class: 'tree-item', onclick: () => openObjectTab(item.object, scope),
+                title: item.isInferred ? 'Inferred from SQLite object SQL' :
+                  (item.isSchemaBound ? 'Schema-bound dependency' : 'Dependency'),
+              }, h('span', { class: 'badge', text: item.object.type.slice(0, 1) }),
+              h('span', { class: 'item-name', text: displayName(item.object, scope) }),
+              item.isInferred ? h('span', { class: 'muted', text: ' inferred' }) : null)))
+              : h('p', { class: 'muted', text: 'None' }));
+        };
+        modal(`Dependencies — ${displayName(o, scope)}`, h('div', { class: 'dependency-dialog' },
+          group('references', 'References'), group('referencedBy', 'Referenced by')), [
+          { label: 'Close', onClick: (close) => close() },
+        ]);
+      } catch (err) { toast(err.message); }
+    },
+  });
+
+  const restartSequenceButton = (o, scope = state) => h('button', {
+    text: 'Restart…', 'data-testid': 'restart-sequence', onclick: async () => {
+      try {
+        const sequence = await api(urlsFor(scope).sequence(o.schema, o.name));
+        const value = h('input', {
+          type: 'text', value: sequence.startValue, 'aria-label': 'Sequence restart value',
+        });
+        modal(`Restart ${displayName(o, scope)}`, h('div', {},
+          h('p', { text: `Current value: ${sequence.currentValue ?? 'not generated yet'}` }),
+          h('label', { class: 'field-label' }, 'Restart with', value)), [
+          { label: 'Cancel', onClick: (close) => close() },
+          { label: 'Restart', primary: true, onClick: async (close, showError) => {
+            try {
+              await post(urlsFor(scope).restartSequence(o.schema, o.name), { value: value.value.trim() });
+              close(); toast(`Sequence ${displayName(o, scope)} restarted.`, false);
+            } catch (err) { showError(err.message); }
+          } },
+        ]);
+        value.focus(); value.select();
+      } catch (err) { toast(err.message); }
+    },
+  });
 
   const isRoutine = (o) =>
     ['StoredProcedure', 'ScalarFunction', 'TableValuedFunction'].includes(o?.type);
@@ -1593,7 +1697,8 @@
     const badge = o.isInternal ? 'I' : isVirtualObject(o) ? 'VT' : o.type === 'Table' ? 'T'
       : o.type === 'View' ? 'V'
       : o.type === 'StoredProcedure' ? 'P'
-      : o.type === 'Trigger' ? 'R' : 'F';
+      : o.type === 'Trigger' ? 'R'
+      : o.type === 'Sequence' ? 'Q' : 'F';
 
     const tab = {
       id: state.nextTabId++,
@@ -1645,6 +1750,41 @@
     const ensureStructure = () => (structurePromise ??= api(urls.structure(o.schema, o.name)));
     const invalidateStructure = () => { structurePromise = null; };
 
+    const openImportDialog = () => {
+      const file = h('input', {
+        type: 'file', accept: '.csv,.json,text/csv,application/json', 'data-testid': 'import-file',
+      });
+      const mapping = h('textarea', {
+        rows: '6', 'data-testid': 'import-mapping',
+        placeholder: '{\n  "CSV or JSON field": "TableColumn"\n}',
+      });
+      modal(`Import into ${displayName(o, scope)}`, h('div', { class: 'constraint-dialog' },
+        h('label', { class: 'field-label' }, 'CSV or JSON file', file),
+        h('p', { class: 'muted', text: 'CSV uses its first row as headers. JSON must be an array of objects. The entire import commits or rolls back as one unit.' }),
+        h('label', { class: 'field-label' }, 'Column mapping (optional JSON)', mapping),
+        h('p', { class: 'muted', text: 'Leave blank when source names match table columns. Add source-to-target pairs to rename or select columns.' })), [
+        { label: 'Cancel', onClick: (close) => close() },
+        { label: 'Import', primary: true, onClick: async (close, showError) => {
+          if (!file.files?.length) { showError('Choose a CSV or JSON file.'); return; }
+          let parsedMapping = null;
+          if (mapping.value.trim()) {
+            try { parsedMapping = JSON.parse(mapping.value); }
+            catch { showError('Column mapping must be valid JSON.'); return; }
+            if (!parsedMapping || Array.isArray(parsedMapping) || typeof parsedMapping !== 'object') {
+              showError('Column mapping must be a JSON object.'); return;
+            }
+          }
+          const form = new FormData();
+          form.append('file', file.files[0]);
+          if (parsedMapping) form.append('mapping', JSON.stringify(parsedMapping));
+          try {
+            const result = await api(urls.importRows(o.schema, o.name), { method: 'POST', body: form });
+            close(); toast(`${result.rowsImported} row(s) imported.`, false); renderData();
+          } catch (err) { showError(err.message); }
+        } },
+      ]);
+    };
+
     const switchView = async (view) => {
       if (view !== currentView && !await canLeaveTab(tab)) return;
       if (view !== 'Data') { activeDataLoad?.abort(); activeDataLoad = null; }
@@ -1660,8 +1800,9 @@
           onclick: () => switchView(v),
         })));
       const deleteViewButton = o.type === 'View' && currentConn().allowDdl && canDropObject(o) ? h('button', {
-          class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
-        }) : null;
+        class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
+      }) : null;
+
       actionBar.replaceChildren();
       viewBar.replaceChildren(viewSwitcher);
       if (view === 'Data') renderData();
@@ -1928,8 +2069,13 @@
             onclick: () => openRowEditor(table, data.columns, structure, friendly, null, null, columnIndex),
           }, '＋ Row')
           : null,
+        structure && o.type === 'Table' && currentConn().allowWrites
+          && currentCapabilities().supportsImport && !o.isInternal
+          ? h('button', { 'data-testid': 'import-data', onclick: openImportDialog }, 'Import…')
+          : null,
         cancel,
         useInQueryButton(o, scope),
+        dependenciesButton(o, scope),
         h('span', { class: 'spacer' }),
         exportButtons(data.columns, data.rows, o.name,
           currentConn().allowSqlExecution
@@ -2445,6 +2591,7 @@
             h('label', { class: 'null-toggle' }, persistedToggle, 'Persisted'))),
           h('td', {}, defaultInput),
           h('td', {}, collationInput),
+          h('td', { class: 'muted', text: existing?.description || '' }),
           h('td', { class: 'cell-actions' },
             h('button', { class: 'mini-btn', title: 'Save', onclick: async () => {
               const design = {
@@ -2724,6 +2871,7 @@
         h('td', { class: 'mono', text: c.computedDefinition || '' }),
         h('td', { class: 'mono muted', text: c.defaultDefinition || '' }),
         h('td', { class: 'mono muted', text: c.collation || '' }),
+        h('td', { class: 'muted', text: c.description || '' }),
         canDesign ? h('td', { class: 'cell-actions' },
           h('button', { class: 'mini-btn', title: 'Edit column inline', onclick: () => row.replaceWith(makeColumnEditor(c)) }, '✎'),
           h('button', {
@@ -2739,7 +2887,7 @@
         return row;
       });
 
-      const headers = ['', 'Column', 'Type', 'Nullable', 'Identity', 'Computed', 'Default', 'Collation'];
+      const headers = ['', 'Column', 'Type', 'Nullable', 'Identity', 'Computed', 'Default', 'Collation', 'Description'];
       if (canDesign) headers.push('');
 
       const columnsBody = h('tbody', {}, columnRows);
@@ -2749,6 +2897,9 @@
         s.tableOptions?.length
           ? h('div', { class: 'table-options muted', 'data-testid': 'table-options' },
             ...s.tableOptions.map((option) => h('span', { class: 'badge', text: option })))
+          : null,
+        s.object.description
+          ? h('p', { class: 'object-description', text: s.object.description })
           : null,
         h('h3', { text: 'Columns' }),
         h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
@@ -3009,7 +3160,10 @@
       testId: 'table-definition-editor',
       scope,
     });
-    if (toolbar && connectionFor(scope).allowSqlExecution) toolbar.append(useInQueryButton(o, scope));
+    if (toolbar) {
+      if (connectionFor(scope).allowSqlExecution) toolbar.append(useInQueryButton(o, scope));
+      toolbar.append(dependenciesButton(o, scope));
+    }
     body.replaceChildren(editor);
   }
 
@@ -3024,8 +3178,15 @@
       return;
     }
     const definition = response.definition || '-- definition unavailable --';
+    if (toolbar) {
+      toolbar.append(dependenciesButton(o, scope));
+      if (o.type === 'Sequence' && connectionFor(scope).allowDdl) {
+        toolbar.append(restartSequenceButton(o, scope));
+      }
+    }
     const canExecute = connectionFor(scope).allowSqlExecution;
-    const canEdit = connectionFor(scope).allowDdl && canExecute && canDesignObject(o);
+    const canEdit = o.type !== 'Sequence'
+      && connectionFor(scope).allowDdl && canExecute && canDesignObject(o);
     if (!canEdit) {
       const useButton = canExecute ? useInQueryButton(o, scope) : null;
       const executeButton = executeRoutineButton(o, scope);
@@ -3123,14 +3284,19 @@
   function openNewSchemaObject(type, scope = scopeOf()) {
     if (!scope.database) { toast('Select a database first.'); return; }
     const capabilities = capabilitiesFor(scope);
+    const defaultSchema = defaultSchemaFor(scope);
     const schemaPrefix = capabilities.supportsSchemas
-      ? capabilities.defaultSchema
-      : `[${capabilities.defaultSchema.replaceAll(']', ']]')}]`;
+      ? defaultSchema
+      : `[${defaultSchema.replaceAll(']', ']]')}]`;
+    const triggerExample = capabilities.supportsSchemas
+      ? capabilities.createTriggerExample
+      : capabilities.createTriggerExample.replaceAll(
+        `[${capabilities.defaultSchema.replaceAll(']', ']]')}]`, schemaPrefix);
     const templates = {
       View: ['New view', `CREATE VIEW ${schemaPrefix}.NewView\nAS\n    SELECT 1 AS Value;`],
       StoredProcedure: ['New procedure', `CREATE PROCEDURE ${schemaPrefix}.NewProcedure\nAS\nBEGIN\n    SET NOCOUNT ON;\n    SELECT 1 AS Value;\nEND;`],
       ScalarFunction: ['New function', `CREATE FUNCTION ${schemaPrefix}.NewFunction (@value int)\nRETURNS int\nAS\nBEGIN\n    RETURN @value;\nEND;`],
-      Trigger: ['New trigger', capabilities.createTriggerExample],
+      Trigger: ['New trigger', triggerExample],
     };
     const template = templates[type];
     openQueryTab(template[1], template[0], scope);
@@ -3140,8 +3306,9 @@
 
   function openTableDesignerTab(scope = scopeOf()) {
     const capabilities = capabilitiesFor(scope);
+    const defaultSchema = defaultSchemaFor(scope);
     const schemaInput = h('input', {
-      type: 'text', value: capabilities.defaultSchema, class: 'designer-name', 'data-testid': 'table-schema',
+      type: 'text', value: defaultSchema, class: 'designer-name', 'data-testid': 'table-schema',
       'aria-label': 'Table schema',
     });
     if (!capabilities.supportsSchemas) schemaInput.readOnly = true;
@@ -3214,7 +3381,7 @@
 
     const create = async () => {
       const design = {
-        schema: schemaInput.value.trim() || capabilities.defaultSchema,
+        schema: schemaInput.value.trim() || defaultSchema,
         name: nameInput.value.trim(),
         options: tableOptions.filter((entry) => entry.box.checked).map((entry) => entry.option),
         columns: rows
@@ -5399,7 +5566,7 @@
     // The tab runs against this connection and database for its whole life.
     const urls = urlsFor(scope);
     const capabilities = capabilitiesFor(scope);
-    const exampleObject = `[${capabilities.defaultSchema.replaceAll(']', ']]')}].[SomeTable]`;
+    const exampleObject = `[${defaultSchemaFor(scope).replaceAll(']', ']]')}].[SomeTable]`;
     const editor = createSqlEditor(initialSql,
       capabilities.selectExample.replace('{object}', exampleObject), { scope });
     const results = h('div', { class: 'query-results', 'data-testid': 'query-results' });

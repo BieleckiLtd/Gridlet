@@ -46,6 +46,12 @@ Run SQL with streamed results, save useful queries, and export CSV or JSON. Per-
 gates can enable or hide row editing, ad-hoc SQL and schema-changing tools, while the database
 identity remains the final permission boundary.
 
+Table imports accept CSV or JSON object arrays, optionally map source headers to target columns,
+batch inserts, and commit all rows atomically. In CSV, an unquoted empty field imports as `NULL`,
+while `""` imports as an empty string. Direct API clients must send `X-Gridlet-Request: 1` with the
+multipart request; this non-simple header protects cookie-authenticated hosts from cross-site form
+submissions.
+
 A query tab can also pin its connection as a session, so an explicit transaction spans several
 executions: begin, run the change, look at the result, then commit or roll back. The toolbar shows
 whether a transaction is open, and closing the session or the tab rolls it back.
@@ -113,6 +119,17 @@ authorization policy. The mount path can be changed with `app.MapGridlet("/inter
 
 For SQLite, install `Gridlet.Sqlite` and replace `AddSqlServer` with `AddSqlite`.
 
+SQLite attachments are an explicit server-side allow-list. Configure their names and filenames on
+the connection; the browser can select `main` or one of these aliases but can never choose
+an arbitrary host path:
+
+```csharp
+.AddSqlite(sqliteConnectionString, connection =>
+{
+    connection.SqliteAttachments["archive"] = "/data/archive.db";
+});
+```
+
 ## Essential configuration
 
 Configure security and connection capabilities when registering Gridlet:
@@ -172,8 +189,8 @@ UI can map `MapGridletApi` or `MapGridletPublished` instead.
 
 | Provider | Coverage |
 | --- | --- |
-| SQL Server | Databases, schemas, tables, views, keys, indexes, relationships, procedures, functions, triggers, queries, writes and DDL. |
-| SQLite | The `main` database, tables, views, keys, indexes, relationships, generated columns, triggers, queries, writes and DDL. |
+| SQL Server | Databases, schemas, tables, views, keys, indexes, relationships, procedures, functions, triggers, descriptions, dependencies, sequences, queries, import/export, writes and DDL. |
+| SQLite | The `main` and host-configured attached databases; tables, views, keys, indexes, relationships, generated columns, triggers, inferred dependencies, queries, import/export, writes and DDL. Connection-local `temp` objects are intentionally omitted because they cannot be safely shared across pooled HTTP requests. |
 
 Provider-specific concepts are omitted when they do not apply; for example, SQLite does not expose
 stored procedures, functions or user-created schemas.
