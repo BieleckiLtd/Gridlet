@@ -55,6 +55,19 @@ public static class GridletSqliteBuilderExtensions
                 {
                     connection.DefaultDatabase = "main";
                     configure?.Invoke(connection);
+                    if (!string.IsNullOrWhiteSpace(relativePathBase))
+                    {
+                        foreach (var attachment in connection.SqliteAttachments.ToArray())
+                        {
+                            if (!Path.IsPathRooted(attachment.Value) &&
+                                !attachment.Value.Equals(":memory:", StringComparison.OrdinalIgnoreCase) &&
+                                !attachment.Value.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
+                            {
+                                connection.SqliteAttachments[attachment.Key] =
+                                    Path.Combine(relativePathBase, attachment.Value);
+                            }
+                        }
+                    }
                 });
         });
         return builder;

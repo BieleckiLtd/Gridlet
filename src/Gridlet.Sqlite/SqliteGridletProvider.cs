@@ -5,7 +5,8 @@ namespace Gridlet.Sqlite;
 
 /// <summary>The SQLite implementation of the Gridlet provider boundary.</summary>
 public sealed class SqliteGridletProvider :
-    IGridletProvider, IGridletProviderMetadata, IGridletDatabaseSystemInfoProvider, IForeignKeyLookupProvider
+    IGridletProvider, IGridletProviderMetadata, IGridletDatabaseSystemInfoProvider, IForeignKeyLookupProvider,
+    ITableImportProvider
 {
     public GridletProviderNames ProviderName => GridletProviderNames.Sqlite;
 
@@ -31,7 +32,8 @@ public sealed class SqliteGridletProvider :
         SupportsIndexes: true,
         SupportsSessions: true,
         SupportsQueryPlans: true,
-        SupportedTableOptions: [SqliteTableOptions.WithoutRowId, SqliteTableOptions.Strict]);
+        SupportedTableOptions: [SqliteTableOptions.WithoutRowId, SqliteTableOptions.Strict],
+        SupportsImport: true);
 
     public ISchemaReader Schema { get; } = new SqliteSchemaReader();
 
@@ -42,6 +44,11 @@ public sealed class SqliteGridletProvider :
     public ITableWriteService Writes { get; } = new SqliteTableWriteService();
 
     public ITableDdlService Ddl { get; } = new SqliteTableDdlService();
+
+    public Task<TableImportResult> ImportAsync(
+        GridletConnectionContext context, string schema, string table, TableImport import,
+        CancellationToken cancellationToken = default)
+        => SqliteTableImportService.ImportAsync(context, schema, table, import, cancellationToken);
 
     public async Task<GridletDatabaseSystemInfo> GetDatabaseSystemInfoAsync(
         GridletConnectionContext context,
@@ -56,7 +63,7 @@ public sealed class SqliteGridletProvider :
         string labelColumn, IReadOnlyList<object?> keys, string? search, int limit,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
         await using var command = connection.CreateCommand();
         var key = SqliteIdentifier.Quote(keyColumn);

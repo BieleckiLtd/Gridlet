@@ -95,10 +95,10 @@ public sealed class SqliteDdlBuilderTests
     }
 
     [Fact]
-    public void Rejects_non_main_schemas_and_nonstandard_identity_sequences()
+    public void Accepts_attached_database_names_and_rejects_nonstandard_identity_sequences()
     {
-        Assert.Throws<GridletValidationException>(() =>
-            SqliteDdlBuilder.BuildCreateTable(new TableDesign("dbo", "T",
+        Assert.Contains("CREATE TABLE \"archive\".\"T\"",
+            SqliteDdlBuilder.BuildCreateTable(new TableDesign("archive", "T",
                 [new ColumnDesign("Id", "INTEGER")])));
         Assert.Throws<GridletValidationException>(() =>
             SqliteDdlBuilder.BuildCreateTable(new TableDesign("main", "T",

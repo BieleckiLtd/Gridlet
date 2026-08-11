@@ -39,12 +39,12 @@ public sealed class SqliteTableWriteService : ITableWriteService
         IReadOnlyDictionary<string, object?>? key,
         CancellationToken cancellationToken)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         if (values is { Count: 0 }) throw new GridletValidationException("No column values were supplied.");
         if (key is { Count: 0 }) throw new GridletValidationException("No key columns were supplied to identify the row.");
 
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, table, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, schema, table, cancellationToken);
         if (definition.Object.Type != DbObjectType.Table)
         {
             throw new GridletValidationException($"Rows cannot be written through {schema}.{table} because it is not a table.");

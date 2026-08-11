@@ -1300,10 +1300,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(summaries.Filter(new() { HasText = "Triggers" })).ToHaveCountAsync(1);
         await Assertions.Expect(page.GetByTitle("dbo.Customers").GetByText("Customers", new() { Exact = true }))
             .ToBeVisibleAsync();
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("import-data")).ToHaveCountAsync(0);
 
         await page.GetByTitle("Create table").ClickAsync();
         var panel = ActivePanel(page);
-        await Assertions.Expect(panel.GetByTestId("table-schema")).ToHaveValueAsync("main");
+        await Assertions.Expect(panel.GetByTestId("table-schema")).ToHaveValueAsync("FakeDb");
         await Assertions.Expect(panel.Locator(".designer-grid input").Nth(1)).ToHaveValueAsync("INTEGER");
         Assert.Equal(
             ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC"],
@@ -1644,6 +1646,42 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(control.Locator(".sql-highlight .sql-keyword").First)
             .ToHaveTextAsync("CREATE");
         Assert.Equal("sql", await control.GetAttributeAsync("data-editor-language"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Sequence_creation_requires_ddl_but_not_ad_hoc_sql_execution()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("#connection-select").SelectOptionAsync("DdlOnly");
+        await Assertions.Expect(page.GetByTitle("Create sequence")).ToBeVisibleAsync();
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("import-data")).ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Sequence_definition_is_read_only_and_restart_is_available()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("summary").Filter(new() { HasText = "Sequences" }).ClickAsync();
+        await page.GetByTitle("dbo.OrderNumbers").ClickAsync();
+        var panel = ActivePanel(page);
+        var editor = panel.GetByTestId("object-definition-editor");
+
+        await Assertions.Expect(editor).Not.ToBeEditableAsync();
+        await Assertions.Expect(editor).ToHaveValueAsync(
+            new Regex("CREATE SEQUENCE dbo\\.OrderNumbers"));
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "Execute", Exact = true }))
+            .ToHaveCountAsync(0);
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "Restart…", Exact = true }))
+            .ToBeVisibleAsync();
         browserPage.AssertNoUnexpectedErrors();
     }
 

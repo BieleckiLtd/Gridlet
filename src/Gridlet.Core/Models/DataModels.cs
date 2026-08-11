@@ -95,3 +95,11 @@ public sealed record TableDataPage(
     {
     }
 }
+
+/// <summary>A rectangular batch of values to append to one table atomically.</summary>
+public sealed record TableImport(
+    IReadOnlyList<string> Columns,
+    IReadOnlyList<IReadOnlyList<object?>> Rows);
+
+/// <summary>The outcome of a completed table import.</summary>
+public sealed record TableImportResult(int RowsImported);

@@ -76,6 +76,23 @@ public class GridletEndpointTests
         Assert.Contains("\"supportsCheckConstraints\":true", body);
         Assert.Contains("\"supportsUniqueConstraints\":true", body);
         Assert.Contains("\"supportsIndexes\":true", body);
+        Assert.Contains("\"supportsImport\":true", body);
+    }
+
+    [Fact]
+    public async Task Object_and_column_descriptions_are_exposed_by_the_api()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var objects = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects");
+        var structure = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/structure");
+
+        Assert.Contains("People who buy from the store", objects);
+        Assert.Contains("People who buy from the store", structure);
+        Assert.Contains("Customer display name", structure);
     }
 
     [Fact]

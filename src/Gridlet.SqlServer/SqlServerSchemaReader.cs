@@ -62,10 +62,13 @@ public sealed class SqlServerSchemaReader : ISchemaReader
     {
         const string sql =
             """
-            SELECT s.name AS [schema], o.name, o.type
+            SELECT s.name AS [schema], o.name, o.type,
+                   CONVERT(nvarchar(4000), ep.value) AS [description]
             FROM sys.objects o
             JOIN sys.schemas s ON s.schema_id = o.schema_id
-            WHERE o.type IN ('U', 'V', 'P', 'FN', 'IF', 'TF', 'TR')
+            LEFT JOIN sys.extended_properties ep
+              ON ep.class = 1 AND ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'
+            WHERE o.type IN ('U', 'V', 'P', 'FN', 'IF', 'TF', 'TR', 'SO')
               AND o.is_ms_shipped = 0
             ORDER BY s.name, o.name;
             """;
@@ -81,7 +84,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             var type = MapObjectType(reader.GetString(2));
             if (type is not null)
             {
-                objects.Add(new DbObjectInfo(reader.GetString(0), reader.GetString(1), type.Value));
+                objects.Add(new DbObjectInfo(reader.GetString(0), reader.GetString(1), type.Value,
+                    Description: reader.IsDBNull(3) ? null : reader.GetString(3)));
             }
         }
 
@@ -96,16 +100,18 @@ public sealed class SqlServerSchemaReader : ISchemaReader
     {
         const string sql =
             """
-            SELECT o.type, s.name, o.name
+            SELECT o.type, s.name, o.name, CONVERT(nvarchar(4000), ep.value) AS [description]
             FROM sys.objects o
             JOIN sys.schemas s ON s.schema_id = o.schema_id
+            LEFT JOIN sys.extended_properties ep
+              ON ep.class = 1 AND ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'
             WHERE o.object_id = OBJECT_ID(@name);
 
             SELECT c.name, t.name AS type_name, c.max_length, c.precision, c.scale,
                    c.is_nullable, c.is_identity, c.is_computed, dc.definition AS default_definition,
                    cc.definition AS computed_definition, cc.is_persisted,
                    CONVERT(bigint, ic.seed_value), CONVERT(bigint, ic.increment_value),
-                   c.collation_name
+                   c.collation_name, CONVERT(nvarchar(4000), ep.value) AS [description]
             FROM sys.columns c
             JOIN sys.types t ON t.user_type_id = c.user_type_id
             LEFT JOIN sys.default_constraints dc
@@ -114,6 +120,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
               ON cc.object_id = c.object_id AND cc.column_id = c.column_id
             LEFT JOIN sys.identity_columns ic
               ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+            LEFT JOIN sys.extended_properties ep
+              ON ep.class = 1 AND ep.major_id = c.object_id AND ep.minor_id = c.column_id AND ep.name = N'MS_Description'
             WHERE c.object_id = OBJECT_ID(@name)
             ORDER BY c.column_id;
 
@@ -211,7 +219,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
         }
 
         var objectType = MapObjectType(reader.GetString(0)) ?? DbObjectType.Table;
-        var dbObject = new DbObjectInfo(reader.GetString(1), reader.GetString(2), objectType);
+        var dbObject = new DbObjectInfo(reader.GetString(1), reader.GetString(2), objectType,
+            Description: reader.IsDBNull(3) ? null : reader.GetString(3));
 
         // Result set 2: columns (primary-key flag filled in after result set 3).
         await reader.NextResultAsync(cancellationToken);
@@ -233,7 +242,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 IsPersisted: !reader.IsDBNull(10) && reader.GetBoolean(10),
                 IdentitySeed: reader.IsDBNull(11) ? null : reader.GetInt64(11),
                 IdentityIncrement: reader.IsDBNull(12) ? null : reader.GetInt64(12),
-                Collation: reader.IsDBNull(13) ? null : reader.GetString(13)));
+                Collation: reader.IsDBNull(13) ? null : reader.GetString(13),
+                Description: reader.IsDBNull(14) ? null : reader.GetString(14)));
         }
 
         // Result set 3: primary key columns.
@@ -504,7 +514,123 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 await GetTableDefinitionAsync(context, schema, name, cancellationToken));
         }
 
+        if (objectType == DbObjectType.Sequence)
+        {
+            return BuildSequenceDefinition(
+                await GetSequenceAsync(context, schema, name, cancellationToken));
+        }
+
         return null;
+    }
+
+    public async Task<IReadOnlyList<ObjectDependencyInfo>> GetObjectDependenciesAsync(
+        GridletConnectionContext context, string schema, string name,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql =
+            """
+            DECLARE @id int = OBJECT_ID(@name);
+            IF @id IS NULL THROW 50000, 'Gridlet object not found.', 1;
+
+            SELECT N'references', rs.name, ro.name, ro.type, d.is_schema_bound_reference
+            FROM sys.sql_expression_dependencies d
+            JOIN sys.objects ro ON ro.object_id = d.referenced_id
+            JOIN sys.schemas rs ON rs.schema_id = ro.schema_id
+            WHERE d.referencing_id = @id
+            UNION ALL
+            SELECT N'references', rs.name, ro.name, ro.type, CONVERT(bit, 1)
+            FROM sys.foreign_keys fk
+            JOIN sys.objects ro ON ro.object_id = fk.referenced_object_id
+            JOIN sys.schemas rs ON rs.schema_id = ro.schema_id
+            WHERE fk.parent_object_id = @id
+            UNION ALL
+            SELECT N'referencedBy', ss.name, so.name, so.type, d.is_schema_bound_reference
+            FROM sys.sql_expression_dependencies d
+            JOIN sys.objects so ON so.object_id = d.referencing_id
+            JOIN sys.schemas ss ON ss.schema_id = so.schema_id
+            WHERE d.referenced_id = @id
+            UNION ALL
+            SELECT N'referencedBy', ss.name, so.name, so.type, CONVERT(bit, 1)
+            FROM sys.foreign_keys fk
+            JOIN sys.objects so ON so.object_id = fk.parent_object_id
+            JOIN sys.schemas ss ON ss.schema_id = so.schema_id
+            WHERE fk.referenced_object_id = @id
+            ORDER BY 1, 2, 3;
+            """;
+        var qualified = SqlServerIdentifier.QuoteQualified(schema, name);
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@name", qualified);
+        try
+        {
+            var dependencies = new List<ObjectDependencyInfo>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var type = MapObjectType(reader.GetString(3));
+                if (type is null) continue;
+                dependencies.Add(new ObjectDependencyInfo(
+                    reader.GetString(0),
+                    new DbObjectInfo(reader.GetString(1), reader.GetString(2), type.Value),
+                    reader.GetBoolean(4)));
+            }
+            return dependencies.Distinct().ToArray();
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number == 50000)
+        {
+            throw new GridletObjectNotFoundException(qualified);
+        }
+    }
+
+    public async Task<SequenceInfo> GetSequenceAsync(
+        GridletConnectionContext context, string schema, string name,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql =
+            """
+            SELECT ss.name, seq.name, t.name, seq.precision, seq.scale,
+                   seq.start_value, seq.increment, seq.minimum_value, seq.maximum_value,
+                   seq.current_value, seq.is_cycling, seq.is_cached, seq.cache_size,
+                   CONVERT(nvarchar(4000), ep.value)
+            FROM sys.sequences seq
+            JOIN sys.schemas ss ON ss.schema_id = seq.schema_id
+            JOIN sys.types t ON t.user_type_id = seq.user_type_id
+            LEFT JOIN sys.extended_properties ep
+              ON ep.class = 1 AND ep.major_id = seq.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'
+            WHERE seq.object_id = OBJECT_ID(@name);
+            """;
+        var qualified = SqlServerIdentifier.QuoteQualified(schema, name);
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@name", qualified);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            throw new GridletObjectNotFoundException(qualified);
+        var type = reader.GetString(2);
+        if (type is "decimal" or "numeric") type += $"({reader.GetByte(3)},{reader.GetByte(4)})";
+        string Value(int ordinal) => Convert.ToString(
+            reader.GetValue(ordinal), System.Globalization.CultureInfo.InvariantCulture) ?? "";
+        return new SequenceInfo(
+            new DbObjectInfo(reader.GetString(0), reader.GetString(1), DbObjectType.Sequence,
+                Description: reader.IsDBNull(13) ? null : reader.GetString(13)),
+            type, Value(5), Value(6), Value(7), Value(8),
+            reader.IsDBNull(9) ? null : Value(9),
+            reader.GetBoolean(10), reader.GetBoolean(11),
+            reader.IsDBNull(12) ? null : Convert.ToInt64(reader.GetValue(12)));
+    }
+
+    private static string BuildSequenceDefinition(SequenceInfo sequence)
+    {
+        var cache = sequence.IsCached
+            ? sequence.CacheSize is null ? "CACHE" : $"CACHE {sequence.CacheSize.Value}"
+            : "NO CACHE";
+        var current = sequence.CurrentValue is null ? "" : $"\n-- Current value: {sequence.CurrentValue}";
+        return $"CREATE SEQUENCE {SqlServerIdentifier.QuoteQualified(sequence.Object.Schema, sequence.Object.Name)} AS {sequence.DataType}\n" +
+            $"    START WITH {sequence.StartValue}\n    INCREMENT BY {sequence.Increment}\n" +
+            $"    MINVALUE {sequence.MinimumValue}\n    MAXVALUE {sequence.MaximumValue}\n" +
+            $"    {(sequence.IsCycling ? "CYCLE" : "NO CYCLE")}\n    {cache};{current}";
     }
 
     /// <summary>
@@ -626,6 +752,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             "FN" => DbObjectType.ScalarFunction,
             "IF" or "TF" => DbObjectType.TableValuedFunction,
             "TR" => DbObjectType.Trigger,
+            "SO" => DbObjectType.Sequence,
             _ => null,
         };
 }

@@ -8,7 +8,7 @@ namespace Gridlet.Tests.AspNetCore.Fakes;
 public sealed class FakeGridletProvider :
     IGridletProvider, IGridletProviderMetadata, ISchemaReader, ITableDataService, IQueryRunner,
     IQuerySessionRunner, IQueryPlanRunner, ITableWriteService, ITableDdlService,
-    IForeignKeyLookupProvider
+    IForeignKeyLookupProvider, ITableImportProvider, ISequenceProvider
 {
     public const GridletProviderNames Name = GridletProviderNames.SqlServer;
 
@@ -23,6 +23,8 @@ public sealed class FakeGridletProvider :
     public string? LastQuerySql { get; private set; }
 
     public IReadOnlyDictionary<string, object?>? LastWriteValues { get; private set; }
+
+    public TableImport? LastImport { get; private set; }
 
     public GridletProviderNames ProviderName => Name;
 
@@ -43,7 +45,9 @@ public sealed class FakeGridletProvider :
         SupportsUniqueConstraints: true,
         SupportsIndexes: true,
         SupportsSessions: true,
-        SupportsQueryPlans: true);
+        SupportsQueryPlans: true,
+        SupportsSequences: true,
+        SupportsImport: true);
 
     public ISchemaReader Schema => this;
 
@@ -69,7 +73,8 @@ public sealed class FakeGridletProvider :
         GridletConnectionContext context, CancellationToken cancellationToken = default)
         => Task.FromResult<IReadOnlyList<DbObjectInfo>>(
         [
-            new DbObjectInfo("dbo", "Customers", DbObjectType.Table),
+            new DbObjectInfo("dbo", "Customers", DbObjectType.Table,
+                Description: "People who buy from the store"),
             new DbObjectInfo("dbo", "Orders", DbObjectType.Table),
             new DbObjectInfo("dbo", "Pizzas", DbObjectType.Table),
             new DbObjectInfo("dbo", "NoKeys", DbObjectType.Table),
@@ -84,6 +89,8 @@ public sealed class FakeGridletProvider :
             new DbObjectInfo("dbo", "RefreshOrders", DbObjectType.StoredProcedure),
             new DbObjectInfo("dbo", "OrderCount", DbObjectType.ScalarFunction),
             new DbObjectInfo("dbo", "AuditCustomers", DbObjectType.Trigger),
+            new DbObjectInfo("dbo", "OrderNumbers", DbObjectType.Sequence,
+                Description: "Order number generator"),
         ]);
 
     public Task<IReadOnlyList<SchemaInfo>> GetSchemasAsync(
@@ -129,10 +136,12 @@ public sealed class FakeGridletProvider :
                 [], [], new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]))),
 
             _ => Task.FromResult(new TableDefinition(
-            new DbObjectInfo(schema, name, DbObjectType.Table),
+            new DbObjectInfo(schema, name, DbObjectType.Table,
+                Description: name == "Customers" ? "People who buy from the store" : null),
             [
                 new ColumnInfo("Id", "int", false, true, false, name != "NoKeys", null, 0),
-                new ColumnInfo("Name", "nvarchar(100)", false, false, false, false, null, 1),
+                new ColumnInfo("Name", "nvarchar(100)", false, false, false, false, null, 1,
+                    Description: name == "Customers" ? "Customer display name" : null),
                 new ColumnInfo("SysStart", "datetime2", false, false, true, false, null, 2,
                     "GENERATED ALWAYS", IsHidden: true),
             ],
@@ -185,9 +194,38 @@ public sealed class FakeGridletProvider :
 
     public Task<string?> GetObjectDefinitionAsync(
         GridletConnectionContext context, string schema, string name, CancellationToken cancellationToken = default)
-        => Task.FromResult<string?>(name == "AuditCustomers"
-            ? $"CREATE TRIGGER {schema}.{name} ON {schema}.Customers AFTER INSERT AS SELECT 1;"
-            : $"CREATE VIEW {schema}.{name} AS SELECT 1 AS One;");
+        => Task.FromResult<string?>(name switch
+        {
+            "AuditCustomers" =>
+                $"CREATE TRIGGER {schema}.{name} ON {schema}.Customers AFTER INSERT AS SELECT 1;",
+            "OrderNumbers" => $"CREATE SEQUENCE {schema}.{name} AS bigint START WITH 1000 INCREMENT BY 5;",
+            _ => $"CREATE VIEW {schema}.{name} AS SELECT 1 AS One;",
+        });
+
+    public Task<SequenceInfo> GetSequenceAsync(
+        GridletConnectionContext context, string schema, string name,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(new SequenceInfo(
+            new DbObjectInfo(schema, name, DbObjectType.Sequence,
+                Description: "Order number generator"),
+            "bigint", "1000", "5", long.MinValue.ToString(), long.MaxValue.ToString(),
+            "1020", IsCycling: false, IsCached: true, CacheSize: 50));
+
+    public Task CreateSequenceAsync(
+        GridletConnectionContext context, SequenceDesign design,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"create sequence {design.Schema}.{design.Name}");
+        return Task.CompletedTask;
+    }
+
+    public Task RestartSequenceAsync(
+        GridletConnectionContext context, string schema, string name, string value,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"restart sequence {schema}.{name} {value}");
+        return Task.CompletedTask;
+    }
 
     // ---- routines ----
 
@@ -705,5 +743,14 @@ public sealed class FakeGridletProvider :
     {
         Calls.Add($"truncate {schema}.{table}");
         return Task.CompletedTask;
+    }
+
+    public Task<TableImportResult> ImportAsync(
+        GridletConnectionContext context, string schema, string table, TableImport import,
+        CancellationToken cancellationToken = default)
+    {
+        LastImport = import;
+        Calls.Add($"import {schema}.{table} {import.Rows.Count}");
+        return Task.FromResult(new TableImportResult(import.Rows.Count));
     }
 }

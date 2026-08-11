@@ -1,3 +1,5 @@
+using Gridlet.Models;
+
 namespace Gridlet.Sqlite;
 
 /// <summary>Quotes and validates SQLite identifiers.</summary>
@@ -27,16 +29,34 @@ public static class SqliteIdentifier
 
     public static string QuoteQualified(string schema, string name)
     {
-        RequireMainSchema(schema);
-        return Quote(MainSchema) + "." + Quote(name);
+        return Quote(schema) + "." + Quote(name);
     }
 
-    public static void RequireMainSchema(string schema)
+    public static string SelectedSchema(GridletConnectionContext context)
     {
-        if (!string.Equals(schema, MainSchema, StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(context.Database) ||
+            context.Database.Equals(MainSchema, StringComparison.OrdinalIgnoreCase))
+            return MainSchema;
+        return context.Connection.SqliteAttachments.Keys.FirstOrDefault(key =>
+                   key.Equals(context.Database, StringComparison.OrdinalIgnoreCase))
+               ?? context.Database;
+    }
+
+    public static void RequireSelectedSchema(GridletConnectionContext context, string schema)
+    {
+        var selected = SelectedSchema(context);
+        if (!string.Equals(schema, selected, StringComparison.Ordinal))
         {
             throw new GridletValidationException(
-                $"SQLite exposes its primary database as schema '{MainSchema}'; schema '{schema}' is not supported.");
+                $"SQLite database '{selected}' does not contain schema '{schema}'.");
+        }
+    }
+
+    public static void RequireDatabaseName(string schema)
+    {
+        if (string.IsNullOrWhiteSpace(schema))
+        {
+            throw new GridletValidationException("A SQLite database name is required.");
         }
     }
 }

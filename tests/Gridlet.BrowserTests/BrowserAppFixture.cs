@@ -46,6 +46,8 @@ public sealed class BrowserAppFixture : IAsyncLifetime
                 connection.AllowAgentSchemaAccess = true;
                 connection.AllowAgentApiAccess = true;
             });
+            options.AddConnection("DdlOnly", "Server=browser-test;", FakeGridletProvider.Name,
+                connection => connection.AllowSqlExecution = false);
             options.AddConnection("SQLite", "Data Source=browser-test.db;", BrowserSqliteProvider.Name);
             options.Security.AllowAnonymous = true;
             options.Security.AllowAnonymousAgentCredentials = true;
@@ -273,7 +275,9 @@ public sealed class BrowserTestPage : IAsyncDisposable
 
     public void AssertNoUnexpectedErrors(params string[] expectedErrorFragments)
     {
-        Assert.Equal(expectedErrorFragments.Length, errors.Count);
+        Assert.True(expectedErrorFragments.Length == errors.Count,
+            $"Expected {expectedErrorFragments.Length} browser error(s), got {errors.Count}:\n" +
+            string.Join("\n", errors));
         foreach (var expected in expectedErrorFragments)
         {
             Assert.Contains(errors, error => error.Contains(expected, StringComparison.OrdinalIgnoreCase));
