@@ -336,6 +336,18 @@ public sealed class SqliteProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public void Import_batching_respects_the_runtime_variable_limit()
+    {
+        Assert.Equal(450, SqliteTableImportService.CalculateBatchSize(2, 32_766));
+        Assert.Equal(1, SqliteTableImportService.CalculateBatchSize(1_024, 32_766));
+
+        var error = Assert.Throws<GridletValidationException>(() =>
+            SqliteTableImportService.CalculateBatchSize(1_000, 999));
+
+        Assert.Contains("999 SQL variables", error.Message);
+    }
+
+    [Fact]
     public async Task Drops_triggers_as_first_class_objects()
     {
         await provider.Ddl.DropObjectAsync(
