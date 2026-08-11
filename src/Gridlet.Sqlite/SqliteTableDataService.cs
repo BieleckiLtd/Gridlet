@@ -12,10 +12,10 @@ public sealed class SqliteTableDataService : ITableDataService
         TableDataRequest request,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         var qualifiedName = SqliteIdentifier.QuoteQualified(schema, name);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, name, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(connection, schema, name, cancellationToken);
 
         string? sortColumn = null;
         if (!string.IsNullOrWhiteSpace(request.SortColumn))
@@ -57,7 +57,7 @@ public sealed class SqliteTableDataService : ITableDataService
         }
 
         var rowIdOrdering = await GetRowIdOrderingAsync(
-            connection, definition, name, cancellationToken);
+            connection, definition, schema, name, cancellationToken);
         if (rowIdOrdering.Alias is not null)
         {
             orderByColumns.Add($"{SqliteIdentifier.Quote(rowIdOrdering.Alias)} ASC");
@@ -172,6 +172,7 @@ public sealed class SqliteTableDataService : ITableDataService
     private static async Task<(bool IsRowIdTable, string? Alias)> GetRowIdOrderingAsync(
         Microsoft.Data.Sqlite.SqliteConnection connection,
         TableDefinition definition,
+        string schema,
         string table,
         CancellationToken cancellationToken)
     {
@@ -183,7 +184,8 @@ public sealed class SqliteTableDataService : ITableDataService
 
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT wr FROM pragma_table_list WHERE schema = 'main' AND name = @table AND type = 'table';";
+            "SELECT wr FROM pragma_table_list WHERE schema = @schema AND name = @table AND type = 'table';";
+        command.Parameters.AddWithValue("@schema", schema);
         command.Parameters.AddWithValue("@table", table);
         var withoutRowId = await command.ExecuteScalarAsync(cancellationToken);
         if (withoutRowId is null or DBNull || Convert.ToInt64(withoutRowId) != 0)

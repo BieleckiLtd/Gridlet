@@ -19,7 +19,7 @@ public static class SqliteInsertScriptBuilder
         IReadOnlyList<ResultColumn> columns,
         IReadOnlyList<object?[]> rows)
     {
-        var target = SqliteIdentifier.QuoteQualified(SqliteIdentifier.MainSchema, table.Object.Name);
+        var target = SqliteIdentifier.QuoteQualified(table.Object.Schema, table.Object.Name);
         var byName = table.Columns.ToDictionary(column => column.Name, StringComparer.OrdinalIgnoreCase);
 
         // A generated column is derived, not stored input, and a hidden one is not addressable.

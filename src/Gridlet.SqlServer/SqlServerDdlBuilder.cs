@@ -444,6 +444,7 @@ public static partial class SqlServerDdlBuilder
             DbObjectType.StoredProcedure => "PROCEDURE",
             DbObjectType.ScalarFunction or DbObjectType.TableValuedFunction => "FUNCTION",
             DbObjectType.Trigger => "TRIGGER",
+            DbObjectType.Sequence => "SEQUENCE",
             _ => throw new GridletValidationException($"Unsupported database object type '{type}'."),
         }} {SqlServerIdentifier.QuoteQualified(schema, name)};";
 

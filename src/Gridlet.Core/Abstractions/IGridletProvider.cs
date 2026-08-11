@@ -64,3 +64,30 @@ public interface IForeignKeyLookupProvider
         int limit,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Optional bulk-import capability. Providers commit every supplied row as one unit.</summary>
+public interface ITableImportProvider
+{
+    Task<Models.TableImportResult> ImportAsync(
+        Models.GridletConnectionContext context,
+        string schema,
+        string table,
+        Models.TableImport import,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>Optional sequence creation and restart capability.</summary>
+public interface ISequenceProvider
+{
+    Task CreateSequenceAsync(
+        Models.GridletConnectionContext context,
+        Models.SequenceDesign design,
+        CancellationToken cancellationToken = default);
+
+    Task RestartSequenceAsync(
+        Models.GridletConnectionContext context,
+        string schema,
+        string name,
+        string value,
+        CancellationToken cancellationToken = default);
+}

@@ -35,6 +35,25 @@ public sealed class GridletOptionsValidator : IValidateOptions<GridletOptions>
                     $"Gridlet connection '{connection.Name}' has an unsupported ProviderName '{connection.ProviderName}'.");
             }
 
+            if (connection.ProviderName == GridletProviderNames.Sqlite)
+            {
+                foreach (var attachment in connection.SqliteAttachments)
+                {
+                    if (string.IsNullOrWhiteSpace(attachment.Key) ||
+                        attachment.Key.Equals("main", StringComparison.OrdinalIgnoreCase) ||
+                        attachment.Key.Equals("temp", StringComparison.OrdinalIgnoreCase))
+                    {
+                        failures.Add(
+                            $"Gridlet connection '{connection.Name}' has invalid SQLite attachment name '{attachment.Key}'. Names must be non-empty and cannot be 'main' or 'temp'.");
+                    }
+                    if (string.IsNullOrWhiteSpace(attachment.Value))
+                    {
+                        failures.Add(
+                            $"SQLite attachment '{attachment.Key}' on connection '{connection.Name}' has an empty filename.");
+                    }
+                }
+            }
+
             if (connection.AllowAgentDataAccess &&
                 string.IsNullOrWhiteSpace(connection.AgentDataConnectionString) &&
                 !connection.AllowAgentDataWithPrimaryConnection)

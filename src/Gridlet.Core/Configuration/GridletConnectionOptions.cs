@@ -30,6 +30,14 @@ public sealed class GridletConnectionOptions
     public string? DefaultDatabase { get; set; }
 
     /// <summary>
+    /// SQLite databases that the host explicitly allows Gridlet to attach. Keys are the database
+    /// names exposed in the database selector; values are server-side filenames. The browser can
+    /// never supply or discover a path. Non-SQLite providers ignore this collection.
+    /// </summary>
+    public Dictionary<string, string> SqliteAttachments { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Whether the ad-hoc SQL editor may execute statements against this connection.
     /// Statement-level write protection is delegated to the SQL principal's own permissions;
     /// grant the connection's login only the rights users should have. Defaults to <c>true</c>.

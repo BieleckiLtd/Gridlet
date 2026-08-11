@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cross-CLI Code Review"
+  short_description: "Verify models and run safe external reviews"
+  default_prompt: "Use $cross-cli-code-review to run a read-only review of my current changes with the requested CLI model and reasoning effort."

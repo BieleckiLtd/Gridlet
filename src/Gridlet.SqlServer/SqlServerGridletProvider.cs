@@ -5,7 +5,8 @@ namespace Gridlet.SqlServer;
 
 /// <summary>The SQL Server implementation of the Gridlet provider boundary.</summary>
 public sealed class SqlServerGridletProvider :
-    IGridletProvider, IGridletProviderMetadata, IGridletDatabaseSystemInfoProvider, IForeignKeyLookupProvider
+    IGridletProvider, IGridletProviderMetadata, IGridletDatabaseSystemInfoProvider, IForeignKeyLookupProvider,
+    ITableImportProvider, ISequenceProvider
 {
     public GridletProviderNames ProviderName => GridletProviderNames.SqlServer;
 
@@ -31,7 +32,9 @@ public sealed class SqlServerGridletProvider :
         SupportsUniqueConstraints: true,
         SupportsIndexes: true,
         SupportsSessions: true,
-        SupportsQueryPlans: true);
+        SupportsQueryPlans: true,
+        SupportsSequences: true,
+        SupportsImport: true);
 
     public ISchemaReader Schema { get; } = new SqlServerSchemaReader();
 
@@ -42,6 +45,21 @@ public sealed class SqlServerGridletProvider :
     public ITableWriteService Writes { get; } = new SqlServerTableWriteService();
 
     public ITableDdlService Ddl { get; } = new SqlServerTableDdlService();
+
+    public Task<TableImportResult> ImportAsync(
+        GridletConnectionContext context, string schema, string table, TableImport import,
+        CancellationToken cancellationToken = default)
+        => SqlServerTableImportService.ImportAsync(context, schema, table, import, cancellationToken);
+
+    public Task CreateSequenceAsync(
+        GridletConnectionContext context, SequenceDesign design,
+        CancellationToken cancellationToken = default)
+        => SqlServerSequenceService.CreateAsync(context, design, cancellationToken);
+
+    public Task RestartSequenceAsync(
+        GridletConnectionContext context, string schema, string name, string value,
+        CancellationToken cancellationToken = default)
+        => SqlServerSequenceService.RestartAsync(context, schema, name, value, cancellationToken);
 
     public async Task<GridletDatabaseSystemInfo> GetDatabaseSystemInfoAsync(
         GridletConnectionContext context,

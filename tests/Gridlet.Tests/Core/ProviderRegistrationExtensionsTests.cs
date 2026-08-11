@@ -85,7 +85,13 @@ public sealed class ProviderRegistrationExtensionsTests
 
         services
             .AddGridletCore()
-            .AddSqlite("Data Source=data/local.db", relativePathBase: basePath);
+            .AddSqlite("Data Source=data/local.db", connection =>
+            {
+                connection.SqliteAttachments["relative"] = "attachments/archive.db";
+                connection.SqliteAttachments["absolute"] = Path.Combine(basePath, "absolute.db");
+                connection.SqliteAttachments["memory"] = ":memory:";
+                connection.SqliteAttachments["uri"] = "file:shared?mode=memory&cache=shared";
+            }, relativePathBase: basePath);
 
         using var provider = services.BuildServiceProvider();
         var connection = Assert.Single(
@@ -94,5 +100,10 @@ public sealed class ProviderRegistrationExtensionsTests
 
         Assert.Equal(Path.Combine(basePath, "data/local.db"), parsed.DataSource);
         Assert.Equal("local.db", connection.Name);
+        Assert.Equal(Path.Combine(basePath, "attachments/archive.db"),
+            connection.SqliteAttachments["relative"]);
+        Assert.Equal(Path.Combine(basePath, "absolute.db"), connection.SqliteAttachments["absolute"]);
+        Assert.Equal(":memory:", connection.SqliteAttachments["memory"]);
+        Assert.Equal("file:shared?mode=memory&cache=shared", connection.SqliteAttachments["uri"]);
     }
 }

@@ -122,7 +122,8 @@ public sealed class SqliteProviderTests : IAsyncLifetime
     [Fact]
     public async Task Reads_database_objects_columns_indexes_foreign_keys_and_definitions()
     {
-        Assert.Equal([new DatabaseInfo("main", false)], await provider.Schema.GetDatabasesAsync(context));
+        Assert.Equal([new DatabaseInfo("main", false)],
+            await provider.Schema.GetDatabasesAsync(context));
         Assert.Equal([new SchemaInfo("main", "")], await provider.Schema.GetSchemasAsync(context));
 
         var objects = await provider.Schema.GetObjectsAsync(context);
@@ -149,6 +150,120 @@ public sealed class SqliteProviderTests : IAsyncLifetime
         Assert.Contains("CREATE VIEW CustomerNames", viewSql, StringComparison.OrdinalIgnoreCase);
         var triggerSql = await provider.Schema.GetObjectDefinitionAsync(context, "main", "AuditCustomerInsert");
         Assert.Contains("CREATE TRIGGER AuditCustomerInsert", triggerSql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Canonicalizes_case_variant_selected_database_names()
+    {
+        var caseVariant = context with { Database = "MAIN" };
+
+        var objects = await provider.Schema.GetObjectsAsync(caseVariant);
+        Assert.Contains(objects, item => item.Name == "Customers" && item.Schema == "main");
+        var page = await provider.Data.GetPageAsync(
+            caseVariant, "main", "Customers", new TableDataRequest(1, 10));
+        Assert.Equal(2, page.TotalRows);
+
+        var routeError = await Assert.ThrowsAsync<GridletValidationException>(() =>
+            provider.Data.GetPageAsync(caseVariant, "MAIN", "Customers", new TableDataRequest(1, 10)));
+        Assert.Contains("does not contain schema", routeError.Message);
+    }
+
+    [Fact]
+    public async Task Infers_incoming_and_outgoing_object_dependencies()
+    {
+        var incoming = await provider.Schema.GetObjectDependenciesAsync(context, "main", "Customers");
+        Assert.Contains(incoming, dependency => dependency.Direction == "referencedBy" &&
+            dependency.Object.Name == "CustomerNames" && dependency.IsInferred);
+        Assert.Contains(incoming, dependency => dependency.Direction == "referencedBy" &&
+            dependency.Object.Name == "Orders" && dependency.IsInferred);
+
+        var outgoing = await provider.Schema.GetObjectDependenciesAsync(context, "main", "CustomerNames");
+        Assert.Contains(outgoing, dependency => dependency.Direction == "references" &&
+            dependency.Object.Name == "Customers");
+    }
+
+    [Fact]
+    public async Task Host_configured_attachments_are_isolated_browsable_and_writable()
+    {
+        var attachedPath = Path.Combine(Path.GetTempPath(), $"gridlet-attached-{Guid.NewGuid():N}.db");
+        try
+        {
+            var pooledConnectionString = new SqliteConnectionStringBuilder
+            {
+                DataSource = databasePath,
+                Pooling = true,
+                ForeignKeys = true,
+            }.ToString();
+            var options = new GridletConnectionOptions
+            {
+                Name = "Pooled",
+                ConnectionString = pooledConnectionString,
+                ProviderName = GridletProviderNames.Sqlite,
+                SqliteAttachments = new() { ["archive"] = attachedPath },
+            };
+            var pooledContext = new GridletConnectionContext(options, "main");
+            var databases = await provider.Schema.GetDatabasesAsync(pooledContext);
+            Assert.DoesNotContain(databases, database => database.Name == "temp");
+            Assert.Contains(new DatabaseInfo("archive", false), databases);
+            // A second pooled open must reuse the existing attachment instead of issuing ATTACH again.
+            Assert.Contains(new DatabaseInfo("archive", false),
+                await provider.Schema.GetDatabasesAsync(pooledContext));
+            var isolatedContext = new GridletConnectionContext(new GridletConnectionOptions
+            {
+                Name = "SamePoolWithoutAttachments",
+                ConnectionString = pooledConnectionString,
+                ProviderName = GridletProviderNames.Sqlite,
+            }, "main");
+            Assert.DoesNotContain(new DatabaseInfo("archive", false),
+                await provider.Schema.GetDatabasesAsync(isolatedContext));
+            // Reopening the configured context must restore its own allowlist after pool reuse.
+            Assert.Contains(new DatabaseInfo("archive", false),
+                await provider.Schema.GetDatabasesAsync(pooledContext));
+
+            var archiveContext = pooledContext with { Database = "archive" };
+            await provider.Ddl.CreateTableAsync(archiveContext, new TableDesign("archive", "Notes",
+            [
+                new ColumnDesign("Id", "INTEGER", IsNullable: false, IsPrimaryKey: true),
+                new ColumnDesign("Body", "TEXT", IsNullable: false),
+                new ColumnDesign("Obsolete", "TEXT", IsNullable: true),
+            ]));
+            await provider.Query.ExecuteAsync(archiveContext,
+                """
+                CREATE TABLE archive.NoteAudit (NoteId INTEGER NOT NULL);
+                CREATE TRIGGER "archive"."AuditNote" AFTER INSERT ON Notes
+                BEGIN
+                    INSERT INTO NoteAudit (NoteId) VALUES (NEW.Id);
+                END;
+                """, new QueryRequestOptions(100, 30));
+            await provider.Ddl.DropColumnAsync(archiveContext, "archive", "Notes", "Obsolete");
+            await provider.Writes.InsertRowAsync(archiveContext, "archive", "Notes",
+                new Dictionary<string, object?> { ["Id"] = 1L, ["Body"] = "attached" });
+
+            Assert.Contains(new DbObjectInfo("archive", "Notes", DbObjectType.Table),
+                await provider.Schema.GetObjectsAsync(archiveContext));
+            var page = await provider.Data.GetPageAsync(
+                archiveContext, "archive", "Notes", new TableDataRequest(1, 10));
+            Assert.Equal("attached", Assert.Single(page.Rows)[1]);
+            var audit = await provider.Query.ExecuteAsync(archiveContext,
+                "SELECT COUNT(*) FROM archive.NoteAudit WHERE NoteId = 1;",
+                new QueryRequestOptions(10, 30));
+            Assert.Equal(1L, Assert.Single(Assert.Single(audit.ResultSets).Rows)[0]);
+
+            var mismatch = await Assert.ThrowsAsync<GridletValidationException>(() =>
+                provider.Ddl.CreateTableAsync(archiveContext,
+                    new TableDesign("main", "WrongDatabase", [new ColumnDesign("Id", "INTEGER")])));
+            Assert.Contains("does not contain schema", mismatch.Message);
+
+            var tempContext = pooledContext with { Database = "temp" };
+            var tempError = await Assert.ThrowsAsync<GridletValidationException>(() =>
+                provider.Schema.GetObjectsAsync(tempContext));
+            Assert.Contains("does not contain database 'temp'", tempError.Message);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(attachedPath)) File.Delete(attachedPath);
+        }
     }
 
     [Fact]
@@ -196,6 +311,28 @@ public sealed class SqliteProviderTests : IAsyncLifetime
         await Assert.ThrowsAsync<GridletValidationException>(() => provider.Writes.UpdateRowAsync(
             context, "main", "Customers", new Dictionary<string, object?> { ["Id"] = 1L },
             new Dictionary<string, object?> { ["Unknown"] = "x" }));
+    }
+
+    [Fact]
+    public async Task Import_is_atomic_when_a_later_row_fails()
+    {
+        var importer = Assert.IsAssignableFrom<ITableImportProvider>(provider);
+        var rows = Enumerable.Range(0, 450)
+            .Select(index => (IReadOnlyList<object?>)[$"Imported {index}", $"imported-{index}@example.com"])
+            .ToList();
+        // This lands in a second statement batch and conflicts with the first row.
+        rows.Add(["Duplicate", "imported-0@example.com"]);
+        var import = new TableImport(
+            ["Name", "Email"],
+            rows);
+
+        await Assert.ThrowsAsync<GridletQueryException>(() =>
+            importer.ImportAsync(context, "main", "Customers", import));
+
+        var result = await provider.Query.ExecuteAsync(context,
+            "SELECT COUNT(*) AS Count FROM Customers WHERE Email LIKE 'imported-%';",
+            new QueryRequestOptions(10, 30));
+        Assert.Equal(0L, Assert.Single(Assert.Single(result.ResultSets).Rows)[0]);
     }
 
     [Fact]

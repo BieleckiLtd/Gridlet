@@ -34,6 +34,22 @@ public interface ISchemaReader
         string name,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Returns direct objects referenced by this object and objects that reference it.</summary>
+    Task<IReadOnlyList<ObjectDependencyInfo>> GetObjectDependenciesAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<ObjectDependencyInfo>>([]);
+
+    /// <summary>Returns sequence configuration and its current value.</summary>
+    Task<SequenceInfo> GetSequenceAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support sequences.");
+
     /// <summary>
     /// Returns the parameters of a stored procedure or function, in declaration order, with the
     /// return value first where the engine has one. Providers with no routines return nothing.

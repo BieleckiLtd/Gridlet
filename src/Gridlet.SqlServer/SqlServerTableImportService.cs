@@ -1,0 +1,90 @@
+using Gridlet.Models;
+using Microsoft.Data.SqlClient;
+
+namespace Gridlet.SqlServer;
+
+internal static class SqlServerTableImportService
+{
+    public static async Task<TableImportResult> ImportAsync(
+        GridletConnectionContext context, string schema, string table, TableImport import,
+        CancellationToken cancellationToken)
+    {
+        if (import.Columns.Count == 0) throw new GridletValidationException("An import needs at least one mapped column.");
+        if (import.Rows.Count == 0) return new TableImportResult(0);
+        if (import.Rows.Any(row => row.Count != import.Columns.Count))
+            throw new GridletValidationException("Every imported row must have one value per mapped column.");
+
+        var qualified = SqlServerIdentifier.QuoteQualified(schema, table);
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        var columns = await ValidateColumnsAsync(connection, qualified, import.Columns, cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            // Stay below SQL Server's 2,100-parameter limit while avoiding a round trip per row.
+            var batchSize = Math.Max(1, Math.Min(500, 2_000 / columns.Count));
+            for (var offset = 0; offset < import.Rows.Count; offset += batchSize)
+            {
+                var count = Math.Min(batchSize, import.Rows.Count - offset);
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                var values = new string[count];
+                for (var rowIndex = 0; rowIndex < count; rowIndex++)
+                {
+                    var parameters = new string[columns.Count];
+                    for (var columnIndex = 0; columnIndex < columns.Count; columnIndex++)
+                    {
+                        var parameterName = $"@value{rowIndex}_{columnIndex}";
+                        parameters[columnIndex] = parameterName;
+                        command.Parameters.Add(new SqlParameter(
+                            parameterName, import.Rows[offset + rowIndex][columnIndex] ?? DBNull.Value));
+                    }
+                    values[rowIndex] = $"({string.Join(", ", parameters)})";
+                }
+                command.CommandText = $"INSERT INTO {qualified} " +
+                    $"({string.Join(", ", columns.Select(SqlServerIdentifier.Quote))}) VALUES " +
+                    $"{string.Join(", ", values)};";
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+            await transaction.CommitAsync(cancellationToken);
+            return new TableImportResult(import.Rows.Count);
+        }
+        catch (SqlException ex)
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw new GridletQueryException(ex.Message, ex);
+        }
+    }
+
+    private static async Task<IReadOnlyList<string>> ValidateColumnsAsync(
+        SqlConnection connection, string qualified, IReadOnlyList<string> requested,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT c.name, c.is_identity, c.is_computed, o.type, o.is_ms_shipped " +
+            "FROM sys.columns c JOIN sys.objects o ON o.object_id = c.object_id " +
+            "WHERE c.object_id = OBJECT_ID(@name);";
+        command.Parameters.AddWithValue("@name", qualified);
+        var available = new Dictionary<string, (string Name, bool Generated)>(StringComparer.OrdinalIgnoreCase);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (!string.Equals(reader.GetString(3).Trim(), "U", StringComparison.Ordinal) || reader.GetBoolean(4))
+                throw new GridletValidationException($"{qualified} is not a user table Gridlet can import into.");
+            available[reader.GetString(0)] = (reader.GetString(0), reader.GetBoolean(1) || reader.GetBoolean(2));
+        }
+        if (available.Count == 0) throw new GridletObjectNotFoundException(qualified);
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>(requested.Count);
+        foreach (var requestedName in requested)
+        {
+            if (!available.TryGetValue(requestedName, out var column))
+                throw new GridletValidationException($"Column '{requestedName}' does not exist on {qualified}.");
+            if (!seen.Add(column.Name)) throw new GridletValidationException($"Column '{column.Name}' is mapped more than once.");
+            if (column.Generated) throw new GridletValidationException($"Column '{column.Name}' cannot be imported because it is generated by SQL Server.");
+            result.Add(column.Name);
+        }
+        return result;
+    }
+}

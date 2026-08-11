@@ -71,7 +71,7 @@ public static partial class SqliteDdlBuilder
         IReadOnlyList<CheckConstraintDesign>? checkConstraints,
         IReadOnlyList<UniqueConstraintDesign>? uniqueConstraints)
     {
-        SqliteIdentifier.RequireMainSchema(design.Schema);
+        SqliteIdentifier.RequireDatabaseName(design.Schema);
         if (design.Columns is not { Count: > 0 })
         {
             throw new GridletValidationException("A table needs at least one column.");
@@ -154,19 +154,19 @@ public static partial class SqliteDdlBuilder
         bool unique,
         IReadOnlyList<string> columns)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireDatabaseName(schema);
         if (columns.Count == 0)
         {
             throw new GridletValidationException("An index needs at least one column.");
         }
 
-        return $"CREATE {(unique ? "UNIQUE " : "")}INDEX {SqliteIdentifier.Quote(name)} ON " +
+        return $"CREATE {(unique ? "UNIQUE " : "")}INDEX {SqliteIdentifier.QuoteQualified(schema, name)} ON " +
                $"{SqliteIdentifier.Quote(table)} ({string.Join(", ", columns.Select(SqliteIdentifier.Quote))});";
     }
 
     public static string BuildCreateIndex(string schema, string table, IndexDesign index)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireDatabaseName(schema);
         if (index.KeyColumns is not { Count: > 0 })
         {
             throw new GridletValidationException("An index needs at least one key.");
@@ -180,19 +180,19 @@ public static partial class SqliteDdlBuilder
         var filter = string.IsNullOrWhiteSpace(index.FilterExpression)
             ? ""
             : $" WHERE {SqliteExpressionSafety.RequireSingleExpression(index.FilterExpression, "index filter")}";
-        return $"CREATE {(index.IsUnique ? "UNIQUE " : "")}INDEX {SqliteIdentifier.Quote(index.Name)} ON " +
+        return $"CREATE {(index.IsUnique ? "UNIQUE " : "")}INDEX {SqliteIdentifier.QuoteQualified(schema, index.Name)} ON " +
                $"{SqliteIdentifier.Quote(table)} ({string.Join(", ", index.KeyColumns.Select(BuildIndexKey))}){filter};";
     }
 
     public static string BuildDropIndex(string schema, string name)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireDatabaseName(schema);
         return $"DROP INDEX {SqliteIdentifier.QuoteQualified(schema, name)};";
     }
 
     public static string BuildForeignKeyDefinition(ForeignKeyDesign foreignKey)
     {
-        SqliteIdentifier.RequireMainSchema(foreignKey.ReferencedSchema);
+        SqliteIdentifier.RequireDatabaseName(foreignKey.ReferencedSchema);
         if (foreignKey.Columns is not { Count: > 0 })
         {
             throw new GridletValidationException("A foreign key needs at least one column pair.");

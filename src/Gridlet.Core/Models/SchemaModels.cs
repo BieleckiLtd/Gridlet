@@ -12,6 +12,7 @@ public enum DbObjectType
     ScalarFunction,
     TableValuedFunction,
     Trigger,
+    Sequence,
 }
 
 /// <summary>A schema-qualified database object.</summary>
@@ -20,8 +21,15 @@ public sealed record DbObjectInfo(
     string Name,
     DbObjectType Type,
     string? SubKind = null,
-    bool IsInternal = false)
+    bool IsInternal = false,
+    string? Description = null)
 {
+    /// <summary>Creates the previous five-field object shape.</summary>
+    public DbObjectInfo(string schema, string name, DbObjectType type, string? subKind, bool isInternal)
+        : this(schema, name, type, subKind, isInternal, null)
+    {
+    }
+
     /// <summary>Creates the legacy three-field object shape without relying on optional-parameter ABI.</summary>
     public DbObjectInfo(string schema, string name, DbObjectType type)
         : this(schema, name, type, null, false)
@@ -40,6 +48,39 @@ public sealed record DbObjectInfo(
 /// <summary>A database schema and its owning principal.</summary>
 public sealed record SchemaInfo(string Name, string Owner);
 
+/// <summary>A direct dependency to or from one database object.</summary>
+public sealed record ObjectDependencyInfo(
+    string Direction,
+    DbObjectInfo Object,
+    bool IsSchemaBound = false,
+    bool IsInferred = false);
+
+/// <summary>SQL sequence metadata, including its current persisted value.</summary>
+public sealed record SequenceInfo(
+    DbObjectInfo Object,
+    string DataType,
+    string StartValue,
+    string Increment,
+    string MinimumValue,
+    string MaximumValue,
+    string? CurrentValue,
+    bool IsCycling,
+    bool IsCached,
+    long? CacheSize);
+
+/// <summary>Options for creating a SQL sequence.</summary>
+public sealed record SequenceDesign(
+    string Schema,
+    string Name,
+    string DataType = "bigint",
+    string StartValue = "1",
+    string Increment = "1",
+    string? MinimumValue = null,
+    string? MaximumValue = null,
+    bool IsCycling = false,
+    bool IsCached = true,
+    long? CacheSize = null);
+
 /// <summary>A column of a table or view.</summary>
 public sealed record ColumnInfo(
     string Name,
@@ -55,8 +96,31 @@ public sealed record ColumnInfo(
     long? IdentitySeed = null,
     long? IdentityIncrement = null,
     bool IsHidden = false,
-    string? Collation = null)
+    string? Collation = null,
+    string? Description = null)
 {
+    /// <summary>Creates the previous fourteen-field column shape.</summary>
+    public ColumnInfo(
+        string name,
+        string dataType,
+        bool isNullable,
+        bool isIdentity,
+        bool isComputed,
+        bool isPrimaryKey,
+        string? defaultDefinition,
+        int ordinal,
+        string? computedDefinition,
+        bool isPersisted,
+        long? identitySeed,
+        long? identityIncrement,
+        bool isHidden,
+        string? collation)
+        : this(name, dataType, isNullable, isIdentity, isComputed, isPrimaryKey,
+            defaultDefinition, ordinal, computedDefinition, isPersisted, identitySeed,
+            identityIncrement, isHidden, collation, null)
+    {
+    }
+
     /// <summary>Creates the thirteen-field column shape without relying on optional-parameter ABI.</summary>
     public ColumnInfo(
         string name,

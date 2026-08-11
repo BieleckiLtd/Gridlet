@@ -12,7 +12,17 @@ public sealed class SqliteSchemaReader : ISchemaReader
         CancellationToken cancellationToken = default)
     {
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        return [new DatabaseInfo(SqliteIdentifier.MainSchema, IsSystem: false)];
+        await using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA database_list;";
+        var databases = new List<DatabaseInfo>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var name = reader.GetString(1);
+            if (!name.Equals("temp", StringComparison.OrdinalIgnoreCase))
+                databases.Add(new DatabaseInfo(name, IsSystem: false));
+        }
+        return databases;
     }
 
     public async Task<IReadOnlyList<SchemaInfo>> GetSchemasAsync(
@@ -20,7 +30,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
         CancellationToken cancellationToken = default)
     {
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        return [new SchemaInfo(SqliteIdentifier.MainSchema, "")];
+        return [new SchemaInfo(SqliteIdentifier.SelectedSchema(context), "")];
     }
 
     public async Task<IReadOnlyList<DbObjectInfo>> GetObjectsAsync(
@@ -28,18 +38,20 @@ public sealed class SqliteSchemaReader : ISchemaReader
         CancellationToken cancellationToken = default)
     {
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var schema = SqliteIdentifier.SelectedSchema(context);
         await using var command = connection.CreateCommand();
         command.CommandText =
-            """
+            $$"""
             SELECT name, type, CASE WHEN type = 'shadow' OR name GLOB 'sqlite_*' THEN 1 ELSE 0 END AS is_internal
             FROM pragma_table_list
-            WHERE schema = 'main' AND name NOT LIKE 'sqlite\_%' ESCAPE '\'
+            WHERE schema = @schema AND name NOT LIKE 'sqlite\_%' ESCAPE '\'
             UNION ALL
             SELECT name, 'trigger', 0
-            FROM main.sqlite_schema
+            FROM {{SqliteIdentifier.Quote(schema)}}.sqlite_schema
             WHERE type = 'trigger' AND name NOT LIKE 'sqlite\_%' ESCAPE '\'
             ORDER BY name;
             """;
+        command.Parameters.AddWithValue("@schema", schema);
 
         var objects = new List<DbObjectInfo>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -52,7 +64,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
                 "trigger" => DbObjectType.Trigger,
                 _ => DbObjectType.Table,
             };
-            objects.Add(new DbObjectInfo(SqliteIdentifier.MainSchema, reader.GetString(0), type,
+            objects.Add(new DbObjectInfo(schema, reader.GetString(0), type,
                 subKind is "virtual" or "shadow" ? subKind : null,
                 reader.GetInt64(2) != 0));
         }
@@ -66,13 +78,14 @@ public sealed class SqliteSchemaReader : ISchemaReader
         string name,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
-        return await LoadTableDefinitionAsync(connection, name, cancellationToken);
+        return await LoadTableDefinitionAsync(connection, schema, name, cancellationToken);
     }
 
     internal static async Task<TableDefinition> LoadTableDefinitionAsync(
         SqliteConnection connection,
+        string schema,
         string name,
         CancellationToken cancellationToken)
     {
@@ -84,19 +97,20 @@ public sealed class SqliteSchemaReader : ISchemaReader
         await using (var objectCommand = connection.CreateCommand())
         {
             objectCommand.CommandText =
-                """
+                $$"""
                 SELECT tl.type, s.sql,
                        CASE WHEN tl.type = 'shadow' OR tl.name GLOB 'sqlite_*' THEN 1 ELSE 0 END,
                        tl.wr, tl.strict
                 FROM pragma_table_list AS tl
-                LEFT JOIN main.sqlite_schema AS s ON s.name = tl.name AND s.type IN ('table', 'view')
-                WHERE tl.schema = 'main' AND tl.name = @name;
+                LEFT JOIN {{SqliteIdentifier.Quote(schema)}}.sqlite_schema AS s ON s.name = tl.name AND s.type IN ('table', 'view')
+                WHERE tl.schema = @schema AND tl.name = @name;
                 """;
             objectCommand.Parameters.AddWithValue("@name", name);
+            objectCommand.Parameters.AddWithValue("@schema", schema);
             await using var objectReader = await objectCommand.ExecuteReaderAsync(cancellationToken);
             if (!await objectReader.ReadAsync(cancellationToken))
             {
-                throw new GridletObjectNotFoundException($"{SqliteIdentifier.MainSchema}.{name}");
+                throw new GridletObjectNotFoundException($"{schema}.{name}");
             }
 
             objectType = objectReader.GetString(0);
@@ -111,8 +125,9 @@ public sealed class SqliteSchemaReader : ISchemaReader
         {
             columnsCommand.CommandText =
                 "SELECT name, type, [notnull], dflt_value, pk, hidden " +
-                "FROM pragma_table_xinfo(@table, 'main') ORDER BY cid;";
+                "FROM pragma_table_xinfo(@table, @schema) ORDER BY cid;";
             columnsCommand.Parameters.AddWithValue("@table", name);
+            columnsCommand.Parameters.AddWithValue("@schema", schema);
             await using var reader = await columnsCommand.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
@@ -151,8 +166,8 @@ public sealed class SqliteSchemaReader : ISchemaReader
                 Collation: parsedTable.ColumnCollations.GetValueOrDefault(column.Name));
         }).ToArray();
 
-        var indexes = await LoadIndexesAsync(connection, name, columns, cancellationToken);
-        var foreignKeys = await LoadForeignKeysAsync(connection, name, cancellationToken);
+        var indexes = await LoadIndexesAsync(connection, schema, name, columns, cancellationToken);
+        var foreignKeys = await LoadForeignKeysAsync(connection, schema, name, cancellationToken);
         var rowIdentity = SqliteRowIdentity.Resolve(
             objectType,
             isInternal,
@@ -163,7 +178,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
                 .ToArray());
 
         return new TableDefinition(
-            new DbObjectInfo(SqliteIdentifier.MainSchema, name,
+            new DbObjectInfo(schema, name,
                 objectType == "view" ? DbObjectType.View : DbObjectType.Table,
                 objectType is "virtual" or "shadow" ? objectType : null,
                 isInternal),
@@ -179,17 +194,23 @@ public sealed class SqliteSchemaReader : ISchemaReader
              .. strict ? new[] { SqliteTableOptions.Strict } : []]);
     }
 
+    internal static Task<TableDefinition> LoadTableDefinitionAsync(
+        SqliteConnection connection,
+        string name,
+        CancellationToken cancellationToken)
+        => LoadTableDefinitionAsync(connection, SqliteIdentifier.MainSchema, name, cancellationToken);
+
     public async Task<string?> GetObjectDefinitionAsync(
         GridletConnectionContext context,
         string schema,
         string name,
         CancellationToken cancellationToken = default)
     {
-        SqliteIdentifier.RequireMainSchema(schema);
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT sql FROM main.sqlite_schema WHERE name = @name AND type IN ('table', 'view', 'trigger');";
+            $"SELECT sql FROM {SqliteIdentifier.Quote(schema)}.sqlite_schema WHERE name = @name AND type IN ('table', 'view', 'trigger');";
         command.Parameters.AddWithValue("@name", name);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result switch
@@ -200,8 +221,59 @@ public sealed class SqliteSchemaReader : ISchemaReader
         };
     }
 
+    public async Task<IReadOnlyList<ObjectDependencyInfo>> GetObjectDependenciesAsync(
+        GridletConnectionContext context, string schema, string name,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT name, type, sql FROM {SqliteIdentifier.Quote(schema)}.sqlite_schema " +
+            "WHERE type IN ('table', 'view', 'trigger') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\';";
+        var definitions = new List<(string Name, DbObjectType Type, string? Sql)>();
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                definitions.Add((reader.GetString(0), reader.GetString(1) switch
+                {
+                    "view" => DbObjectType.View,
+                    "trigger" => DbObjectType.Trigger,
+                    _ => DbObjectType.Table,
+                }, reader.IsDBNull(2) ? null : reader.GetString(2)));
+            }
+        }
+        var target = definitions.FirstOrDefault(item =>
+            string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (target.Name is null) throw new GridletObjectNotFoundException($"{schema}.{name}");
+
+        var result = new List<ObjectDependencyInfo>();
+        foreach (var candidate in definitions.Where(item =>
+                     !string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (ContainsIdentifier(target.Sql, candidate.Name))
+                result.Add(new ObjectDependencyInfo("references",
+                    new DbObjectInfo(schema, candidate.Name, candidate.Type), IsInferred: true));
+            if (ContainsIdentifier(candidate.Sql, name))
+                result.Add(new ObjectDependencyInfo("referencedBy",
+                    new DbObjectInfo(schema, candidate.Name, candidate.Type), IsInferred: true));
+        }
+        return result.Distinct().OrderBy(item => item.Direction).ThenBy(item => item.Object.Name).ToArray();
+    }
+
+    private static bool ContainsIdentifier(string? sql, string identifier)
+    {
+        if (string.IsNullOrWhiteSpace(sql)) return false;
+        var escaped = Regex.Escape(identifier);
+        return Regex.IsMatch(sql,
+            $@"(?<![\p{{L}}\p{{N}}_])(?:{escaped}|\[{escaped}\]|\""{escaped}\""|`{escaped}`)(?![\p{{L}}\p{{N}}_])",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(1));
+    }
+
     private static async Task<IReadOnlyList<IndexInfo>> LoadIndexesAsync(
         SqliteConnection connection,
+        string schema,
         string table,
         IReadOnlyList<ColumnInfo> columns,
         CancellationToken cancellationToken)
@@ -209,13 +281,14 @@ public sealed class SqliteSchemaReader : ISchemaReader
         var indexes = new List<IndexInfo>();
         await using var command = connection.CreateCommand();
         command.CommandText =
-            """
+            $$"""
             SELECT il.name, il.[unique], il.origin, s.sql
-            FROM pragma_index_list(@table, 'main') AS il
-            LEFT JOIN main.sqlite_schema AS s ON s.type = 'index' AND s.name = il.name
+            FROM pragma_index_list(@table, @schema) AS il
+            LEFT JOIN {{SqliteIdentifier.Quote(schema)}}.sqlite_schema AS s ON s.type = 'index' AND s.name = il.name
             ORDER BY il.seq;
             """;
         command.Parameters.AddWithValue("@table", table);
+        command.Parameters.AddWithValue("@schema", schema);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -226,7 +299,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
 
             var createSql = reader.IsDBNull(3) ? null : reader.GetString(3);
             var parsed = SqliteCreateSqlParser.ParseIndex(createSql);
-            var keyColumns = await LoadIndexKeysAsync(connection, indexName, parsed.Keys, cancellationToken);
+            var keyColumns = await LoadIndexKeysAsync(connection, schema, indexName, parsed.Keys, cancellationToken);
             var indexColumns = keyColumns.Where(key => key.Column is not null).Select(key => key.Column!).ToArray();
             indexes.Add(new IndexInfo(indexName, unique ? "UNIQUE INDEX" : "INDEX", unique, false,
                 indexColumns, keyColumns, FilterDefinition: parsed.Filter));
@@ -243,6 +316,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
 
     private static async Task<IReadOnlyList<IndexKeyInfo>> LoadIndexKeysAsync(
         SqliteConnection connection,
+        string schema,
         string index,
         IReadOnlyList<IndexKeyInfo> parsedKeys,
         CancellationToken cancellationToken)
@@ -250,9 +324,10 @@ public sealed class SqliteSchemaReader : ISchemaReader
         var keys = new List<IndexKeyInfo>();
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT seqno, cid, name, [desc], coll FROM pragma_index_xinfo(@index, 'main') " +
+            "SELECT seqno, cid, name, [desc], coll FROM pragma_index_xinfo(@index, @schema) " +
             "WHERE [key] <> 0 ORDER BY seqno;";
         command.Parameters.AddWithValue("@index", index);
+        command.Parameters.AddWithValue("@schema", schema);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -272,6 +347,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
 
     private static async Task<IReadOnlyList<ForeignKeyInfo>> LoadForeignKeysAsync(
         SqliteConnection connection,
+        string schema,
         string table,
         CancellationToken cancellationToken)
     {
@@ -280,8 +356,9 @@ public sealed class SqliteSchemaReader : ISchemaReader
         await using var command = connection.CreateCommand();
         command.CommandText =
             "SELECT id, seq, [table], [from], [to], on_update, on_delete " +
-            "FROM pragma_foreign_key_list(@table, 'main') ORDER BY id, seq;";
+            "FROM pragma_foreign_key_list(@table, @schema) ORDER BY id, seq;";
         command.Parameters.AddWithValue("@table", table);
+        command.Parameters.AddWithValue("@schema", schema);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -300,7 +377,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
 
         return order.Select(id => new ForeignKeyInfo(
             $"FK_{table}_{id}",
-            SqliteIdentifier.MainSchema,
+            schema,
             entries[id].Table,
             entries[id].Columns,
             entries[id].OnDelete.Replace(' ', '_'),

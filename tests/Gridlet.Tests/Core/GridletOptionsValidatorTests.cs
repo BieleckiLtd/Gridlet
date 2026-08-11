@@ -143,6 +143,20 @@ public class GridletOptionsValidatorTests
         Assert.True(result.Failed);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("main")]
+    [InlineData("TEMP")]
+    public void Reserved_or_empty_sqlite_attachment_names_fail(string name)
+    {
+        var result = Validate(options => options.AddConnection(
+            "Main", "Data Source=main.db", GridletProviderNames.Sqlite,
+            connection => connection.SqliteAttachments[name] = "archive.db"));
+
+        Assert.True(result.Failed);
+        Assert.Contains("attachment name", result.FailureMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void Undefined_provider_enum_value_fails()
     {
