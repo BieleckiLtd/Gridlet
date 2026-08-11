@@ -609,6 +609,14 @@ table.grid td { font-family: var(--mono); font-size: 12.5px; }
 .data-grid tr.selected .row-selector { color: var(--text); background: var(--accent-dim); }
 
 td.null { color: var(--muted); font-style: italic; }
+.fk-reference-error { white-space: nowrap; }
+.fk-display-value { white-space: nowrap; }
+.fk-value-label { color: var(--muted); }
+.fk-value-label.null { font-style: italic; }
+.fk-display-invalid { color: var(--danger); }
+.fk-display-invalid .mini-btn,
+.structure td > .mini-btn { margin-left: 6px; }
+.fk-lookup-input { min-width: 180px; }
 td.empty-row { text-align: center; font-family: var(--sans); }
 
 .pager { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
@@ -2202,7 +2210,9 @@ table.grid th { position: sticky; }
 .summary-add { float: none; flex: none; margin-left: auto; }
 td.cell-actions, th.cell-actions { white-space: nowrap; width: 1%; }
 .struct-actions { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.row-editor td { background: var(--panel-2); }
+.data-grid tbody tr.row-editor { position: relative; z-index: 40; }
+.row-editor td { position: relative; background: var(--panel-2); }
+.row-editor td:has(.fk-autocomplete) { overflow: visible; z-index: 41; }
 .cell-editor { position: relative; display: block; width: 100%; min-width: 0; overflow: hidden; }
 .cell-input {
   display: block; appearance: none; width: 100%; height: auto; min-width: 0;
@@ -2210,12 +2220,38 @@ td.cell-actions, th.cell-actions { white-space: nowrap; width: 1%; }
   background: transparent; color: inherit; font: inherit; line-height: inherit;
 }
 .cell-input:focus { outline: 0; }
+.cell-input.nullable-value::placeholder { color: var(--muted); font-style: italic; opacity: 1; }
 .cell-input::selection { color: var(--selection-text); background: var(--selection-bg); }
 .row-editor td:focus-within { box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-dim); }
-.cell-null {
-  position: absolute; top: 50%; right: 0; display: flex; align-items: center; gap: 2px;
-  color: var(--muted); font-size: 10px; white-space: nowrap; transform: translateY(-50%);
+.cell-editor.fk-autocomplete { overflow: visible; z-index: 42; }
+.fk-autocomplete-menu {
+  position: absolute; z-index: 43; top: calc(100% + 4px); left: -4px;
+  width: max(100%, 260px); min-width: 0; max-width: min(420px, calc(100vw - 24px)); max-height: 190px;
+  box-sizing: border-box; padding: 2px; overflow-x: hidden; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel); box-shadow: 0 8px 24px rgb(0 0 0 / 22%);
+  scrollbar-color: var(--muted) transparent; scrollbar-width: thin;
 }
+.fk-autocomplete-menu::-webkit-scrollbar { width: 10px; }
+.fk-autocomplete-menu::-webkit-scrollbar-track {
+  margin-block: 6px; background: transparent;
+}
+.fk-autocomplete-menu::-webkit-scrollbar-thumb {
+  border: 2px solid transparent; border-radius: 999px;
+  background: var(--muted); background-clip: padding-box;
+}
+.fk-autocomplete-menu::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+.fk-autocomplete-option {
+  position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: .5em;
+  width: 100%; height: 27px; box-sizing: border-box; min-width: 0;
+  padding: 3px 7px; border: 0; border-radius: 4px;
+  color: var(--text); background: transparent; text-align: left; white-space: nowrap; overflow: hidden;
+}
+.fk-autocomplete-viewport { position: relative; min-width: 100%; }
+.fk-autocomplete-option:hover, .fk-autocomplete-option.active { background: var(--accent-dim); }
+.fk-option-key { flex: none; }
+.fk-option-label { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; }
+.fk-autocomplete-empty { padding: 6px 8px; white-space: nowrap; }
 .generated-value { font-style: italic; }
 .row-editor.saving { opacity: .7; }
 .row-editor.save-error .row-selector { color: var(--error-text); }

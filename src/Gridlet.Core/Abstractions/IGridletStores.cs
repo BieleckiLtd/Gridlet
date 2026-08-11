@@ -27,3 +27,18 @@ public interface IPublishedEndpointStore
 
     Task<bool> DeleteAsync(string id, CancellationToken cancellationToken = default);
 }
+
+/// <summary>Persistence for opt-in foreign-key display labels.</summary>
+public interface IForeignKeyDisplayStore
+{
+    Task<IReadOnlyList<ForeignKeyDisplaySetting>> GetForObjectAsync(
+        string connectionName, string? database, string sourceSchema, string sourceTable,
+        CancellationToken cancellationToken = default);
+
+    Task<ForeignKeyDisplaySetting> SaveAsync(
+        ForeignKeyDisplaySetting setting, CancellationToken cancellationToken = default);
+
+    Task<bool> DeleteAsync(
+        string connectionName, string? database, string sourceSchema, string sourceTable,
+        string foreignKeyName, CancellationToken cancellationToken = default);
+}

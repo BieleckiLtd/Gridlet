@@ -9,6 +9,16 @@ public sealed record SavedQuery(
     string Sql,
     DateTimeOffset UpdatedAtUtc);
 
+/// <summary>An opt-in human-readable label for one declared, single-column foreign key.</summary>
+public sealed record ForeignKeyDisplaySetting(
+    string ConnectionName,
+    string? Database,
+    string SourceSchema,
+    string SourceTable,
+    string ForeignKeyName,
+    string LabelColumn,
+    DateTimeOffset UpdatedAtUtc);
+
 /// <summary>
 /// A value parameter of a published API endpoint, bound to a SQL parameter of the same name.
 /// Type is one of auto, string, integer, number, or boolean. Auto preserves the value supplied

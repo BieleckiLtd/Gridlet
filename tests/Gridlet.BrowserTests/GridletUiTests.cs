@@ -1446,6 +1446,140 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    [Fact]
+    public async Task Enables_friendly_foreign_key_display_and_searches_when_editing()
+    {
+        const string settingUrl =
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Orders/foreign-key-displays/FK_Orders_Pizzas";
+        using var client = new HttpClient { BaseAddress = fixture.BaseAddress };
+        await client.DeleteAsync(settingUrl);
+
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.Locator("tbody td:not(.row-selector)")
+            .Filter(new() { HasTextRegex = new Regex("^1$") }).First).ToBeVisibleAsync();
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        var foreignKeyRow = panel.Locator("tr").Filter(new() { HasText = "FK_Orders_Pizzas" });
+        await foreignKeyRow.GetByRole(AriaRole.Button, new() { Name = "Show value…", Exact = true }).ClickAsync();
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Show foreign-key value" });
+        await Assertions.Expect(dialog.GetByLabel("Foreign key label column")).ToHaveValueAsync("Name");
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Show value", Exact = true }).ClickAsync();
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Data", Exact = true }).ClickAsync();
+        var margherita = panel.GetByRole(AriaRole.Cell, new() { Name = "1 Margherita", Exact = true });
+        await Assertions.Expect(margherita).ToBeVisibleAsync();
+        var keyColor = await margherita.Locator("span").First.EvaluateAsync<string>(
+            "element => getComputedStyle(element).color");
+        var labelColor = await margherita.Locator(".fk-value-label").EvaluateAsync<string>(
+            "element => getComputedStyle(element).color");
+        Assert.NotEqual(keyColor, labelColor);
+        var broken = panel.GetByRole(AriaRole.Cell, new() { Name = "4 #REF!", Exact = true });
+        await Assertions.Expect(broken).ToBeVisibleAsync();
+        Assert.Equal("italic", await broken.Locator(".fk-value-label").EvaluateAsync<string>(
+            "element => getComputedStyle(element).fontStyle"));
+        await Assertions.Expect(panel.GetByRole(AriaRole.Cell, new() { Name = "99 Missing reference", Exact = true }))
+            .ToBeVisibleAsync();
+
+        var editCell = panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(1);
+        await editCell.ClickAsync();
+        await Assertions.Expect(panel.Locator("tr.row-editor")).ToHaveCountAsync(1);
+        browserPage.AssertNoUnexpectedErrors();
+        var pizza = panel.GetByLabel("PizzaId", new() { Exact = true });
+        await Assertions.Expect(pizza).ToHaveValueAsync("1 Margherita");
+        var allValues = panel.GetByRole(AriaRole.Option, new() { Name = "1 Margherita", Exact = true });
+        await Assertions.Expect(allValues).ToBeVisibleAsync();
+        await Assertions.Expect(panel.GetByLabel("Show choices for PizzaId")).ToHaveCountAsync(0);
+        await pizza.FillAsync("");
+        await Assertions.Expect(allValues).ToBeVisibleAsync();
+        await Assertions.Expect(allValues).ToHaveAttributeAsync("aria-setsize", "50");
+        var menu = panel.Locator(".fk-autocomplete-menu");
+        Assert.False(await menu.EvaluateAsync<bool>(
+            "element => element.scrollWidth > element.clientWidth"));
+        Assert.True(await menu.EvaluateAsync<bool>(
+            "element => element.scrollHeight > element.clientHeight"));
+        Assert.InRange(await allValues.EvaluateAsync<int>("element => element.offsetHeight"), 1, 30);
+
+        // Interacting with the menu scrollbar must not blur-save and tear down the editor.
+        await menu.DispatchEventAsync("pointerdown");
+        await pizza.EvaluateAsync("element => element.blur()");
+        await page.WaitForTimeoutAsync(50);
+        await Assertions.Expect(panel.Locator("tr.row-editor")).ToHaveCountAsync(1);
+        await Assertions.Expect(menu).ToBeVisibleAsync();
+        await page.EvaluateAsync("window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))");
+        await pizza.FocusAsync();
+
+        await pizza.FillAsync("pe");
+        var pepperoni = panel.GetByRole(AriaRole.Option, new() { Name = "2 Pepperoni", Exact = true });
+        await Assertions.Expect(pepperoni).ToBeVisibleAsync();
+        Assert.True(await pepperoni.EvaluateAsync<bool>(
+            """
+            element => {
+              const bounds = element.getBoundingClientRect();
+              const topmost = document.elementFromPoint(
+                bounds.left + Math.min(bounds.width / 2, 40), bounds.top + bounds.height / 2);
+              return topmost === element || element.contains(topmost);
+            }
+            """));
+        await pepperoni.ClickAsync();
+        await Assertions.Expect(pizza).ToHaveValueAsync("2 Pepperoni");
+        await pizza.PressAsync("Control+Enter");
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "Row 1 updated.", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.Equal("2", fixture.Provider.LastWriteValues!["PizzaId"]?.ToString());
+
+        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(2).ClickAsync();
+        var promotion = panel.GetByLabel("Promotion", new() { Exact = true });
+        await promotion.FillAsync("");
+        await promotion.PressAsync("Control+Enter");
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "Row 1 updated.", new() { Exact = true }).Last).ToBeVisibleAsync();
+        Assert.Equal("2", fixture.Provider.LastWriteValues!["PizzaId"]?.ToString());
+        Assert.Null(fixture.Provider.LastWriteValues["Promotion"]);
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "data is not defined", new() { Exact = true })).ToHaveCountAsync(0);
+
+        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(2).ClickAsync();
+        await panel.GetByLabel("Promotion", new() { Exact = true }).PressAsync("Tab");
+        await Assertions.Expect(panel.GetByLabel("PizzaId", new() { Exact = true }))
+            .ToHaveValueAsync("4 #REF!");
+        await page.Keyboard.PressAsync("Escape");
+
+        var updatesBeforeDirectKeyEdit = fixture.Provider.Calls.Count(call =>
+            call.StartsWith("update dbo.Orders", StringComparison.Ordinal));
+        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(1).ClickAsync();
+        var directKeyPizza = panel.GetByLabel("PizzaId", new() { Exact = true });
+        await directKeyPizza.FillAsync("3");
+        await Assertions.Expect(panel.GetByRole(AriaRole.Option, new() { Name = "3 Hawaiian", Exact = true }))
+            .ToBeVisibleAsync();
+        var updateToasts = page.Locator("#toast-stack").GetByText(
+            "Row 1 updated.", new() { Exact = true });
+        var updateToastsBeforeDirectKeyEdit = await updateToasts.CountAsync();
+        await directKeyPizza.PressAsync("Control+Enter");
+        await Assertions.Expect(updateToasts).ToHaveCountAsync(updateToastsBeforeDirectKeyEdit + 1);
+        Assert.Equal(updatesBeforeDirectKeyEdit + 1, fixture.Provider.Calls.Count(call =>
+            call.StartsWith("update dbo.Orders", StringComparison.Ordinal)));
+        Assert.Equal("3", fixture.Provider.LastWriteValues!["PizzaId"]?.ToString());
+
+        var updatesBeforeInvalidEdit = fixture.Provider.Calls.Count(call =>
+            call.StartsWith("update dbo.Orders", StringComparison.Ordinal));
+        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(1).ClickAsync();
+        var invalidPizza = panel.GetByLabel("PizzaId", new() { Exact = true });
+        await invalidPizza.FillAsync("not-a-key");
+        await invalidPizza.PressAsync("Control+Enter");
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "Choose a value for PizzaId from the suggestions.", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(panel.Locator("tr.row-editor")).ToHaveCountAsync(1);
+        Assert.Equal(updatesBeforeInvalidEdit, fixture.Provider.Calls.Count(call =>
+            call.StartsWith("update dbo.Orders", StringComparison.Ordinal)));
+
+        await client.DeleteAsync(settingUrl);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     /// <summary>
     /// A heap has no primary key, so the row is addressed by a key the server streams alongside the
     /// rows - here a rowid, which is not one of the columns on screen.
@@ -1744,7 +1878,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         // Every table the fake provider lists except the internal one, which the tree hides.
         var tables = page.Locator("#tree summary").Filter(new() { HasText = "Tables" });
-        await Assertions.Expect(tables).ToContainTextAsync("6");
+        await Assertions.Expect(tables).ToContainTextAsync("8");
 
         await page.GetByTitle("dbo.NoKeys").ClickAsync();
         var panel = ActivePanel(page);
