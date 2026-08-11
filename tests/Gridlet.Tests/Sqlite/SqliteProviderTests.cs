@@ -95,6 +95,31 @@ public sealed class SqliteProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Foreign_key_lookup_resolves_keys_and_searches_labels()
+    {
+        var lookup = Assert.IsAssignableFrom<IForeignKeyLookupProvider>(provider);
+
+        var keys = await lookup.LookupForeignKeyAsync(
+            context, "main", "Customers", "Id", "Name", [2L], null, 50);
+        var grace = Assert.Single(keys);
+        Assert.Equal(2L, grace.Key);
+        Assert.Equal("Grace", grace.Label);
+
+        var search = await lookup.LookupForeignKeyAsync(
+            context, "main", "Customers", "Id", "Name", [], "ad", 50);
+        var ada = Assert.Single(search);
+        Assert.Equal("Ada", ada.Label);
+
+        var oneCharacterLabelSearch = await lookup.LookupForeignKeyAsync(
+            context, "main", "Customers", "Id", "Name", [], "G", 50);
+        Assert.Empty(oneCharacterLabelSearch);
+
+        var browsed = await lookup.LookupForeignKeyAsync(
+            context, "main", "Customers", "Id", "Name", [], null, 50);
+        Assert.Equal(["Ada", "Grace"], browsed.Select(item => item.Label));
+    }
+
+    [Fact]
     public async Task Reads_database_objects_columns_indexes_foreign_keys_and_definitions()
     {
         Assert.Equal([new DatabaseInfo("main", false)], await provider.Schema.GetDatabasesAsync(context));

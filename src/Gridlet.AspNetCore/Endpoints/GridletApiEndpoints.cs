@@ -58,6 +58,9 @@ internal static partial class GridletApiEndpoints
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data", GetObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data/stream", StreamObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/structure", GetObjectStructure);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", SaveForeignKeyDisplay);
+        api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", DeleteForeignKeyDisplay);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}/lookup", LookupForeignKeyDisplay);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/definition", GetObjectDefinition);
         api.MapPost("/connections/{connection}/databases/{database}/query", ExecuteQuery);
         MapSessions(api);
@@ -359,17 +362,171 @@ internal static partial class GridletApiEndpoints
         string schema,
         string name,
         IGridletConnectionResolver resolver,
+        IForeignKeyDisplayStore displayStore,
         CancellationToken cancellationToken)
         => Execute(async () =>
         {
             var resolved = resolver.Resolve(connection, database);
             var definition = await resolved.Provider.Schema.GetTableDefinitionAsync(
                 resolved.Context, schema, name, cancellationToken);
+            var settings = await displayStore.GetForObjectAsync(
+                connection, database, schema, name, cancellationToken);
+            var displays = new List<ForeignKeyDisplayDto>();
+            foreach (var setting in settings)
+            {
+                var display = ValidateForeignKeyDisplay(definition, setting);
+                var relationship = definition.ForeignKeys.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Name, setting.ForeignKeyName, StringComparison.OrdinalIgnoreCase));
+                if (display.IsValid && relationship is not null)
+                {
+                    try
+                    {
+                        var referenced = await resolved.Provider.Schema.GetTableDefinitionAsync(
+                            resolved.Context, relationship.ReferencedSchema, relationship.ReferencedTable,
+                            cancellationToken);
+                        if (!referenced.Columns.Any(column => string.Equals(
+                                column.Name, setting.LabelColumn, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            display = display with
+                            {
+                                IsValid = false,
+                                ValidationMessage = "Label column no longer exists.",
+                            };
+                        }
+                    }
+                    catch (GridletObjectNotFoundException)
+                    {
+                        display = display with
+                        {
+                            IsValid = false,
+                            ValidationMessage = "Referenced table no longer exists.",
+                        };
+                    }
+                }
+                displays.Add(display);
+            }
             return Results.Ok(new TableStructureResponse(
                 ToDto(definition.Object), definition.Columns, definition.Indexes, definition.ForeignKeys,
                 definition.CheckConstraints, definition.UniqueConstraints, definition.RowIdentity,
-                definition.TableOptions));
+                definition.TableOptions, displays));
         });
+
+    private static Task<IResult> SaveForeignKeyDisplay(
+        string connection, string database, string schema, string name, string foreignKey,
+        ForeignKeyDisplaySaveRequest body, IGridletConnectionResolver resolver,
+        IForeignKeyDisplayStore store, CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            if (string.IsNullOrWhiteSpace(body.LabelColumn))
+            {
+                throw new GridletValidationException("Choose a label column.");
+            }
+
+            var resolved = resolver.Resolve(connection, database);
+            var source = await resolved.Provider.Schema.GetTableDefinitionAsync(
+                resolved.Context, schema, name, cancellationToken);
+            var relationship = FindSingleColumnForeignKey(source, foreignKey);
+            var referenced = await resolved.Provider.Schema.GetTableDefinitionAsync(
+                resolved.Context, relationship.ReferencedSchema, relationship.ReferencedTable, cancellationToken);
+            var label = referenced.Columns.FirstOrDefault(column =>
+                string.Equals(column.Name, body.LabelColumn, StringComparison.OrdinalIgnoreCase))
+                ?? throw new GridletValidationException(
+                    $"Label column '{body.LabelColumn}' does not exist on " +
+                    $"{relationship.ReferencedSchema}.{relationship.ReferencedTable}.");
+
+            var saved = await store.SaveAsync(new ForeignKeyDisplaySetting(
+                connection, database, schema, name, relationship.Name, label.Name, DateTimeOffset.UtcNow),
+                cancellationToken);
+            return Results.Ok(ValidateForeignKeyDisplay(source, saved));
+        });
+
+    private static Task<IResult> DeleteForeignKeyDisplay(
+        string connection, string database, string schema, string name, string foreignKey,
+        IForeignKeyDisplayStore store, CancellationToken cancellationToken)
+        => Execute(async () => await store.DeleteAsync(
+                connection, database, schema, name, foreignKey, cancellationToken)
+            ? Results.Ok(new { deleted = true })
+            : Results.NotFound(new GridletErrorResponse(
+                $"Foreign-key display '{foreignKey}' is not enabled.")));
+
+    private static Task<IResult> LookupForeignKeyDisplay(
+        string connection, string database, string schema, string name, string foreignKey,
+        ForeignKeyLookupRequest body, IGridletConnectionResolver resolver,
+        IForeignKeyDisplayStore store, CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            if (resolved.Provider is not IForeignKeyLookupProvider lookupProvider)
+            {
+                throw new GridletValidationException(
+                    $"Provider '{resolved.Provider.ProviderName}' does not support foreign-key lookups.");
+            }
+
+            var source = await resolved.Provider.Schema.GetTableDefinitionAsync(
+                resolved.Context, schema, name, cancellationToken);
+            var relationship = FindSingleColumnForeignKey(source, foreignKey);
+            var setting = (await store.GetForObjectAsync(
+                    connection, database, schema, name, cancellationToken))
+                .FirstOrDefault(candidate => string.Equals(
+                    candidate.ForeignKeyName, relationship.Name, StringComparison.OrdinalIgnoreCase))
+                ?? throw new GridletValidationException(
+                    $"Foreign-key display '{relationship.Name}' is not enabled.");
+            var referenced = await resolved.Provider.Schema.GetTableDefinitionAsync(
+                resolved.Context, relationship.ReferencedSchema, relationship.ReferencedTable, cancellationToken);
+            var label = referenced.Columns.FirstOrDefault(column =>
+                string.Equals(column.Name, setting.LabelColumn, StringComparison.OrdinalIgnoreCase))
+                ?? throw new GridletValidationException(
+                    $"Configured label column '{setting.LabelColumn}' no longer exists.");
+            var pair = relationship.Columns[0];
+            var keys = (body.Keys ?? []).Take(50).Select(JsonScalar).ToArray();
+            var items = await lookupProvider.LookupForeignKeyAsync(
+                resolved.Context, relationship.ReferencedSchema, relationship.ReferencedTable,
+                pair.ReferencedColumn, label.Name, keys, body.Search, 50, cancellationToken);
+            return Results.Ok(new ForeignKeyLookupResponse(items));
+        });
+
+    private static ForeignKeyInfo FindSingleColumnForeignKey(TableDefinition definition, string name)
+    {
+        var relationship = definition.ForeignKeys.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase))
+            ?? throw new GridletValidationException($"Foreign key '{name}' does not exist.");
+        if (relationship.Columns.Count != 1)
+        {
+            throw new GridletValidationException("Friendly display supports single-column foreign keys only.");
+        }
+        return relationship;
+    }
+
+    private static ForeignKeyDisplayDto ValidateForeignKeyDisplay(
+        TableDefinition definition, ForeignKeyDisplaySetting setting)
+    {
+        var relationship = definition.ForeignKeys.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, setting.ForeignKeyName, StringComparison.OrdinalIgnoreCase));
+        if (relationship is null)
+        {
+            return new ForeignKeyDisplayDto(
+                setting.ForeignKeyName, setting.LabelColumn, false, "Foreign key no longer exists.");
+        }
+        if (relationship.Columns.Count != 1)
+        {
+            return new ForeignKeyDisplayDto(
+                setting.ForeignKeyName, setting.LabelColumn, false, "Foreign key is no longer single-column.");
+        }
+        return new ForeignKeyDisplayDto(setting.ForeignKeyName, setting.LabelColumn, true);
+    }
+
+    private static object? JsonScalar(JsonElement value)
+        => value.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Number when value.TryGetInt64(out var integer) => integer,
+            JsonValueKind.Number when value.TryGetDecimal(out var number) => number,
+            JsonValueKind.Number => value.GetDouble(),
+            _ => throw new GridletValidationException("Foreign-key values must be JSON scalars."),
+        };
 
     private static Task<IResult> GetObjectDefinition(
         string connection,

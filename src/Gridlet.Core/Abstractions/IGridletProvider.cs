@@ -46,3 +46,21 @@ public interface IGridletDatabaseSystemInfoProvider
         Models.GridletConnectionContext context,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Optional narrow lookup capability used to render and edit declared foreign keys without
+/// returning unrelated columns from the referenced table.
+/// </summary>
+public interface IForeignKeyLookupProvider
+{
+    Task<IReadOnlyList<Models.ForeignKeyLookupItem>> LookupForeignKeyAsync(
+        Models.GridletConnectionContext context,
+        string schema,
+        string table,
+        string keyColumn,
+        string labelColumn,
+        IReadOnlyList<object?> keys,
+        string? search,
+        int limit,
+        CancellationToken cancellationToken = default);
+}

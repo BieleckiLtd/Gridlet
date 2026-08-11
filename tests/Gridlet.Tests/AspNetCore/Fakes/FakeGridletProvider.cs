@@ -7,7 +7,8 @@ namespace Gridlet.Tests.AspNetCore.Fakes;
 /// <summary>An in-memory provider so endpoint behaviour can be tested without a database.</summary>
 public sealed class FakeGridletProvider :
     IGridletProvider, IGridletProviderMetadata, ISchemaReader, ITableDataService, IQueryRunner,
-    IQuerySessionRunner, IQueryPlanRunner, ITableWriteService, ITableDdlService
+    IQuerySessionRunner, IQueryPlanRunner, ITableWriteService, ITableDdlService,
+    IForeignKeyLookupProvider
 {
     public const GridletProviderNames Name = GridletProviderNames.SqlServer;
 
@@ -20,6 +21,8 @@ public sealed class FakeGridletProvider :
     public QueryRequestOptions? LastQueryOptions { get; private set; }
 
     public string? LastQuerySql { get; private set; }
+
+    public IReadOnlyDictionary<string, object?>? LastWriteValues { get; private set; }
 
     public GridletProviderNames ProviderName => Name;
 
@@ -67,6 +70,8 @@ public sealed class FakeGridletProvider :
         => Task.FromResult<IReadOnlyList<DbObjectInfo>>(
         [
             new DbObjectInfo("dbo", "Customers", DbObjectType.Table),
+            new DbObjectInfo("dbo", "Orders", DbObjectType.Table),
+            new DbObjectInfo("dbo", "Pizzas", DbObjectType.Table),
             new DbObjectInfo("dbo", "NoKeys", DbObjectType.Table),
             // Two tables with more rows than one page, one addressable and one not, so paging can
             // be told apart from reading everything at once.
@@ -111,6 +116,18 @@ public sealed class FakeGridletProvider :
                 [],
                 new RowIdentityInfo(RowIdentityKinds.RowId, ["rowid"]))),
 
+            "Orders" => Task.FromResult(new TableDefinition(
+                new DbObjectInfo(schema, name, DbObjectType.Table),
+                [
+                    new ColumnInfo("Id", "int", false, true, false, true, null, 0),
+                    new ColumnInfo("PizzaId", "int", false, false, false, false, null, 1),
+                    new ColumnInfo("Promotion", "nvarchar(100)", true, false, false, false, null, 2),
+                ],
+                [new IndexInfo("PK_Orders", "CLUSTERED", true, true, ["Id"])],
+                [new ForeignKeyInfo("FK_Orders_Pizzas", "dbo", "Pizzas",
+                    [new ForeignKeyColumnPair("PizzaId", "Id")])],
+                [], [], new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]))),
+
             _ => Task.FromResult(new TableDefinition(
             new DbObjectInfo(schema, name, DbObjectType.Table),
             [
@@ -139,6 +156,32 @@ public sealed class FakeGridletProvider :
                 ? null
                 : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]))),
         };
+
+    public Task<IReadOnlyList<ForeignKeyLookupItem>> LookupForeignKeyAsync(
+        GridletConnectionContext context, string schema, string table, string keyColumn,
+        string labelColumn, IReadOnlyList<object?> keys, string? search, int limit,
+        CancellationToken cancellationToken = default)
+    {
+        ForeignKeyLookupItem[] pizzas =
+        [
+            new(1, "Margherita"), new(2, "Pepperoni"), new(3, "Hawaiian"), new(4, null),
+            .. Enumerable.Range(5, 46).Select(id => new ForeignKeyLookupItem(id, $"Pizza {id}")),
+        ];
+        var keyTexts = keys.Select(value => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var query = search?.Trim();
+        var browseAll = keyTexts.Count == 0 && string.IsNullOrEmpty(query);
+        var matches = pizzas.Where(item => browseAll || keyTexts.Contains(Convert.ToString(
+                item.Key, System.Globalization.CultureInfo.InvariantCulture)) ||
+            (!string.IsNullOrEmpty(query) && Convert.ToString(
+                item.Key, System.Globalization.CultureInfo.InvariantCulture) == query) ||
+            (!string.IsNullOrEmpty(query) && query.Length >= 2 &&
+             Convert.ToString(item.Label, System.Globalization.CultureInfo.InvariantCulture)?
+                 .Contains(query, StringComparison.OrdinalIgnoreCase) == true))
+            .Take(limit)
+            .ToArray();
+        return Task.FromResult<IReadOnlyList<ForeignKeyLookupItem>>(matches);
+    }
 
     public Task<string?> GetObjectDefinitionAsync(
         GridletConnectionContext context, string schema, string name, CancellationToken cancellationToken = default)
@@ -231,7 +274,15 @@ public sealed class FakeGridletProvider :
     }
 
     private static Task<TableDataPage> GetFixedPage(string name, TableDataRequest request)
-        => Task.FromResult(name == "Heap"
+        => Task.FromResult(name == "Orders"
+            ? new TableDataPage(
+                [new ResultColumn("Id", "int"), new ResultColumn("PizzaId", "int"),
+                    new ResultColumn("Promotion", "nvarchar(100)")],
+                [[10, 1, "Featured"], [11, 4, null], [12, 99, "Weekend"]],
+                request.Page, request.PageSize, TotalRows: 3,
+                RowIdentity: new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+                RowKeys: [[10], [11], [12]])
+            : name == "Heap"
             ? new TableDataPage(
                 [new ResultColumn("Name", "nvarchar(100)")],
                 [["Ada"], ["Grace"]],
@@ -458,6 +509,7 @@ public sealed class FakeGridletProvider :
         GridletConnectionContext context, string schema, string table,
         IReadOnlyDictionary<string, object?> values, CancellationToken cancellationToken = default)
     {
+        LastWriteValues = new Dictionary<string, object?>(values, StringComparer.OrdinalIgnoreCase);
         Calls.Add($"insert {schema}.{table} ({string.Join(",", values.Keys)})");
         return Task.FromResult(1);
     }
@@ -467,6 +519,7 @@ public sealed class FakeGridletProvider :
         IReadOnlyDictionary<string, object?> key, IReadOnlyDictionary<string, object?> values,
         CancellationToken cancellationToken = default)
     {
+        LastWriteValues = new Dictionary<string, object?>(values, StringComparer.OrdinalIgnoreCase);
         Calls.Add($"update {schema}.{table} key({string.Join(",", key.Keys)}) set({string.Join(",", values.Keys)})");
         return Task.FromResult(1);
     }

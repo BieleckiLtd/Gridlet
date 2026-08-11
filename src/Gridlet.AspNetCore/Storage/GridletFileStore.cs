@@ -12,7 +12,7 @@ namespace Gridlet.AspNetCore.Storage;
 /// to persist elsewhere.
 /// </summary>
 internal sealed class GridletFileStore(IOptions<GridletOptions> options, IHostEnvironment environment)
-    : ISavedQueryStore, IPublishedEndpointStore
+    : ISavedQueryStore, IPublishedEndpointStore, IForeignKeyDisplayStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
@@ -28,6 +28,8 @@ internal sealed class GridletFileStore(IOptions<GridletOptions> options, IHostEn
         public List<SavedQuery> SavedQueries { get; set; } = [];
 
         public List<PublishedEndpoint> PublishedEndpoints { get; set; } = [];
+
+        public List<ForeignKeyDisplaySetting> ForeignKeyDisplays { get; set; } = [];
     }
 
     // ---- saved queries ----
@@ -93,6 +95,44 @@ internal sealed class GridletFileStore(IOptions<GridletOptions> options, IHostEn
         return removed;
     }
 
+    // ---- foreign-key displays ----
+
+    async Task<IReadOnlyList<ForeignKeyDisplaySetting>> IForeignKeyDisplayStore.GetForObjectAsync(
+        string connectionName, string? database, string sourceSchema, string sourceTable,
+        CancellationToken cancellationToken)
+        => await ReadAsync(d => d.ForeignKeyDisplays.Where(setting =>
+                Same(setting.ConnectionName, connectionName) &&
+                Same(setting.Database, database) &&
+                Same(setting.SourceSchema, sourceSchema) &&
+                Same(setting.SourceTable, sourceTable))
+            .OrderBy(setting => setting.ForeignKeyName, StringComparer.OrdinalIgnoreCase)
+            .ToArray(), cancellationToken);
+
+    async Task<ForeignKeyDisplaySetting> IForeignKeyDisplayStore.SaveAsync(
+        ForeignKeyDisplaySetting setting, CancellationToken cancellationToken)
+    {
+        await MutateAsync(d =>
+        {
+            d.ForeignKeyDisplays.RemoveAll(candidate => SameDisplay(candidate, setting));
+            d.ForeignKeyDisplays.Add(setting);
+        }, cancellationToken);
+        return setting;
+    }
+
+    async Task<bool> IForeignKeyDisplayStore.DeleteAsync(
+        string connectionName, string? database, string sourceSchema, string sourceTable,
+        string foreignKeyName, CancellationToken cancellationToken)
+    {
+        var removed = false;
+        await MutateAsync(d => removed = d.ForeignKeyDisplays.RemoveAll(setting =>
+            Same(setting.ConnectionName, connectionName) &&
+            Same(setting.Database, database) &&
+            Same(setting.SourceSchema, sourceSchema) &&
+            Same(setting.SourceTable, sourceTable) &&
+            Same(setting.ForeignKeyName, foreignKeyName)) > 0, cancellationToken);
+        return removed;
+    }
+
     // ---- plumbing ----
 
     private async Task<T> ReadAsync<T>(Func<StoreData, T> selector, CancellationToken cancellationToken)
@@ -118,6 +158,7 @@ internal sealed class GridletFileStore(IOptions<GridletOptions> options, IHostEn
             {
                 SavedQueries = [.. current.SavedQueries],
                 PublishedEndpoints = [.. current.PublishedEndpoints],
+                ForeignKeyDisplays = [.. current.ForeignKeyDisplays],
             };
             mutate(candidate);
             await PersistAsync(candidate, cancellationToken);
@@ -206,4 +247,14 @@ internal sealed class GridletFileStore(IOptions<GridletOptions> options, IHostEn
 
         return _data ??= new StoreData();
     }
+
+    private static bool Same(string? left, string? right)
+        => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+
+    private static bool SameDisplay(ForeignKeyDisplaySetting left, ForeignKeyDisplaySetting right)
+        => Same(left.ConnectionName, right.ConnectionName) &&
+           Same(left.Database, right.Database) &&
+           Same(left.SourceSchema, right.SourceSchema) &&
+           Same(left.SourceTable, right.SourceTable) &&
+           Same(left.ForeignKeyName, right.ForeignKeyName);
 }
