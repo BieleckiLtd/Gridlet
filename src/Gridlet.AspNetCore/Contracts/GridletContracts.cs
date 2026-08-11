@@ -52,7 +52,8 @@ public sealed record TableStructureResponse(
     IReadOnlyList<CheckConstraintInfo> CheckConstraints,
     IReadOnlyList<UniqueConstraintInfo> UniqueConstraints,
     RowIdentityInfo? RowIdentity = null,
-    IReadOnlyList<string>? TableOptions = null)
+    IReadOnlyList<string>? TableOptions = null,
+    IReadOnlyList<ForeignKeyDisplayDto>? ForeignKeyDisplays = null)
 {
     public TableStructureResponse(
         DbObjectDto @object,
@@ -101,6 +102,18 @@ public sealed record TableStructureResponse(
 }
 
 public sealed record ObjectDefinitionResponse(string? Definition);
+
+public sealed record ForeignKeyDisplayDto(
+    string ForeignKeyName,
+    string LabelColumn,
+    bool IsValid,
+    string? ValidationMessage = null);
+
+public sealed record ForeignKeyDisplaySaveRequest(string? LabelColumn);
+
+public sealed record ForeignKeyLookupRequest(List<JsonElement>? Keys, string? Search = null);
+
+public sealed record ForeignKeyLookupResponse(IReadOnlyList<ForeignKeyLookupItem> Items);
 
 /// <summary>Body for scripting an object.</summary>
 /// <param name="Include">Any of <c>drop</c>, <c>create</c> and <c>data</c>; defaults to create.</param>

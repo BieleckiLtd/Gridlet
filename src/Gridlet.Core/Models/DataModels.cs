@@ -1,5 +1,8 @@
 namespace Gridlet.Models;
 
+/// <summary>One key and its configured human-readable label.</summary>
+public sealed record ForeignKeyLookupItem(object? Key, object? Label);
+
 public enum SortDirection
 {
     Ascending,

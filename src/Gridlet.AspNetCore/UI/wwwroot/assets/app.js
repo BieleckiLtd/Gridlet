@@ -517,6 +517,8 @@
       indexes: (s, n) => `${objBase(s, n)}/indexes`,
       index: (s, n, index) => `${objBase(s, n)}/indexes/${enc(index)}`,
       foreignKeys: (s, n) => `${objBase(s, n)}/foreign-keys`,
+      foreignKeyDisplay: (s, n, fk) => `${objBase(s, n)}/foreign-key-displays/${enc(fk)}`,
+      foreignKeyLookup: (s, n, fk) => `${objBase(s, n)}/foreign-key-displays/${enc(fk)}/lookup`,
       constraint: (s, n, constraint) => `${objBase(s, n)}/constraints/${enc(constraint)}`,
       dropObject: (s, n, type) => `${objBase(s, n)}?type=${enc(type)}`,
       renameObject: (s, n, type) => `${objBase(s, n)}/rename?type=${enc(type)}`,
@@ -1681,13 +1683,93 @@
       const data = { columns: [], rows: [] };
       let structure = null;
       try {
-        if (o.type === 'Table' && currentConn().allowWrites && !o.isInternal) {
+        if (o.type === 'Table' && !o.isInternal) {
           structure = await ensureStructure();
         }
       } catch (err) {
-        body.replaceChildren(errorBox(err.message));
-        return;
+        toast(`Table structure is unavailable; showing raw values. ${err.message}`);
       }
+
+      const displays = new Map();
+      for (const setting of structure?.foreignKeyDisplays || []) {
+        const fk = structure.foreignKeys.find((candidate) =>
+          candidate.name.toLowerCase() === setting.foreignKeyName.toLowerCase());
+        if (!setting.isValid || !fk || fk.columns.length !== 1) continue;
+        displays.set(fk.columns[0].column.toLowerCase(), {
+          setting, fk, values: new Map(), missing: new Set(), pending: new Set(), failed: false,
+        });
+      }
+      const valueKey = (value) => JSON.stringify(value);
+      let lookupWarningShown = false;
+      const friendlyCell = (value, column) => {
+        if (value === null || value === undefined) return renderCell(value);
+        const display = displays.get(column.name.toLowerCase());
+        if (!display || display.failed) return renderCell(value);
+        const token = valueKey(value);
+        if (display.values.has(token)) {
+          const label = display.values.get(token);
+          if (label === null || label === undefined || String(label).length === 0) {
+            return h('td', { class: 'fk-display-value fk-reference-error' },
+              h('span', { text: String(value) }),
+              ' ',
+              h('span', { class: 'fk-value-label null', text: '#REF!' }));
+          }
+          return h('td', { class: 'fk-display-value' },
+            h('span', { text: String(value) }),
+            ' ',
+            h('span', { class: 'fk-value-label', text: String(label) }));
+        }
+        if (display.missing.has(token)) {
+          return h('td', { class: 'fk-display-value fk-reference-error' },
+            h('span', { text: String(value) }),
+            ' ',
+            h('span', { class: 'fk-value-label null', text: 'Missing reference' }));
+        }
+        return renderCell(value);
+      };
+      const resolveFriendlyValues = async (rows) => {
+        for (const [columnName, display] of displays) {
+          if (display.failed) continue;
+          const index = data.columns.findIndex((column) => column.name.toLowerCase() === columnName);
+          if (index < 0) continue;
+          const keys = [];
+          for (const row of rows) {
+            const value = row[index];
+            if (value === null || value === undefined) continue;
+            const token = valueKey(value);
+            if (display.values.has(token) || display.missing.has(token) || display.pending.has(token)) continue;
+            display.pending.add(token);
+            keys.push(value);
+          }
+          if (!keys.length) continue;
+          try {
+            for (let offset = 0; offset < keys.length; offset += 50) {
+              const batch = keys.slice(offset, offset + 50);
+              const response = await post(
+                urls.foreignKeyLookup(o.schema, o.name, display.fk.name), { keys: batch });
+              const found = new Set();
+              for (const item of response.items || []) {
+                const token = valueKey(item.key);
+                found.add(token);
+                display.values.set(token, item.label);
+              }
+              for (const key of batch) {
+                const token = valueKey(key);
+                display.pending.delete(token);
+                if (!found.has(token)) display.missing.add(token);
+              }
+            }
+            gridView?.render();
+          } catch (err) {
+            keys.forEach((key) => display.pending.delete(valueKey(key)));
+            display.failed = true;
+            if (!lookupWarningShown) {
+              lookupWarningShown = true;
+              toast(`Foreign-key labels could not be loaded; showing raw values. ${err.message}`);
+            }
+          }
+        }
+      };
 
       // The server decides how a row is addressed: the primary key when there is one, otherwise a
       // unique key over non-nullable columns or SQLite's rowid. Its values arrive with each row.
@@ -1725,9 +1807,10 @@
       };
 
       let table;
+      const friendly = { displays, valueKey, renderCell: friendlyCell };
       const editRow = (row, rowElement, selectedColumn, rowIndex) =>
         openRowEditor(
-          table, data.columns, structure, row, rowElement, columnIndex, rowKey, selectedColumn, rowIndex + 1,
+          table, data.columns, structure, friendly, row, rowElement, columnIndex, rowKey, selectedColumn, rowIndex + 1,
           rowIndex + 1 < data.rows.length
             ? () => rowElement.nextElementSibling
               ?.querySelector('td:not(.row-selector)')?.click()
@@ -1841,7 +1924,9 @@
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
       actionBar.replaceChildren(...[
         structure && currentConn().allowWrites && !o.isInternal
-          ? h('button', { onclick: () => openRowEditor(table, data.columns, structure, null, null, columnIndex) }, '＋ Row')
+          ? h('button', {
+            onclick: () => openRowEditor(table, data.columns, structure, friendly, null, null, columnIndex),
+          }, '＋ Row')
           : null,
         cancel,
         useInQueryButton(o, scope),
@@ -1871,6 +1956,7 @@
         sort: () => grid.sort,
         direction: () => grid.dir,
         onRender: (value) => { table = value; },
+        renderCell: friendlyCell,
         onSort: (column) => {
           if (grid.sort === column) grid.dir = grid.dir === 'asc' ? 'desc' : 'asc';
           else { grid.sort = column; grid.dir = 'asc'; }
@@ -1898,6 +1984,7 @@
               });
             }
             gridView.appendRows(event.rows);
+            resolveFriendlyValues(event.rows);
             status.textContent = `${data.rows.length} row(s) - receiving…`;
           }
           else if (event.type === 'resultSetCompleted') status.textContent = `${data.rows.length} row(s)` + (event.truncated ? ' - safety cap reached' : '');
@@ -1913,7 +2000,7 @@
     };
 
     const openRowEditor = async (
-      table, dataColumns, structure, existingRow, existingRowElement, columnIndex, rowKey = null,
+      table, dataColumns, structure, friendly, existingRow, existingRowElement, columnIndex, rowKey = null,
       selectedColumn = null, rowNumber = null, moveToNextRow = null) => {
       const isNew = existingRow === null;
       lockTableLayout(table);
@@ -1970,40 +2057,220 @@
         }
 
         const currentValue = isNew ? undefined : existingRow[columnIndex(c.name)];
-        const input = h('input', { type: 'text', class: 'cell-input', 'aria-label': c.name });
-        const nullToggle = h('input', { type: 'checkbox', title: `Set ${c.name} to NULL`, 'aria-label': `Set ${c.name} to NULL` });
-        const syncNull = () => {
-          input.disabled = nullToggle.checked;
-          input.placeholder = nullToggle.checked ? 'NULL' : '';
-        };
-        nullToggle.addEventListener('change', syncNull);
-        if (!isNew && currentValue === null) nullToggle.checked = true;
-        else if (!isNew) input.value = String(currentValue);
-        syncNull();
-        editorRow.append(h('td', {}, h('div', { class: 'cell-editor' }, input,
-          c.isNullable ? h('label', { class: 'cell-null' }, nullToggle, 'NULL') : null)));
-        fields.push({ column: c, input, nullToggle });
+        const display = friendly.displays.get(c.name.toLowerCase());
+        const input = h('input', {
+          type: 'text', class: 'cell-input' + (display ? ' fk-lookup-input' : ''), 'aria-label': c.name,
+        });
+        let selectedKey = currentValue ?? null;
+        let lookupTimer = null;
+        let resolveSelectedKey = async () => selectedKey !== null;
+        if (display) {
+          const listId = `fk-${tab.id}-${c.name.replace(/[^a-z0-9_-]/gi, '-')}-${Math.random().toString(36).slice(2)}`;
+          const choices = h('div', {
+            id: listId, class: 'fk-autocomplete-menu', role: 'listbox', hidden: '',
+          });
+          input.setAttribute('role', 'combobox');
+          input.setAttribute('aria-autocomplete', 'list');
+          input.setAttribute('aria-controls', listId);
+          input.setAttribute('aria-expanded', 'false');
+          const cell = h('td', {});
+          input._choices = choices;
+          const setOpen = (open) => {
+            choices.hidden = !open;
+            input.setAttribute('aria-expanded', String(open));
+          };
+          const showKey = (key, label) => label === null || label === undefined || String(label).length === 0
+            ? `${key} #REF!` : `${key} ${label}`;
+          const optionHeight = 27;
+          const resultViewport = h('div', { class: 'fk-autocomplete-viewport' });
+          let resultItems = [];
+          let activeIndex = -1;
+          let searchVersion = 0;
+          const choose = (item) => {
+            selectedKey = item.key;
+            input.value = showKey(item.key, item.label);
+            setOpen(false);
+            input.focus();
+          };
+          const renderWindow = () => {
+            if (!resultItems.length) return;
+            const visibleCount = Math.ceil((choices.clientHeight || 220) / optionHeight);
+            const start = Math.max(0, Math.floor(choices.scrollTop / optionHeight) - 3);
+            const end = Math.min(resultItems.length, start + visibleCount + 6);
+            resultViewport.style.height = `${resultItems.length * optionHeight}px`;
+            resultViewport.replaceChildren(...resultItems.slice(start, end).map((item, offset) => {
+              const index = start + offset;
+              return h('button', {
+                type: 'button', class: 'fk-autocomplete-option' + (index === activeIndex ? ' active' : ''),
+                role: 'option', 'aria-selected': String(index === activeIndex),
+                'aria-setsize': String(resultItems.length), 'aria-posinset': String(index + 1),
+                'aria-label': showKey(item.key, item.label), tabindex: '-1',
+                style: `top:${index * optionHeight}px`,
+                onmousedown: (event) => event.preventDefault(),
+                onclick: () => choose(item),
+              },
+              h('span', { class: 'fk-option-key', text: String(item.key) }),
+              ' ',
+              h('span', {
+                class: 'fk-option-label',
+                text: item.label === null || item.label === undefined || String(item.label).length === 0
+                  ? '#REF!' : String(item.label),
+              }));
+            }));
+          };
+          const setActive = (index) => {
+            if (!resultItems.length) return;
+            activeIndex = (index + resultItems.length) % resultItems.length;
+            const top = activeIndex * optionHeight;
+            const bottom = top + optionHeight;
+            if (top < choices.scrollTop) choices.scrollTop = top;
+            else if (bottom > choices.scrollTop + choices.clientHeight) {
+              choices.scrollTop = bottom - choices.clientHeight;
+            }
+            renderWindow();
+          };
+          const useResults = (items, query = '') => {
+            resultItems = items;
+            activeIndex = -1;
+            items.forEach((item) => display.values.set(friendly.valueKey(item.key), item.label));
+            if (query) {
+              const exact = items.find((item) =>
+                String(item.key).localeCompare(query, undefined, { sensitivity: 'accent' }) === 0);
+              if (exact) selectedKey = exact.key;
+            }
+            choices.scrollTop = 0;
+            choices.replaceChildren(items.length
+              ? resultViewport
+              : h('div', { class: 'fk-autocomplete-empty muted', text: 'No matching values' }));
+            setOpen(true);
+            renderWindow();
+          };
+          choices.addEventListener('scroll', renderWindow);
+          const search = async (browseAll = false) => {
+            const version = ++searchVersion;
+            const query = browseAll ? '' : input.value.trim();
+            choices.replaceChildren(h('div', { class: 'fk-autocomplete-empty muted', text: 'Loading…' }));
+            setOpen(true);
+            try {
+              const response = await post(
+                urls.foreignKeyLookup(o.schema, o.name, display.fk.name), { search: query || null });
+              if (version !== searchVersion) return;
+              useResults(response.items || [], query);
+            } catch (err) {
+              if (version !== searchVersion) return;
+              setOpen(false);
+              toast(`Foreign-key search failed. ${err.message}`);
+            }
+          };
+          input.addEventListener('input', () => {
+            selectedKey = null;
+            clearTimeout(lookupTimer);
+            lookupTimer = setTimeout(search, 250);
+          });
+          input.addEventListener('focus', () => {
+            if (choices.hidden) search(true);
+          });
+          input.addEventListener('blur', () => {
+            setTimeout(() => {
+              if (!editorRow._lookupPointerActive) setOpen(false);
+            });
+          });
+          input.addEventListener('keydown', (event) => {
+            if (event.key === 'ArrowDown' && !choices.hidden) {
+              event.preventDefault(); setActive(activeIndex + 1);
+            } else if (event.key === 'ArrowUp' && !choices.hidden) {
+              event.preventDefault(); setActive(activeIndex - 1);
+            } else if (event.key === 'Enter' && !choices.hidden && !event.ctrlKey && !event.metaKey) {
+              event.preventDefault();
+              if (resultItems.length) choose(resultItems[activeIndex < 0 ? 0 : activeIndex]);
+            } else if (event.key === 'Escape' && !choices.hidden) {
+              event.stopPropagation(); setOpen(false);
+            }
+          });
+          choices.addEventListener('pointerdown', () => {
+            editorRow._lookupPointerActive = true;
+            window.addEventListener('pointerup', () => {
+              setTimeout(() => { editorRow._lookupPointerActive = false; });
+            }, { once: true });
+          });
+          resolveSelectedKey = async () => {
+            if (selectedKey !== null) return true;
+            clearTimeout(lookupTimer);
+            if (!input.value.trim()) return false;
+            await search();
+            return selectedKey !== null;
+          };
+          if (!isNew && currentValue !== null) {
+            const cached = display.values.get(friendly.valueKey(currentValue));
+            if (display.values.has(friendly.valueKey(currentValue))) input.value = showKey(currentValue, cached);
+            else {
+              input.value = String(currentValue);
+              post(urls.foreignKeyLookup(o.schema, o.name, display.fk.name), { keys: [currentValue] })
+                .then((response) => {
+                  if (!input.isConnected || String(currentValue) !== input.value) return;
+                  const item = response.items?.[0];
+                  if (item) {
+                    display.values.set(friendly.valueKey(item.key), item.label);
+                    input.value = showKey(item.key, item.label);
+                  }
+                }).catch(() => { /* raw key remains editable */ });
+            }
+          }
+          input._lookupCell = cell;
+        }
+        if (c.isNullable) {
+          input.classList.add('nullable-value');
+          input.placeholder = 'NULL';
+          input.title = `Leave ${c.name} empty to save NULL`;
+        }
+        if (!isNew && currentValue !== null && !display) input.value = String(currentValue);
+        const editorCell = input._lookupCell || h('td', {});
+        editorCell.append(h('div', {
+          class: 'cell-editor' + (display ? ' fk-autocomplete' : ''),
+        }, input, input._choices || null));
+        editorRow.append(editorCell);
+        fields.push({
+          column: c, input,
+          isForeignKey: Boolean(display),
+          selectedKey: () => selectedKey,
+          resolveSelectedKey,
+          value: () => display && selectedKey !== null ? selectedKey : input.value,
+        });
         focusableByName.set(c.name.toLowerCase(), input);
       }
 
       let saving = false;
       const commit = async () => {
         if (saving) return false;
+        saving = true;
         const values = {};
-        for (const f of fields) values[f.column.name] = f.nullToggle.checked ? null : f.input.value;
+        const submittedValue = (field) =>
+          field.column.isNullable && field.input.value === '' ? null : field.value();
+        for (const f of fields) {
+          if (f.isForeignKey && f.selectedKey() === null &&
+              !(f.column.isNullable && f.input.value === '') &&
+              !await f.resolveSelectedKey()) {
+            f.input.focus();
+            toast(`Choose a value for ${f.column.name} from the suggestions.`);
+            saving = false;
+            return false;
+          }
+          values[f.column.name] = submittedValue(f);
+        }
         if (!isNew) {
           const hasChanges = fields.some((f) => {
             const originalValue = existingRow[columnIndex(f.column.name)];
+            const submitted = submittedValue(f);
             return originalValue === null
-              ? !f.nullToggle.checked
-              : f.nullToggle.checked || f.input.value !== String(originalValue);
+              ? submitted !== null
+              : submitted === null || String(submitted) !== String(originalValue);
           });
           if (!hasChanges) {
+            saving = false;
             editorRow.replaceWith(existingRowElement);
             return true;
           }
         }
-        saving = true;
         editorRow.classList.add('saving');
         selector.title = 'Saving…';
         try {
@@ -2021,9 +2288,11 @@
             for (const [name, value] of Object.entries(values)) existingRow[columnIndex(name)] = value;
             rowKey?.refresh?.(existingRow);
             existingRowElement.querySelectorAll('td:not(.row-selector)').forEach((cell, index) => {
-              const rendered = renderCell(existingRow[index]);
+              const rendered = friendly.renderCell(existingRow[index], dataColumns[index]);
               cell.className = rendered.className;
-              cell.textContent = rendered.textContent;
+              cell.replaceChildren(...rendered.childNodes);
+              if (rendered.title) cell.title = rendered.title;
+              else cell.removeAttribute('title');
             });
             editorRow.replaceWith(existingRowElement);
           }
@@ -2052,7 +2321,8 @@
       });
       editorRow.addEventListener('focusout', () => {
         setTimeout(() => {
-          if (editorRow.isConnected && !editorRow.contains(document.activeElement)) commit();
+          if (editorRow.isConnected && !editorRow.contains(document.activeElement) &&
+              !editorRow._lookupPointerActive) commit();
         });
       });
 
@@ -2601,19 +2871,96 @@
               }, '🗑') : null)))))));
       }
 
-      if (s.foreignKeys.length) {
+      if (s.foreignKeys.length || (s.foreignKeyDisplays || []).length) {
+        const displayFor = (fk) => (s.foreignKeyDisplays || []).find((setting) =>
+          setting.foreignKeyName.toLowerCase() === fk.name.toLowerCase());
+        const suggestLabelColumn = (columns) => {
+          const safe = columns.filter((column) =>
+            !/(password|passwd|secret|token|api.?key)/i.test(column.name));
+          const text = safe.filter((column) =>
+            /(char|text|clob|string|xml)/i.test(column.dataType || column.dataTypeName || ''));
+          for (const preferred of ['name', 'title', 'label', 'description']) {
+            const match = text.find((column) => column.name.toLowerCase() === preferred);
+            if (match) return match.name;
+          }
+          return text[0]?.name || safe[0]?.name || columns[0]?.name;
+        };
+        const configureDisplay = async (fk) => {
+          if (fk.columns.length !== 1) {
+            toast('Friendly display supports single-column foreign keys only.');
+            return;
+          }
+          let referenced;
+          try {
+            referenced = await api(urls.structure(fk.referencedSchema, fk.referencedTable));
+          } catch (err) {
+            toast(err.message);
+            return;
+          }
+          const existing = displayFor(fk);
+          const selected = existing?.isValid && referenced.columns.some((column) =>
+            column.name.toLowerCase() === existing.labelColumn.toLowerCase())
+            ? existing.labelColumn
+            : suggestLabelColumn(referenced.columns);
+          const column = h('select', { 'aria-label': 'Foreign key label column' },
+            ...referenced.columns.map((candidate) => h('option', {
+              value: candidate.name,
+              text: `${candidate.name} (${candidate.dataTypeName || candidate.dataType})`,
+              selected: candidate.name === selected ? '' : null,
+            })));
+          modal(existing ? 'Change foreign-key display' : 'Show foreign-key value',
+            h('div', { class: 'form-grid' },
+              h('label', { class: 'field-label', text: 'Relationship' }),
+              h('div', { class: 'field-input mono', text: fk.name }),
+              h('label', { class: 'field-label', text: 'Display column' }),
+              h('div', { class: 'field-input' }, column)), [
+              { label: 'Cancel', onClick: (close) => close() },
+              {
+                label: existing ? 'Save' : 'Show value', primary: true,
+                onClick: async (close, showError) => {
+                  try {
+                    await post(urls.foreignKeyDisplay(o.schema, o.name, fk.name), {
+                      labelColumn: column.value,
+                    });
+                    close(); invalidateStructure(); renderStructure();
+                    toast(`Foreign-key values will show ${column.value}.`, false);
+                  } catch (err) { showError(err.message); }
+                },
+              },
+            ]);
+        };
+        const disableDisplay = (fk) => confirmModal(
+          'Show raw foreign key', `Stop showing labels for ${fk.name}?`, async () => {
+            await del(urls.foreignKeyDisplay(o.schema, o.name, fk.name));
+            invalidateStructure(); renderStructure();
+            toast('Foreign-key values will show their raw keys.', false);
+          }, 'Show raw key');
         sections.push(
           h('h3', { text: 'Foreign keys' }),
           h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
             h('thead', {}, h('tr', {},
-              ['Name', 'Columns', 'References', 'Delete / update', ''].map((t) => h('th', { text: t })))),
-            h('tbody', {}, s.foreignKeys.map((fk) => h('tr', {},
+              ['Name', 'Columns', 'References', 'Display', 'Delete / update', ''].map((t) => h('th', { text: t })))),
+            h('tbody', {}, s.foreignKeys.map((fk) => {
+              const display = displayFor(fk);
+              return h('tr', {},
               h('td', { text: fk.name }),
               h('td', { class: 'mono', text: fk.columns.map((p) => p.column).join(', ') }),
               h('td', {
                 class: 'mono',
                 text: `${fk.referencedSchema}.${fk.referencedTable} (${fk.columns.map((p) => p.referencedColumn).join(', ')})`,
               }),
+              h('td', { class: display && !display.isValid ? 'fk-display-invalid' : '' },
+                display ? h('span', {
+                  class: 'mono',
+                  text: display.isValid ? display.labelColumn : `Invalid: ${display.validationMessage}`,
+                }) : h('span', { class: 'muted', text: 'Raw key' }),
+                fk.columns.length === 1 ? h('button', {
+                  class: 'mini-btn', title: display ? 'Change display column' : 'Show a referenced value',
+                  onclick: () => configureDisplay(fk),
+                }, display ? '✎' : 'Show value…') : null,
+                display ? h('button', {
+                  class: 'mini-btn', title: 'Show raw key', onclick: () => disableDisplay(fk),
+                }, '×') : null),
               h('td', { class: 'mono muted', text: `${fk.onDelete.replaceAll('_', ' ')} / ${fk.onUpdate.replaceAll('_', ' ')}` }),
               h('td', { class: 'cell-actions' }, canDesign ? h('button', {
                 class: 'mini-btn', title: 'Drop foreign key', onclick: () => confirmModal(
@@ -2621,7 +2968,26 @@
                     await del(urls.constraint(o.schema, o.name, fk.name));
                     toast('Foreign key dropped.', false); invalidateStructure(); renderStructure();
                   }, 'Drop'),
-              }, '🗑') : null)))))));
+              }, '🗑') : null));
+            })))));
+        const orphanDisplays = (s.foreignKeyDisplays || []).filter((display) =>
+          !s.foreignKeys.some((fk) => fk.name.toLowerCase() === display.foreignKeyName.toLowerCase()));
+        if (orphanDisplays.length) {
+          sections.push(h('div', { class: 'error-box fk-display-orphans' },
+            h('strong', { text: 'Invalid foreign-key display settings' }),
+            ...orphanDisplays.map((display) => h('div', {},
+              h('span', {
+                class: 'mono',
+                text: `${display.foreignKeyName}: ${display.validationMessage || 'relationship no longer exists'}`,
+              }),
+              h('button', {
+                class: 'mini-btn', title: 'Remove invalid display setting',
+                onclick: async () => {
+                  await del(urls.foreignKeyDisplay(o.schema, o.name, display.foreignKeyName));
+                  invalidateStructure(); renderStructure();
+                },
+              }, 'Remove')))));
+        }
       }
 
       body.replaceChildren(h('div', { class: 'structure' }, sections));
@@ -6213,7 +6579,8 @@
     const selected = selection.selected;
     const rowElements = [];
     const tbody = h('tbody', {}, rows.map((row, rowIndex) => {
-      const tr = h('tr', {}, row.map(renderCell));
+      const tr = h('tr', {}, row.map((value, columnIndex) =>
+        options?.renderCell ? options.renderCell(value, columns[columnIndex], row) : renderCell(value)));
       rowElements.push(tr);
       if (selectable) {
         const globalIndex = rowOffset + rowIndex;
@@ -6306,6 +6673,7 @@
         dir: options.direction?.(),
         onSort: options.onSort,
         rowActions,
+        renderCell: options.renderCell,
       });
       if (virtual) {
         const tbody = table.tBodies[0];

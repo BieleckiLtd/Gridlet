@@ -8,6 +8,13 @@ the answer to lead with.
   it.
 - **Edit a row.** Click any cell in it. The row opens in an editor where the values can be changed
   and saved. `Tab` at the end moves to the next row.
+- **Choose a foreign-key value.** Foreign-key columns can optionally show the stored key followed
+  by a dimmed, human-readable value from any column of the referenced table. This is off by default;
+  enable it for a foreign key in the table's **Structure** view with **Show value…**, then choose the
+  referenced column to display. Selecting an enabled cell opens a searchable, virtualized list.
+  A person can choose a suggestion or type an exact key directly; only the key is written, never the
+  displayed referenced value. Clearing a nullable foreign key writes `NULL`. An italic `#REF!`
+  means the stored key no longer resolves to a referenced row.
 - **Add a row.** The `＋ Row` button above the grid opens the same editor with an empty row.
 - **Copy rows.** Select rows and press `Ctrl+C` (`Cmd+C` on a Mac) to copy them as tab-separated
   text, ready to paste into a spreadsheet.

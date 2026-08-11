@@ -54,6 +54,7 @@ public static class GridletServiceCollectionExtensions
         services.TryAddSingleton<GridletFileStore>();
         services.TryAddSingleton<ISavedQueryStore>(sp => sp.GetRequiredService<GridletFileStore>());
         services.TryAddSingleton<IPublishedEndpointStore>(sp => sp.GetRequiredService<GridletFileStore>());
+        services.TryAddSingleton<IForeignKeyDisplayStore>(sp => sp.GetRequiredService<GridletFileStore>());
 
         // Lets an agent turn call this installation's own GET endpoints and show the real response.
         // The accessor supplies the address and the caller's credentials; the mount path is filled
