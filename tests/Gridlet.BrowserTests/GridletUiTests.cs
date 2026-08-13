@@ -1342,6 +1342,108 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Formats_the_query_without_changing_literals_or_comments()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page,
+            "select c.Id,c.Name from dbo.Customers c left join dbo.Orders o on o.CustomerId=c.Id where c.Note='from here' and c.Active=1 -- keep select lower");
+
+        await page.GetByTestId("query-format").ClickAsync();
+
+        await Assertions.Expect(page.GetByTestId("sql-editor")).ToHaveValueAsync(
+            "SELECT\n" +
+            "    c.Id,\n" +
+            "    c.Name\n" +
+            "FROM dbo.Customers c\n" +
+            "LEFT JOIN dbo.Orders o\n" +
+            "    ON o.CustomerId = c.Id\n" +
+            "WHERE c.Note = 'from here'\n" +
+            "AND c.Active = 1 -- keep select lower");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Formats_only_selected_sql_with_the_keyboard_shortcut()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "-- untouched\nselect Id,Name from Customers\n-- untouched too");
+        var editor = page.GetByTestId("sql-editor");
+        await editor.EvaluateAsync("""
+            input => input.setSelectionRange(
+                input.value.indexOf('select'),
+                input.value.indexOf('\n-- untouched too'))
+            """);
+
+        await editor.PressAsync("Control+Shift+f");
+
+        await Assertions.Expect(editor).ToHaveValueAsync(
+            "-- untouched\nSELECT\n    Id,\n    Name\nFROM Customers\n-- untouched too");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Completes_partial_alias_columns_from_the_current_query_sources()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT * FROM dbo.Customers c WHERE c.Na");
+        var editor = page.GetByTestId("sql-editor");
+
+        await editor.PressAsync("Control+Space");
+        var suggestion = page.Locator(".sql-completions").GetByRole(
+            AriaRole.Button, new() { Name = "c.Name", Exact = true });
+        await Assertions.Expect(suggestion).ToBeVisibleAsync();
+        await suggestion.ClickAsync();
+
+        await Assertions.Expect(editor).ToHaveValueAsync(
+            "SELECT * FROM dbo.Customers c WHERE c.Name");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Narrows_unqualified_columns_and_offers_foreign_key_join_conditions()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT * FROM dbo.Customers c WHERE Na");
+        var editor = page.GetByTestId("sql-editor");
+
+        await editor.PressAsync("Control+Space");
+        await Assertions.Expect(page.Locator(".sql-completions").GetByRole(
+            AriaRole.Button, new() { Name = "Name", Exact = true })).ToBeVisibleAsync();
+
+        await editor.FillAsync("SELECT * FROM dbo.Orders o JOIN dbo.Pizzas p ON ");
+        await editor.PressAsync("Control+Space");
+        var join = page.Locator(".sql-completions").GetByRole(
+            AriaRole.Button, new() { Name = "o.PizzaId = p.Id", Exact = true });
+        await Assertions.Expect(join).ToBeVisibleAsync();
+        await join.ClickAsync();
+        await Assertions.Expect(editor).ToHaveValueAsync(
+            "SELECT * FROM dbo.Orders o JOIN dbo.Pizzas p ON o.PizzaId = p.Id");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Completes_routine_parameter_names()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "EXEC dbo.RefreshOrders @S");
+        var editor = page.GetByTestId("sql-editor");
+
+        await editor.PressAsync("Control+Space");
+        var suggestion = page.Locator(".sql-completions").GetByRole(
+            AriaRole.Button, new() { Name = "@Since", Exact = true });
+        await Assertions.Expect(suggestion).ToBeVisibleAsync();
+        await suggestion.ClickAsync();
+
+        await Assertions.Expect(editor).ToHaveValueAsync("EXEC dbo.RefreshOrders @Since");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Confirms_successful_non_row_query_execution()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -2156,6 +2258,21 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
 
+    private static async Task ClickQueryActionAsync(ILocator panel, string testId)
+    {
+        var control = panel.GetByTestId(testId);
+        if (await control.IsVisibleAsync())
+        {
+            await control.ClickAsync();
+            return;
+        }
+
+        await panel.GetByTestId("query-toolbar")
+            .GetByRole(AriaRole.Button, new() { Name = "More query actions" })
+            .ClickAsync();
+        await control.ClickAsync();
+    }
+
     /// <summary>
     /// WITHOUT ROWID and STRICT change what a table is, so the designer offers them where the
     /// provider has them and leaves them out where it does not.
@@ -2350,11 +2467,11 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var panel = ActivePanel(page);
         var state = panel.GetByTestId("session-state");
 
-        await panel.GetByTestId("session-toggle").ClickAsync();
+        await ClickQueryActionAsync(panel, "session-toggle");
         await Assertions.Expect(state).ToHaveTextAsync("session - no transaction");
         await Assertions.Expect(panel.GetByTestId("transaction-commit")).ToBeDisabledAsync();
 
-        await panel.GetByTestId("transaction-begin").ClickAsync();
+        await ClickQueryActionAsync(panel, "transaction-begin");
         await Assertions.Expect(state).ToHaveTextAsync("transaction open");
         await page.GetByTestId("query-run").ClickAsync();
         await Assertions.Expect(panel.GetByTestId("query-status")).Not.ToHaveTextAsync("Running…");
@@ -2363,7 +2480,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(state).ToHaveTextAsync("transaction open");
         Assert.Contains("session.query SELECT 42", fixture.Provider.Calls);
 
-        await panel.GetByTestId("transaction-commit").ClickAsync();
+        await ClickQueryActionAsync(panel, "transaction-commit");
         await Assertions.Expect(state).ToHaveTextAsync("session - no transaction");
         Assert.Contains("session.commit", fixture.Provider.Calls);
         browserPage.AssertNoUnexpectedErrors();
@@ -2376,8 +2493,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var page = browserPage.Page;
         await OpenQueryAsync(page, "SELECT 42");
         var panel = ActivePanel(page);
-        await panel.GetByTestId("session-toggle").ClickAsync();
-        await panel.GetByTestId("transaction-begin").ClickAsync();
+        await ClickQueryActionAsync(panel, "session-toggle");
+        await ClickQueryActionAsync(panel, "transaction-begin");
         await Assertions.Expect(panel.GetByTestId("session-state")).ToHaveTextAsync("transaction open");
 
         await page.Locator("#tabbar .tab.active .tab-close").ClickAsync();
