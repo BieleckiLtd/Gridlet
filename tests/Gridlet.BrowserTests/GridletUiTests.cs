@@ -2258,6 +2258,21 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
 
+    private static async Task ClickQueryActionAsync(ILocator panel, string testId)
+    {
+        var control = panel.GetByTestId(testId);
+        if (await control.IsVisibleAsync())
+        {
+            await control.ClickAsync();
+            return;
+        }
+
+        await panel.GetByTestId("query-toolbar")
+            .GetByRole(AriaRole.Button, new() { Name = "More query actions" })
+            .ClickAsync();
+        await control.ClickAsync();
+    }
+
     /// <summary>
     /// WITHOUT ROWID and STRICT change what a table is, so the designer offers them where the
     /// provider has them and leaves them out where it does not.
@@ -2452,11 +2467,11 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var panel = ActivePanel(page);
         var state = panel.GetByTestId("session-state");
 
-        await panel.GetByTestId("session-toggle").ClickAsync();
+        await ClickQueryActionAsync(panel, "session-toggle");
         await Assertions.Expect(state).ToHaveTextAsync("session - no transaction");
         await Assertions.Expect(panel.GetByTestId("transaction-commit")).ToBeDisabledAsync();
 
-        await panel.GetByTestId("transaction-begin").ClickAsync();
+        await ClickQueryActionAsync(panel, "transaction-begin");
         await Assertions.Expect(state).ToHaveTextAsync("transaction open");
         await page.GetByTestId("query-run").ClickAsync();
         await Assertions.Expect(panel.GetByTestId("query-status")).Not.ToHaveTextAsync("Running…");
@@ -2465,7 +2480,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(state).ToHaveTextAsync("transaction open");
         Assert.Contains("session.query SELECT 42", fixture.Provider.Calls);
 
-        await panel.GetByTestId("transaction-commit").ClickAsync();
+        await ClickQueryActionAsync(panel, "transaction-commit");
         await Assertions.Expect(state).ToHaveTextAsync("session - no transaction");
         Assert.Contains("session.commit", fixture.Provider.Calls);
         browserPage.AssertNoUnexpectedErrors();
@@ -2478,8 +2493,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var page = browserPage.Page;
         await OpenQueryAsync(page, "SELECT 42");
         var panel = ActivePanel(page);
-        await panel.GetByTestId("session-toggle").ClickAsync();
-        await panel.GetByTestId("transaction-begin").ClickAsync();
+        await ClickQueryActionAsync(panel, "session-toggle");
+        await ClickQueryActionAsync(panel, "transaction-begin");
         await Assertions.Expect(panel.GetByTestId("session-state")).ToHaveTextAsync("transaction open");
 
         await page.Locator("#tabbar .tab.active .tab-close").ClickAsync();
