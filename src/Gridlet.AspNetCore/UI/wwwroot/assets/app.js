@@ -562,6 +562,7 @@
     schemas: [],
     objectsByScope: new Map(),
     structures: new Map(),
+    routines: new Map(),
     tabs: [],
     activeTabId: null,
     nextTabId: 1,
@@ -692,36 +693,156 @@
     return [...new Set([...objects, ...schemas, ...SQL_KEYWORDS, ...SQL_FUNCTIONS])];
   }
 
-  const unquoteSqlIdentifier = (value) => value.replace(/^\[|\]$/g, '').replaceAll(']]', ']');
+  const unquoteSqlIdentifier = (value) => {
+    if (value.startsWith('[') && value.endsWith(']')) return value.slice(1, -1).replaceAll(']]', ']');
+    if (value.startsWith('"') && value.endsWith('"')) return value.slice(1, -1).replaceAll('""', '"');
+    if (value.startsWith('`') && value.endsWith('`')) return value.slice(1, -1).replaceAll('``', '`');
+    return value;
+  };
 
-  async function aliasColumnSuggestions(sql, prefix, scope = state) {
-    if (!prefix.endsWith('.')) return [];
+  function maskSqlCommentsAndStrings(sql) {
+    return sql.replace(/--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|N?'(?:''|[^'])*(?:'|$)/gi,
+      (match) => match.replace(/[^\r\n]/g, ' '));
+  }
+
+  function currentSqlStatement(sql, caret) {
+    const masked = maskSqlCommentsAndStrings(sql);
+    const start = masked.lastIndexOf(';', Math.max(0, caret - 1)) + 1;
+    const nextEnd = masked.indexOf(';', caret);
+    const end = nextEnd < 0 ? sql.length : nextEnd;
+    return { sql: sql.slice(start, end), beforeCaret: sql.slice(start, caret) };
+  }
+
+  function sqlSources(sql, scope) {
     const known = objectsFor(scope);
-    const qualifier = unquoteSqlIdentifier(prefix.slice(0, -1));
-    if (!qualifier || known.some((o) => o.schema.toLowerCase() === qualifier.toLowerCase())) return [];
-
-    const identifier = '(?:\\[[^\\]]+\\]|[A-Za-z_][\\w$#@]*)';
-    const sourcePattern = new RegExp(`\\b(?:FROM|JOIN)\\s+(${identifier})(?:\\s*\\.\\s*(${identifier}))?\\s+(?:AS\\s+)?(${identifier})`, 'gi');
-    let object = null;
-    for (const match of sql.matchAll(sourcePattern)) {
-      const alias = unquoteSqlIdentifier(match[3]);
-      if (alias.toLowerCase() !== qualifier.toLowerCase()) continue;
+    const identifier = '(?:\\[(?:\\]\\]|[^\\]])+\\]|"(?:""|[^"])+"|`(?:``|[^`])+`|[A-Za-z_][\\w$#@]*)';
+    const pattern = new RegExp(`\\b(?:FROM|JOIN)\\s+(${identifier})(?:\\s*\\.\\s*(${identifier}))?(?:\\s+(?:AS\\s+)?(${identifier}))?`, 'gi');
+    const reserved = new Set([...SQL_KEYWORDS, 'LIMIT', 'OFFSET', 'RETURNING', 'WINDOW']);
+    const sources = [];
+    for (const match of maskSqlCommentsAndStrings(sql).matchAll(pattern)) {
       const schema = match[2] ? unquoteSqlIdentifier(match[1]) : defaultSchemaFor(scope);
       const name = unquoteSqlIdentifier(match[2] || match[1]);
-      object = known.find((o) => o.schema.toLowerCase() === schema.toLowerCase() && o.name.toLowerCase() === name.toLowerCase());
-      if (object) break;
+      const rawAlias = match[3] && !reserved.has(unquoteSqlIdentifier(match[3]).toUpperCase())
+        ? match[3]
+        : null;
+      const object = known.find((candidate) => ['Table', 'View'].includes(candidate.type)
+        && candidate.schema.toLowerCase() === schema.toLowerCase()
+        && candidate.name.toLowerCase() === name.toLowerCase());
+      if (!object || sources.some((source) => source.alias.toLowerCase() === unquoteSqlIdentifier(rawAlias || name).toLowerCase())) continue;
+      sources.push({ object, alias: unquoteSqlIdentifier(rawAlias || name), displayAlias: rawAlias || match[2] || match[1] });
     }
-    if (!object || !['Table', 'View'].includes(object.type)) return [];
+    return sources;
+  }
 
-    const key = `${scopeKey(scope)} ${object.schema}.${object.name}`.toLowerCase();
+  async function loadCompletionStructure(source, scope) {
+    const key = `${scopeKey(scope)} ${source.object.schema}.${source.object.name}`.toLowerCase();
     let structure = state.structures.get(key);
     if (!structure) {
-      try {
-        structure = await api(urlsFor(scope).structure(object.schema, object.name));
-        state.structures.set(key, structure);
-      } catch { return []; }
+      structure = await api(urlsFor(scope).structure(source.object.schema, source.object.name));
+      state.structures.set(key, structure);
     }
-    return (structure.columns || []).map((column) => `${prefix}${column.name}`);
+    return { ...source, structure };
+  }
+
+  async function routineParameterSuggestions(statement, prefix, scope) {
+    const identifier = '(?:\\[(?:\\]\\]|[^\\]])+\\]|"(?:""|[^"])+"|`(?:``|[^`])+`|[A-Za-z_][\\w$#@]*)';
+    const match = maskSqlCommentsAndStrings(statement.sql).match(
+      new RegExp(`\\bEXEC(?:UTE)?\\s+(${identifier})(?:\\s*\\.\\s*(${identifier}))?`, 'i'));
+    const declared = [...statement.sql.matchAll(/\bDECLARE\s+(@[A-Za-z_][\w$#@]*)/gi)].map((item) => item[1]);
+    let parameters = declared;
+    if (match) {
+      const schema = match[2] ? unquoteSqlIdentifier(match[1]) : defaultSchemaFor(scope);
+      const name = unquoteSqlIdentifier(match[2] || match[1]);
+      const routine = objectsFor(scope).find((object) =>
+        ['StoredProcedure', 'ScalarFunction', 'TableValuedFunction'].includes(object.type)
+        && object.schema.toLowerCase() === schema.toLowerCase()
+        && object.name.toLowerCase() === name.toLowerCase());
+      if (routine) {
+        const key = `${scopeKey(scope)} ${routine.schema}.${routine.name}`.toLowerCase();
+        let definition = state.routines.get(key);
+        if (!definition) {
+          definition = await api(urlsFor(scope).routine(routine.schema, routine.name));
+          state.routines.set(key, definition);
+        }
+        parameters = [...parameters, ...(definition.parameters || [])
+          .filter((parameter) => !parameter.isReturnValue)
+          .map((parameter) => parameter.name)];
+      }
+    }
+    return [...new Set(parameters)].filter((parameter) =>
+      parameter.toLowerCase().startsWith(prefix.toLowerCase())
+      && parameter.toLowerCase() !== prefix.toLowerCase());
+  }
+
+  function joinConditionSuggestions(sources) {
+    const suggestions = [];
+    for (const source of sources) {
+      for (const foreignKey of source.structure.foreignKeys || []) {
+        const target = sources.find((candidate) =>
+          candidate.object.schema.toLowerCase() === foreignKey.referencedSchema.toLowerCase()
+          && candidate.object.name.toLowerCase() === foreignKey.referencedTable.toLowerCase());
+        if (!target) continue;
+        const pairs = (foreignKey.columns || []).map((pair) =>
+          `${source.displayAlias}.${pair.column} = ${target.displayAlias}.${pair.referencedColumn}`);
+        if (pairs.length) suggestions.push(pairs.join(' AND '));
+      }
+    }
+    return suggestions;
+  }
+
+  async function contextualSqlSuggestions(sql, caret, prefix, scope = state) {
+    const statement = currentSqlStatement(sql, caret);
+    if (prefix.startsWith('@') || /\bEXEC(?:UTE)?\b/i.test(statement.beforeCaret)) {
+      try {
+        const parameters = await routineParameterSuggestions(statement, prefix, scope);
+        if (parameters.length) return parameters;
+      } catch { /* metadata completion is best effort */ }
+    }
+
+    const sourceContext = statement.beforeCaret.match(/\b(?:FROM|JOIN)\s+([^\s,()]*)$/i);
+    if (sourceContext) {
+      const typed = sourceContext[1].toLowerCase();
+      return sqlSuggestions(scope).filter((suggestion) => {
+        const object = objectsFor(scope).find((candidate) => ['Table', 'View'].includes(candidate.type)
+          && [candidate.name, `${candidate.schema}.${candidate.name}`,
+            `[${candidate.schema.replaceAll(']', ']]')}].[${candidate.name.replaceAll(']', ']]')}]`]
+            .some((name) => name.toLowerCase() === suggestion.toLowerCase()));
+        return object && suggestion.toLowerCase().startsWith(typed);
+      });
+    }
+
+    const sources = sqlSources(statement.sql, scope);
+    if (!sources.length) return [];
+    let loaded;
+    try { loaded = await Promise.all(sources.map((source) => loadCompletionStructure(source, scope))); }
+    catch { return []; }
+
+    const dot = prefix.lastIndexOf('.');
+    if (dot >= 0) {
+      const qualifier = unquoteSqlIdentifier(prefix.slice(0, dot));
+      const columnPrefix = unquoteSqlIdentifier(prefix.slice(dot + 1));
+      const source = loaded.find((candidate) => candidate.alias.toLowerCase() === qualifier.toLowerCase());
+      if (!source) return [];
+      const displayedQualifier = prefix.slice(0, dot);
+      return (source.structure.columns || [])
+        .filter((column) => !column.isHidden && column.name.toLowerCase().startsWith(columnPrefix.toLowerCase()))
+        .map((column) => `${displayedQualifier}.${column.name}`);
+    }
+
+    if (/\bON\s*$/i.test(statement.beforeCaret)) {
+      const joins = joinConditionSuggestions(loaded);
+      if (joins.length) return joins;
+    }
+
+    const candidates = loaded.flatMap((source) => (source.structure.columns || [])
+      .filter((column) => !column.isHidden && column.name.toLowerCase().startsWith(prefix.toLowerCase()))
+      .map((column) => ({ source, column })));
+    return candidates.map(({ source, column }) => {
+      const duplicate = candidates.some((candidate) =>
+        candidate.column.name.toLowerCase() === column.name.toLowerCase()
+        && candidate.source !== source);
+      return duplicate ? `${source.displayAlias}.${column.name}` : column.name;
+    });
   }
 
   function highlightSql(sql) {
@@ -758,9 +879,205 @@
     return '';
   }
 
+  function tokenizeSqlForFormatting(sql) {
+    const tokens = [];
+    let index = 0;
+    const quoted = (end, escapedEnd = end) => {
+      const start = index++;
+      while (index < sql.length) {
+        if (sql[index] !== end) { index++; continue; }
+        if (sql[index + 1] === escapedEnd) { index += 2; continue; }
+        index++;
+        break;
+      }
+      tokens.push({ type: 'quoted', text: sql.slice(start, index) });
+    };
+
+    while (index < sql.length) {
+      if (/\s/.test(sql[index])) { index++; continue; }
+      if (sql.startsWith('--', index)) {
+        const end = sql.indexOf('\n', index);
+        tokens.push({ type: 'line-comment', text: sql.slice(index, end < 0 ? sql.length : end).trimEnd() });
+        index = end < 0 ? sql.length : end + 1;
+      } else if (sql.startsWith('/*', index)) {
+        const start = index;
+        let depth = 1;
+        index += 2;
+        while (index < sql.length && depth) {
+          if (sql.startsWith('/*', index)) { depth++; index += 2; }
+          else if (sql.startsWith('*/', index)) { depth--; index += 2; }
+          else index++;
+        }
+        tokens.push({ type: 'block-comment', text: sql.slice(start, index) });
+      } else if ((sql[index] === 'N' || sql[index] === 'n') && sql[index + 1] === "'") {
+        const prefix = sql[index++];
+        quoted("'");
+        tokens[tokens.length - 1].text = prefix + tokens[tokens.length - 1].text;
+      } else if (sql[index] === "'" || sql[index] === '"' || sql[index] === '`') {
+        quoted(sql[index]);
+      } else if (sql[index] === '[') {
+        quoted(']', ']');
+      } else {
+        const rest = sql.slice(index);
+        const match = rest.match(/^(@@?[A-Za-z_][\w$#@]*|[#A-Za-z_][\w$#@]*|(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?|<>|!=|<=|>=|!<|!>|:=|\|\||[-+*/%=<>&|^~.,;:()])/i);
+        if (match) {
+          const text = match[0];
+          tokens.push({ type: /^[#A-Za-z_@]/.test(text) ? 'word' : /^(?:\d|\.\d)/.test(text) ? 'number' : 'symbol', text });
+          index += text.length;
+        } else {
+          tokens.push({ type: 'symbol', text: sql[index++] });
+        }
+      }
+    }
+    return tokens;
+  }
+
+  function formatSql(sql) {
+    const tokens = tokenizeSqlForFormatting(sql);
+    if (!tokens.length) return sql;
+    const keywordSet = new Set([...SQL_KEYWORDS,
+      'ABORT', 'CONFLICT', 'DO', 'EXPLAIN', 'FILTER', 'IGNORE', 'LIMIT', 'NOTHING',
+      'OFFSET', 'PRAGMA', 'RECURSIVE', 'REPLACE', 'RETURNING', 'TEMP', 'TEMPORARY',
+      'WINDOW', 'WITHOUT']);
+    const clauses = new Map([
+      ['GROUP BY', 2], ['ORDER BY', 2], ['PARTITION BY', 2], ['INSERT INTO', 2],
+      ['DELETE FROM', 2], ['UNION ALL', 2], ['LEFT OUTER JOIN', 3],
+      ['RIGHT OUTER JOIN', 3], ['FULL OUTER JOIN', 3], ['LEFT JOIN', 2],
+      ['RIGHT JOIN', 2], ['FULL JOIN', 2], ['INNER JOIN', 2], ['CROSS JOIN', 2],
+    ]);
+    const clauseStarts = new Set([
+      'SELECT', 'FROM', 'WHERE', 'HAVING', 'GROUP BY', 'ORDER BY', 'LIMIT', 'OFFSET',
+      'RETURNING', 'WINDOW', 'INSERT INTO', 'UPDATE', 'DELETE FROM', 'VALUES', 'SET',
+      'UNION', 'UNION ALL', 'EXCEPT', 'INTERSECT', 'WITH', 'MERGE', 'WHEN MATCHED',
+      'WHEN NOT MATCHED',
+    ]);
+    const joinClauses = new Set(['JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'FULL JOIN',
+      'INNER JOIN', 'CROSS JOIN', 'LEFT OUTER JOIN', 'RIGHT OUTER JOIN', 'FULL OUTER JOIN']);
+    const lines = [];
+    let line = '';
+    let indent = 0;
+    let parenDepth = 0;
+    let selectDepth = -1;
+    let clause = '';
+    let caseDepth = 0;
+    const indentation = () => '    '.repeat(Math.max(0, indent));
+    const flush = () => {
+      const value = line.trimEnd();
+      if (value) lines.push(indentation() + value.trimStart());
+      line = '';
+    };
+    const blankLine = () => {
+      flush();
+      if (lines.length && lines[lines.length - 1] !== '') lines.push('');
+    };
+    const append = (text, space = true) => {
+      if (space && line && !/[ (.]$/.test(line)) line += ' ';
+      line += text;
+    };
+    const nextWord = (offset) => tokens[offset]?.type === 'word' ? tokens[offset].text.toUpperCase() : '';
+
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token.type === 'line-comment') {
+        append(token.text);
+        flush();
+        continue;
+      }
+      if (token.type === 'block-comment') {
+        if (token.text.includes('\n')) {
+          flush();
+          for (const commentLine of token.text.split(/\r?\n/)) lines.push(indentation() + commentLine.trimEnd());
+        } else append(token.text);
+        continue;
+      }
+
+      let upper = token.type === 'word' ? token.text.toUpperCase() : '';
+      let phrase = upper;
+      let consumed = 1;
+      for (const width of [3, 2]) {
+        const candidate = Array.from({ length: width }, (_, offset) => nextWord(i + offset)).join(' ');
+        if (clauses.get(candidate) === width) { phrase = candidate; consumed = width; break; }
+      }
+      if (consumed > 1) i += consumed - 1;
+      else if (keywordSet.has(upper)) phrase = upper;
+      else phrase = token.text;
+
+      if (token.type === 'symbol') {
+        if (token.text === ';') {
+          append(';', false);
+          blankLine();
+          selectDepth = -1;
+          clause = '';
+        } else if (token.text === ',') {
+          append(',', false);
+          if (selectDepth === parenDepth || clause === 'SET' || clause === 'VALUES') flush();
+          else append('', true);
+        } else if (token.text === '.') append('.', false);
+        else if (token.text === '(') {
+          append('(', !line || /\b(?:AS|IN|EXISTS|VALUES|FROM|JOIN)$/i.test(line));
+          parenDepth++;
+          if (nextWord(i + 1) === 'SELECT') { flush(); indent++; }
+        } else if (token.text === ')') {
+          if (!line && indent) indent--;
+          append(')', false);
+          parenDepth = Math.max(0, parenDepth - 1);
+        } else if (token.text === ':') append(':', false);
+        else append(token.text);
+        continue;
+      }
+
+      if (clauseStarts.has(phrase) || joinClauses.has(phrase)) {
+        if (line) flush();
+        if (phrase === 'SELECT') {
+          append(phrase, false);
+          flush();
+          indent++;
+          selectDepth = parenDepth;
+        } else {
+          indent = parenDepth + caseDepth;
+          selectDepth = -1;
+          append(phrase, false);
+          clause = phrase;
+          if (['UNION', 'UNION ALL', 'EXCEPT', 'INTERSECT'].includes(phrase)) flush();
+        }
+        continue;
+      }
+      if (phrase === 'ON' && joinClauses.has(clause)) {
+        flush();
+        indent++;
+        append('ON', false);
+        clause = 'ON';
+        continue;
+      }
+      if ((phrase === 'AND' || phrase === 'OR') && ['WHERE', 'HAVING', 'ON'].includes(clause)) {
+        flush();
+        append(phrase, false);
+        continue;
+      }
+      if (phrase === 'CASE') {
+        append('CASE');
+        caseDepth++;
+        indent++;
+      } else if (phrase === 'WHEN' || phrase === 'ELSE') {
+        flush();
+        append(phrase, false);
+      } else if (phrase === 'END' && caseDepth) {
+        flush();
+        indent--;
+        append('END', false);
+        caseDepth--;
+      } else {
+        append(keywordSet.has(upper) ? upper : token.text);
+      }
+    }
+    flush();
+    while (lines[lines.length - 1] === '') lines.pop();
+    return lines.join('\n');
+  }
+
   function sqlCompletionPrefix(value, caret) {
     const before = value.slice(0, caret);
-    const found = before.match(/(?:\[?[A-Za-z_][\w$#@]*\]?\.(?:\[?[A-Za-z_][\w$#@]*\]?)?|\[?[A-Za-z_][\w$#@]*\]?)$/);
+    const found = before.match(/(?:@@?[A-Za-z_][\w$#@]*|\[?[A-Za-z_][\w$#@]*\]?\.(?:\[?[A-Za-z_][\w$#@]*\]?)?|\[?[A-Za-z_][\w$#@]*\]?)$/);
     return found ? found[0] : '';
   }
 
@@ -797,11 +1114,11 @@
       const request = ++completionRequest;
       const prefix = sqlCompletionPrefix(input.value, input.selectionStart);
       if (!force && prefix.length < 2) { hideCompletion(); return; }
-      const columns = await aliasColumnSuggestions(input.value, prefix, scope);
+      const contextual = await contextualSqlSuggestions(input.value, input.selectionStart, prefix, scope);
       if (request !== completionRequest || prefix !== sqlCompletionPrefix(input.value, input.selectionStart)) return;
-      matches = [...columns, ...sqlSuggestions(scope).filter((x) => x.toLowerCase().startsWith(prefix.toLowerCase()))]
+      matches = [...contextual, ...sqlSuggestions(scope).filter((x) => x.toLowerCase().startsWith(prefix.toLowerCase()))]
         .filter((x, i, all) => x.toLowerCase() !== prefix.toLowerCase() && all.findIndex((y) => y.toLowerCase() === x.toLowerCase()) === i)
-        .slice(0, 10);
+        .slice(0, 20);
       selected = 0;
       if (!matches.length) { hideCompletion(); return; }
       completion.replaceChildren(...matches.map((x, i) => h('button', {
@@ -833,6 +1150,20 @@
     Object.defineProperty(editor, 'value', { get: () => input.value, set: (v) => { input.value = v || ''; refresh(); } });
     editor.focus = () => input.focus();
     editor.textarea = input;
+    editor.formatSql = () => {
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      const hasSelection = start !== end;
+      const formatted = formatSql(hasSelection ? input.value.slice(start, end) : input.value);
+      if (hasSelection) {
+        input.setRangeText(formatted, start, end, 'select');
+      } else {
+        input.value = formatted;
+        input.setSelectionRange(formatted.length, formatted.length);
+      }
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+    };
     editor.value = initialValue;
     return editor;
   }
@@ -5575,6 +5906,10 @@
       class: 'primary', text: 'Run (Ctrl+Enter)', 'data-testid': 'query-run',
     });
     const cancelButton = h('button', { text: 'Cancel', disabled: '', 'data-testid': 'query-cancel' });
+    const formatButton = h('button', {
+      text: 'Format', title: 'Format SQL (Ctrl+Shift+F)', 'data-testid': 'query-format',
+      onclick: () => editor.formatSql(),
+    });
     const serverMaxRows = state.meta.maxQueryResultRows;
     let savedMaxRows = serverMaxRows;
     try { savedMaxRows = Number(localStorage.getItem('gridlet.queryMaxRows')) || serverMaxRows; } catch { /* unavailable */ }
@@ -5930,9 +6265,13 @@
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         run();
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        editor.formatSql();
       }
     });
 
+    const formatActions = h('span', { class: 'toolbar-group' }, formatButton);
     const savedActions = h('span', { class: 'toolbar-group saved-query-actions' },
       h('span', { class: 'toolbar-divider' }), savedSelect, saveButton, deleteButton);
     const planActions = capabilities.supportsQueryPlans && currentConn().allowSqlExecution
@@ -5958,6 +6297,7 @@
       h('label', { class: 'query-limit-label', title: maxRowsInput.title }, 'Row cap ', maxRowsInput));
     const queryToolbar = h('div', { class: 'query-toolbar', 'data-testid': 'query-toolbar' },
         runButton, cancelButton,
+        formatActions,
         savedActions,
         planActions,
         sessionActions,
@@ -5966,7 +6306,7 @@
         status);
     setupOverflowToolbar(
       queryToolbar,
-      [savedActions, planActions, sessionActions, limitActions].filter(Boolean),
+      [savedActions, planActions, sessionActions, limitActions, formatActions].filter(Boolean),
       'More query actions');
     renderSession();
     tab.panel = h('div', { class: 'panel query-panel' },
