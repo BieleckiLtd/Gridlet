@@ -6306,7 +6306,7 @@
         status);
     setupOverflowToolbar(
       queryToolbar,
-      [savedActions, planActions, sessionActions, limitActions, formatActions].filter(Boolean),
+      [formatActions, savedActions, planActions, sessionActions, limitActions].filter(Boolean),
       'More query actions');
     renderSession();
     tab.panel = h('div', { class: 'panel query-panel' },
