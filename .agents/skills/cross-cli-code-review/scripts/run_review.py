@@ -1,21 +1,30 @@
 #!/usr/bin/env python3
-"""Run a model-verified, read-only review through Claude Code or Copilot CLI."""
+"""Run a model-verified, read-only review through an external coding CLI."""
 
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import time
 import uuid
 
+PROVIDERS = ("claude", "codex", "copilot", "grok")
+SESSION_ROOTS = {
+    "claude": Path.home() / ".claude/projects",
+    "codex": Path.home() / ".codex/sessions",
+    "copilot": Path.home() / ".copilot/session-state",
+    "grok": Path.home() / ".grok/sessions",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--provider", choices=("claude", "copilot"), required=True)
+    parser.add_argument("--provider", choices=PROVIDERS, required=True)
     parser.add_argument("--model", required=True, help="Exact backend model ID; aliases are discouraged.")
     parser.add_argument("--effort", required=True, choices=("low", "medium", "high", "xhigh", "max"))
     parser.add_argument("--scope", choices=("working-tree", "staged", "branch"), default="working-tree")
@@ -77,9 +86,20 @@ def build_command(args: argparse.Namespace, prompt: str) -> list[str]:
             "--allow-tool=shell(git log)", "--allow-tool=shell(git show)",
             "--deny-tool=write", "--no-ask-user", "--silent", "--stream", "off",
         ]
+    if args.provider == "claude":
+        return [
+            "claude", "-p", prompt, "--model", args.model, "--effort", args.effort,
+            "--permission-mode", "plan", "--tools", "Read,Grep,Glob,Bash", "--output-format", "json",
+        ]
+    if args.provider == "codex":
+        return [
+            "codex", "-a", "never", "-c", f'model_reasoning_effort="{args.effort}"',
+            "exec", "-s", "read-only", "--color", "never", "-m", args.model, "--json",
+            "review", "--uncommitted", prompt,
+        ]
     return [
-        "claude", "-p", prompt, "--model", args.model, "--effort", args.effort,
-        "--permission-mode", "plan", "--tools", "Read,Grep,Glob,Bash", "--output-format", "json",
+        "grok", "-p", prompt, "-m", args.model, "--reasoning-effort", args.effort,
+        "--permission-mode", "plan", "--sandbox", "read-only", "--output-format", "json",
     ]
 
 
@@ -120,15 +140,22 @@ def models_from_jsonl(root: Path, marker: str, started: float) -> set[str]:
     return set()
 
 
+def models_from_text(text: str) -> set[str]:
+    return {match.group(1) for match in re.finditer(r"(?m)^model:\s+(\S+)", text)}
+
+
 def verify_model(args: argparse.Namespace, stdout: str, marker: str, started: float) -> set[str]:
     models: set[str] = set()
     try:
         models.update(collect_models(json.loads(stdout)))
     except json.JSONDecodeError:
-        pass
-    home = Path.home()
-    session_root = home / (".copilot/session-state" if args.provider == "copilot" else ".claude/projects")
-    models.update(models_from_jsonl(session_root, marker, started))
+        for line in stdout.splitlines():
+            try:
+                models.update(collect_models(json.loads(line)))
+            except json.JSONDecodeError:
+                continue
+    models.update(models_from_text(stdout))
+    models.update(models_from_jsonl(SESSION_ROOTS[args.provider], marker, started))
     if args.model not in models:
         observed = ", ".join(sorted(models)) or "none"
         raise RuntimeError(f"effective model could not be verified as {args.model!r}; observed: {observed}")
@@ -136,13 +163,14 @@ def verify_model(args: argparse.Namespace, stdout: str, marker: str, started: fl
 
 
 def display_result(provider: str, stdout: str) -> None:
-    if provider == "claude":
+    if provider in {"claude", "grok"}:
         try:
             payload = json.loads(stdout)
-            result = payload.get("result")
-            if isinstance(result, str):
-                print(result)
-                return
+            for key in ("result", "message", "text"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    print(value)
+                    return
         except json.JSONDecodeError:
             pass
     print(stdout.rstrip())
