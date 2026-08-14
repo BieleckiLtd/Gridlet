@@ -2833,10 +2833,14 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.Locator("#tabbar .tab")).ToHaveCountAsync(1);
 
         await page.Locator("#tabbar .tab.active .tab-close").ClickAsync();
+        var sessionClosed = page.WaitForResponseAsync(response =>
+            response.Request.Method == "DELETE"
+            && response.Url.Contains("/api/sessions/", StringComparison.Ordinal));
         await page.GetByRole(AriaRole.Dialog, new() { Name = "Transaction still open" })
             .GetByRole(AriaRole.Button, new() { Name = "Roll back and close", Exact = true }).ClickAsync();
 
         await Assertions.Expect(page.Locator("#tabbar .tab")).ToHaveCountAsync(0);
+        await sessionClosed;
         Assert.Contains("session.rollback", fixture.Provider.Calls);
         browserPage.AssertNoUnexpectedErrors();
     }
