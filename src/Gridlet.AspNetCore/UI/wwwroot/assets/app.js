@@ -562,6 +562,7 @@
     schemas: [],
     objectsByScope: new Map(),
     structures: new Map(),
+    routines: new Map(),
     tabs: [],
     activeTabId: null,
     nextTabId: 1,
@@ -692,36 +693,156 @@
     return [...new Set([...objects, ...schemas, ...SQL_KEYWORDS, ...SQL_FUNCTIONS])];
   }
 
-  const unquoteSqlIdentifier = (value) => value.replace(/^\[|\]$/g, '').replaceAll(']]', ']');
+  const unquoteSqlIdentifier = (value) => {
+    if (value.startsWith('[') && value.endsWith(']')) return value.slice(1, -1).replaceAll(']]', ']');
+    if (value.startsWith('"') && value.endsWith('"')) return value.slice(1, -1).replaceAll('""', '"');
+    if (value.startsWith('`') && value.endsWith('`')) return value.slice(1, -1).replaceAll('``', '`');
+    return value;
+  };
 
-  async function aliasColumnSuggestions(sql, prefix, scope = state) {
-    if (!prefix.endsWith('.')) return [];
+  function maskSqlCommentsAndStrings(sql) {
+    return sql.replace(/--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|N?'(?:''|[^'])*(?:'|$)/gi,
+      (match) => match.replace(/[^\r\n]/g, ' '));
+  }
+
+  function currentSqlStatement(sql, caret) {
+    const masked = maskSqlCommentsAndStrings(sql);
+    const start = masked.lastIndexOf(';', Math.max(0, caret - 1)) + 1;
+    const nextEnd = masked.indexOf(';', caret);
+    const end = nextEnd < 0 ? sql.length : nextEnd;
+    return { sql: sql.slice(start, end), beforeCaret: sql.slice(start, caret) };
+  }
+
+  function sqlSources(sql, scope) {
     const known = objectsFor(scope);
-    const qualifier = unquoteSqlIdentifier(prefix.slice(0, -1));
-    if (!qualifier || known.some((o) => o.schema.toLowerCase() === qualifier.toLowerCase())) return [];
-
-    const identifier = '(?:\\[[^\\]]+\\]|[A-Za-z_][\\w$#@]*)';
-    const sourcePattern = new RegExp(`\\b(?:FROM|JOIN)\\s+(${identifier})(?:\\s*\\.\\s*(${identifier}))?\\s+(?:AS\\s+)?(${identifier})`, 'gi');
-    let object = null;
-    for (const match of sql.matchAll(sourcePattern)) {
-      const alias = unquoteSqlIdentifier(match[3]);
-      if (alias.toLowerCase() !== qualifier.toLowerCase()) continue;
+    const identifier = '(?:\\[(?:\\]\\]|[^\\]])+\\]|"(?:""|[^"])+"|`(?:``|[^`])+`|[A-Za-z_][\\w$#@]*)';
+    const pattern = new RegExp(`\\b(?:FROM|JOIN)\\s+(${identifier})(?:\\s*\\.\\s*(${identifier}))?(?:\\s+(?:AS\\s+)?(${identifier}))?`, 'gi');
+    const reserved = new Set([...SQL_KEYWORDS, 'LIMIT', 'OFFSET', 'RETURNING', 'WINDOW']);
+    const sources = [];
+    for (const match of maskSqlCommentsAndStrings(sql).matchAll(pattern)) {
       const schema = match[2] ? unquoteSqlIdentifier(match[1]) : defaultSchemaFor(scope);
       const name = unquoteSqlIdentifier(match[2] || match[1]);
-      object = known.find((o) => o.schema.toLowerCase() === schema.toLowerCase() && o.name.toLowerCase() === name.toLowerCase());
-      if (object) break;
+      const rawAlias = match[3] && !reserved.has(unquoteSqlIdentifier(match[3]).toUpperCase())
+        ? match[3]
+        : null;
+      const object = known.find((candidate) => ['Table', 'View'].includes(candidate.type)
+        && candidate.schema.toLowerCase() === schema.toLowerCase()
+        && candidate.name.toLowerCase() === name.toLowerCase());
+      if (!object || sources.some((source) => source.alias.toLowerCase() === unquoteSqlIdentifier(rawAlias || name).toLowerCase())) continue;
+      sources.push({ object, alias: unquoteSqlIdentifier(rawAlias || name), displayAlias: rawAlias || match[2] || match[1] });
     }
-    if (!object || !['Table', 'View'].includes(object.type)) return [];
+    return sources;
+  }
 
-    const key = `${scopeKey(scope)} ${object.schema}.${object.name}`.toLowerCase();
+  async function loadCompletionStructure(source, scope) {
+    const key = `${scopeKey(scope)} ${source.object.schema}.${source.object.name}`.toLowerCase();
     let structure = state.structures.get(key);
     if (!structure) {
-      try {
-        structure = await api(urlsFor(scope).structure(object.schema, object.name));
-        state.structures.set(key, structure);
-      } catch { return []; }
+      structure = await api(urlsFor(scope).structure(source.object.schema, source.object.name));
+      state.structures.set(key, structure);
     }
-    return (structure.columns || []).map((column) => `${prefix}${column.name}`);
+    return { ...source, structure };
+  }
+
+  async function routineParameterSuggestions(statement, prefix, scope) {
+    const identifier = '(?:\\[(?:\\]\\]|[^\\]])+\\]|"(?:""|[^"])+"|`(?:``|[^`])+`|[A-Za-z_][\\w$#@]*)';
+    const match = maskSqlCommentsAndStrings(statement.sql).match(
+      new RegExp(`\\bEXEC(?:UTE)?\\s+(${identifier})(?:\\s*\\.\\s*(${identifier}))?`, 'i'));
+    const declared = [...statement.sql.matchAll(/\bDECLARE\s+(@[A-Za-z_][\w$#@]*)/gi)].map((item) => item[1]);
+    let parameters = declared;
+    if (match) {
+      const schema = match[2] ? unquoteSqlIdentifier(match[1]) : defaultSchemaFor(scope);
+      const name = unquoteSqlIdentifier(match[2] || match[1]);
+      const routine = objectsFor(scope).find((object) =>
+        ['StoredProcedure', 'ScalarFunction', 'TableValuedFunction'].includes(object.type)
+        && object.schema.toLowerCase() === schema.toLowerCase()
+        && object.name.toLowerCase() === name.toLowerCase());
+      if (routine) {
+        const key = `${scopeKey(scope)} ${routine.schema}.${routine.name}`.toLowerCase();
+        let definition = state.routines.get(key);
+        if (!definition) {
+          definition = await api(urlsFor(scope).routine(routine.schema, routine.name));
+          state.routines.set(key, definition);
+        }
+        parameters = [...parameters, ...(definition.parameters || [])
+          .filter((parameter) => !parameter.isReturnValue)
+          .map((parameter) => parameter.name)];
+      }
+    }
+    return [...new Set(parameters)].filter((parameter) =>
+      parameter.toLowerCase().startsWith(prefix.toLowerCase())
+      && parameter.toLowerCase() !== prefix.toLowerCase());
+  }
+
+  function joinConditionSuggestions(sources) {
+    const suggestions = [];
+    for (const source of sources) {
+      for (const foreignKey of source.structure.foreignKeys || []) {
+        const target = sources.find((candidate) =>
+          candidate.object.schema.toLowerCase() === foreignKey.referencedSchema.toLowerCase()
+          && candidate.object.name.toLowerCase() === foreignKey.referencedTable.toLowerCase());
+        if (!target) continue;
+        const pairs = (foreignKey.columns || []).map((pair) =>
+          `${source.displayAlias}.${pair.column} = ${target.displayAlias}.${pair.referencedColumn}`);
+        if (pairs.length) suggestions.push(pairs.join(' AND '));
+      }
+    }
+    return suggestions;
+  }
+
+  async function contextualSqlSuggestions(sql, caret, prefix, scope = state) {
+    const statement = currentSqlStatement(sql, caret);
+    if (prefix.startsWith('@') || /\bEXEC(?:UTE)?\b/i.test(statement.beforeCaret)) {
+      try {
+        const parameters = await routineParameterSuggestions(statement, prefix, scope);
+        if (parameters.length) return parameters;
+      } catch { /* metadata completion is best effort */ }
+    }
+
+    const sourceContext = statement.beforeCaret.match(/\b(?:FROM|JOIN)\s+([^\s,()]*)$/i);
+    if (sourceContext) {
+      const typed = sourceContext[1].toLowerCase();
+      return sqlSuggestions(scope).filter((suggestion) => {
+        const object = objectsFor(scope).find((candidate) => ['Table', 'View'].includes(candidate.type)
+          && [candidate.name, `${candidate.schema}.${candidate.name}`,
+            `[${candidate.schema.replaceAll(']', ']]')}].[${candidate.name.replaceAll(']', ']]')}]`]
+            .some((name) => name.toLowerCase() === suggestion.toLowerCase()));
+        return object && suggestion.toLowerCase().startsWith(typed);
+      });
+    }
+
+    const sources = sqlSources(statement.sql, scope);
+    if (!sources.length) return [];
+    let loaded;
+    try { loaded = await Promise.all(sources.map((source) => loadCompletionStructure(source, scope))); }
+    catch { return []; }
+
+    const dot = prefix.lastIndexOf('.');
+    if (dot >= 0) {
+      const qualifier = unquoteSqlIdentifier(prefix.slice(0, dot));
+      const columnPrefix = unquoteSqlIdentifier(prefix.slice(dot + 1));
+      const source = loaded.find((candidate) => candidate.alias.toLowerCase() === qualifier.toLowerCase());
+      if (!source) return [];
+      const displayedQualifier = prefix.slice(0, dot);
+      return (source.structure.columns || [])
+        .filter((column) => !column.isHidden && column.name.toLowerCase().startsWith(columnPrefix.toLowerCase()))
+        .map((column) => `${displayedQualifier}.${column.name}`);
+    }
+
+    if (/\bON\s*$/i.test(statement.beforeCaret)) {
+      const joins = joinConditionSuggestions(loaded);
+      if (joins.length) return joins;
+    }
+
+    const candidates = loaded.flatMap((source) => (source.structure.columns || [])
+      .filter((column) => !column.isHidden && column.name.toLowerCase().startsWith(prefix.toLowerCase()))
+      .map((column) => ({ source, column })));
+    return candidates.map(({ source, column }) => {
+      const duplicate = candidates.some((candidate) =>
+        candidate.column.name.toLowerCase() === column.name.toLowerCase()
+        && candidate.source !== source);
+      return duplicate ? `${source.displayAlias}.${column.name}` : column.name;
+    });
   }
 
   function highlightSql(sql) {
@@ -758,9 +879,310 @@
     return '';
   }
 
+  function tokenizeSqlForFormatting(sql) {
+    const tokens = [];
+    let index = 0;
+    const quoted = (end, escapedEnd = end) => {
+      const start = index++;
+      while (index < sql.length) {
+        if (sql[index] !== end) { index++; continue; }
+        if (sql[index + 1] === escapedEnd) { index += 2; continue; }
+        index++;
+        break;
+      }
+      tokens.push({ type: 'quoted', text: sql.slice(start, index) });
+    };
+
+    while (index < sql.length) {
+      if (/\s/.test(sql[index])) { index++; continue; }
+      if (sql.startsWith('--', index)) {
+        const end = sql.indexOf('\n', index);
+        tokens.push({ type: 'line-comment', text: sql.slice(index, end < 0 ? sql.length : end).trimEnd() });
+        index = end < 0 ? sql.length : end + 1;
+      } else if (sql.startsWith('/*', index)) {
+        const start = index;
+        let depth = 1;
+        index += 2;
+        while (index < sql.length && depth) {
+          if (sql.startsWith('/*', index)) { depth++; index += 2; }
+          else if (sql.startsWith('*/', index)) { depth--; index += 2; }
+          else index++;
+        }
+        tokens.push({ type: 'block-comment', text: sql.slice(start, index) });
+      } else if ((sql[index] === 'N' || sql[index] === 'n') && sql[index + 1] === "'") {
+        const prefix = sql[index++];
+        quoted("'");
+        tokens[tokens.length - 1].text = prefix + tokens[tokens.length - 1].text;
+      } else if (sql[index] === "'" || sql[index] === '"' || sql[index] === '`') {
+        quoted(sql[index]);
+      } else if (sql[index] === '[') {
+        quoted(']', ']');
+      } else {
+        const rest = sql.slice(index);
+        const match = rest.match(/^(@@?[A-Za-z_][\w$#@]*|[#A-Za-z_][\w$#@]*|(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?|<>|!=|<=|>=|!<|!>|:=|\|\||[-+*/%=<>&|^~.,;:()])/i);
+        if (match) {
+          const text = match[0];
+          tokens.push({ type: /^[#A-Za-z_@]/.test(text) ? 'word' : /^(?:\d|\.\d)/.test(text) ? 'number' : 'symbol', text });
+          index += text.length;
+        } else {
+          tokens.push({ type: 'symbol', text: sql[index++] });
+        }
+      }
+    }
+    return tokens;
+  }
+
+  function unqualifiedMutationStatements(sql, providerName = '') {
+    const statementStarts = new Set([
+      'ALTER', 'CREATE', 'DELETE', 'DENY', 'DROP', 'EXEC', 'EXECUTE', 'EXPLAIN',
+      'GRANT', 'INSERT', 'MERGE', 'PRAGMA', 'REVOKE', 'SELECT', 'TRUNCATE', 'UPDATE',
+    ]);
+    const definitionContexts = new Set([
+      'AFTER', 'BEFORE', 'DENY', 'DO', 'FOR', 'GRANT', 'INSTEAD', 'KEY', 'OF', 'ON', 'REVOKE', 'THEN',
+    ]);
+    const warnings = [];
+    let statement = [];
+    let definitionBatch = false;
+    let triggerBodyDepth = 0;
+
+    const inspect = () => {
+      let depth = 0;
+      const words = [];
+      for (const token of statement) {
+        if (token.type === 'line-comment' || token.type === 'block-comment') continue;
+        if (token.type === 'symbol' && token.text === '(') { depth++; continue; }
+        if (token.type === 'symbol' && token.text === ')') { depth = Math.max(0, depth - 1); continue; }
+        if (depth === 0 && token.type === 'word') words.push(token.text.toUpperCase());
+      }
+      statement = [];
+
+      if (definitionBatch) return;
+      if (triggerBodyDepth) {
+        triggerBodyDepth += words.filter((word) => word === 'BEGIN' || word === 'CASE').length
+          - words.filter((word) => word === 'END').length;
+        if (triggerBodyDepth < 0) triggerBodyDepth = 0;
+        return;
+      }
+      // EXPLAIN and SQLite's EXPLAIN QUERY PLAN compile a statement without executing its DML.
+      if (words[0] === 'EXPLAIN') return;
+
+      // Routine/view/trigger bodies do not run when their definition is executed. Table DDL is not
+      // exempt wholesale because a semicolon-free CREATE/ALTER can be followed by a real mutation;
+      // its ON DELETE/UPDATE clauses are filtered by their immediate context below.
+      const bodyKinds = new Set(['PROCEDURE', 'PROC', 'FUNCTION', 'VIEW', 'TRIGGER']);
+      let definitionIndex = 1;
+      if (words[0] === 'CREATE' && words[definitionIndex] === 'OR'
+        && ['ALTER', 'REPLACE'].includes(words[definitionIndex + 1])) {
+        definitionIndex += 2;
+      }
+      if (words[0] === 'CREATE' && ['TEMP', 'TEMPORARY'].includes(words[definitionIndex])) definitionIndex++;
+      const definitionKind = words[definitionIndex];
+      if (['CREATE', 'ALTER'].includes(words[0]) && bodyKinds.has(definitionKind)) {
+        if (definitionKind === 'TRIGGER') {
+          const hasBegin = words.includes('BEGIN');
+          triggerBodyDepth = words.filter((word) => word === 'BEGIN' || word === 'CASE').length
+            - words.filter((word) => word === 'END').length;
+          // SQL Server also permits a trigger body without BEGIN/END and requires the definition
+          // to own its batch, so nothing after that header is independently executable here.
+          if (!hasBegin && providerName === 'SqlServer') definitionBatch = true;
+        } else if (definitionKind !== 'VIEW' && providerName === 'SqlServer') {
+          definitionBatch = true;
+        }
+        return;
+      }
+      const isMutation = (index) => {
+        const mutation = words[index];
+        if (mutation !== 'UPDATE' && mutation !== 'DELETE') return false;
+        if (mutation === 'UPDATE' && words[index + 1] === 'STATISTICS') return false;
+        const permissionOn = ['GRANT', 'REVOKE', 'DENY'].includes(words[0]) ? words.indexOf('ON') : -1;
+        if (permissionOn > index) return false;
+        if (definitionContexts.has(words[index - 1])) return false;
+        // Trigger event lists may use commas or OR; punctuation is intentionally absent from words.
+        if (words[index - 1] === 'OR') return false;
+        return true;
+      };
+      for (let index = 0; index < words.length; index++) {
+        const mutation = words[index];
+        if (!isMutation(index)) continue;
+
+        let end = words.length;
+        for (let next = index + 1; next < words.length; next++) {
+          if ((words[next] === 'UPDATE' || words[next] === 'DELETE') && !isMutation(next)) continue;
+          if (statementStarts.has(words[next])) { end = next; break; }
+        }
+        if (!words.slice(index + 1, end).includes('WHERE')) warnings.push(mutation);
+        index = end - 1;
+      }
+    };
+
+    const inspectBatch = (batch) => {
+      definitionBatch = false;
+      triggerBodyDepth = 0;
+      for (const token of tokenizeSqlForFormatting(batch)) {
+        if (token.type === 'symbol' && token.text === ';') inspect();
+        else statement.push(token);
+      }
+      inspect();
+    };
+
+    // SQL Server's GO separator is not SQL, so it never reaches the formatter tokenizer as a
+    // boundary. Mask literals/comments, find separator-only lines, and inspect each real batch.
+    const masked = maskSqlCommentsAndStrings(sql);
+    let batchStart = 0;
+    for (const separator of masked.matchAll(/^[\t ]*GO(?:[\t ]+\d+)?[\t ]*$/gim)) {
+      inspectBatch(sql.slice(batchStart, separator.index));
+      batchStart = separator.index + separator[0].length;
+    }
+    inspectBatch(sql.slice(batchStart));
+    return warnings;
+  }
+
+  function formatSql(sql) {
+    const tokens = tokenizeSqlForFormatting(sql);
+    if (!tokens.length) return sql;
+    const keywordSet = new Set([...SQL_KEYWORDS,
+      'ABORT', 'CONFLICT', 'DO', 'EXPLAIN', 'FILTER', 'IGNORE', 'LIMIT', 'NOTHING',
+      'OFFSET', 'PRAGMA', 'RECURSIVE', 'REPLACE', 'RETURNING', 'TEMP', 'TEMPORARY',
+      'WINDOW', 'WITHOUT']);
+    const clauses = new Map([
+      ['GROUP BY', 2], ['ORDER BY', 2], ['PARTITION BY', 2], ['INSERT INTO', 2],
+      ['DELETE FROM', 2], ['UNION ALL', 2], ['LEFT OUTER JOIN', 3],
+      ['RIGHT OUTER JOIN', 3], ['FULL OUTER JOIN', 3], ['LEFT JOIN', 2],
+      ['RIGHT JOIN', 2], ['FULL JOIN', 2], ['INNER JOIN', 2], ['CROSS JOIN', 2],
+    ]);
+    const clauseStarts = new Set([
+      'SELECT', 'FROM', 'WHERE', 'HAVING', 'GROUP BY', 'ORDER BY', 'LIMIT', 'OFFSET',
+      'RETURNING', 'WINDOW', 'INSERT INTO', 'UPDATE', 'DELETE FROM', 'VALUES', 'SET',
+      'UNION', 'UNION ALL', 'EXCEPT', 'INTERSECT', 'WITH', 'MERGE', 'WHEN MATCHED',
+      'WHEN NOT MATCHED',
+    ]);
+    const joinClauses = new Set(['JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'FULL JOIN',
+      'INNER JOIN', 'CROSS JOIN', 'LEFT OUTER JOIN', 'RIGHT OUTER JOIN', 'FULL OUTER JOIN']);
+    const lines = [];
+    let line = '';
+    let indent = 0;
+    let parenDepth = 0;
+    let selectDepth = -1;
+    let clause = '';
+    let caseDepth = 0;
+    const indentation = () => '    '.repeat(Math.max(0, indent));
+    const flush = () => {
+      const value = line.trimEnd();
+      if (value) lines.push(indentation() + value.trimStart());
+      line = '';
+    };
+    const blankLine = () => {
+      flush();
+      if (lines.length && lines[lines.length - 1] !== '') lines.push('');
+    };
+    const append = (text, space = true) => {
+      if (space && line && !/[ (.]$/.test(line)) line += ' ';
+      line += text;
+    };
+    const nextWord = (offset) => tokens[offset]?.type === 'word' ? tokens[offset].text.toUpperCase() : '';
+
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token.type === 'line-comment') {
+        append(token.text);
+        flush();
+        continue;
+      }
+      if (token.type === 'block-comment') {
+        if (token.text.includes('\n')) {
+          flush();
+          for (const commentLine of token.text.split(/\r?\n/)) lines.push(indentation() + commentLine.trimEnd());
+        } else append(token.text);
+        continue;
+      }
+
+      let upper = token.type === 'word' ? token.text.toUpperCase() : '';
+      let phrase = upper;
+      let consumed = 1;
+      for (const width of [3, 2]) {
+        const candidate = Array.from({ length: width }, (_, offset) => nextWord(i + offset)).join(' ');
+        if (clauses.get(candidate) === width) { phrase = candidate; consumed = width; break; }
+      }
+      if (consumed > 1) i += consumed - 1;
+      else if (keywordSet.has(upper)) phrase = upper;
+      else phrase = token.text;
+
+      if (token.type === 'symbol') {
+        if (token.text === ';') {
+          append(';', false);
+          blankLine();
+          selectDepth = -1;
+          clause = '';
+        } else if (token.text === ',') {
+          append(',', false);
+          if (selectDepth === parenDepth || clause === 'SET' || clause === 'VALUES') flush();
+          else append('', true);
+        } else if (token.text === '.') append('.', false);
+        else if (token.text === '(') {
+          append('(', !line || /\b(?:AS|IN|EXISTS|VALUES|FROM|JOIN)$/i.test(line));
+          parenDepth++;
+          if (nextWord(i + 1) === 'SELECT') { flush(); indent++; }
+        } else if (token.text === ')') {
+          if (!line && indent) indent--;
+          append(')', false);
+          parenDepth = Math.max(0, parenDepth - 1);
+        } else if (token.text === ':') append(':', false);
+        else append(token.text);
+        continue;
+      }
+
+      if (clauseStarts.has(phrase) || joinClauses.has(phrase)) {
+        if (line) flush();
+        if (phrase === 'SELECT') {
+          append(phrase, false);
+          flush();
+          indent++;
+          selectDepth = parenDepth;
+        } else {
+          indent = parenDepth + caseDepth;
+          selectDepth = -1;
+          append(phrase, false);
+          clause = phrase;
+          if (['UNION', 'UNION ALL', 'EXCEPT', 'INTERSECT'].includes(phrase)) flush();
+        }
+        continue;
+      }
+      if (phrase === 'ON' && joinClauses.has(clause)) {
+        flush();
+        indent++;
+        append('ON', false);
+        clause = 'ON';
+        continue;
+      }
+      if ((phrase === 'AND' || phrase === 'OR') && ['WHERE', 'HAVING', 'ON'].includes(clause)) {
+        flush();
+        append(phrase, false);
+        continue;
+      }
+      if (phrase === 'CASE') {
+        append('CASE');
+        caseDepth++;
+        indent++;
+      } else if (phrase === 'WHEN' || phrase === 'ELSE') {
+        flush();
+        append(phrase, false);
+      } else if (phrase === 'END' && caseDepth) {
+        flush();
+        indent--;
+        append('END', false);
+        caseDepth--;
+      } else {
+        append(keywordSet.has(upper) ? upper : token.text);
+      }
+    }
+    flush();
+    while (lines[lines.length - 1] === '') lines.pop();
+    return lines.join('\n');
+  }
+
   function sqlCompletionPrefix(value, caret) {
     const before = value.slice(0, caret);
-    const found = before.match(/(?:\[?[A-Za-z_][\w$#@]*\]?\.(?:\[?[A-Za-z_][\w$#@]*\]?)?|\[?[A-Za-z_][\w$#@]*\]?)$/);
+    const found = before.match(/(?:@@?[A-Za-z_][\w$#@]*|\[?[A-Za-z_][\w$#@]*\]?\.(?:\[?[A-Za-z_][\w$#@]*\]?)?|\[?[A-Za-z_][\w$#@]*\]?)$/);
     return found ? found[0] : '';
   }
 
@@ -797,11 +1219,11 @@
       const request = ++completionRequest;
       const prefix = sqlCompletionPrefix(input.value, input.selectionStart);
       if (!force && prefix.length < 2) { hideCompletion(); return; }
-      const columns = await aliasColumnSuggestions(input.value, prefix, scope);
+      const contextual = await contextualSqlSuggestions(input.value, input.selectionStart, prefix, scope);
       if (request !== completionRequest || prefix !== sqlCompletionPrefix(input.value, input.selectionStart)) return;
-      matches = [...columns, ...sqlSuggestions(scope).filter((x) => x.toLowerCase().startsWith(prefix.toLowerCase()))]
+      matches = [...contextual, ...sqlSuggestions(scope).filter((x) => x.toLowerCase().startsWith(prefix.toLowerCase()))]
         .filter((x, i, all) => x.toLowerCase() !== prefix.toLowerCase() && all.findIndex((y) => y.toLowerCase() === x.toLowerCase()) === i)
-        .slice(0, 10);
+        .slice(0, 20);
       selected = 0;
       if (!matches.length) { hideCompletion(); return; }
       completion.replaceChildren(...matches.map((x, i) => h('button', {
@@ -833,6 +1255,20 @@
     Object.defineProperty(editor, 'value', { get: () => input.value, set: (v) => { input.value = v || ''; refresh(); } });
     editor.focus = () => input.focus();
     editor.textarea = input;
+    editor.formatSql = () => {
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      const hasSelection = start !== end;
+      const formatted = formatSql(hasSelection ? input.value.slice(start, end) : input.value);
+      if (hasSelection) {
+        input.setRangeText(formatted, start, end, 'select');
+      } else {
+        input.value = formatted;
+        input.setSelectionRange(formatted.length, formatted.length);
+      }
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+    };
     editor.value = initialValue;
     return editor;
   }
@@ -5557,6 +5993,77 @@
 
   // ---- query tabs -----------------------------------------------------------------
 
+  const queryHistoryKey = 'gridlet.queryHistory';
+  const queryHistoryLimit = 100;
+
+  const readQueryHistory = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(queryHistoryKey) || '[]');
+      return Array.isArray(parsed)
+        ? parsed.filter((entry) => entry && typeof entry.sql === 'string' && entry.startedAt)
+        : [];
+    } catch { return []; }
+  };
+
+  const writeQueryHistory = (records) => {
+    const candidates = records.slice(0, queryHistoryLimit);
+    // A pasted script can be large. Keep the newest executions and discard older entries until
+    // the browser accepts the write instead of allowing one script to disable history entirely.
+    const write = (value) => {
+      localStorage.setItem(queryHistoryKey, JSON.stringify(value));
+    };
+    const writeLargestPrefix = (values) => {
+      let low = 1;
+      let high = values.length;
+      let best = 0;
+      while (low <= high) {
+        const middle = Math.floor((low + high) / 2);
+        try {
+          write(values.slice(0, middle));
+          best = middle;
+          low = middle + 1;
+        } catch {
+          high = middle - 1;
+        }
+      }
+      if (best) {
+        try { write(values.slice(0, best)); return true; } catch { /* quota changed */ }
+      }
+      return false;
+    };
+    if (!candidates.length) {
+      try { localStorage.removeItem(queryHistoryKey); } catch { /* unavailable */ }
+      return;
+    }
+    try { write(candidates); return; } catch { /* reduce below */ }
+
+    // If the newest statement cannot fit even by itself, preserve the history that fitted before
+    // it was added. Otherwise a single very large paste would erase every connection's records.
+    if (candidates.length > 1) {
+      try { write([candidates[0]]); }
+      catch {
+        writeLargestPrefix(candidates.slice(1));
+        return;
+      }
+    }
+
+    // The newest entry fits on its own. Add as many older entries as the quota still permits.
+    writeLargestPrefix(candidates.slice(0, -1));
+  };
+
+  const queryHistoryFor = (scope) => readQueryHistory()
+    .filter((entry) => entry.connection === scope.connection && entry.database === scope.database);
+
+  const addQueryHistory = (scope, entry) => {
+    writeQueryHistory([{ ...entry, connection: scope.connection, database: scope.database },
+      ...readQueryHistory()]);
+  };
+
+  const clearQueryHistory = (scope) => {
+    writeQueryHistory(readQueryHistory().filter((entry) =>
+      entry.connection !== scope.connection || entry.database !== scope.database));
+  };
+
   function openQueryTab(initialSql = '', initialTitle = null, scope = scopeOf(), { autoRun = false } = {}) {
     if (!scope.database) {
       toast('Select a database first.');
@@ -5575,6 +6082,14 @@
       class: 'primary', text: 'Run (Ctrl+Enter)', 'data-testid': 'query-run',
     });
     const cancelButton = h('button', { text: 'Cancel', disabled: '', 'data-testid': 'query-cancel' });
+    const formatButton = h('button', {
+      text: 'Format', title: 'Format SQL (Ctrl+Shift+F)', 'data-testid': 'query-format',
+      onclick: () => editor.formatSql(),
+    });
+    const historyButton = h('button', {
+      text: 'History', title: 'Queries run on this connection and database from this browser',
+      'data-testid': 'query-history',
+    });
     const serverMaxRows = state.meta.maxQueryResultRows;
     let savedMaxRows = serverMaxRows;
     try { savedMaxRows = Number(localStorage.getItem('gridlet.queryMaxRows')) || serverMaxRows; } catch { /* unavailable */ }
@@ -5594,6 +6109,58 @@
     let savedQueries = [];
     let selectedSavedId = null;
     let activeQuery = null;
+
+    const showQueryHistory = () => {
+      const content = h('div', { class: 'query-history-dialog' });
+      const render = () => {
+        const records = queryHistoryFor(scope);
+        content.replaceChildren(
+          h('p', {
+            class: 'muted query-history-note',
+            text: 'The latest 100 executions are stored in this browser only. SQL may contain sensitive values and remains here after sign-out until history is cleared.',
+          }),
+          records.length
+            ? h('div', { class: 'query-history-list' }, records.map((record) => {
+              const firstLine = record.sql.trim().split(/\r?\n/).find((line) => line.trim()) || 'Query';
+              const title = firstLine.length > 90 ? `${firstLine.slice(0, 89)}…` : firstLine;
+              const when = new Date(record.startedAt);
+              const duration = Number.isFinite(record.durationMs)
+                ? `${record.durationMs.toLocaleString()} ms`
+                : 'duration unavailable';
+              const outcome = record.outcome === 'succeeded' ? 'Succeeded'
+                : record.outcome === 'cancelled' ? 'Cancelled' : 'Failed';
+              return h('button', {
+                type: 'button', class: `query-history-item ${record.outcome || 'failed'}`,
+                'data-testid': 'query-history-item',
+                title: record.sql,
+                onclick: () => {
+                  editor.value = record.sql;
+                  close();
+                  editor.focus();
+                },
+              },
+                h('span', { class: 'query-history-sql', text: title }),
+                h('span', {
+                  class: 'query-history-meta',
+                  text: `${outcome} · ${duration} · ${Number.isNaN(when.getTime()) ? '' : when.toLocaleString()}`,
+                }));
+            }))
+            : h('p', {
+              class: 'query-history-empty muted', 'data-testid': 'query-history-empty',
+              text: 'Run a query to add it to history.',
+            }));
+      };
+      let close;
+      close = modal('Query history', content, [
+        {
+          label: 'Clear history', danger: true,
+          onClick: () => { clearQueryHistory(scope); render(); },
+        },
+        { label: 'Close', primary: true, onClick: (dismiss) => dismiss() },
+      ]);
+      render();
+    };
+    historyButton.addEventListener('click', showQueryHistory);
 
     // ---- pinned session -----------------------------------------------------------------
     // Without one, every execution gets its own connection and an explicit transaction is
@@ -5779,15 +6346,32 @@
     // plan compiles without running, so it is safe on a DELETE; an actual plan runs the statement
     // and reports what really happened, which is why it is a separate, explicit action.
 
-    const showPlan = async (mode) => {
+    const confirmUnqualifiedMutation = (sql, onConfirm) => {
+      const unqualified = unqualifiedMutationStatements(sql, connectionFor(scope).providerName);
+      if (!unqualified.length) return false;
+      const kinds = [...new Set(unqualified)];
+      const description = unqualified.length === 1
+        ? `This ${kinds[0]} statement has no top-level WHERE clause and may affect every row.`
+        : `This script contains ${unqualified.length} UPDATE or DELETE statements with no top-level WHERE clause.`;
+      confirmModal('Run query without WHERE?', `${description} Run it anyway?`, onConfirm, 'Run anyway');
+      return true;
+    };
+
+    const showPlan = async (mode, dangerConfirmed = false) => {
       const sql = editor.value.trim();
       if (!sql) return;
+      if (mode === 'actual' && !dangerConfirmed
+        && confirmUnqualifiedMutation(sql, () => { showPlan(mode, true); })) return;
+      const startedAt = performance.now();
+      const historyStartedAt = Date.now();
+      let historyOutcome = 'failed';
       runButton.disabled = true;
       status.textContent = mode === 'actual' ? 'Running for actual plan…' : 'Explaining…';
       results.replaceChildren();
       results.classList.remove('single-result');
       try {
         const plan = await post(urls.queryPlan(), { sql, mode });
+        historyOutcome = 'succeeded';
         results.replaceChildren(renderQueryPlan(plan));
         status.textContent = plan.mode === 'actual' ? 'Actual plan' : 'Estimated plan';
         await refreshSession();
@@ -5795,13 +6379,22 @@
         results.replaceChildren(errorBox(err.message));
         status.textContent = 'Failed';
       } finally {
+        if (mode === 'actual') {
+          addQueryHistory(scope, {
+            sql,
+            startedAt: historyStartedAt,
+            durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+            outcome: historyOutcome,
+          });
+        }
         runButton.disabled = false;
       }
     };
 
-    const run = async () => {
+    const run = async (dangerConfirmed = false) => {
       const sql = editor.value.trim();
       if (!sql) return;
+      if (!dangerConfirmed && confirmUnqualifiedMutation(sql, () => { run(true); })) return;
       if (activeQuery) activeQuery.abort();
       const controller = new AbortController();
       activeQuery = controller;
@@ -5811,6 +6404,9 @@
       results.replaceChildren();
       results.classList.remove('single-result');
       const startedAt = performance.now();
+      const historyStartedAt = Date.now();
+      let historyDuration = null;
+      let historyOutcome = 'failed';
       status.textContent = 'Running…';
       const timer = setInterval(() => {
         status.textContent = `Running… ${((performance.now() - startedAt) / 1000).toFixed(1)} s`;
@@ -5855,6 +6451,8 @@
           if (!messages.isConnected) results.append(messages);
         } else if (event.type === 'completed') {
           completedSuccessfully = true;
+          historyOutcome = 'succeeded';
+          historyDuration = event.durationMs;
           if (!sets.size && event.recordsAffected >= 0) {
             const count = event.recordsAffected;
             results.append(h('div', {
@@ -5865,6 +6463,7 @@
           status.textContent = event.durationMs + ' ms';
         } else if (event.type === 'error') {
           completedSuccessfully = false;
+          historyDuration = event.durationMs;
           results.append(errorBox(event.message));
           status.textContent = 'Failed';
         }
@@ -5878,9 +6477,20 @@
           await refreshObjects(scope);
         }
       } catch (err) {
-        if (err.name === 'AbortError') status.textContent = 'Cancelled';
+        if (err.name === 'AbortError') {
+          historyOutcome = 'cancelled';
+          status.textContent = 'Cancelled';
+        }
         else { results.append(errorBox(err.message)); status.textContent = 'Failed'; }
       } finally {
+        addQueryHistory(scope, {
+          sql,
+          startedAt: historyStartedAt,
+          durationMs: Number.isFinite(historyDuration)
+            ? historyDuration
+            : Math.max(0, Math.round(performance.now() - startedAt)),
+          outcome: historyOutcome,
+        });
         // The statement may have been BEGIN or COMMIT itself, so the state is re-read either way.
         await refreshSession();
         clearInterval(timer);
@@ -5893,7 +6503,7 @@
       }
     };
 
-    runButton.addEventListener('click', run);
+    runButton.addEventListener('click', () => run());
     cancelButton.addEventListener('click', () => activeQuery?.abort());
 
     // Closing the tab ends the session, so an unfinished transaction is rolled back now rather
@@ -5930,9 +6540,14 @@
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         run();
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        editor.formatSql();
       }
     });
 
+    const formatActions = h('span', { class: 'toolbar-group' }, formatButton);
+    const historyActions = h('span', { class: 'toolbar-group' }, historyButton);
     const savedActions = h('span', { class: 'toolbar-group saved-query-actions' },
       h('span', { class: 'toolbar-divider' }), savedSelect, saveButton, deleteButton);
     const planActions = capabilities.supportsQueryPlans && currentConn().allowSqlExecution
@@ -5958,6 +6573,8 @@
       h('label', { class: 'query-limit-label', title: maxRowsInput.title }, 'Row cap ', maxRowsInput));
     const queryToolbar = h('div', { class: 'query-toolbar', 'data-testid': 'query-toolbar' },
         runButton, cancelButton,
+        formatActions,
+        historyActions,
         savedActions,
         planActions,
         sessionActions,
@@ -5966,7 +6583,7 @@
         status);
     setupOverflowToolbar(
       queryToolbar,
-      [savedActions, planActions, sessionActions, limitActions].filter(Boolean),
+      [historyActions, savedActions, planActions, sessionActions, limitActions].filter(Boolean),
       'More query actions');
     renderSession();
     tab.panel = h('div', { class: 'panel query-panel' },

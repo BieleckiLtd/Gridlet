@@ -22,11 +22,12 @@ internal static class SqliteTableImportService
             throw new GridletValidationException($"{schema}.{table} is not a table Gridlet can import into.");
 
         var columns = ValidateColumns(import.Columns, definition);
+        var variableLimit = SQLitePCL.raw.sqlite3_limit(
+            connection.Handle, SQLitePCL.raw.SQLITE_LIMIT_VARIABLE_NUMBER, -1);
+        var batchSize = CalculateBatchSize(columns.Count, variableLimit);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         try
         {
-            // Keep batches comfortably below SQLite's variable limit across supported builds.
-            var batchSize = Math.Max(1, Math.Min(500, 900 / columns.Count));
             for (var offset = 0; offset < import.Rows.Count; offset += batchSize)
             {
                 var count = Math.Min(batchSize, import.Rows.Count - offset);
@@ -58,6 +59,24 @@ internal static class SqliteTableImportService
             await transaction.RollbackAsync(CancellationToken.None);
             throw new GridletQueryException(ex.Message, ex);
         }
+    }
+
+    internal static int CalculateBatchSize(int columnCount, int variableLimit)
+    {
+        if (columnCount < 1)
+            throw new GridletValidationException("An import needs at least one mapped column.");
+        if (variableLimit < 1)
+            throw new GridletValidationException("SQLite reported an invalid SQL variable limit.");
+        if (columnCount > variableLimit)
+        {
+            throw new GridletValidationException(
+                $"The import maps {columnCount:N0} columns, but this SQLite connection supports at most " +
+                $"{variableLimit:N0} SQL variables per statement.");
+        }
+
+        // Retain the conservative batch budget while allowing one wide row when the runtime supports it.
+        var batchVariableBudget = Math.Min(900, variableLimit);
+        return Math.Max(1, Math.Min(500, batchVariableBudget / columnCount));
     }
 
     private static IReadOnlyList<string> ValidateColumns(
