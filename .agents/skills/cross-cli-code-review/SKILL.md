@@ -1,6 +1,6 @@
 ---
 name: cross-cli-code-review
-description: "Run independent, read-only code reviews through external coding CLIs such as Claude Code and GitHub Copilot CLI while honoring an exact requested model and reasoning effort, verifying the effective backend model, filtering stale findings against current code and discussion, and optionally repeating review after fixes. Use when the user asks for a second opinion, adversarial review, review with Claude or Copilot, comparison across CLI providers, or a fix-and-rereview loop."
+description: "Run independent, read-only code reviews through external coding CLIs such as Codex, Claude Code, Grok, and GitHub Copilot CLI while honoring an exact requested model and reasoning effort, verifying the effective backend model, filtering stale findings against current code and discussion, and optionally repeating review after fixes. Use when the user asks for a second opinion, adversarial review, review with Codex, Claude, Grok, or Copilot, comparison across CLI providers, or a fix-and-rereview loop."
 ---
 
 # Cross-CLI code review
@@ -17,7 +17,7 @@ Obtain an independent review without surrendering control of the worktree. Treat
 
 ## Run the review
 
-Prefer `scripts/run_review.py` for Claude Code and Copilot CLI:
+Prefer `scripts/run_review.py` for Codex, Claude Code, Grok, and Copilot CLI:
 
 ```text
 python .agents/skills/cross-cli-code-review/scripts/run_review.py \

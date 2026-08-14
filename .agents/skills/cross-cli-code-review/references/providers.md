@@ -2,6 +2,32 @@
 
 Model catalogs and flags change. Start every run with `<cli> --version` and `<cli> --help`; treat the installed CLI as authoritative for syntax and the provider service/session metadata as authoritative for the effective model.
 
+## Codex CLI
+
+Non-interactive pattern:
+
+```text
+codex -a never -c model_reasoning_effort="<level>" \
+  exec -s read-only --color never --model <exact-id> --json \
+  review --uncommitted "<prompt>"
+```
+
+- `codex review --uncommitted` cannot take a custom prompt; use `codex exec review`.
+- Global flags such as `-a` belong before `exec`. Confirm `--help` on the installed CLI.
+- Verify the model from `--json` events, the `model:` banner, or `~/.codex/sessions`.
+
+## Grok CLI
+
+Non-interactive pattern:
+
+```text
+grok -p "<prompt>" --model <exact-id> --reasoning-effort <level> \
+  --permission-mode plan --sandbox read-only --output-format json
+```
+
+- Use `--sandbox read-only` and plan permission mode. Do not grant write tools.
+- Verify the model from JSON output or `~/.grok/sessions`.
+
 ## GitHub Copilot CLI
 
 Non-interactive pattern:

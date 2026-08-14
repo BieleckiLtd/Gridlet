@@ -74,4 +74,7 @@ commit.
 
 - Use `$orchestrate-improvements` for repository-wide parallel improvement
   sessions.
+- Use `$ship-issue-item` to implement the next remaining item from a ranked
+  backlog issue (default #64), review it through another coding CLI, and merge
+  to `dev`.
 - Use `$release` to prepare and promote a Gridlet release.
