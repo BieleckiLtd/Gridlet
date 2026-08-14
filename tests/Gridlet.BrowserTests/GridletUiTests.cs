@@ -2136,6 +2136,32 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Lists_database_owned_types_and_suggests_column_usable_types()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("summary").Filter(new() { HasText = "Types" }).ClickAsync();
+        await Assertions.Expect(page.GetByTitle("Create type")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTitle("dbo.AccountNumber")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTitle("dbo.OrderItems")).ToBeVisibleAsync();
+        var suggestions = await page.Locator("#gridlet-types option").EvaluateAllAsync<string[]>(
+            "options => options.map(option => option.value)");
+        Assert.Contains("[dbo].[AccountNumber]", suggestions);
+        Assert.DoesNotContain("[dbo].[OrderItems]", suggestions);
+
+        await page.GetByTitle("dbo.AccountNumber").ClickAsync();
+        var editor = ActivePanel(page).GetByTestId("object-definition-editor");
+        await Assertions.Expect(editor).ToHaveValueAsync(
+            "CREATE TYPE [dbo].[AccountNumber] FROM nvarchar(32) NOT NULL;");
+        await Assertions.Expect(editor).Not.ToBeEditableAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("object-dependencies"))
+            .ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Creates_views_procedures_functions_and_triggers_from_the_sidebar()
     {
         await using var browserPage = await fixture.NewPageAsync();

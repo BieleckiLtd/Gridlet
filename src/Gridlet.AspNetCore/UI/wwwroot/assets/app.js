@@ -494,7 +494,7 @@
       data: (s, n, q) => `${objBase(s, n)}/data?${q}`,
       dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
       structure: (s, n) => `${objBase(s, n)}/structure`,
-      definition: (s, n) => `${objBase(s, n)}/definition`,
+      definition: (s, n, type = null) => `${objBase(s, n)}/definition${type ? `?type=${enc(type)}` : ''}`,
       dependencies: (s, n) => `${objBase(s, n)}/dependencies`,
       routine: (s, n) => `${objBase(s, n)}/routine`,
       routineScript: (s, n) => `${objBase(s, n)}/routine/script`,
@@ -549,7 +549,7 @@
   const del = (url) => api(url, { method: 'DELETE' });
 
   const isVirtualObject = (o) => !!o?.subKind && /virtual/i.test(o.subKind);
-  const canDropObject = (o) => !o?.isInternal;
+  const canDropObject = (o) => !o?.isInternal && o?.type !== 'UserDefinedType';
   const canDesignObject = (o) => canDropObject(o) && !isVirtualObject(o);
 
   // ---- state ----------------------------------------------------------------
@@ -675,7 +675,10 @@
 
   function refreshTypeSuggestions() {
     const list = $('#gridlet-types');
-    if (list) list.replaceChildren(...currentCapabilities().suggestedDataTypes
+    const databaseTypes = currentCapabilities().supportsSchemas ? state.objects
+      .filter((object) => object.type === 'UserDefinedType' && object.subKind !== 'table')
+      .map((object) => `[${object.schema.replaceAll(']', ']]')}].[${object.name.replaceAll(']', ']]')}]`) : [];
+    if (list) list.replaceChildren(...[...currentCapabilities().suggestedDataTypes, ...databaseTypes]
       .map((type) => h('option', { value: type })));
   }
 
@@ -1418,6 +1421,7 @@
     if (!sameScope(scope, state)) return;
     state.objects = objects;
     state.schemas = schemas;
+    refreshTypeSuggestions();
     renderTree();
   }
 
@@ -1523,6 +1527,7 @@
     ['Functions', ['ScalarFunction', 'TableValuedFunction'], 'F', 'supportsFunctions'],
     ['Triggers', ['Trigger'], 'R', 'supportsTriggers'],
     ['Sequences', ['Sequence'], 'Q', 'supportsSequences'],
+    ['Types', ['UserDefinedType'], 'Y', 'supportsSchemas'],
   ];
 
   const treeViewStorageKey = () => `gridlet.tree.${state.connection}.${state.database}`;
@@ -1587,6 +1592,7 @@
         (!filter || (o.schema + '.' + o.name).toLowerCase().includes(filter)));
       const summary = h('summary', {}, label + ' ', h('span', { class: 'count', text: String(items.length) }));
       const canCreate = currentConn().allowDdl
+        && badge !== 'Y'
         && (badge === 'T' || badge === 'Q' || currentConn().allowSqlExecution);
       if (canCreate) {
         summary.append(h('button', {
@@ -1738,7 +1744,7 @@
   }
 
   const useInQueryButton = (o, scope = state) =>
-    connectionFor(scope).allowSqlExecution && o.type !== 'Trigger' ? h('button', {
+    connectionFor(scope).allowSqlExecution && !['Trigger', 'UserDefinedType'].includes(o.type) ? h('button', {
       onclick: () => openQueryTab(objectQuerySql(o, scope), `Use ${o.name}`, scope),
     }, 'Use in query') : null;
 
@@ -1982,7 +1988,7 @@
     if (isRoutine(o) && currentConn().allowSqlExecution) {
       items.push({ label: 'Execute…', action: () => openRoutineExecuteDialog(o) });
     }
-    if (currentConn().allowSqlExecution && o.type !== 'Trigger') {
+    if (currentConn().allowSqlExecution && !['Trigger', 'UserDefinedType'].includes(o.type)) {
       items.push({ label: 'Script…', action: () => openScriptDialog(o) });
     }
     if (currentConn().allowDdl && canDropObject(o)) {
@@ -3619,14 +3625,14 @@
     body.replaceChildren(h('div', { class: 'loading', text: 'Loading…' }));
     let response;
     try {
-      response = await api(urlsFor(scope).definition(o.schema, o.name));
+      response = await api(urlsFor(scope).definition(o.schema, o.name, o.type));
     } catch (err) {
       body.replaceChildren(errorBox(err.message));
       return;
     }
     const definition = response.definition || '-- definition unavailable --';
     if (toolbar) {
-      toolbar.append(dependenciesButton(o, scope));
+      if (o.type !== 'UserDefinedType') toolbar.append(dependenciesButton(o, scope));
       if (o.type === 'Sequence' && connectionFor(scope).allowDdl) {
         toolbar.append(restartSequenceButton(o, scope));
       }

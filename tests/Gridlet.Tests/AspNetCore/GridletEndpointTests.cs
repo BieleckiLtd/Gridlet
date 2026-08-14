@@ -96,6 +96,22 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task User_defined_type_definition_is_selected_explicitly()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var objects = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects");
+        var definition = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/AccountNumber/definition?type=UserDefinedType");
+
+        Assert.Contains("\"type\":\"UserDefinedType\"", objects);
+        Assert.Contains("\"subKind\":\"alias\"", objects);
+        Assert.Contains("CREATE TYPE [dbo].[AccountNumber] FROM nvarchar(32) NOT NULL;", definition);
+    }
+
+    [Fact]
     public async Task Meta_defaults_portable_ddl_capabilities_off_for_legacy_providers()
     {
         var (app, client) = await GridletTestHost.StartAsync(

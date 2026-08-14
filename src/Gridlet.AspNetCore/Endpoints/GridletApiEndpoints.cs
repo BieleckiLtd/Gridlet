@@ -543,13 +543,17 @@ internal static partial class GridletApiEndpoints
         string database,
         string schema,
         string name,
+        DbObjectType? type,
         IGridletConnectionResolver resolver,
         CancellationToken cancellationToken)
         => Execute(async () =>
         {
             var resolved = resolver.Resolve(connection, database);
-            var definition = await resolved.Provider.Schema.GetObjectDefinitionAsync(
-                resolved.Context, schema, name, cancellationToken);
+            var definition = type == DbObjectType.UserDefinedType
+                ? await resolved.Provider.Schema.GetUserDefinedTypeDefinitionAsync(
+                    resolved.Context, schema, name, cancellationToken)
+                : await resolved.Provider.Schema.GetObjectDefinitionAsync(
+                    resolved.Context, schema, name, cancellationToken);
             return Results.Ok(new ObjectDefinitionResponse(definition));
         });
 

@@ -50,6 +50,14 @@ public interface ISchemaReader
         CancellationToken cancellationToken = default)
         => throw new GridletValidationException("This provider does not support sequences.");
 
+    /// <summary>Returns a readable definition for a database-owned alias, CLR, or table type.</summary>
+    Task<string> GetUserDefinedTypeDefinitionAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not describe user-defined types.");
+
     /// <summary>
     /// Returns the parameters of a stored procedure or function, in declaration order, with the
     /// return value first where the engine has one. Providers with no routines return nothing.

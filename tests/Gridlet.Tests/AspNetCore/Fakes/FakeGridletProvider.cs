@@ -91,6 +91,8 @@ public sealed class FakeGridletProvider :
             new DbObjectInfo("dbo", "AuditCustomers", DbObjectType.Trigger),
             new DbObjectInfo("dbo", "OrderNumbers", DbObjectType.Sequence,
                 Description: "Order number generator"),
+            new DbObjectInfo("dbo", "AccountNumber", DbObjectType.UserDefinedType, "alias"),
+            new DbObjectInfo("dbo", "OrderItems", DbObjectType.UserDefinedType, "table"),
         ]);
 
     public Task<IReadOnlyList<SchemaInfo>> GetSchemasAsync(
@@ -201,6 +203,13 @@ public sealed class FakeGridletProvider :
             "OrderNumbers" => $"CREATE SEQUENCE {schema}.{name} AS bigint START WITH 1000 INCREMENT BY 5;",
             _ => $"CREATE VIEW {schema}.{name} AS SELECT 1 AS One;",
         });
+
+    public Task<string> GetUserDefinedTypeDefinitionAsync(
+        GridletConnectionContext context, string schema, string name,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(name == "OrderItems"
+            ? $"CREATE TYPE [{schema}].[{name}] AS TABLE ([Id] int NOT NULL);"
+            : $"CREATE TYPE [{schema}].[{name}] FROM nvarchar(32) NOT NULL;");
 
     public Task<SequenceInfo> GetSequenceAsync(
         GridletConnectionContext context, string schema, string name,
