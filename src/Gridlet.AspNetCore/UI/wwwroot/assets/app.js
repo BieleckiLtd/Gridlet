@@ -2603,7 +2603,11 @@
       selectedColumn = null, rowNumber = null, moveToNextRow = null) => {
       const isNew = existingRow === null;
       lockTableLayout(table);
-      const editable = structure.columns.filter((c) => !c.isIdentity && !c.isComputed && !c.isHidden);
+      const editable = structure.columns.filter((c) =>
+        !c.isIdentity && !c.isComputed && !c.isHidden && !(
+          structure.temporal?.kind === 'systemVersioned' &&
+          [structure.temporal.periodStartColumn, structure.temporal.periodEndColumn]
+            .some((name) => name && name.toLowerCase() === c.name.toLowerCase())));
       const editableByName = new Map(editable.map((c) => [c.name.toLowerCase(), c]));
       const fields = [];
       const focusableByName = new Map();
@@ -2949,6 +2953,10 @@
       const canCheckConstraints = canDesign && currentCapabilities().supportsCheckConstraints;
       const canUniqueConstraints = canDesign && currentCapabilities().supportsUniqueConstraints;
       const canIndexes = canDesign && currentCapabilities().supportsIndexes;
+      const temporal = s.temporal;
+      const isTemporalPeriodColumn = (column) => temporal?.kind === 'systemVersioned' &&
+        [temporal.periodStartColumn, temporal.periodEndColumn]
+          .some((name) => name && name.toLowerCase() === column.name.toLowerCase());
 
       actionBar.replaceChildren(...[
         canDesign ? h('button', { onclick: () => columnsBody.append(makeColumnEditor(null)) }, '＋ Add column') : null,
@@ -3325,7 +3333,7 @@
         h('td', { class: 'mono muted', text: c.defaultDefinition || '' }),
         h('td', { class: 'mono muted', text: c.collation || '' }),
         h('td', { class: 'muted', text: c.description || '' }),
-        canDesign ? h('td', { class: 'cell-actions' },
+        canDesign ? h('td', { class: 'cell-actions' }, !isTemporalPeriodColumn(c) ? [
           h('button', { class: 'mini-btn', title: 'Edit column inline', onclick: () => row.replaceWith(makeColumnEditor(c)) }, '✎'),
           h('button', {
             class: 'mini-btn', title: 'Drop column',
@@ -3336,7 +3344,8 @@
                 invalidateStructure();
                 renderStructure();
               }, 'Drop'),
-          }, '🗑')) : null);
+          }, '🗑'),
+        ] : null) : null);
         return row;
       });
 
@@ -3344,12 +3353,31 @@
       if (canDesign) headers.push('');
 
       const columnsBody = h('tbody', {}, columnRows);
+      const temporalLabel = temporal?.kind === 'historyTable'
+        ? 'Temporal history table'
+        : 'System-versioned temporal table';
+      const relatedLabel = temporal?.kind === 'historyTable' ? 'Current table' : 'History table';
       const sections = [
         // WITHOUT ROWID and STRICT change how every row is stored and checked, so they belong at
         // the top of the structure rather than being invisible.
         s.tableOptions?.length
           ? h('div', { class: 'table-options muted', 'data-testid': 'table-options' },
             ...s.tableOptions.map((option) => h('span', { class: 'badge', text: option })))
+          : null,
+        temporal ? h('div', { class: 'temporal-info', 'data-testid': 'temporal-info' },
+          h('strong', { text: temporalLabel }),
+          temporal.relatedSchema && temporal.relatedTable
+            ? h('span', {}, `${relatedLabel}: `,
+              h('span', { class: 'mono', text: `${temporal.relatedSchema}.${temporal.relatedTable}` }))
+            : null,
+          temporal.periodStartColumn && temporal.periodEndColumn
+            ? h('span', {}, 'System-time period: ',
+              h('span', { class: 'mono', text: `${temporal.periodStartColumn} → ${temporal.periodEndColumn}` }))
+            : null,
+          temporal.historyRetentionPeriod != null && temporal.historyRetentionUnit
+            ? h('span', {}, 'History retention: ', h('span', { class: 'mono',
+              text: `${temporal.historyRetentionPeriod} ${temporal.historyRetentionUnit}` }))
+            : null)
           : null,
         s.object.description
           ? h('p', { class: 'object-description', text: s.object.description })

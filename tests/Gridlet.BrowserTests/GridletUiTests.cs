@@ -2383,6 +2383,51 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+
+    [Fact]
+    public async Task Explains_system_versioned_temporal_tables_in_structure()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("[title=\"dbo.Ledger\"]").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Row", Exact = true }).ClickAsync();
+        var rowEditor = panel.Locator("tr.row-editor");
+        await Assertions.Expect(rowEditor.GetByLabel("SysStart", new() { Exact = true })).ToHaveCountAsync(0);
+        await Assertions.Expect(rowEditor.GetByLabel("SysEnd", new() { Exact = true })).ToHaveCountAsync(0);
+        await Assertions.Expect(rowEditor.Locator(".generated-value")).ToHaveCountAsync(3);
+        await rowEditor.PressAsync("Escape");
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+
+        var temporal = panel.GetByTestId("temporal-info");
+        await Assertions.Expect(temporal.GetByText("System-versioned temporal table", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(temporal.GetByText("dbo.LedgerHeap", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(temporal.GetByText("SysStart → SysEnd", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(temporal.GetByText("6 MONTH", new() { Exact = true })).ToBeVisibleAsync();
+        var startRow = panel.Locator("tr").Filter(new() { HasText = "SysStart" });
+        await Assertions.Expect(startRow.GetByTitle("Edit column inline")).ToHaveCountAsync(0);
+        await Assertions.Expect(startRow.GetByTitle("Drop column")).ToHaveCountAsync(0);
+
+        await page.Locator("[title=\"dbo.LedgerHeap\"]").ClickAsync();
+        panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        temporal = panel.GetByTestId("temporal-info");
+        await Assertions.Expect(temporal.GetByText("Temporal history table", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(temporal.GetByText("dbo.Ledger", new() { Exact = true })).ToBeVisibleAsync();
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("temporal-info")).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     [Fact]
     public async Task Protects_virtual_and_internal_objects_and_reveals_internal_search_results()
     {

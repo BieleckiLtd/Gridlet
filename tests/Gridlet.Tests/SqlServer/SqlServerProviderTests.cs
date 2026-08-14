@@ -37,4 +37,34 @@ public sealed class SqlServerProviderTests
         Assert.Throws<GridletValidationException>(() => SqlServerSequenceService.BuildCreate(
             new Gridlet.Models.SequenceDesign("dbo", "TooPrecise", "decimal(99,0)", "1", "1")));
     }
+
+    [Theory]
+    [InlineData(0, null)]
+    [InlineData(1, Gridlet.Models.TemporalTableKinds.HistoryTable)]
+    [InlineData(2, Gridlet.Models.TemporalTableKinds.SystemVersioned)]
+    public void Maps_sql_server_temporal_types(int temporalType, string? expectedKind)
+    {
+        var temporal = SqlServerSchemaReader.CreateTemporalTableInfo(
+            temporalType, "history", "OrdersHistory", "ValidFrom", "ValidTo");
+
+        Assert.Equal(expectedKind, temporal?.Kind);
+        if (temporal is not null)
+        {
+            Assert.Equal("history", temporal.RelatedSchema);
+            Assert.Equal("OrdersHistory", temporal.RelatedTable);
+            Assert.Equal("ValidFrom", temporal.PeriodStartColumn);
+            Assert.Equal("ValidTo", temporal.PeriodEndColumn);
+        }
+    }
+
+    [Fact]
+    public void Maps_infinite_temporal_retention_to_no_finite_policy()
+    {
+        var temporal = SqlServerSchemaReader.CreateTemporalTableInfo(
+            2, "history", "OrdersHistory", "ValidFrom", "ValidTo", -1, "INFINITE");
+
+        Assert.NotNull(temporal);
+        Assert.Null(temporal.HistoryRetentionPeriod);
+        Assert.Null(temporal.HistoryRetentionUnit);
+    }
 }

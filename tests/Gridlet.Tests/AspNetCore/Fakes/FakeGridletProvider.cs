@@ -144,8 +144,13 @@ public sealed class FakeGridletProvider :
                 new ColumnInfo("Id", "int", false, true, false, name != "NoKeys", null, 0),
                 new ColumnInfo("Name", "nvarchar(100)", false, false, false, false, null, 1,
                     Description: name == "Customers" ? "Customer display name" : null),
-                new ColumnInfo("SysStart", "datetime2", false, false, true, false, null, 2,
-                    "GENERATED ALWAYS", IsHidden: true),
+                new ColumnInfo("SysStart", "datetime2", false, false,
+                    name is not ("Ledger" or "LedgerHeap"), false, null, 2,
+                    name is "Ledger" or "LedgerHeap" ? null : "GENERATED ALWAYS",
+                    IsHidden: name is not ("Ledger" or "LedgerHeap")),
+                ..(name is "Ledger" or "LedgerHeap"
+                    ? new[] { new ColumnInfo("SysEnd", "datetime2", false, false, false, false, null, 3) }
+                    : Array.Empty<ColumnInfo>()),
             ],
             name == "NoKeys"
                 ? []
@@ -165,7 +170,15 @@ public sealed class FakeGridletProvider :
                 IsClustered: true, FillFactor: 90, IsDisabled: true)],
             name is "NoKeys" or "LedgerHeap"
                 ? null
-                : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]))),
+                : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+            Temporal: name switch
+            {
+                "Ledger" => new TemporalTableInfo(TemporalTableKinds.SystemVersioned,
+                    "dbo", "LedgerHeap", "SysStart", "SysEnd", 6, "MONTH"),
+                "LedgerHeap" => new TemporalTableInfo(TemporalTableKinds.HistoryTable,
+                    "dbo", "Ledger", "SysStart", "SysEnd"),
+                _ => null,
+            })),
         };
 
     public Task<IReadOnlyList<ForeignKeyLookupItem>> LookupForeignKeyAsync(
@@ -294,13 +307,20 @@ public sealed class FakeGridletProvider :
     /// </summary>
     private static TableDataPage LedgerPage(string name, TableDataRequest request)
     {
-        object?[][] all = [[1, "Ada"], [2, "Grace"], [3, "Edsger"], [4, "Alan"]];
+        object?[][] all =
+        [
+            [1, "Ada", new DateTime(2026, 1, 1), new DateTime(2026, 2, 1)],
+            [2, "Grace", new DateTime(2026, 1, 2), new DateTime(2026, 2, 2)],
+            [3, "Edsger", new DateTime(2026, 1, 3), new DateTime(2026, 2, 3)],
+            [4, "Alan", new DateTime(2026, 1, 4), new DateTime(2026, 2, 4)],
+        ];
         var taken = all
             .Skip((request.Page - 1) * request.PageSize)
             .Take(request.PageSize)
             .ToArray();
         return new TableDataPage(
-            [new ResultColumn("Id", "int"), new ResultColumn("Name", "nvarchar(100)")],
+            [new ResultColumn("Id", "int"), new ResultColumn("Name", "nvarchar(100)"),
+                new ResultColumn("SysStart", "datetime2"), new ResultColumn("SysEnd", "datetime2")],
             taken,
             request.Page,
             request.PageSize,

@@ -61,7 +61,8 @@ internal static class SqlServerTableImportService
     {
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT c.name, c.is_identity, c.is_computed, o.type, o.is_ms_shipped " +
+            "SELECT c.name, c.is_identity, c.is_computed, o.type, o.is_ms_shipped, " +
+            "CONVERT(int, COLUMNPROPERTY(c.object_id, c.name, 'GeneratedAlwaysType')) " +
             "FROM sys.columns c JOIN sys.objects o ON o.object_id = c.object_id " +
             "WHERE c.object_id = OBJECT_ID(@name);";
         command.Parameters.AddWithValue("@name", qualified);
@@ -71,7 +72,9 @@ internal static class SqlServerTableImportService
         {
             if (!string.Equals(reader.GetString(3).Trim(), "U", StringComparison.Ordinal) || reader.GetBoolean(4))
                 throw new GridletValidationException($"{qualified} is not a user table Gridlet can import into.");
-            available[reader.GetString(0)] = (reader.GetString(0), reader.GetBoolean(1) || reader.GetBoolean(2));
+            available[reader.GetString(0)] = (reader.GetString(0),
+                reader.GetBoolean(1) || reader.GetBoolean(2) ||
+                !reader.IsDBNull(5) && reader.GetInt32(5) != 0);
         }
         if (available.Count == 0) throw new GridletObjectNotFoundException(qualified);
 

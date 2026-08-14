@@ -267,6 +267,31 @@ public class SqlServerDdlBuilderTests
     }
 
     [Fact]
+    public void Synthesised_create_preserves_system_versioning()
+    {
+        var definition = new TableDefinition(
+            new DbObjectInfo("sales", "Orders", DbObjectType.Table),
+            [
+                new ColumnInfo("Id", "int", false, false, false, true, null, 0),
+                new ColumnInfo("ValidFrom", "datetime2(7)", false, false, false, false,
+                    "sysutcdatetime()", 1, IsHidden: true),
+                new ColumnInfo("ValidTo", "datetime2(7)", false, false, false, false,
+                    "CONVERT(datetime2, '9999-12-31 23:59:59.9999999')", 2),
+            ],
+            [], [], [], [], null, null,
+            new TemporalTableInfo(TemporalTableKinds.SystemVersioned, "history", "OrdersHistory",
+                "ValidFrom", "ValidTo", 6, "MONTH"));
+
+        var sql = SqlServerDdlBuilder.BuildTableDefinition(definition);
+
+        Assert.Contains("[ValidFrom] datetime2(7) GENERATED ALWAYS AS ROW START HIDDEN NOT NULL", sql);
+        Assert.Contains("[ValidTo] datetime2(7) GENERATED ALWAYS AS ROW END NOT NULL", sql);
+        Assert.Contains("PERIOD FOR SYSTEM_TIME ([ValidFrom], [ValidTo])", sql);
+        Assert.Contains(") WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = [history].[OrdersHistory], " +
+            "HISTORY_RETENTION_PERIOD = 6 MONTH));", sql);
+    }
+
+    [Fact]
     public void Synthesised_create_appends_rich_rowstore_indexes()
     {
         var definition = new TableDefinition(

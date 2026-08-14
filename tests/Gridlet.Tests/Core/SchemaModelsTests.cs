@@ -65,4 +65,22 @@ public sealed class SchemaModelsTests
         Assert.Empty(definition.CheckConstraints);
         Assert.Empty(definition.UniqueConstraints);
     }
+
+    [Fact]
+    public void Previous_table_definition_constructor_shape_remains_available()
+    {
+        var constructor = typeof(TableDefinition).GetConstructor(
+        [
+            typeof(DbObjectInfo),
+            typeof(IReadOnlyList<ColumnInfo>),
+            typeof(IReadOnlyList<IndexInfo>),
+            typeof(IReadOnlyList<ForeignKeyInfo>),
+            typeof(IReadOnlyList<CheckConstraintInfo>),
+            typeof(IReadOnlyList<UniqueConstraintInfo>),
+            typeof(RowIdentityInfo),
+            typeof(IReadOnlyList<string>),
+        ]);
+
+        Assert.NotNull(constructor);
+    }
 }

@@ -2343,6 +2343,18 @@ td.cell-actions, th.cell-actions { white-space: nowrap; width: 1%; }
 .toolbar-slot { display: contents; }
 .toolbar-group { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .table-options { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.temporal-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.temporal-info strong { color: var(--text); }
 .checkbox-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
 .checkbox-row input[type="number"] { width: 90px; }
 .filter-bar {
