@@ -932,6 +932,111 @@
     return tokens;
   }
 
+  function unqualifiedMutationStatements(sql, providerName = '') {
+    const statementStarts = new Set([
+      'ALTER', 'CREATE', 'DELETE', 'DENY', 'DROP', 'EXEC', 'EXECUTE', 'EXPLAIN',
+      'GRANT', 'INSERT', 'MERGE', 'PRAGMA', 'REVOKE', 'SELECT', 'TRUNCATE', 'UPDATE',
+    ]);
+    const definitionContexts = new Set([
+      'AFTER', 'BEFORE', 'DENY', 'DO', 'FOR', 'GRANT', 'INSTEAD', 'KEY', 'OF', 'ON', 'REVOKE', 'THEN',
+    ]);
+    const warnings = [];
+    let statement = [];
+    let definitionBatch = false;
+    let triggerBodyDepth = 0;
+
+    const inspect = () => {
+      let depth = 0;
+      const words = [];
+      for (const token of statement) {
+        if (token.type === 'line-comment' || token.type === 'block-comment') continue;
+        if (token.type === 'symbol' && token.text === '(') { depth++; continue; }
+        if (token.type === 'symbol' && token.text === ')') { depth = Math.max(0, depth - 1); continue; }
+        if (depth === 0 && token.type === 'word') words.push(token.text.toUpperCase());
+      }
+      statement = [];
+
+      if (definitionBatch) return;
+      if (triggerBodyDepth) {
+        triggerBodyDepth += words.filter((word) => word === 'BEGIN' || word === 'CASE').length
+          - words.filter((word) => word === 'END').length;
+        if (triggerBodyDepth < 0) triggerBodyDepth = 0;
+        return;
+      }
+      // EXPLAIN and SQLite's EXPLAIN QUERY PLAN compile a statement without executing its DML.
+      if (words[0] === 'EXPLAIN') return;
+
+      // Routine/view/trigger bodies do not run when their definition is executed. Table DDL is not
+      // exempt wholesale because a semicolon-free CREATE/ALTER can be followed by a real mutation;
+      // its ON DELETE/UPDATE clauses are filtered by their immediate context below.
+      const bodyKinds = new Set(['PROCEDURE', 'PROC', 'FUNCTION', 'VIEW', 'TRIGGER']);
+      let definitionIndex = 1;
+      if (words[0] === 'CREATE' && words[definitionIndex] === 'OR'
+        && ['ALTER', 'REPLACE'].includes(words[definitionIndex + 1])) {
+        definitionIndex += 2;
+      }
+      if (words[0] === 'CREATE' && ['TEMP', 'TEMPORARY'].includes(words[definitionIndex])) definitionIndex++;
+      const definitionKind = words[definitionIndex];
+      if (['CREATE', 'ALTER'].includes(words[0]) && bodyKinds.has(definitionKind)) {
+        if (definitionKind === 'TRIGGER') {
+          const hasBegin = words.includes('BEGIN');
+          triggerBodyDepth = words.filter((word) => word === 'BEGIN' || word === 'CASE').length
+            - words.filter((word) => word === 'END').length;
+          // SQL Server also permits a trigger body without BEGIN/END and requires the definition
+          // to own its batch, so nothing after that header is independently executable here.
+          if (!hasBegin && providerName === 'SqlServer') definitionBatch = true;
+        } else if (definitionKind !== 'VIEW' && providerName === 'SqlServer') {
+          definitionBatch = true;
+        }
+        return;
+      }
+      const isMutation = (index) => {
+        const mutation = words[index];
+        if (mutation !== 'UPDATE' && mutation !== 'DELETE') return false;
+        if (mutation === 'UPDATE' && words[index + 1] === 'STATISTICS') return false;
+        const permissionOn = ['GRANT', 'REVOKE', 'DENY'].includes(words[0]) ? words.indexOf('ON') : -1;
+        if (permissionOn > index) return false;
+        if (definitionContexts.has(words[index - 1])) return false;
+        // Trigger event lists may use commas or OR; punctuation is intentionally absent from words.
+        if (words[index - 1] === 'OR') return false;
+        return true;
+      };
+      for (let index = 0; index < words.length; index++) {
+        const mutation = words[index];
+        if (!isMutation(index)) continue;
+
+        let end = words.length;
+        for (let next = index + 1; next < words.length; next++) {
+          if ((words[next] === 'UPDATE' || words[next] === 'DELETE') && !isMutation(next)) continue;
+          if (statementStarts.has(words[next])) { end = next; break; }
+        }
+        if (!words.slice(index + 1, end).includes('WHERE')) warnings.push(mutation);
+        index = end - 1;
+      }
+    };
+
+    const inspectBatch = (batch) => {
+      definitionBatch = false;
+      triggerBodyDepth = 0;
+      for (const token of tokenizeSqlForFormatting(batch)) {
+        if (token.type === 'symbol' && token.text === ';') inspect();
+        else statement.push(token);
+      }
+      inspect();
+    };
+
+    // SQL Server's GO separator is not SQL, so it never reaches the formatter tokenizer as a
+    // boundary. Mask literals/comments, find separator-only lines, and inspect each real batch.
+    const masked = maskSqlCommentsAndStrings(sql);
+    let batchStart = 0;
+    for (const separator of masked.matchAll(/^[\t ]*GO(?:[\t ]+\d+)?[\t ]*$/gim)) {
+      inspectBatch(sql.slice(batchStart, separator.index));
+      batchStart = separator.index + separator[0].length;
+    }
+    inspectBatch(sql.slice(batchStart));
+    return warnings;
+  }
+
   function formatSql(sql) {
     const tokens = tokenizeSqlForFormatting(sql);
     if (!tokens.length) return sql;
@@ -5888,6 +5993,77 @@
 
   // ---- query tabs -----------------------------------------------------------------
 
+  const queryHistoryKey = 'gridlet.queryHistory';
+  const queryHistoryLimit = 100;
+
+  const readQueryHistory = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(queryHistoryKey) || '[]');
+      return Array.isArray(parsed)
+        ? parsed.filter((entry) => entry && typeof entry.sql === 'string' && entry.startedAt)
+        : [];
+    } catch { return []; }
+  };
+
+  const writeQueryHistory = (records) => {
+    const candidates = records.slice(0, queryHistoryLimit);
+    // A pasted script can be large. Keep the newest executions and discard older entries until
+    // the browser accepts the write instead of allowing one script to disable history entirely.
+    const write = (value) => {
+      localStorage.setItem(queryHistoryKey, JSON.stringify(value));
+    };
+    const writeLargestPrefix = (values) => {
+      let low = 1;
+      let high = values.length;
+      let best = 0;
+      while (low <= high) {
+        const middle = Math.floor((low + high) / 2);
+        try {
+          write(values.slice(0, middle));
+          best = middle;
+          low = middle + 1;
+        } catch {
+          high = middle - 1;
+        }
+      }
+      if (best) {
+        try { write(values.slice(0, best)); return true; } catch { /* quota changed */ }
+      }
+      return false;
+    };
+    if (!candidates.length) {
+      try { localStorage.removeItem(queryHistoryKey); } catch { /* unavailable */ }
+      return;
+    }
+    try { write(candidates); return; } catch { /* reduce below */ }
+
+    // If the newest statement cannot fit even by itself, preserve the history that fitted before
+    // it was added. Otherwise a single very large paste would erase every connection's records.
+    if (candidates.length > 1) {
+      try { write([candidates[0]]); }
+      catch {
+        writeLargestPrefix(candidates.slice(1));
+        return;
+      }
+    }
+
+    // The newest entry fits on its own. Add as many older entries as the quota still permits.
+    writeLargestPrefix(candidates.slice(0, -1));
+  };
+
+  const queryHistoryFor = (scope) => readQueryHistory()
+    .filter((entry) => entry.connection === scope.connection && entry.database === scope.database);
+
+  const addQueryHistory = (scope, entry) => {
+    writeQueryHistory([{ ...entry, connection: scope.connection, database: scope.database },
+      ...readQueryHistory()]);
+  };
+
+  const clearQueryHistory = (scope) => {
+    writeQueryHistory(readQueryHistory().filter((entry) =>
+      entry.connection !== scope.connection || entry.database !== scope.database));
+  };
+
   function openQueryTab(initialSql = '', initialTitle = null, scope = scopeOf(), { autoRun = false } = {}) {
     if (!scope.database) {
       toast('Select a database first.');
@@ -5910,6 +6086,10 @@
       text: 'Format', title: 'Format SQL (Ctrl+Shift+F)', 'data-testid': 'query-format',
       onclick: () => editor.formatSql(),
     });
+    const historyButton = h('button', {
+      text: 'History', title: 'Queries run in this database from this browser',
+      'data-testid': 'query-history',
+    });
     const serverMaxRows = state.meta.maxQueryResultRows;
     let savedMaxRows = serverMaxRows;
     try { savedMaxRows = Number(localStorage.getItem('gridlet.queryMaxRows')) || serverMaxRows; } catch { /* unavailable */ }
@@ -5929,6 +6109,58 @@
     let savedQueries = [];
     let selectedSavedId = null;
     let activeQuery = null;
+
+    const showQueryHistory = () => {
+      const content = h('div', { class: 'query-history-dialog' });
+      const render = () => {
+        const records = queryHistoryFor(scope);
+        content.replaceChildren(
+          h('p', {
+            class: 'muted query-history-note',
+            text: 'The latest 100 executions are stored in this browser only. SQL may contain sensitive values and remains here after sign-out until history is cleared.',
+          }),
+          records.length
+            ? h('div', { class: 'query-history-list' }, records.map((record) => {
+              const firstLine = record.sql.trim().split(/\r?\n/).find((line) => line.trim()) || 'Query';
+              const title = firstLine.length > 90 ? `${firstLine.slice(0, 89)}…` : firstLine;
+              const when = new Date(record.startedAt);
+              const duration = Number.isFinite(record.durationMs)
+                ? `${record.durationMs.toLocaleString()} ms`
+                : 'duration unavailable';
+              const outcome = record.outcome === 'succeeded' ? 'Succeeded'
+                : record.outcome === 'cancelled' ? 'Cancelled' : 'Failed';
+              return h('button', {
+                type: 'button', class: `query-history-item ${record.outcome || 'failed'}`,
+                'data-testid': 'query-history-item',
+                title: record.sql,
+                onclick: () => {
+                  editor.value = record.sql;
+                  close();
+                  editor.focus();
+                },
+              },
+                h('span', { class: 'query-history-sql', text: title }),
+                h('span', {
+                  class: 'query-history-meta',
+                  text: `${outcome} · ${duration} · ${Number.isNaN(when.getTime()) ? '' : when.toLocaleString()}`,
+                }));
+            }))
+            : h('p', {
+              class: 'query-history-empty muted', 'data-testid': 'query-history-empty',
+              text: 'Run a query to add it to history.',
+            }));
+      };
+      let close;
+      close = modal('Query history', content, [
+        {
+          label: 'Clear history', danger: true,
+          onClick: () => { clearQueryHistory(scope); render(); },
+        },
+        { label: 'Close', primary: true, onClick: (dismiss) => dismiss() },
+      ]);
+      render();
+    };
+    historyButton.addEventListener('click', showQueryHistory);
 
     // ---- pinned session -----------------------------------------------------------------
     // Without one, every execution gets its own connection and an explicit transaction is
@@ -6114,15 +6346,32 @@
     // plan compiles without running, so it is safe on a DELETE; an actual plan runs the statement
     // and reports what really happened, which is why it is a separate, explicit action.
 
-    const showPlan = async (mode) => {
+    const confirmUnqualifiedMutation = (sql, onConfirm) => {
+      const unqualified = unqualifiedMutationStatements(sql, connectionFor(scope).providerName);
+      if (!unqualified.length) return false;
+      const kinds = [...new Set(unqualified)];
+      const description = unqualified.length === 1
+        ? `This ${kinds[0]} statement has no top-level WHERE clause and may affect every row.`
+        : `This script contains ${unqualified.length} UPDATE or DELETE statements with no top-level WHERE clause.`;
+      confirmModal('Run query without WHERE?', `${description} Run it anyway?`, onConfirm, 'Run anyway');
+      return true;
+    };
+
+    const showPlan = async (mode, dangerConfirmed = false) => {
       const sql = editor.value.trim();
       if (!sql) return;
+      if (mode === 'actual' && !dangerConfirmed
+        && confirmUnqualifiedMutation(sql, () => { showPlan(mode, true); })) return;
+      const startedAt = performance.now();
+      const historyStartedAt = Date.now();
+      let historyOutcome = 'failed';
       runButton.disabled = true;
       status.textContent = mode === 'actual' ? 'Running for actual plan…' : 'Explaining…';
       results.replaceChildren();
       results.classList.remove('single-result');
       try {
         const plan = await post(urls.queryPlan(), { sql, mode });
+        historyOutcome = 'succeeded';
         results.replaceChildren(renderQueryPlan(plan));
         status.textContent = plan.mode === 'actual' ? 'Actual plan' : 'Estimated plan';
         await refreshSession();
@@ -6130,13 +6379,22 @@
         results.replaceChildren(errorBox(err.message));
         status.textContent = 'Failed';
       } finally {
+        if (mode === 'actual') {
+          addQueryHistory(scope, {
+            sql,
+            startedAt: historyStartedAt,
+            durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+            outcome: historyOutcome,
+          });
+        }
         runButton.disabled = false;
       }
     };
 
-    const run = async () => {
+    const run = async (dangerConfirmed = false) => {
       const sql = editor.value.trim();
       if (!sql) return;
+      if (!dangerConfirmed && confirmUnqualifiedMutation(sql, () => { run(true); })) return;
       if (activeQuery) activeQuery.abort();
       const controller = new AbortController();
       activeQuery = controller;
@@ -6146,6 +6404,9 @@
       results.replaceChildren();
       results.classList.remove('single-result');
       const startedAt = performance.now();
+      const historyStartedAt = Date.now();
+      let historyDuration = null;
+      let historyOutcome = 'failed';
       status.textContent = 'Running…';
       const timer = setInterval(() => {
         status.textContent = `Running… ${((performance.now() - startedAt) / 1000).toFixed(1)} s`;
@@ -6190,6 +6451,8 @@
           if (!messages.isConnected) results.append(messages);
         } else if (event.type === 'completed') {
           completedSuccessfully = true;
+          historyOutcome = 'succeeded';
+          historyDuration = event.durationMs;
           if (!sets.size && event.recordsAffected >= 0) {
             const count = event.recordsAffected;
             results.append(h('div', {
@@ -6200,6 +6463,7 @@
           status.textContent = event.durationMs + ' ms';
         } else if (event.type === 'error') {
           completedSuccessfully = false;
+          historyDuration = event.durationMs;
           results.append(errorBox(event.message));
           status.textContent = 'Failed';
         }
@@ -6213,9 +6477,20 @@
           await refreshObjects(scope);
         }
       } catch (err) {
-        if (err.name === 'AbortError') status.textContent = 'Cancelled';
+        if (err.name === 'AbortError') {
+          historyOutcome = 'cancelled';
+          status.textContent = 'Cancelled';
+        }
         else { results.append(errorBox(err.message)); status.textContent = 'Failed'; }
       } finally {
+        addQueryHistory(scope, {
+          sql,
+          startedAt: historyStartedAt,
+          durationMs: Number.isFinite(historyDuration)
+            ? historyDuration
+            : Math.max(0, Math.round(performance.now() - startedAt)),
+          outcome: historyOutcome,
+        });
         // The statement may have been BEGIN or COMMIT itself, so the state is re-read either way.
         await refreshSession();
         clearInterval(timer);
@@ -6228,7 +6503,7 @@
       }
     };
 
-    runButton.addEventListener('click', run);
+    runButton.addEventListener('click', () => run());
     cancelButton.addEventListener('click', () => activeQuery?.abort());
 
     // Closing the tab ends the session, so an unfinished transaction is rolled back now rather
@@ -6272,6 +6547,7 @@
     });
 
     const formatActions = h('span', { class: 'toolbar-group' }, formatButton);
+    const historyActions = h('span', { class: 'toolbar-group' }, historyButton);
     const savedActions = h('span', { class: 'toolbar-group saved-query-actions' },
       h('span', { class: 'toolbar-divider' }), savedSelect, saveButton, deleteButton);
     const planActions = capabilities.supportsQueryPlans && currentConn().allowSqlExecution
@@ -6298,6 +6574,7 @@
     const queryToolbar = h('div', { class: 'query-toolbar', 'data-testid': 'query-toolbar' },
         runButton, cancelButton,
         formatActions,
+        historyActions,
         savedActions,
         planActions,
         sessionActions,
@@ -6306,7 +6583,7 @@
         status);
     setupOverflowToolbar(
       queryToolbar,
-      [savedActions, planActions, sessionActions, limitActions].filter(Boolean),
+      [historyActions, savedActions, planActions, sessionActions, limitActions].filter(Boolean),
       'More query actions');
     renderSession();
     tab.panel = h('div', { class: 'panel query-panel' },

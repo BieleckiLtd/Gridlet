@@ -1342,6 +1342,312 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Warns_before_running_update_or_delete_without_a_where_clause()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT 1\nGO\nDELETE FROM Customers");
+
+        await page.GetByTestId("query-run").ClickAsync();
+
+        var warning = page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" });
+        await Assertions.Expect(warning).ToBeVisibleAsync();
+        await Assertions.Expect(warning).ToContainTextAsync(
+            "DELETE statement has no top-level WHERE clause");
+        await warning.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToBeEmptyAsync();
+
+        var editor = page.GetByTestId("sql-editor");
+        await editor.FillAsync("UPDATE Customers SET Note = 'WHERE is text' /* WHERE is a comment */");
+        await page.GetByTestId("query-run").ClickAsync();
+        warning = page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" });
+        await Assertions.Expect(warning).ToBeVisibleAsync();
+        await warning.GetByRole(AriaRole.Button, new() { Name = "Run anyway", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        Assert.Equal("UPDATE Customers SET Note = 'WHERE is text' /* WHERE is a comment */",
+            fixture.Provider.LastQuerySql);
+
+        await editor.FillAsync("WITH doomed AS (SELECT Id FROM Customers WHERE Active = 0) DELETE FROM doomed");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Dialog, new() { Name = "Run query without WHERE?" })).ToBeVisibleAsync();
+        await page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" })
+            .GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+
+        await editor.FillAsync("DELETE FROM Customers WHERE Id IN (SELECT Id FROM Customers)");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Dialog, new() { Name = "Run query without WHERE?" })).ToHaveCountAsync(0);
+
+        await editor.FillAsync("SELECT 1\nDELETE FROM Customers");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Dialog, new() { Name = "Run query without WHERE?" })).ToBeVisibleAsync();
+        await page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" })
+            .GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+
+        await editor.FillAsync(
+            "DELETE FROM Customers WHERE Id = 1\nDELETE FROM Orders\nUPDATE Pizzas SET Name = 'All'");
+        await page.GetByTestId("query-run").ClickAsync();
+        warning = page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" });
+        await Assertions.Expect(warning).ToContainTextAsync(
+            "2 UPDATE or DELETE statements with no top-level WHERE clause");
+        await warning.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+
+        foreach (var prefix in new[]
+                 {
+                     "EXEC dbo.LogMaintenance\n",
+                     "INSERT INTO AuditLog VALUES (1)\n",
+                     "DROP TABLE #OldResults\n",
+                 })
+        {
+            await editor.FillAsync(prefix + "DELETE FROM Customers");
+            await page.GetByTestId("query-run").ClickAsync();
+            warning = page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" });
+            await Assertions.Expect(warning).ToBeVisibleAsync();
+            await warning.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+        }
+
+        await editor.FillAsync(
+            "ALTER TABLE Orders ADD CONSTRAINT FK_Orders_Customers FOREIGN KEY (CustomerId) " +
+            "REFERENCES Customers (Id) ON DELETE CASCADE");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Dialog, new() { Name = "Run query without WHERE?" })).ToHaveCountAsync(0);
+
+        await editor.FillAsync("ALTER TABLE Orders ENABLE TRIGGER ALL\nDELETE FROM Customers");
+        await page.GetByTestId("query-run").ClickAsync();
+        warning = page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" });
+        await Assertions.Expect(warning).ToBeVisibleAsync();
+        await warning.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+
+        foreach (var definition in new[]
+                 {
+                     "GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.Orders TO app_role",
+                     "CREATE TRIGGER trg AFTER DELETE ON Customers BEGIN " +
+                      "DELETE FROM AuditLog; DELETE FROM AuditArchive; END;",
+                     "CREATE TRIGGER trg AFTER UPDATE ON Customers BEGIN " +
+                     "UPDATE AuditLog SET Value = CASE WHEN Value = 1 THEN 2 ELSE 3 END; " +
+                     "DELETE FROM AuditArchive; END;",
+                     "CREATE OR REPLACE FUNCTION clean_up() RETURNS void AS $$ BEGIN " +
+                     "DELETE FROM AuditLog; END; $$ LANGUAGE plpgsql;",
+                     "CREATE TEMP TRIGGER trg AFTER DELETE ON Customers BEGIN " +
+                     "DELETE FROM AuditLog; END;",
+                     "CREATE PROCEDURE clean_up AS DELETE FROM AuditLog; DELETE FROM AuditArchive;",
+                     "CREATE TRIGGER trg ON Customers AFTER UPDATE AS " +
+                     "DELETE FROM AuditLog; DELETE FROM AuditArchive;",
+                  })
+        {
+            await editor.FillAsync(definition);
+            await page.GetByTestId("query-run").ClickAsync();
+            await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+            await Assertions.Expect(page.GetByRole(
+                AriaRole.Dialog, new() { Name = "Run query without WHERE?" })).ToHaveCountAsync(0);
+        }
+
+        foreach (var definitionThenMutation in new[]
+                 {
+                     "CREATE VIEW active_customers AS SELECT * FROM Customers; DELETE FROM Customers",
+                     "ALTER VIEW active_customers AS SELECT * FROM Customers; UPDATE Customers SET Active = 0",
+                     "CREATE VIEW active_customers AS SELECT * FROM Customers\nGO\nDELETE FROM Customers",
+                 })
+        {
+            await editor.FillAsync(definitionThenMutation);
+            await page.GetByTestId("query-run").ClickAsync();
+            warning = page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" });
+            await Assertions.Expect(warning).ToBeVisibleAsync();
+            await warning.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+        }
+
+        await editor.FillAsync("UPDATE STATISTICS Customers");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Dialog, new() { Name = "Run query without WHERE?" })).ToHaveCountAsync(0);
+
+        await editor.FillAsync("EXPLAIN QUERY PLAN DELETE FROM Customers");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Dialog, new() { Name = "Run query without WHERE?" })).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Warns_after_a_completed_definition_on_non_sql_server_connections()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
+        await Assertions.Expect(page.Locator("#database-select")).ToHaveValueAsync("FakeDb");
+        await page.Locator("#new-query-btn").ClickAsync();
+        var editor = page.GetByTestId("sql-editor");
+
+        foreach (var definitionThenMutation in new[]
+                 {
+                     "CREATE OR REPLACE FUNCTION clean_up() RETURNS void AS $$ BEGIN " +
+                     "DELETE FROM AuditLog; END; $$ LANGUAGE plpgsql; DELETE FROM Customers",
+                     "CREATE TRIGGER trg AFTER DELETE ON Customers FOR EACH ROW " +
+                     "EXECUTE FUNCTION clean_up(); DELETE FROM Customers",
+                 })
+        {
+            await editor.FillAsync(definitionThenMutation);
+            await page.GetByTestId("query-run").ClickAsync();
+            var warning = page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" });
+            await Assertions.Expect(warning).ToBeVisibleAsync();
+            await warning.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Keeps_query_history_with_outcome_duration_and_sql_in_this_browser()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT 42");
+        var editor = page.GetByTestId("sql-editor");
+
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await editor.FillAsync("boom");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("Failed");
+
+        await ClickQueryActionAsync(ActivePanel(page), "query-history");
+        var history = page.GetByRole(AriaRole.Dialog, new() { Name = "Query history" });
+        var items = history.GetByTestId("query-history-item");
+        await Assertions.Expect(items).ToHaveCountAsync(2);
+        await Assertions.Expect(items.Nth(0)).ToContainTextAsync("boom");
+        await Assertions.Expect(items.Nth(0)).ToContainTextAsync("Failed");
+        await Assertions.Expect(items.Nth(1)).ToContainTextAsync("SELECT 42");
+        await Assertions.Expect(items.Nth(1)).ToContainTextAsync("Succeeded · 1 ms");
+        await history.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+
+        await page.EvaluateAsync("""
+            () => {
+                const original = Storage.prototype.setItem;
+                window.__gridletOriginalSetItem = original;
+                Storage.prototype.setItem = function(key, value) {
+                    if (key === 'gridlet.queryHistory' && JSON.parse(value)[0]?.sql === 'oversized') {
+                        throw new DOMException('Quota exceeded', 'QuotaExceededError');
+                    }
+                    return original.call(this, key, value);
+                };
+            }
+            """);
+        await editor.FillAsync("oversized");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        var storedAfterQuota = await page.EvaluateAsync<string[]>("""
+            () => JSON.parse(localStorage.getItem('gridlet.queryHistory')).map(entry => entry.sql)
+            """);
+        Assert.Equal(["boom", "SELECT 42"], storedAfterQuota);
+
+        await page.EvaluateAsync("""
+            () => {
+                Storage.prototype.setItem = window.__gridletOriginalSetItem;
+                const original = Storage.prototype.setItem;
+                let threshold;
+                Storage.prototype.setItem = function(key, value) {
+                    if (key === 'gridlet.queryHistory') {
+                        const entries = JSON.parse(value);
+                        if (entries[0]?.sql === 'fits-newest') {
+                            threshold ??= JSON.stringify(entries.slice(0, 2)).length;
+                            if (value.length > threshold) {
+                                throw new DOMException('Quota exceeded', 'QuotaExceededError');
+                            }
+                        }
+                    }
+                    return original.call(this, key, value);
+                };
+            }
+            """);
+        await editor.FillAsync("fits-newest");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        storedAfterQuota = await page.EvaluateAsync<string[]>("""
+            () => JSON.parse(localStorage.getItem('gridlet.queryHistory')).map(entry => entry.sql)
+            """);
+        Assert.Equal(["fits-newest", "boom"], storedAfterQuota);
+
+        await page.ReloadAsync();
+        await page.Locator("#new-query-btn").ClickAsync();
+        editor = page.GetByTestId("sql-editor");
+        await ClickQueryActionAsync(ActivePanel(page), "query-history");
+        history = page.GetByRole(AriaRole.Dialog, new() { Name = "Query history" });
+        items = history.GetByTestId("query-history-item");
+        await Assertions.Expect(items).ToHaveCountAsync(2);
+        await items.Nth(1).ClickAsync();
+        await Assertions.Expect(editor).ToHaveValueAsync("boom");
+
+        await ClickQueryActionAsync(ActivePanel(page), "query-history");
+        history = page.GetByRole(AriaRole.Dialog, new() { Name = "Query history" });
+        await history.GetByRole(AriaRole.Button, new() { Name = "Clear history", Exact = true }).ClickAsync();
+        await Assertions.Expect(history.GetByTestId("query-history-empty")).ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors("400");
+    }
+
+    [Fact]
+    public async Task Bounds_and_scopes_query_history_by_connection_and_database()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "newest");
+        await page.EvaluateAsync("""
+            () => {
+                const records = Array.from({ length: 98 }, (_, index) => ({
+                    sql: `old-${index}`,
+                    startedAt: Date.now() - index - 1,
+                    durationMs: 1,
+                    outcome: 'succeeded',
+                    connection: 'Main',
+                    database: 'FakeDb',
+                }));
+                records.push({
+                    sql: 'other-connection',
+                    startedAt: Date.now() - 200,
+                    durationMs: 1,
+                    outcome: 'succeeded',
+                    connection: 'SQLite',
+                    database: 'FakeDb',
+                });
+                records.push({
+                    sql: 'old-trimmed-1', startedAt: Date.now() - 300, durationMs: 1,
+                    outcome: 'succeeded', connection: 'Main', database: 'FakeDb',
+                }, {
+                    sql: 'old-trimmed-2', startedAt: Date.now() - 301, durationMs: 1,
+                    outcome: 'succeeded', connection: 'Main', database: 'FakeDb',
+                });
+                localStorage.setItem('gridlet.queryHistory', JSON.stringify(records));
+            }
+            """);
+
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await ClickQueryActionAsync(ActivePanel(page), "query-history");
+        var history = page.GetByRole(AriaRole.Dialog, new() { Name = "Query history" });
+        var items = history.GetByTestId("query-history-item");
+        await Assertions.Expect(items).ToHaveCountAsync(99);
+        await Assertions.Expect(items.First).ToContainTextAsync("newest");
+        await Assertions.Expect(items.GetByText("other-connection", new() { Exact = true }))
+            .ToHaveCountAsync(0);
+        Assert.Equal(100, await page.EvaluateAsync<int>(
+            "() => JSON.parse(localStorage.getItem('gridlet.queryHistory')).length"));
+
+        await history.GetByRole(AriaRole.Button, new() { Name = "Clear history", Exact = true }).ClickAsync();
+        var remaining = await page.EvaluateAsync<string[]>("""
+            () => JSON.parse(localStorage.getItem('gridlet.queryHistory')).map(entry => entry.sql)
+            """);
+        Assert.Equal(["other-connection"], remaining);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Formats_the_query_without_changing_literals_or_comments()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -2261,6 +2567,10 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     private static async Task ClickQueryActionAsync(ILocator panel, string testId)
     {
         var control = panel.GetByTestId(testId);
+        await panel.EvaluateAsync("""
+            element => new Promise(resolve => requestAnimationFrame(
+                () => requestAnimationFrame(resolve)))
+            """);
         if (await control.IsVisibleAsync())
         {
             await control.ClickAsync();
@@ -2419,6 +2729,25 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("Actual plan");
         await Assertions.Expect(panel.GetByText("logical reads 3")).ToBeVisibleAsync();
         Assert.Contains("plan.actual SELECT 1", fixture.Provider.Calls);
+
+        var editor = panel.GetByTestId("sql-editor");
+        await editor.FillAsync("DELETE FROM Customers");
+        var callsBeforeWarning = fixture.Provider.Calls.Count(call => call.StartsWith("plan.actual "));
+        await panel.GetByTestId("query-plan-actual").ClickAsync();
+        var warning = page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" });
+        await Assertions.Expect(warning).ToBeVisibleAsync();
+        Assert.Equal(callsBeforeWarning,
+            fixture.Provider.Calls.Count(call => call.StartsWith("plan.actual ")));
+        await warning.GetByRole(AriaRole.Button, new() { Name = "Run anyway", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("query-status")).ToHaveTextAsync("Actual plan");
+        Assert.Contains("plan.actual DELETE FROM Customers", fixture.Provider.Calls);
+
+        await ClickQueryActionAsync(panel, "query-history");
+        var history = page.GetByRole(AriaRole.Dialog, new() { Name = "Query history" });
+        await Assertions.Expect(history.GetByTestId("query-history-item").First)
+            .ToContainTextAsync("DELETE FROM Customers");
+        await Assertions.Expect(history.GetByTestId("query-history-item").First)
+            .ToContainTextAsync("Succeeded");
         browserPage.AssertNoUnexpectedErrors();
     }
 
