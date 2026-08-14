@@ -1247,14 +1247,25 @@
       if (!completion.hidden && ['ArrowDown', 'ArrowUp'].includes(e.key)) {
         e.preventDefault(); selected = (selected + (e.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length;
         [...completion.children].forEach((x, i) => x.classList.toggle('active', i === selected));
-      } else if (!completion.hidden && (e.key === 'Enter' || e.key === 'Tab')) {
+      } else if (!completion.hidden && (e.key === 'Enter' || e.key === 'Tab')
+        && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault(); insert(matches[selected], sqlCompletionPrefix(input.value, input.selectionStart).length);
       } else if (e.key === 'Escape') hideCompletion();
       else if (e.key === 'Tab') { e.preventDefault(); insert('    '); }
     });
     Object.defineProperty(editor, 'value', { get: () => input.value, set: (v) => { input.value = v || ''; refresh(); } });
     editor.focus = () => input.focus();
+    editor.hideCompletion = hideCompletion;
     editor.textarea = input;
+    // A non-empty selection is the SQL to run or explain, matching SSMS: the rest of the buffer
+    // stays on screen and is not sent. Whitespace-only selections are empty on purpose so they
+    // do not silently fall back to the whole script.
+    editor.executableSql = () => {
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      if (start !== end) return input.value.slice(start, end).trim();
+      return input.value.trim();
+    };
     editor.formatSql = () => {
       const start = input.selectionStart;
       const end = input.selectionEnd;
@@ -6080,6 +6091,7 @@
     const status = h('span', { class: 'muted', 'data-testid': 'query-status' });
     const runButton = h('button', {
       class: 'primary', text: 'Run (Ctrl+Enter)', 'data-testid': 'query-run',
+      title: 'Run the selected SQL, or the whole editor when nothing is selected (Ctrl+Enter)',
     });
     const cancelButton = h('button', { text: 'Cancel', disabled: '', 'data-testid': 'query-cancel' });
     const formatButton = h('button', {
@@ -6358,7 +6370,8 @@
     };
 
     const showPlan = async (mode, dangerConfirmed = false) => {
-      const sql = editor.value.trim();
+      editor.hideCompletion();
+      const sql = editor.executableSql();
       if (!sql) return;
       if (mode === 'actual' && !dangerConfirmed
         && confirmUnqualifiedMutation(sql, () => { showPlan(mode, true); })) return;
@@ -6392,7 +6405,8 @@
     };
 
     const run = async (dangerConfirmed = false) => {
-      const sql = editor.value.trim();
+      editor.hideCompletion();
+      const sql = editor.executableSql();
       if (!sql) return;
       if (!dangerConfirmed && confirmUnqualifiedMutation(sql, () => { run(true); })) return;
       if (activeQuery) activeQuery.abort();
@@ -6442,7 +6456,7 @@
             + (event.truncated ? ' - truncated at the configured limit' : '');
           const controls = exportButtons(set.columns, set.rows,
             `${tab.title}-result${event.resultSetIndex + 1}`,
-            { sql: editor.value.trim(), name: tab.title.startsWith('Query ') ? '' : tab.title, scope });
+            { sql, name: tab.title.startsWith('Query ') ? '' : tab.title, scope });
           set.exports.replaceWith(controls);
           set.exports = controls;
           setupOverflowToolbar(set.meta, [controls], 'More result actions');
@@ -6555,12 +6569,12 @@
         h('span', { class: 'toolbar-divider' }),
         h('button', {
           text: 'Plan', 'data-testid': 'query-plan-estimated',
-          title: 'Show the plan without running the query',
+          title: 'Show the plan for the selected SQL, or the whole editor when nothing is selected',
           onclick: () => showPlan('estimated'),
         }),
         h('button', {
           text: 'Plan + run', 'data-testid': 'query-plan-actual',
-          title: 'Run the query and show the plan it actually used',
+          title: 'Run the selected SQL, or the whole editor when nothing is selected, and show the plan it actually used',
           onclick: () => showPlan('actual'),
         }))
       : null;

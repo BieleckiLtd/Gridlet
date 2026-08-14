@@ -1649,6 +1649,47 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Runs_only_selected_sql_and_applies_safety_to_that_selection()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string first = "SELECT 42";
+        const string mutation = "DELETE FROM Customers";
+        await OpenQueryAsync(page, first + "\n" + mutation);
+        var editor = page.GetByTestId("sql-editor");
+
+        await editor.EvaluateAsync("""
+            input => input.setSelectionRange(0, input.value.indexOf('\n'))
+            """);
+        await editor.PressAsync("Control+Enter");
+
+        var results = page.GetByTestId("query-results");
+        await Assertions.Expect(results.GetByRole(AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        Assert.Equal(first, fixture.Provider.LastQuerySql);
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Dialog, new() { Name = "Run query without WHERE?" })).ToHaveCountAsync(0);
+
+        await editor.EvaluateAsync("""
+            input => input.setSelectionRange(input.value.indexOf('DELETE'), input.value.length)
+            """);
+        await page.GetByTestId("query-run").ClickAsync();
+        var warning = page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" });
+        await Assertions.Expect(warning).ToBeVisibleAsync();
+        await warning.GetByRole(AriaRole.Button, new() { Name = "Run anyway", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        Assert.Equal(mutation, fixture.Provider.LastQuerySql);
+
+        await editor.EvaluateAsync("input => input.setSelectionRange(input.value.length, input.value.length)");
+        await page.GetByTestId("query-run").ClickAsync();
+        warning = page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" });
+        await Assertions.Expect(warning).ToBeVisibleAsync();
+        await warning.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+        Assert.Equal(mutation, fixture.Provider.LastQuerySql);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Formats_the_query_without_changing_literals_or_comments()
     {
         await using var browserPage = await fixture.NewPageAsync();
