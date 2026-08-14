@@ -1452,7 +1452,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
                      "CREATE VIEW active_customers AS SELECT * FROM Customers; DELETE FROM Customers",
                      "ALTER VIEW active_customers AS SELECT * FROM Customers; UPDATE Customers SET Active = 0",
                      "CREATE VIEW active_customers AS SELECT * FROM Customers\nGO\nDELETE FROM Customers",
-                 })
+                     "CREATE PROCEDURE clean_up AS DELETE FROM AuditLog\r\nGO\r\nDELETE FROM Customers",
+                  })
         {
             await editor.FillAsync(definitionThenMutation);
             await page.GetByTestId("query-run").ClickAsync();
