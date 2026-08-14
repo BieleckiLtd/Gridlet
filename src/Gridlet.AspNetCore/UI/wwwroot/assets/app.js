@@ -6087,7 +6087,7 @@
       onclick: () => editor.formatSql(),
     });
     const historyButton = h('button', {
-      text: 'History', title: 'Queries run in this database from this browser',
+      text: 'History', title: 'Queries run on this connection and database from this browser',
       'data-testid': 'query-history',
     });
     const serverMaxRows = state.meta.maxQueryResultRows;
