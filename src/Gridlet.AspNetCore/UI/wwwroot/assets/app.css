@@ -705,6 +705,38 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 .result-meta { font-size: 12.5px; }
 .message { color: var(--ok); font-size: 12.5px; white-space: pre-wrap; }
 
+.query-history-dialog { width: min(620px, calc(100vw - 64px)); }
+.query-history-note { margin: 0 0 10px; font-size: 12.5px; }
+.query-history-list {
+  display: flex;
+  max-height: min(58vh, 520px);
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+}
+.query-history-item {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  border-color: var(--border);
+  background: var(--panel-2);
+  text-align: left;
+}
+.query-history-item:hover, .query-history-item:focus-visible { border-color: var(--accent); }
+.query-history-sql {
+  overflow: hidden;
+  font: 12.5px var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.query-history-meta { color: var(--muted); font-size: 11.5px; }
+.query-history-item.failed .query-history-meta { color: var(--error-text); }
+.query-history-item.cancelled .query-history-meta { color: var(--warning); }
+.query-history-empty { margin: 24px 0; text-align: center; }
+
 /* ---- database agent tab ---- */
 .agent-panel { position: relative; flex-direction: row; gap: 10px; overflow: hidden; padding: 12px; }
 .agent-workspace {
