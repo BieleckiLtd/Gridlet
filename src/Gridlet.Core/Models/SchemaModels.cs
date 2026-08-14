@@ -13,6 +13,7 @@ public enum DbObjectType
     TableValuedFunction,
     Trigger,
     Sequence,
+    UserDefinedType,
 }
 
 /// <summary>A schema-qualified database object.</summary>

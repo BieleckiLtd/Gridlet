@@ -63,14 +63,26 @@ public sealed class SqlServerSchemaReader : ISchemaReader
         const string sql =
             """
             SELECT s.name AS [schema], o.name, o.type,
-                   CONVERT(nvarchar(4000), ep.value) AS [description]
+                   CONVERT(nvarchar(4000), ep.value) AS [description],
+                   CONVERT(nvarchar(20), NULL) AS sub_kind
             FROM sys.objects o
             JOIN sys.schemas s ON s.schema_id = o.schema_id
             LEFT JOIN sys.extended_properties ep
               ON ep.class = 1 AND ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'
             WHERE o.type IN ('U', 'V', 'P', 'FN', 'IF', 'TF', 'TR', 'SO')
               AND o.is_ms_shipped = 0
-            ORDER BY s.name, o.name;
+            UNION ALL
+            SELECT s.name, t.name, N'UDT', CONVERT(nvarchar(4000), ep.value),
+                   CASE WHEN t.is_table_type = 1 THEN N'table'
+                        WHEN t.is_assembly_type = 1 THEN N'clr'
+                        ELSE N'alias' END
+            FROM sys.types t
+            JOIN sys.schemas s ON s.schema_id = t.schema_id
+            LEFT JOIN sys.extended_properties ep
+              ON ep.class = 6 AND ep.major_id = t.user_type_id
+             AND ep.minor_id = 0 AND ep.name = N'MS_Description'
+            WHERE t.is_user_defined = 1
+            ORDER BY [schema], name;
             """;
 
         await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
@@ -85,6 +97,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             if (type is not null)
             {
                 objects.Add(new DbObjectInfo(reader.GetString(0), reader.GetString(1), type.Value,
+                    SubKind: reader.IsDBNull(4) ? null : reader.GetString(4),
                     Description: reader.IsDBNull(3) ? null : reader.GetString(3)));
             }
         }
@@ -621,6 +634,79 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             reader.IsDBNull(12) ? null : Convert.ToInt64(reader.GetValue(12)));
     }
 
+    public async Task<string> GetUserDefinedTypeDefinitionAsync(
+        GridletConnectionContext context, string schema, string name,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql =
+            """
+            DECLARE @type_id int = (
+                SELECT t.user_type_id
+                FROM sys.types t
+                JOIN sys.schemas s ON s.schema_id = t.schema_id
+                WHERE s.name = @schema AND t.name = @type_name
+                  AND t.is_user_defined = 1
+            );
+
+            SELECT s.name, t.name, t.is_table_type, t.is_assembly_type,
+                   bt.name AS base_type_name, t.max_length, t.precision, t.scale,
+                   t.is_nullable, a.name AS assembly_name, at.assembly_class,
+                   CONVERT(nvarchar(4000), ep.value) AS [description],
+                   tt.type_table_object_id
+            FROM sys.types t
+            JOIN sys.schemas s ON s.schema_id = t.schema_id
+            LEFT JOIN sys.types bt
+              ON bt.user_type_id = t.system_type_id AND bt.is_user_defined = 0
+            LEFT JOIN sys.assembly_types at ON at.user_type_id = t.user_type_id
+            LEFT JOIN sys.assemblies a ON a.assembly_id = at.assembly_id
+            LEFT JOIN sys.table_types tt ON tt.user_type_id = t.user_type_id
+            LEFT JOIN sys.extended_properties ep
+              ON ep.class = 6 AND ep.major_id = t.user_type_id
+             AND ep.minor_id = 0 AND ep.name = N'MS_Description'
+            WHERE t.user_type_id = @type_id AND t.is_user_defined = 1;
+
+            SELECT c.name, ct.name, SCHEMA_NAME(ct.schema_id), ct.is_user_defined,
+                   c.max_length, c.precision, c.scale, c.is_nullable, c.column_id
+            FROM sys.table_types tt
+            JOIN sys.columns c ON c.object_id = tt.type_table_object_id
+            JOIN sys.types ct ON ct.user_type_id = c.user_type_id
+            WHERE tt.user_type_id = @type_id
+            ORDER BY c.column_id;
+            """;
+        var qualified = SqlServerIdentifier.QuoteQualified(schema, name);
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@schema", schema);
+        command.Parameters.AddWithValue("@type_name", name);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            throw new GridletObjectNotFoundException(qualified);
+
+        var isTable = reader.GetBoolean(2);
+        var isClr = reader.GetBoolean(3);
+        var kind = isTable ? "table" : isClr ? "clr" : "alias";
+        var baseType = reader.IsDBNull(4) ? null : SqlServerDataTypeFormatter.Format(
+            reader.GetString(4), reader.GetInt16(5), reader.GetByte(6), reader.GetByte(7));
+        var info = new SqlServerUserDefinedType(
+            reader.GetString(0), reader.GetString(1), kind, baseType, reader.GetBoolean(8),
+            reader.IsDBNull(9) ? null : reader.GetString(9),
+            reader.IsDBNull(10) ? null : reader.GetString(10), []);
+
+        await reader.NextResultAsync(cancellationToken);
+        var columns = new List<SqlServerUserDefinedTypeColumn>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var dataType = reader.GetBoolean(3)
+                ? SqlServerIdentifier.QuoteQualified(reader.GetString(2), reader.GetString(1))
+                : SqlServerDataTypeFormatter.Format(
+                    reader.GetString(1), reader.GetInt16(4), reader.GetByte(5), reader.GetByte(6));
+            columns.Add(new SqlServerUserDefinedTypeColumn(
+                reader.GetString(0), dataType, reader.GetBoolean(7), reader.GetInt32(8)));
+        }
+        return SqlServerUserDefinedTypeFormatter.Format(info with { Columns = columns });
+    }
+
     private static string BuildSequenceDefinition(SequenceInfo sequence)
     {
         var cache = sequence.IsCached
@@ -753,6 +839,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             "IF" or "TF" => DbObjectType.TableValuedFunction,
             "TR" => DbObjectType.Trigger,
             "SO" => DbObjectType.Sequence,
+            "UDT" => DbObjectType.UserDefinedType,
             _ => null,
         };
 }
