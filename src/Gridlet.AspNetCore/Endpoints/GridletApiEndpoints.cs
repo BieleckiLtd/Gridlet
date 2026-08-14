@@ -418,7 +418,7 @@ internal static partial class GridletApiEndpoints
             return Results.Ok(new TableStructureResponse(
                 ToDto(definition.Object), definition.Columns, definition.Indexes, definition.ForeignKeys,
                 definition.CheckConstraints, definition.UniqueConstraints, definition.RowIdentity,
-                definition.TableOptions, displays));
+                definition.TableOptions, displays, definition.Temporal));
         });
 
     private static Task<IResult> SaveForeignKeyDisplay(

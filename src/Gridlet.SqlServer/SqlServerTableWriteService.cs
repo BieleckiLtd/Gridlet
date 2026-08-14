@@ -100,7 +100,7 @@ public sealed class SqlServerTableWriteService : ITableWriteService
     /// <summary>Returns matched canonical column names, rejecting unknown / identity / computed columns.</summary>
     private static List<string>? ValidateColumns(
         IReadOnlyDictionary<string, object?>? requested,
-        Dictionary<string, (bool IsIdentity, bool IsComputed)> columns,
+        Dictionary<string, (bool IsIdentity, bool IsComputed, bool IsGeneratedAlways)> columns,
         bool forWrite,
         string qualifiedName)
     {
@@ -117,9 +117,12 @@ public sealed class SqlServerTableWriteService : ITableWriteService
                 throw new GridletValidationException($"Column '{name}' does not exist on {qualifiedName}.");
             }
 
-            if (forWrite && (info.IsIdentity || info.IsComputed))
+            if (forWrite && (info.IsIdentity || info.IsComputed || info.IsGeneratedAlways))
             {
-                throw new GridletValidationException($"Column '{name}' is {(info.IsIdentity ? "an identity" : "a computed")} column and cannot be written.");
+                var kind = info.IsIdentity ? "an identity"
+                    : info.IsComputed ? "a computed"
+                    : "a generated-always";
+                throw new GridletValidationException($"Column '{name}' is {kind} column and cannot be written.");
             }
 
             result.Add(name);
@@ -128,19 +131,23 @@ public sealed class SqlServerTableWriteService : ITableWriteService
         return result;
     }
 
-    private static async Task<Dictionary<string, (bool IsIdentity, bool IsComputed)>> LoadColumnsAsync(
+    private static async Task<Dictionary<string, (bool IsIdentity, bool IsComputed, bool IsGeneratedAlways)>> LoadColumnsAsync(
         SqlConnection connection, string qualifiedName, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
         command.CommandText =
-            "SELECT c.name, c.is_identity, c.is_computed FROM sys.columns c WHERE c.object_id = OBJECT_ID(@name);";
+            "SELECT c.name, c.is_identity, c.is_computed, " +
+            "CONVERT(int, COLUMNPROPERTY(c.object_id, c.name, 'GeneratedAlwaysType')) " +
+            "FROM sys.columns c WHERE c.object_id = OBJECT_ID(@name);";
         command.Parameters.AddWithValue("@name", qualifiedName);
 
-        var columns = new Dictionary<string, (bool, bool)>(StringComparer.OrdinalIgnoreCase);
+        var columns = new Dictionary<string, (bool, bool, bool)>(StringComparer.OrdinalIgnoreCase);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            columns[reader.GetString(0)] = (reader.GetBoolean(1), reader.GetBoolean(2));
+            columns[reader.GetString(0)] = (
+                reader.GetBoolean(1), reader.GetBoolean(2),
+                !reader.IsDBNull(3) && reader.GetInt32(3) != 0);
         }
 
         return columns;

@@ -25,13 +25,19 @@ public static class SqlServerInsertScriptBuilder
     {
         var target = SqlServerIdentifier.QuoteQualified(table.Object.Schema, table.Object.Name);
         var byName = table.Columns.ToDictionary(column => column.Name, StringComparer.OrdinalIgnoreCase);
+        var currentTemporal = table.Temporal is { Kind: TemporalTableKinds.SystemVersioned } value
+            ? value
+            : null;
+        var periodColumns = new HashSet<string>(
+            new[] { currentTemporal?.PeriodStartColumn, currentTemporal?.PeriodEndColumn }.OfType<string>(),
+            StringComparer.OrdinalIgnoreCase);
 
         // Computed columns cannot be written at all; identity columns can, but only inside
         // IDENTITY_INSERT, which is why the script turns it on rather than dropping the column.
         var writable = columns
             .Select((column, ordinal) => (Column: column, Ordinal: ordinal))
             .Where(entry => !byName.TryGetValue(entry.Column.Name, out var info)
-                || (!info.IsComputed && !info.IsHidden))
+                || (!info.IsComputed && !info.IsHidden && !periodColumns.Contains(info.Name)))
             .ToArray();
         if (writable.Length == 0 || rows.Count == 0)
         {

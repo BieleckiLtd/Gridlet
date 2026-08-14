@@ -106,7 +106,26 @@ public static partial class SqlServerDdlBuilder
             c.IdentitySeed ?? 1,
             c.IdentityIncrement ?? 1,
             c.Collation)).ToArray();
-        var lines = columns.Select(c => BuildColumnDefinition(c, includeDefault: true)).ToList();
+        var temporal = definition.Temporal is { Kind: TemporalTableKinds.SystemVersioned } value
+            ? value
+            : null;
+        var lines = definition.Columns.Select((column, index) =>
+        {
+            var role = string.Equals(column.Name, temporal?.PeriodStartColumn, StringComparison.OrdinalIgnoreCase)
+                ? "START"
+                : string.Equals(column.Name, temporal?.PeriodEndColumn, StringComparison.OrdinalIgnoreCase)
+                    ? "END"
+                    : null;
+            return role is null
+                ? BuildColumnDefinition(columns[index], includeDefault: true)
+                : BuildTemporalPeriodColumn(column, role);
+        }).ToList();
+
+        if (temporal?.PeriodStartColumn is not null && temporal.PeriodEndColumn is not null)
+        {
+            lines.Add($"PERIOD FOR SYSTEM_TIME ({SqlServerIdentifier.Quote(temporal.PeriodStartColumn)}, " +
+                      $"{SqlServerIdentifier.Quote(temporal.PeriodEndColumn)})");
+        }
 
         if (primaryKey is not null)
         {
@@ -141,8 +160,23 @@ public static partial class SqlServerDdlBuilder
             $"ON DELETE {fk.OnDelete.Replace('_', ' ')} ON UPDATE {fk.OnUpdate.Replace('_', ' ')}"));
 
         var target = SqlServerIdentifier.QuoteQualified(definition.Object.Schema, definition.Object.Name);
+        var temporalOptions = new List<string>();
+        if (temporal?.RelatedSchema is not null && temporal.RelatedTable is not null)
+        {
+            temporalOptions.Add("HISTORY_TABLE = " +
+                SqlServerIdentifier.QuoteQualified(temporal.RelatedSchema, temporal.RelatedTable));
+        }
+        if (temporal?.HistoryRetentionPeriod is >= 0 &&
+            NormalizeHistoryRetentionUnit(temporal.HistoryRetentionUnit) is { } retentionUnit)
+        {
+            temporalOptions.Add($"HISTORY_RETENTION_PERIOD = {temporal.HistoryRetentionPeriod} {retentionUnit}");
+        }
+        var temporalClause = temporal is null
+            ? string.Empty
+            : $" WITH (SYSTEM_VERSIONING = ON" +
+              (temporalOptions.Count > 0 ? $" ({string.Join(", ", temporalOptions)})" : string.Empty) + ")";
         var sql = $"CREATE TABLE {target} (\n" +
-                  $"    {string.Join(",\n    ", lines)}\n);";
+                  $"    {string.Join(",\n    ", lines)}\n){temporalClause};";
         var scriptedIndexes = new List<(IndexInfo Info, IndexDesign Design)>();
 
         foreach (var index in definition.Indexes.Where(i => !i.IsPrimaryKey))
@@ -189,6 +223,30 @@ public static partial class SqlServerDdlBuilder
 
         return sql;
     }
+
+    private static string BuildTemporalPeriodColumn(ColumnInfo column, string role)
+    {
+        var definition =
+            $"{SqlServerIdentifier.Quote(column.Name)} {NormalizeDataType(column.DataType)}" +
+            $"{NormalizeCollation(column.Collation)} GENERATED ALWAYS AS ROW {role}" +
+            $"{(column.IsHidden ? " HIDDEN" : "")}" +
+            $"{(column.IsNullable ? " NULL" : " NOT NULL")}";
+        if (!string.IsNullOrWhiteSpace(column.DefaultDefinition))
+        {
+            definition += $" DEFAULT ({SqlServerExpressionSafety.RequireSingleExpression(column.DefaultDefinition, "default")})";
+        }
+        return definition;
+    }
+
+    private static string? NormalizeHistoryRetentionUnit(string? unit)
+        => unit?.Trim().ToUpperInvariant() switch
+        {
+            "DAY" => "DAY",
+            "WEEK" => "WEEK",
+            "MONTH" => "MONTH",
+            "YEAR" => "YEAR",
+            _ => null,
+        };
 
     /// <summary>Creates a schema only when it is not already present.</summary>
     public static string BuildCreateSchemaIfMissing(string schema)

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using Gridlet.Tests.AspNetCore.Fakes;
 using Gridlet.Abstractions;
+using Gridlet.AspNetCore.Contracts;
 using Gridlet.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
@@ -234,6 +235,43 @@ public class GridletEndpointTests
 
         Assert.Contains("\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]", keyed);
         Assert.Contains("\"rowIdentity\":null", unkeyed);
+    }
+
+    [Fact]
+    public async Task Structure_exposes_temporal_table_relationship_and_period()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var body = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Ledger/structure");
+        var history = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/LedgerHeap/structure");
+
+        Assert.Contains("\"kind\":\"systemVersioned\"", body);
+        Assert.Contains("\"relatedSchema\":\"dbo\"", body);
+        Assert.Contains("\"relatedTable\":\"LedgerHeap\"", body);
+        Assert.Contains("\"periodStartColumn\":\"SysStart\"", body);
+        Assert.Contains("\"periodEndColumn\":\"SysEnd\"", body);
+        Assert.Contains("\"historyRetentionPeriod\":6", body);
+        Assert.Contains("\"historyRetentionUnit\":\"MONTH\"", body);
+        Assert.Contains("\"kind\":\"historyTable\"", history);
+        Assert.Contains("\"relatedSchema\":\"dbo\"", history);
+        Assert.Contains("\"relatedTable\":\"Ledger\"", history);
+    }
+
+    [Fact]
+    public void Previous_table_structure_response_constructor_shape_remains_available()
+    {
+        var constructor = typeof(TableStructureResponse).GetConstructor(
+        [
+            typeof(DbObjectDto), typeof(IReadOnlyList<ColumnInfo>), typeof(IReadOnlyList<IndexInfo>),
+            typeof(IReadOnlyList<ForeignKeyInfo>), typeof(IReadOnlyList<CheckConstraintInfo>),
+            typeof(IReadOnlyList<UniqueConstraintInfo>), typeof(RowIdentityInfo),
+            typeof(IReadOnlyList<string>), typeof(IReadOnlyList<ForeignKeyDisplayDto>),
+        ]);
+
+        Assert.NotNull(constructor);
     }
 
     [Fact]

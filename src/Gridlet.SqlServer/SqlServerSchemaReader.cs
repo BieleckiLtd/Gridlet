@@ -124,7 +124,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                    c.is_nullable, c.is_identity, c.is_computed, dc.definition AS default_definition,
                    cc.definition AS computed_definition, cc.is_persisted,
                    CONVERT(bigint, ic.seed_value), CONVERT(bigint, ic.increment_value),
-                   c.collation_name, CONVERT(nvarchar(4000), ep.value) AS [description]
+                   c.collation_name, CONVERT(nvarchar(4000), ep.value) AS [description],
+                   CONVERT(int, COLUMNPROPERTY(c.object_id, c.name, 'IsHidden')) AS is_hidden
             FROM sys.columns c
             JOIN sys.types t ON t.user_type_id = c.user_type_id
             LEFT JOIN sys.default_constraints dc
@@ -214,6 +215,60 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             JOIN sys.columns col ON col.object_id = ic.object_id AND col.column_id = ic.column_id
             WHERE kc.parent_object_id = OBJECT_ID(@name) AND kc.type = 'UQ'
             ORDER BY kc.object_id, ic.key_ordinal;
+
+            DECLARE @temporal_sql nvarchar(max);
+            DECLARE @retention_columns nvarchar(500) =
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM sys.all_columns
+                    WHERE object_id = OBJECT_ID(N'sys.tables') AND name = N'history_retention_period')
+                THEN N',
+                    CONVERT(bigint, CASE WHEN t.temporal_type = 2
+                        THEN t.history_retention_period ELSE owner_table.history_retention_period END)
+                        AS history_retention_period,
+                    CONVERT(nvarchar(60), CASE WHEN t.temporal_type = 2
+                        THEN t.history_retention_period_unit_desc ELSE owner_table.history_retention_period_unit_desc END)
+                        AS history_retention_unit'
+                ELSE N',
+                    CONVERT(bigint, NULL) AS history_retention_period,
+                    CONVERT(nvarchar(60), NULL) AS history_retention_unit'
+                END;
+            IF OBJECT_ID(N'sys.periods') IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM sys.all_columns
+                   WHERE object_id = OBJECT_ID(N'sys.tables') AND name = N'temporal_type')
+            BEGIN
+                SET @temporal_sql = N'
+                    SELECT CONVERT(int, t.temporal_type) AS temporal_type,
+                           CASE WHEN t.temporal_type = 2 THEN hs.name ELSE owner_schema.name END AS related_schema,
+                           CASE WHEN t.temporal_type = 2 THEN history_table.name ELSE owner_table.name END AS related_table,
+                           period_start.name AS period_start_column,
+                           period_end.name AS period_end_column' + @retention_columns + N'
+                    FROM sys.tables t
+                    LEFT JOIN sys.tables history_table ON history_table.object_id = t.history_table_id
+                    LEFT JOIN sys.schemas hs ON hs.schema_id = history_table.schema_id
+                    LEFT JOIN sys.tables owner_table ON owner_table.history_table_id = t.object_id
+                    LEFT JOIN sys.schemas owner_schema ON owner_schema.schema_id = owner_table.schema_id
+                    LEFT JOIN sys.periods period
+                      ON period.object_id = CASE WHEN t.temporal_type = 1 THEN owner_table.object_id ELSE t.object_id END
+                    LEFT JOIN sys.columns period_start
+                      ON period_start.object_id = period.object_id AND period_start.column_id = period.start_column_id
+                    LEFT JOIN sys.columns period_end
+                      ON period_end.object_id = period.object_id AND period_end.column_id = period.end_column_id
+                    WHERE t.object_id = OBJECT_ID(@object_name);';
+            END
+            ELSE
+            BEGIN
+                SET @temporal_sql = N'
+                    SELECT CONVERT(int, 0) AS temporal_type,
+                           CONVERT(sysname, NULL) AS related_schema,
+                           CONVERT(sysname, NULL) AS related_table,
+                           CONVERT(sysname, NULL) AS period_start_column,
+                           CONVERT(sysname, NULL) AS period_end_column,
+                           CONVERT(bigint, NULL) AS history_retention_period,
+                           CONVERT(nvarchar(60), NULL) AS history_retention_unit
+                    WHERE 1 = 0;';
+            END;
+            EXEC sys.sp_executesql @temporal_sql, N'@object_name nvarchar(776)', @object_name = @name;
             """;
 
         var qualifiedName = SqlServerIdentifier.QuoteQualified(schema, name);
@@ -256,7 +311,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 IdentitySeed: reader.IsDBNull(11) ? null : reader.GetInt64(11),
                 IdentityIncrement: reader.IsDBNull(12) ? null : reader.GetInt64(12),
                 Collation: reader.IsDBNull(13) ? null : reader.GetString(13),
-                Description: reader.IsDBNull(14) ? null : reader.GetString(14)));
+                Description: reader.IsDBNull(14) ? null : reader.GetString(14),
+                IsHidden: !reader.IsDBNull(15) && reader.GetInt32(15) != 0));
         }
 
         // Result set 3: primary key columns.
@@ -411,6 +467,22 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 reader.GetBoolean(5)));
         }
 
+        // Result set 8: SQL Server system-versioning metadata. A normal table reports temporal_type
+        // 0; a view has no sys.tables row. Both intentionally map to no temporal descriptor.
+        await reader.NextResultAsync(cancellationToken);
+        TemporalTableInfo? temporal = null;
+        if (await reader.ReadAsync(cancellationToken))
+        {
+            temporal = CreateTemporalTableInfo(
+                reader.GetInt32(0),
+                reader.IsDBNull(1) ? null : reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetInt64(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6));
+        }
+
         var indexInfos = indexOrder
             .Select(n => new IndexInfo(
                     n,
@@ -452,7 +524,36 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                     PrimaryKeyColumnsInKeyOrder(indexInfos, columns),
                     UniqueKeyCandidates(indexInfos, uniqueConstraintInfos),
                     columns.ToDictionary(c => c.Name, c => c.IsNullable, StringComparer.OrdinalIgnoreCase))
-                : null);
+                : null,
+            Temporal: temporal);
+    }
+
+    internal static TemporalTableInfo? CreateTemporalTableInfo(
+        int temporalType,
+        string? relatedSchema,
+        string? relatedTable,
+        string? periodStartColumn,
+        string? periodEndColumn,
+        long? historyRetentionPeriod = null,
+        string? historyRetentionUnit = null)
+    {
+        // SQL Server exposes its default infinite retention as -1 / INFINITE. Keep the
+        // provider-neutral model limited to finite durations; null means no finite policy.
+        if (historyRetentionPeriod < 0 ||
+            string.Equals(historyRetentionUnit, "INFINITE", StringComparison.OrdinalIgnoreCase))
+        {
+            historyRetentionPeriod = null;
+            historyRetentionUnit = null;
+        }
+
+        return temporalType switch
+        {
+            2 => new TemporalTableInfo(TemporalTableKinds.SystemVersioned, relatedSchema, relatedTable,
+                periodStartColumn, periodEndColumn, historyRetentionPeriod, historyRetentionUnit),
+            1 => new TemporalTableInfo(TemporalTableKinds.HistoryTable, relatedSchema, relatedTable,
+                periodStartColumn, periodEndColumn, historyRetentionPeriod, historyRetentionUnit),
+            _ => null,
+        };
     }
 
     /// <summary>Returns the primary-key columns in key order, preferring the index's own ordering.</summary>
