@@ -11,7 +11,7 @@ Obtain an independent review without surrendering control of the worktree. Treat
 
 1. Read repository instructions and capture `git status --short`, the current branch, and the requested review scope.
 2. Ask only when the scope or model is materially ambiguous. Otherwise infer the scope from the request and current changes.
-3. Record exact provider, model display name, backend model ID, and reasoning effort. Never replace a rejected model with a similarly named model, alias, legacy picker entry, or automatic selection.
+3. Record the provider, selectable catalog ID, any reported runtime/backend ID, and reasoning effort. Pass the catalog ID to the CLI. Never replace a rejected catalog ID with a similarly named model, alias, legacy picker entry, automatic selection, or a reported runtime ID that is not itself selectable.
 4. Keep review invocations read-only. Do not grant write tools, stage, commit, push, or run tests unless the user separately authorizes them.
 5. Include relevant issue or PR discussion in the prompt when available. Require the reviewer to check current code and comments so it does not report already-fixed items.
 
@@ -36,11 +36,12 @@ For provider flags, model discovery, and manual fallback commands, read [referen
 
 ## Verify identity and integrity
 
-1. Require the CLI to accept the exact backend ID. If it rejects the ID, stop. Check the installed version and the provider's current model catalog; update the CLI only with user authorization when the update changes software outside the repository.
-2. Verify the effective model from structured output or session metadata. A UI label or self-description alone is insufficient when metadata is available.
+1. Require the CLI to accept the exact selectable catalog ID. If it rejects that ID, stop. Check the installed version and the provider's current catalog; update the CLI only with user authorization when the update changes software outside the repository.
+2. Verify the effective model from structured output or session metadata. A UI label or self-description alone is insufficient when metadata is available. A reported runtime ID that is not in the catalog (for example Grok `grok-4.6` reporting `grok-4.6-build`) is the selected model, not a fallback. A different selectable catalog ID invalidates the run.
 3. Confirm the requested effort in the invocation. If the provider exposes effort metadata, verify that too.
 4. Compare repository state before and after. If anything changed, report it and inspect the change; never silently revert user work.
 5. Discard output from any run that used the wrong model, even if its findings look useful.
+6. Accept a review only when the output ends with `REVIEW_VERDICT: findings` or `REVIEW_VERDICT: no_actionable_findings`. Progress narration without that line is not a review. If the reviewer process is still running, wait for that line. Do not start a second review of the same scope, and do not treat a session trace as the verdict.
 
 ## Triage findings
 
