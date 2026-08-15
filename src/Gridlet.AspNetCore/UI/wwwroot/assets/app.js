@@ -2122,7 +2122,15 @@
     renderTabBar();
 
     const panels = $('#panels');
-    panels.replaceChildren(...state.tabs.map((t) => t.panel));
+    // Keep existing panels mounted while switching tabs. Replacing the whole panel list blurs an
+    // active inline editor (and discards its focus) even though the editor's tab is still open.
+    const livePanels = new Set(state.tabs.map((tab) => tab.panel));
+    for (const panel of [...panels.children]) {
+      if (!livePanels.has(panel)) panel.remove();
+    }
+    for (const tab of state.tabs) {
+      if (tab.panel.parentElement !== panels) panels.append(tab.panel);
+    }
     for (const tab of state.tabs) {
       tab.panel.hidden = tab.id !== state.activeTabId;
     }
@@ -2927,6 +2935,9 @@
       });
       editorRow.addEventListener('focusout', () => {
         setTimeout(() => {
+          // Switching Gridlet tabs hides this row temporarily. Keep the editor alive so returning
+          // to its tab does not silently commit or discard the in-progress inline edit.
+          if (editorRow.closest('.panel')?.hidden) return;
           if (editorRow.isConnected && !editorRow.contains(document.activeElement) &&
               !editorRow._lookupPointerActive) commit();
         });
@@ -7662,28 +7673,18 @@
   }
 
   function jsonPreviewButton(getValue) {
-    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    icon.setAttribute('viewBox', '0 0 16 16');
-    icon.setAttribute('aria-hidden', 'true');
-    icon.classList.add('json-preview-icon');
-    const lens = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    lens.setAttribute('cx', '6.75');
-    lens.setAttribute('cy', '6.75');
-    lens.setAttribute('r', '4.25');
-    const handle = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    handle.setAttribute('d', 'M10 10l3.5 3.5');
-    icon.append(lens, handle);
+    const icon = h('span', { class: 'json-preview-icon', text: '</>', 'aria-hidden': 'true' });
     return h('button', {
       type: 'button', class: 'json-preview-button',
-      title: 'Preview formatted JSON in a new tab',
-      'aria-label': 'Preview formatted JSON in a new tab',
+      title: 'Preview formatted JSON in a new Gridlet tab',
+      'aria-label': 'Preview formatted JSON in a new Gridlet tab',
       'data-testid': 'json-preview',
       // Keep focus in the input. The row editor normally commits when focus leaves the row.
       onpointerdown: (event) => event.preventDefault(),
       onclick: (event) => {
         event.stopPropagation();
         const json = jsonContainerValue(getValue());
-        if (json !== null) openJsonPreview(json);
+        if (json !== null) openJsonPreviewTab(json);
       },
     }, icon);
   }
@@ -7719,43 +7720,29 @@
     }
   }
 
-  function openJsonPreview(value) {
-    const preview = window.open('', '_blank');
-    if (!preview) {
-      toast('The JSON preview was blocked. Allow pop-ups for Gridlet and try again.');
-      return;
-    }
-    preview.opener = null;
-    const formatted = JSON.stringify(value, null, 2);
-    const doc = preview.document;
-    doc.title = 'JSON preview';
-    doc.documentElement.lang = 'en';
-    const viewport = doc.createElement('meta');
-    viewport.name = 'viewport';
-    viewport.content = 'width=device-width, initial-scale=1';
-    const style = doc.createElement('style');
-    style.textContent = `
-      :root { color-scheme: light dark; }
-      body { margin: 0; padding: 24px; background: #111827; color: #d1d5db; }
-      pre { max-width: 1200px; margin: 0 auto; padding: 20px; overflow: auto;
-        border: 1px solid #374151; border-radius: 10px; background: #0b1020;
-        box-shadow: 0 12px 32px rgb(0 0 0 / 25%); white-space: pre-wrap;
-        overflow-wrap: anywhere; tab-size: 2; font: 13px/1.55 ui-monospace, SFMono-Regular,
-        Consolas, "Liberation Mono", monospace; }
-      .json-key { color: #93c5fd; } .json-string { color: #86efac; }
-      .json-number { color: #fca5a5; } .json-literal { color: #c4b5fd; }
-      @media (prefers-color-scheme: light) {
-        body { background: #f3f4f6; color: #1f2937; }
-        pre { border-color: #d1d5db; background: white; box-shadow: 0 12px 32px rgb(0 0 0 / 8%); }
-        .json-key { color: #1d4ed8; } .json-string { color: #15803d; }
-        .json-number { color: #b91c1c; } .json-literal { color: #7e22ce; }
-      }`;
-    const pre = doc.createElement('pre');
-    const code = doc.createElement('code');
-    code.innerHTML = highlightJson(formatted);
-    pre.append(code);
-    doc.head.append(viewport, style);
-    doc.body.replaceChildren(pre);
+  function openJsonPreviewTab(value) {
+    const responseView = createVirtualCodeViewer('Formatted JSON');
+    const responsePresentation = createJsonPresentation((text, syntax) =>
+      responseView.setText(text || '(empty JSON)', syntax));
+    const tab = {
+      id: state.nextTabId++,
+      key: null,
+      badge: '{}',
+      title: 'JSON preview',
+      panel: h('div', { class: 'panel' },
+        h('div', { class: 'panel-body api-preview-body' },
+          h('section', { class: 'api-response' },
+            h('div', { class: 'api-response-toolbar' },
+              h('strong', { text: 'JSON preview' }),
+              h('span', { class: 'spacer' }),
+              h('div', { class: 'view-switcher api-format-switcher' },
+                responsePresentation.rawButton, responsePresentation.prettyButton)),
+            responseView.element))),
+      loaded: true,
+      load: () => {},
+    };
+    responsePresentation.setText(JSON.stringify(value), true);
+    addTab(tab);
   }
 
   // ---- export ---------------------------------------------------------------------------

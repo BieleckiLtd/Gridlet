@@ -1923,12 +1923,22 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal("1", await previewButton.EvaluateAsync<string>(
             "element => getComputedStyle(element).opacity"));
 
-        var preview = await page.RunAndWaitForPopupAsync(() => previewButton.ClickAsync());
-        await preview.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
-        await Assertions.Expect(preview.Locator("pre")).ToContainTextAsync("\n  \"person\": {");
+        await Assertions.Expect(previewButton).ToHaveAttributeAsync(
+            "title", "Preview formatted JSON in a new Gridlet tab");
+        await Assertions.Expect(previewButton).ToContainTextAsync("</>");
+        await previewButton.ClickAsync();
+        var previewTab = page.Locator("#tabbar .tab").Filter(new() { HasText = "JSON preview" });
+        await Assertions.Expect(previewTab).ToHaveCountAsync(1);
+        await Assertions.Expect(previewTab).ToHaveClassAsync(new Regex("active"));
+        var preview = ActivePanel(page);
+        await Assertions.Expect(preview.Locator(".api-code-content"))
+            .ToContainTextAsync("\n  \"person\": {");
         await Assertions.Expect(preview.Locator(".json-key").First).ToHaveTextAsync("\"person\":");
+        await Assertions.Expect(page.Locator("#panels .panel tr.row-editor")).ToHaveCountAsync(1);
+        await previewTab.GetByTitle("Close tab").ClickAsync();
+        await Assertions.Expect(previewTab).ToHaveCountAsync(0);
+        await jsonCell.ClickAsync();
         await Assertions.Expect(editor).ToHaveCountAsync(1);
-        await preview.CloseAsync();
 
         var name = panel.GetByLabel("Name", new() { Exact = true });
         await name.FillAsync("{\"edited\":true}");
