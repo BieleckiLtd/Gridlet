@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ship issue item"
+  short_description: "Next backlog item, cross-CLI review, merge to dev"
+  default_prompt: "Use $ship-issue-item to implement the next remaining item from issue #64, review it through another coding CLI, and merge to dev."

@@ -1,6 +1,10 @@
 The query editor runs SQL against the selected connection and database, but only when that
 connection has SQL execution enabled.
 
+- Selecting a statement and pressing Ctrl+Enter, or clicking Run, executes only that selection.
+  With no selection the whole buffer runs. The same rule applies to Plan and Plan + run, and to
+  the unqualified UPDATE/DELETE warning, so a script can stay on screen while one statement is
+  tried.
 - Results stream in as they arrive and the row count updates while they do. When the safety
   cap is reached the editor says so rather than silently truncating.
 - A result set can be exported as CSV or JSON.

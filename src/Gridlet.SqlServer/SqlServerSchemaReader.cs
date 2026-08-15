@@ -63,14 +63,26 @@ public sealed class SqlServerSchemaReader : ISchemaReader
         const string sql =
             """
             SELECT s.name AS [schema], o.name, o.type,
-                   CONVERT(nvarchar(4000), ep.value) AS [description]
+                   CONVERT(nvarchar(4000), ep.value) AS [description],
+                   CONVERT(nvarchar(20), NULL) AS sub_kind
             FROM sys.objects o
             JOIN sys.schemas s ON s.schema_id = o.schema_id
             LEFT JOIN sys.extended_properties ep
               ON ep.class = 1 AND ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description'
             WHERE o.type IN ('U', 'V', 'P', 'FN', 'IF', 'TF', 'TR', 'SO')
               AND o.is_ms_shipped = 0
-            ORDER BY s.name, o.name;
+            UNION ALL
+            SELECT s.name, t.name, N'UDT', CONVERT(nvarchar(4000), ep.value),
+                   CASE WHEN t.is_table_type = 1 THEN N'table'
+                        WHEN t.is_assembly_type = 1 THEN N'clr'
+                        ELSE N'alias' END
+            FROM sys.types t
+            JOIN sys.schemas s ON s.schema_id = t.schema_id
+            LEFT JOIN sys.extended_properties ep
+              ON ep.class = 6 AND ep.major_id = t.user_type_id
+             AND ep.minor_id = 0 AND ep.name = N'MS_Description'
+            WHERE t.is_user_defined = 1
+            ORDER BY [schema], name;
             """;
 
         await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
@@ -85,6 +97,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             if (type is not null)
             {
                 objects.Add(new DbObjectInfo(reader.GetString(0), reader.GetString(1), type.Value,
+                    SubKind: reader.IsDBNull(4) ? null : reader.GetString(4),
                     Description: reader.IsDBNull(3) ? null : reader.GetString(3)));
             }
         }
@@ -111,7 +124,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                    c.is_nullable, c.is_identity, c.is_computed, dc.definition AS default_definition,
                    cc.definition AS computed_definition, cc.is_persisted,
                    CONVERT(bigint, ic.seed_value), CONVERT(bigint, ic.increment_value),
-                   c.collation_name, CONVERT(nvarchar(4000), ep.value) AS [description]
+                   c.collation_name, CONVERT(nvarchar(4000), ep.value) AS [description],
+                   CONVERT(int, COLUMNPROPERTY(c.object_id, c.name, 'IsHidden')) AS is_hidden
             FROM sys.columns c
             JOIN sys.types t ON t.user_type_id = c.user_type_id
             LEFT JOIN sys.default_constraints dc
@@ -201,6 +215,60 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             JOIN sys.columns col ON col.object_id = ic.object_id AND col.column_id = ic.column_id
             WHERE kc.parent_object_id = OBJECT_ID(@name) AND kc.type = 'UQ'
             ORDER BY kc.object_id, ic.key_ordinal;
+
+            DECLARE @temporal_sql nvarchar(max);
+            DECLARE @retention_columns nvarchar(500) =
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM sys.all_columns
+                    WHERE object_id = OBJECT_ID(N'sys.tables') AND name = N'history_retention_period')
+                THEN N',
+                    CONVERT(bigint, CASE WHEN t.temporal_type = 2
+                        THEN t.history_retention_period ELSE owner_table.history_retention_period END)
+                        AS history_retention_period,
+                    CONVERT(nvarchar(60), CASE WHEN t.temporal_type = 2
+                        THEN t.history_retention_period_unit_desc ELSE owner_table.history_retention_period_unit_desc END)
+                        AS history_retention_unit'
+                ELSE N',
+                    CONVERT(bigint, NULL) AS history_retention_period,
+                    CONVERT(nvarchar(60), NULL) AS history_retention_unit'
+                END;
+            IF OBJECT_ID(N'sys.periods') IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM sys.all_columns
+                   WHERE object_id = OBJECT_ID(N'sys.tables') AND name = N'temporal_type')
+            BEGIN
+                SET @temporal_sql = N'
+                    SELECT CONVERT(int, t.temporal_type) AS temporal_type,
+                           CASE WHEN t.temporal_type = 2 THEN hs.name ELSE owner_schema.name END AS related_schema,
+                           CASE WHEN t.temporal_type = 2 THEN history_table.name ELSE owner_table.name END AS related_table,
+                           period_start.name AS period_start_column,
+                           period_end.name AS period_end_column' + @retention_columns + N'
+                    FROM sys.tables t
+                    LEFT JOIN sys.tables history_table ON history_table.object_id = t.history_table_id
+                    LEFT JOIN sys.schemas hs ON hs.schema_id = history_table.schema_id
+                    LEFT JOIN sys.tables owner_table ON owner_table.history_table_id = t.object_id
+                    LEFT JOIN sys.schemas owner_schema ON owner_schema.schema_id = owner_table.schema_id
+                    LEFT JOIN sys.periods period
+                      ON period.object_id = CASE WHEN t.temporal_type = 1 THEN owner_table.object_id ELSE t.object_id END
+                    LEFT JOIN sys.columns period_start
+                      ON period_start.object_id = period.object_id AND period_start.column_id = period.start_column_id
+                    LEFT JOIN sys.columns period_end
+                      ON period_end.object_id = period.object_id AND period_end.column_id = period.end_column_id
+                    WHERE t.object_id = OBJECT_ID(@object_name);';
+            END
+            ELSE
+            BEGIN
+                SET @temporal_sql = N'
+                    SELECT CONVERT(int, 0) AS temporal_type,
+                           CONVERT(sysname, NULL) AS related_schema,
+                           CONVERT(sysname, NULL) AS related_table,
+                           CONVERT(sysname, NULL) AS period_start_column,
+                           CONVERT(sysname, NULL) AS period_end_column,
+                           CONVERT(bigint, NULL) AS history_retention_period,
+                           CONVERT(nvarchar(60), NULL) AS history_retention_unit
+                    WHERE 1 = 0;';
+            END;
+            EXEC sys.sp_executesql @temporal_sql, N'@object_name nvarchar(776)', @object_name = @name;
             """;
 
         var qualifiedName = SqlServerIdentifier.QuoteQualified(schema, name);
@@ -243,7 +311,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 IdentitySeed: reader.IsDBNull(11) ? null : reader.GetInt64(11),
                 IdentityIncrement: reader.IsDBNull(12) ? null : reader.GetInt64(12),
                 Collation: reader.IsDBNull(13) ? null : reader.GetString(13),
-                Description: reader.IsDBNull(14) ? null : reader.GetString(14)));
+                Description: reader.IsDBNull(14) ? null : reader.GetString(14),
+                IsHidden: !reader.IsDBNull(15) && reader.GetInt32(15) != 0));
         }
 
         // Result set 3: primary key columns.
@@ -398,6 +467,22 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 reader.GetBoolean(5)));
         }
 
+        // Result set 8: SQL Server system-versioning metadata. A normal table reports temporal_type
+        // 0; a view has no sys.tables row. Both intentionally map to no temporal descriptor.
+        await reader.NextResultAsync(cancellationToken);
+        TemporalTableInfo? temporal = null;
+        if (await reader.ReadAsync(cancellationToken))
+        {
+            temporal = CreateTemporalTableInfo(
+                reader.GetInt32(0),
+                reader.IsDBNull(1) ? null : reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetInt64(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6));
+        }
+
         var indexInfos = indexOrder
             .Select(n => new IndexInfo(
                     n,
@@ -439,7 +524,36 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                     PrimaryKeyColumnsInKeyOrder(indexInfos, columns),
                     UniqueKeyCandidates(indexInfos, uniqueConstraintInfos),
                     columns.ToDictionary(c => c.Name, c => c.IsNullable, StringComparer.OrdinalIgnoreCase))
-                : null);
+                : null,
+            Temporal: temporal);
+    }
+
+    internal static TemporalTableInfo? CreateTemporalTableInfo(
+        int temporalType,
+        string? relatedSchema,
+        string? relatedTable,
+        string? periodStartColumn,
+        string? periodEndColumn,
+        long? historyRetentionPeriod = null,
+        string? historyRetentionUnit = null)
+    {
+        // SQL Server exposes its default infinite retention as -1 / INFINITE. Keep the
+        // provider-neutral model limited to finite durations; null means no finite policy.
+        if (historyRetentionPeriod < 0 ||
+            string.Equals(historyRetentionUnit, "INFINITE", StringComparison.OrdinalIgnoreCase))
+        {
+            historyRetentionPeriod = null;
+            historyRetentionUnit = null;
+        }
+
+        return temporalType switch
+        {
+            2 => new TemporalTableInfo(TemporalTableKinds.SystemVersioned, relatedSchema, relatedTable,
+                periodStartColumn, periodEndColumn, historyRetentionPeriod, historyRetentionUnit),
+            1 => new TemporalTableInfo(TemporalTableKinds.HistoryTable, relatedSchema, relatedTable,
+                periodStartColumn, periodEndColumn, historyRetentionPeriod, historyRetentionUnit),
+            _ => null,
+        };
     }
 
     /// <summary>Returns the primary-key columns in key order, preferring the index's own ordering.</summary>
@@ -621,6 +735,79 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             reader.IsDBNull(12) ? null : Convert.ToInt64(reader.GetValue(12)));
     }
 
+    public async Task<string> GetUserDefinedTypeDefinitionAsync(
+        GridletConnectionContext context, string schema, string name,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql =
+            """
+            DECLARE @type_id int = (
+                SELECT t.user_type_id
+                FROM sys.types t
+                JOIN sys.schemas s ON s.schema_id = t.schema_id
+                WHERE s.name = @schema AND t.name = @type_name
+                  AND t.is_user_defined = 1
+            );
+
+            SELECT s.name, t.name, t.is_table_type, t.is_assembly_type,
+                   bt.name AS base_type_name, t.max_length, t.precision, t.scale,
+                   t.is_nullable, a.name AS assembly_name, at.assembly_class,
+                   CONVERT(nvarchar(4000), ep.value) AS [description],
+                   tt.type_table_object_id
+            FROM sys.types t
+            JOIN sys.schemas s ON s.schema_id = t.schema_id
+            LEFT JOIN sys.types bt
+              ON bt.user_type_id = t.system_type_id AND bt.is_user_defined = 0
+            LEFT JOIN sys.assembly_types at ON at.user_type_id = t.user_type_id
+            LEFT JOIN sys.assemblies a ON a.assembly_id = at.assembly_id
+            LEFT JOIN sys.table_types tt ON tt.user_type_id = t.user_type_id
+            LEFT JOIN sys.extended_properties ep
+              ON ep.class = 6 AND ep.major_id = t.user_type_id
+             AND ep.minor_id = 0 AND ep.name = N'MS_Description'
+            WHERE t.user_type_id = @type_id AND t.is_user_defined = 1;
+
+            SELECT c.name, ct.name, SCHEMA_NAME(ct.schema_id), ct.is_user_defined,
+                   c.max_length, c.precision, c.scale, c.is_nullable, c.column_id
+            FROM sys.table_types tt
+            JOIN sys.columns c ON c.object_id = tt.type_table_object_id
+            JOIN sys.types ct ON ct.user_type_id = c.user_type_id
+            WHERE tt.user_type_id = @type_id
+            ORDER BY c.column_id;
+            """;
+        var qualified = SqlServerIdentifier.QuoteQualified(schema, name);
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@schema", schema);
+        command.Parameters.AddWithValue("@type_name", name);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            throw new GridletObjectNotFoundException(qualified);
+
+        var isTable = reader.GetBoolean(2);
+        var isClr = reader.GetBoolean(3);
+        var kind = isTable ? "table" : isClr ? "clr" : "alias";
+        var baseType = reader.IsDBNull(4) ? null : SqlServerDataTypeFormatter.Format(
+            reader.GetString(4), reader.GetInt16(5), reader.GetByte(6), reader.GetByte(7));
+        var info = new SqlServerUserDefinedType(
+            reader.GetString(0), reader.GetString(1), kind, baseType, reader.GetBoolean(8),
+            reader.IsDBNull(9) ? null : reader.GetString(9),
+            reader.IsDBNull(10) ? null : reader.GetString(10), []);
+
+        await reader.NextResultAsync(cancellationToken);
+        var columns = new List<SqlServerUserDefinedTypeColumn>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var dataType = reader.GetBoolean(3)
+                ? SqlServerIdentifier.QuoteQualified(reader.GetString(2), reader.GetString(1))
+                : SqlServerDataTypeFormatter.Format(
+                    reader.GetString(1), reader.GetInt16(4), reader.GetByte(5), reader.GetByte(6));
+            columns.Add(new SqlServerUserDefinedTypeColumn(
+                reader.GetString(0), dataType, reader.GetBoolean(7), reader.GetInt32(8)));
+        }
+        return SqlServerUserDefinedTypeFormatter.Format(info with { Columns = columns });
+    }
+
     private static string BuildSequenceDefinition(SequenceInfo sequence)
     {
         var cache = sequence.IsCached
@@ -753,6 +940,7 @@ public sealed class SqlServerSchemaReader : ISchemaReader
             "IF" or "TF" => DbObjectType.TableValuedFunction,
             "TR" => DbObjectType.Trigger,
             "SO" => DbObjectType.Sequence,
+            "UDT" => DbObjectType.UserDefinedType,
             _ => null,
         };
 }

@@ -418,7 +418,7 @@ internal static partial class GridletApiEndpoints
             return Results.Ok(new TableStructureResponse(
                 ToDto(definition.Object), definition.Columns, definition.Indexes, definition.ForeignKeys,
                 definition.CheckConstraints, definition.UniqueConstraints, definition.RowIdentity,
-                definition.TableOptions, displays));
+                definition.TableOptions, displays, definition.Temporal));
         });
 
     private static Task<IResult> SaveForeignKeyDisplay(
@@ -543,13 +543,17 @@ internal static partial class GridletApiEndpoints
         string database,
         string schema,
         string name,
+        DbObjectType? type,
         IGridletConnectionResolver resolver,
         CancellationToken cancellationToken)
         => Execute(async () =>
         {
             var resolved = resolver.Resolve(connection, database);
-            var definition = await resolved.Provider.Schema.GetObjectDefinitionAsync(
-                resolved.Context, schema, name, cancellationToken);
+            var definition = type == DbObjectType.UserDefinedType
+                ? await resolved.Provider.Schema.GetUserDefinedTypeDefinitionAsync(
+                    resolved.Context, schema, name, cancellationToken)
+                : await resolved.Provider.Schema.GetObjectDefinitionAsync(
+                    resolved.Context, schema, name, cancellationToken);
             return Results.Ok(new ObjectDefinitionResponse(definition));
         });
 

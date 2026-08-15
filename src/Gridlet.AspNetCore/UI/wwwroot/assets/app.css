@@ -608,6 +608,25 @@ table.grid td { font-family: var(--mono); font-size: 12.5px; }
 .data-grid th.row-selector { z-index: 3; }
 .data-grid tr.selected .row-selector { color: var(--text); background: var(--accent-dim); }
 
+.json-cell { position: relative; padding-right: 30px !important; }
+.json-preview-button {
+  position: absolute; top: 50%; right: 4px; display: inline-flex; width: 22px; height: 21px;
+  align-items: center; justify-content: center; padding: 3px; transform: translateY(-50%);
+  border: 0; border-radius: 4px; background: var(--panel-2); color: var(--muted);
+  opacity: 0; pointer-events: none; cursor: pointer;
+}
+.json-cell:hover .json-preview-button,
+.json-preview-button:focus-visible { opacity: 1; pointer-events: auto; }
+.json-preview-button:hover,
+.json-preview-button:focus-visible { color: var(--text); background: var(--accent-dim); }
+.json-preview-icon {
+  width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+@media (hover: none) {
+  .json-preview-button { opacity: 1; pointer-events: auto; }
+}
+
 td.null { color: var(--muted); font-style: italic; }
 .fk-reference-error { white-space: nowrap; }
 .fk-display-value { white-space: nowrap; }
@@ -2343,6 +2362,18 @@ td.cell-actions, th.cell-actions { white-space: nowrap; width: 1%; }
 .toolbar-slot { display: contents; }
 .toolbar-group { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .table-options { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.temporal-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.temporal-info strong { color: var(--text); }
 .checkbox-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
 .checkbox-row input[type="number"] { width: 90px; }
 .filter-bar {

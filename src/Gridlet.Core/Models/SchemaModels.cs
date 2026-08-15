@@ -13,6 +13,7 @@ public enum DbObjectType
     TableValuedFunction,
     Trigger,
     Sequence,
+    UserDefinedType,
 }
 
 /// <summary>A schema-qualified database object.</summary>
@@ -352,6 +353,23 @@ public sealed record ForeignKeyInfo(
     string OnDelete = "NO_ACTION",
     string OnUpdate = "NO_ACTION");
 
+/// <summary>SQL Server system-versioning metadata for a current or history table.</summary>
+public sealed record TemporalTableInfo(
+    string Kind,
+    string? RelatedSchema,
+    string? RelatedTable,
+    string? PeriodStartColumn,
+    string? PeriodEndColumn,
+    long? HistoryRetentionPeriod = null,
+    string? HistoryRetentionUnit = null);
+
+/// <summary>Stable wire values for <see cref="TemporalTableInfo.Kind"/>.</summary>
+public static class TemporalTableKinds
+{
+    public const string SystemVersioned = "systemVersioned";
+    public const string HistoryTable = "historyTable";
+}
+
 /// <summary>Full structural description of a table or view.</summary>
 /// <param name="RowIdentity">
 /// How a single row of this object can be addressed for editing, or <see langword="null"/> when the
@@ -365,8 +383,24 @@ public sealed record TableDefinition(
     IReadOnlyList<CheckConstraintInfo> CheckConstraints,
     IReadOnlyList<UniqueConstraintInfo> UniqueConstraints,
     RowIdentityInfo? RowIdentity = null,
-    IReadOnlyList<string>? TableOptions = null)
+    IReadOnlyList<string>? TableOptions = null,
+    TemporalTableInfo? Temporal = null)
 {
+    /// <summary>Creates the previous eight-field shape without relying on optional-parameter ABI.</summary>
+    public TableDefinition(
+        DbObjectInfo @object,
+        IReadOnlyList<ColumnInfo> columns,
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ForeignKeyInfo> foreignKeys,
+        IReadOnlyList<CheckConstraintInfo> checkConstraints,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints,
+        RowIdentityInfo? rowIdentity,
+        IReadOnlyList<string>? tableOptions)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints,
+            rowIdentity, tableOptions, null)
+    {
+    }
+
     /// <summary>Creates the seven-field table-definition shape without relying on optional-parameter ABI.</summary>
     public TableDefinition(
         DbObjectInfo @object,
@@ -376,7 +410,7 @@ public sealed record TableDefinition(
         IReadOnlyList<CheckConstraintInfo> checkConstraints,
         IReadOnlyList<UniqueConstraintInfo> uniqueConstraints,
         RowIdentityInfo? rowIdentity)
-        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, rowIdentity, null)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, rowIdentity, null, null)
     {
     }
 
@@ -388,7 +422,7 @@ public sealed record TableDefinition(
         IReadOnlyList<ForeignKeyInfo> foreignKeys,
         IReadOnlyList<CheckConstraintInfo> checkConstraints,
         IReadOnlyList<UniqueConstraintInfo> uniqueConstraints)
-        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, null, null)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints, null, null, null)
     {
     }
 
@@ -398,7 +432,7 @@ public sealed record TableDefinition(
         IReadOnlyList<ColumnInfo> columns,
         IReadOnlyList<IndexInfo> indexes,
         IReadOnlyList<ForeignKeyInfo> foreignKeys)
-        : this(@object, columns, indexes, foreignKeys, [], [], null, null)
+        : this(@object, columns, indexes, foreignKeys, [], [], null, null, null)
     {
     }
 

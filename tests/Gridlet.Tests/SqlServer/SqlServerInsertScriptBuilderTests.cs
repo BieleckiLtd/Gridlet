@@ -61,6 +61,59 @@ public sealed class SqlServerInsertScriptBuilderTests
         Assert.DoesNotContain("IDENTITY_INSERT", script, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Temporal_period_columns_are_left_out_even_when_they_are_visible()
+    {
+        var table = new TableDefinition(
+            new DbObjectInfo("dbo", "Customers", DbObjectType.Table),
+            [
+                new ColumnInfo("Name", "nvarchar(50)", false, false, false, false, null, 0),
+                new ColumnInfo("ValidFrom", "datetime2", false, false, false, false, null, 1),
+                new ColumnInfo("ValidTo", "datetime2", false, false, false, false, null, 2),
+            ],
+            [], [], [], [], null, null,
+            new TemporalTableInfo(TemporalTableKinds.SystemVersioned, "dbo", "CustomersHistory",
+                "ValidFrom", "ValidTo"));
+        var columns = new[]
+        {
+            new ResultColumn("Name", "nvarchar"),
+            new ResultColumn("ValidFrom", "datetime2"),
+            new ResultColumn("ValidTo", "datetime2"),
+        };
+
+        var script = SqlServerInsertScriptBuilder.Build(
+            table, columns, [["Ada", "2026-01-01", "9999-12-31"]]);
+
+        Assert.Equal("INSERT INTO [dbo].[Customers] ([Name]) VALUES (N'Ada');", script);
+    }
+
+    [Fact]
+    public void History_table_period_columns_are_preserved()
+    {
+        var table = new TableDefinition(
+            new DbObjectInfo("dbo", "CustomersHistory", DbObjectType.Table),
+            [
+                new ColumnInfo("Name", "nvarchar(50)", false, false, false, false, null, 0),
+                new ColumnInfo("ValidFrom", "datetime2", false, false, false, false, null, 1),
+                new ColumnInfo("ValidTo", "datetime2", false, false, false, false, null, 2),
+            ],
+            [], [], [], [], null, null,
+            new TemporalTableInfo(TemporalTableKinds.HistoryTable, "dbo", "Customers",
+                "ValidFrom", "ValidTo"));
+        var columns = new[]
+        {
+            new ResultColumn("Name", "nvarchar"),
+            new ResultColumn("ValidFrom", "datetime2"),
+            new ResultColumn("ValidTo", "datetime2"),
+        };
+
+        var script = SqlServerInsertScriptBuilder.Build(
+            table, columns, [["Ada", new DateTime(2026, 1, 1), new DateTime(2026, 2, 1)]]);
+
+        Assert.Contains("([Name], [ValidFrom], [ValidTo])", script);
+        Assert.Contains("'2026-01-01T00:00:00.0000000', '2026-02-01T00:00:00.0000000'", script);
+    }
+
     [Theory]
     [InlineData(true, "1")]
     [InlineData(42, "42")]

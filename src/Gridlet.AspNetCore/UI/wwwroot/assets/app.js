@@ -494,7 +494,7 @@
       data: (s, n, q) => `${objBase(s, n)}/data?${q}`,
       dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
       structure: (s, n) => `${objBase(s, n)}/structure`,
-      definition: (s, n) => `${objBase(s, n)}/definition`,
+      definition: (s, n, type = null) => `${objBase(s, n)}/definition${type ? `?type=${enc(type)}` : ''}`,
       dependencies: (s, n) => `${objBase(s, n)}/dependencies`,
       routine: (s, n) => `${objBase(s, n)}/routine`,
       routineScript: (s, n) => `${objBase(s, n)}/routine/script`,
@@ -549,7 +549,7 @@
   const del = (url) => api(url, { method: 'DELETE' });
 
   const isVirtualObject = (o) => !!o?.subKind && /virtual/i.test(o.subKind);
-  const canDropObject = (o) => !o?.isInternal;
+  const canDropObject = (o) => !o?.isInternal && o?.type !== 'UserDefinedType';
   const canDesignObject = (o) => canDropObject(o) && !isVirtualObject(o);
 
   // ---- state ----------------------------------------------------------------
@@ -675,7 +675,10 @@
 
   function refreshTypeSuggestions() {
     const list = $('#gridlet-types');
-    if (list) list.replaceChildren(...currentCapabilities().suggestedDataTypes
+    const databaseTypes = currentCapabilities().supportsSchemas ? state.objects
+      .filter((object) => object.type === 'UserDefinedType' && object.subKind !== 'table')
+      .map((object) => `[${object.schema.replaceAll(']', ']]')}].[${object.name.replaceAll(']', ']]')}]`) : [];
+    if (list) list.replaceChildren(...[...currentCapabilities().suggestedDataTypes, ...databaseTypes]
       .map((type) => h('option', { value: type })));
   }
 
@@ -1247,14 +1250,25 @@
       if (!completion.hidden && ['ArrowDown', 'ArrowUp'].includes(e.key)) {
         e.preventDefault(); selected = (selected + (e.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length;
         [...completion.children].forEach((x, i) => x.classList.toggle('active', i === selected));
-      } else if (!completion.hidden && (e.key === 'Enter' || e.key === 'Tab')) {
+      } else if (!completion.hidden && (e.key === 'Enter' || e.key === 'Tab')
+        && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault(); insert(matches[selected], sqlCompletionPrefix(input.value, input.selectionStart).length);
       } else if (e.key === 'Escape') hideCompletion();
       else if (e.key === 'Tab') { e.preventDefault(); insert('    '); }
     });
     Object.defineProperty(editor, 'value', { get: () => input.value, set: (v) => { input.value = v || ''; refresh(); } });
     editor.focus = () => input.focus();
+    editor.hideCompletion = hideCompletion;
     editor.textarea = input;
+    // A non-empty selection is the SQL to run or explain, matching SSMS: the rest of the buffer
+    // stays on screen and is not sent. Whitespace-only selections are empty on purpose so they
+    // do not silently fall back to the whole script.
+    editor.executableSql = () => {
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      if (start !== end) return input.value.slice(start, end).trim();
+      return input.value.trim();
+    };
     editor.formatSql = () => {
       const start = input.selectionStart;
       const end = input.selectionEnd;
@@ -1407,6 +1421,7 @@
     if (!sameScope(scope, state)) return;
     state.objects = objects;
     state.schemas = schemas;
+    refreshTypeSuggestions();
     renderTree();
   }
 
@@ -1512,6 +1527,7 @@
     ['Functions', ['ScalarFunction', 'TableValuedFunction'], 'F', 'supportsFunctions'],
     ['Triggers', ['Trigger'], 'R', 'supportsTriggers'],
     ['Sequences', ['Sequence'], 'Q', 'supportsSequences'],
+    ['Types', ['UserDefinedType'], 'Y', 'supportsSchemas'],
   ];
 
   const treeViewStorageKey = () => `gridlet.tree.${state.connection}.${state.database}`;
@@ -1576,6 +1592,7 @@
         (!filter || (o.schema + '.' + o.name).toLowerCase().includes(filter)));
       const summary = h('summary', {}, label + ' ', h('span', { class: 'count', text: String(items.length) }));
       const canCreate = currentConn().allowDdl
+        && badge !== 'Y'
         && (badge === 'T' || badge === 'Q' || currentConn().allowSqlExecution);
       if (canCreate) {
         summary.append(h('button', {
@@ -1727,7 +1744,7 @@
   }
 
   const useInQueryButton = (o, scope = state) =>
-    connectionFor(scope).allowSqlExecution && o.type !== 'Trigger' ? h('button', {
+    connectionFor(scope).allowSqlExecution && !['Trigger', 'UserDefinedType'].includes(o.type) ? h('button', {
       onclick: () => openQueryTab(objectQuerySql(o, scope), `Use ${o.name}`, scope),
     }, 'Use in query') : null;
 
@@ -1971,7 +1988,7 @@
     if (isRoutine(o) && currentConn().allowSqlExecution) {
       items.push({ label: 'Execute…', action: () => openRoutineExecuteDialog(o) });
     }
-    if (currentConn().allowSqlExecution && o.type !== 'Trigger') {
+    if (currentConn().allowSqlExecution && !['Trigger', 'UserDefinedType'].includes(o.type)) {
       items.push({ label: 'Script…', action: () => openScriptDialog(o) });
     }
     if (currentConn().allowDdl && canDropObject(o)) {
@@ -2586,7 +2603,11 @@
       selectedColumn = null, rowNumber = null, moveToNextRow = null) => {
       const isNew = existingRow === null;
       lockTableLayout(table);
-      const editable = structure.columns.filter((c) => !c.isIdentity && !c.isComputed && !c.isHidden);
+      const editable = structure.columns.filter((c) =>
+        !c.isIdentity && !c.isComputed && !c.isHidden && !(
+          structure.temporal?.kind === 'systemVersioned' &&
+          [structure.temporal.periodStartColumn, structure.temporal.periodEndColumn]
+            .some((name) => name && name.toLowerCase() === c.name.toLowerCase())));
       const editableByName = new Map(editable.map((c) => [c.name.toLowerCase(), c]));
       const fields = [];
       const focusableByName = new Map();
@@ -2632,7 +2653,9 @@
                 || (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey)) rejectEdit(event);
             });
             readOnlyInput.addEventListener('paste', rejectEdit);
-            editorRow.append(h('td', { class: value == null ? 'null' : '' }, readOnlyInput));
+            const readOnlyCell = h('td', { class: value == null ? 'null' : '' }, readOnlyInput);
+            addJsonEditorPreview(readOnlyCell, readOnlyInput);
+            editorRow.append(readOnlyCell);
             focusableByName.set(dataColumn.name.toLowerCase(), readOnlyInput);
           }
           continue;
@@ -2810,6 +2833,7 @@
         editorCell.append(h('div', {
           class: 'cell-editor' + (display ? ' fk-autocomplete' : ''),
         }, input, input._choices || null));
+        addJsonEditorPreview(editorCell, input);
         editorRow.append(editorCell);
         fields.push({
           column: c, input,
@@ -2932,6 +2956,10 @@
       const canCheckConstraints = canDesign && currentCapabilities().supportsCheckConstraints;
       const canUniqueConstraints = canDesign && currentCapabilities().supportsUniqueConstraints;
       const canIndexes = canDesign && currentCapabilities().supportsIndexes;
+      const temporal = s.temporal;
+      const isTemporalPeriodColumn = (column) => temporal?.kind === 'systemVersioned' &&
+        [temporal.periodStartColumn, temporal.periodEndColumn]
+          .some((name) => name && name.toLowerCase() === column.name.toLowerCase());
 
       actionBar.replaceChildren(...[
         canDesign ? h('button', { onclick: () => columnsBody.append(makeColumnEditor(null)) }, '＋ Add column') : null,
@@ -3308,7 +3336,7 @@
         h('td', { class: 'mono muted', text: c.defaultDefinition || '' }),
         h('td', { class: 'mono muted', text: c.collation || '' }),
         h('td', { class: 'muted', text: c.description || '' }),
-        canDesign ? h('td', { class: 'cell-actions' },
+        canDesign ? h('td', { class: 'cell-actions' }, !isTemporalPeriodColumn(c) ? [
           h('button', { class: 'mini-btn', title: 'Edit column inline', onclick: () => row.replaceWith(makeColumnEditor(c)) }, '✎'),
           h('button', {
             class: 'mini-btn', title: 'Drop column',
@@ -3319,7 +3347,8 @@
                 invalidateStructure();
                 renderStructure();
               }, 'Drop'),
-          }, '🗑')) : null);
+          }, '🗑'),
+        ] : null) : null);
         return row;
       });
 
@@ -3327,12 +3356,31 @@
       if (canDesign) headers.push('');
 
       const columnsBody = h('tbody', {}, columnRows);
+      const temporalLabel = temporal?.kind === 'historyTable'
+        ? 'Temporal history table'
+        : 'System-versioned temporal table';
+      const relatedLabel = temporal?.kind === 'historyTable' ? 'Current table' : 'History table';
       const sections = [
         // WITHOUT ROWID and STRICT change how every row is stored and checked, so they belong at
         // the top of the structure rather than being invisible.
         s.tableOptions?.length
           ? h('div', { class: 'table-options muted', 'data-testid': 'table-options' },
             ...s.tableOptions.map((option) => h('span', { class: 'badge', text: option })))
+          : null,
+        temporal ? h('div', { class: 'temporal-info', 'data-testid': 'temporal-info' },
+          h('strong', { text: temporalLabel }),
+          temporal.relatedSchema && temporal.relatedTable
+            ? h('span', {}, `${relatedLabel}: `,
+              h('span', { class: 'mono', text: `${temporal.relatedSchema}.${temporal.relatedTable}` }))
+            : null,
+          temporal.periodStartColumn && temporal.periodEndColumn
+            ? h('span', {}, 'System-time period: ',
+              h('span', { class: 'mono', text: `${temporal.periodStartColumn} → ${temporal.periodEndColumn}` }))
+            : null,
+          temporal.historyRetentionPeriod != null && temporal.historyRetentionUnit
+            ? h('span', {}, 'History retention: ', h('span', { class: 'mono',
+              text: `${temporal.historyRetentionPeriod} ${temporal.historyRetentionUnit}` }))
+            : null)
           : null,
         s.object.description
           ? h('p', { class: 'object-description', text: s.object.description })
@@ -3608,14 +3656,14 @@
     body.replaceChildren(h('div', { class: 'loading', text: 'Loading…' }));
     let response;
     try {
-      response = await api(urlsFor(scope).definition(o.schema, o.name));
+      response = await api(urlsFor(scope).definition(o.schema, o.name, o.type));
     } catch (err) {
       body.replaceChildren(errorBox(err.message));
       return;
     }
     const definition = response.definition || '-- definition unavailable --';
     if (toolbar) {
-      toolbar.append(dependenciesButton(o, scope));
+      if (o.type !== 'UserDefinedType') toolbar.append(dependenciesButton(o, scope));
       if (o.type === 'Sequence' && connectionFor(scope).allowDdl) {
         toolbar.append(restartSequenceButton(o, scope));
       }
@@ -6080,6 +6128,7 @@
     const status = h('span', { class: 'muted', 'data-testid': 'query-status' });
     const runButton = h('button', {
       class: 'primary', text: 'Run (Ctrl+Enter)', 'data-testid': 'query-run',
+      title: 'Run the selected SQL, or the whole editor when nothing is selected (Ctrl+Enter)',
     });
     const cancelButton = h('button', { text: 'Cancel', disabled: '', 'data-testid': 'query-cancel' });
     const formatButton = h('button', {
@@ -6358,7 +6407,8 @@
     };
 
     const showPlan = async (mode, dangerConfirmed = false) => {
-      const sql = editor.value.trim();
+      editor.hideCompletion();
+      const sql = editor.executableSql();
       if (!sql) return;
       if (mode === 'actual' && !dangerConfirmed
         && confirmUnqualifiedMutation(sql, () => { showPlan(mode, true); })) return;
@@ -6392,7 +6442,8 @@
     };
 
     const run = async (dangerConfirmed = false) => {
-      const sql = editor.value.trim();
+      editor.hideCompletion();
+      const sql = editor.executableSql();
       if (!sql) return;
       if (!dangerConfirmed && confirmUnqualifiedMutation(sql, () => { run(true); })) return;
       if (activeQuery) activeQuery.abort();
@@ -6442,7 +6493,7 @@
             + (event.truncated ? ' - truncated at the configured limit' : '');
           const controls = exportButtons(set.columns, set.rows,
             `${tab.title}-result${event.resultSetIndex + 1}`,
-            { sql: editor.value.trim(), name: tab.title.startsWith('Query ') ? '' : tab.title, scope });
+            { sql, name: tab.title.startsWith('Query ') ? '' : tab.title, scope });
           set.exports.replaceWith(controls);
           set.exports = controls;
           setupOverflowToolbar(set.meta, [controls], 'More result actions');
@@ -6555,12 +6606,12 @@
         h('span', { class: 'toolbar-divider' }),
         h('button', {
           text: 'Plan', 'data-testid': 'query-plan-estimated',
-          title: 'Show the plan without running the query',
+          title: 'Show the plan for the selected SQL, or the whole editor when nothing is selected',
           onclick: () => showPlan('estimated'),
         }),
         h('button', {
           text: 'Plan + run', 'data-testid': 'query-plan-actual',
-          title: 'Run the query and show the plan it actually used',
+          title: 'Run the selected SQL, or the whole editor when nothing is selected, and show the plan it actually used',
           onclick: () => showPlan('actual'),
         }))
       : null;
@@ -7608,6 +7659,103 @@
     const full = typeof value === 'string' ? value : String(value);
     const shown = full.length > 200 ? full.slice(0, 200) + '…' : full;
     return h('td', { title: full.length > 40 ? full : null, text: shown });
+  }
+
+  function jsonPreviewButton(getValue) {
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 16 16');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.classList.add('json-preview-icon');
+    const lens = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    lens.setAttribute('cx', '6.75');
+    lens.setAttribute('cy', '6.75');
+    lens.setAttribute('r', '4.25');
+    const handle = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    handle.setAttribute('d', 'M10 10l3.5 3.5');
+    icon.append(lens, handle);
+    return h('button', {
+      type: 'button', class: 'json-preview-button',
+      title: 'Preview formatted JSON in a new tab',
+      'aria-label': 'Preview formatted JSON in a new tab',
+      'data-testid': 'json-preview',
+      // Keep focus in the input. The row editor normally commits when focus leaves the row.
+      onpointerdown: (event) => event.preventDefault(),
+      onclick: (event) => {
+        event.stopPropagation();
+        const json = jsonContainerValue(getValue());
+        if (json !== null) openJsonPreview(json);
+      },
+    }, icon);
+  }
+
+  function addJsonEditorPreview(cell, input) {
+    let button = null;
+    const sync = () => {
+      const hasJson = jsonContainerValue(input.value) !== null;
+      cell.classList.toggle('json-cell', hasJson);
+      if (hasJson && !button) {
+        button = jsonPreviewButton(() => input.value);
+        cell.append(button);
+      } else if (!hasJson && button) {
+        button.remove();
+        button = null;
+      }
+    };
+    input.addEventListener('input', sync);
+    sync();
+  }
+
+  // A number, boolean, or quoted string may technically be JSON, but treating those as document
+  // values would put a preview button beside a large share of ordinary database cells.
+  function jsonContainerValue(value) {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function openJsonPreview(value) {
+    const preview = window.open('', '_blank');
+    if (!preview) {
+      toast('The JSON preview was blocked. Allow pop-ups for Gridlet and try again.');
+      return;
+    }
+    preview.opener = null;
+    const formatted = JSON.stringify(value, null, 2);
+    const doc = preview.document;
+    doc.title = 'JSON preview';
+    doc.documentElement.lang = 'en';
+    const viewport = doc.createElement('meta');
+    viewport.name = 'viewport';
+    viewport.content = 'width=device-width, initial-scale=1';
+    const style = doc.createElement('style');
+    style.textContent = `
+      :root { color-scheme: light dark; }
+      body { margin: 0; padding: 24px; background: #111827; color: #d1d5db; }
+      pre { max-width: 1200px; margin: 0 auto; padding: 20px; overflow: auto;
+        border: 1px solid #374151; border-radius: 10px; background: #0b1020;
+        box-shadow: 0 12px 32px rgb(0 0 0 / 25%); white-space: pre-wrap;
+        overflow-wrap: anywhere; tab-size: 2; font: 13px/1.55 ui-monospace, SFMono-Regular,
+        Consolas, "Liberation Mono", monospace; }
+      .json-key { color: #93c5fd; } .json-string { color: #86efac; }
+      .json-number { color: #fca5a5; } .json-literal { color: #c4b5fd; }
+      @media (prefers-color-scheme: light) {
+        body { background: #f3f4f6; color: #1f2937; }
+        pre { border-color: #d1d5db; background: white; box-shadow: 0 12px 32px rgb(0 0 0 / 8%); }
+        .json-key { color: #1d4ed8; } .json-string { color: #15803d; }
+        .json-number { color: #b91c1c; } .json-literal { color: #7e22ce; }
+      }`;
+    const pre = doc.createElement('pre');
+    const code = doc.createElement('code');
+    code.innerHTML = highlightJson(formatted);
+    pre.append(code);
+    doc.head.append(viewport, style);
+    doc.body.replaceChildren(pre);
   }
 
   // ---- export ---------------------------------------------------------------------------

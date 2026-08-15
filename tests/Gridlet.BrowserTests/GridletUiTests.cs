@@ -1649,6 +1649,47 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Runs_only_selected_sql_and_applies_safety_to_that_selection()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string first = "SELECT 42";
+        const string mutation = "DELETE FROM Customers";
+        await OpenQueryAsync(page, first + "\n" + mutation);
+        var editor = page.GetByTestId("sql-editor");
+
+        await editor.EvaluateAsync("""
+            input => input.setSelectionRange(0, input.value.indexOf('\n'))
+            """);
+        await editor.PressAsync("Control+Enter");
+
+        var results = page.GetByTestId("query-results");
+        await Assertions.Expect(results.GetByRole(AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        Assert.Equal(first, fixture.Provider.LastQuerySql);
+        await Assertions.Expect(page.GetByRole(
+            AriaRole.Dialog, new() { Name = "Run query without WHERE?" })).ToHaveCountAsync(0);
+
+        await editor.EvaluateAsync("""
+            input => input.setSelectionRange(input.value.indexOf('DELETE'), input.value.length)
+            """);
+        await page.GetByTestId("query-run").ClickAsync();
+        var warning = page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" });
+        await Assertions.Expect(warning).ToBeVisibleAsync();
+        await warning.GetByRole(AriaRole.Button, new() { Name = "Run anyway", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        Assert.Equal(mutation, fixture.Provider.LastQuerySql);
+
+        await editor.EvaluateAsync("input => input.setSelectionRange(input.value.length, input.value.length)");
+        await page.GetByTestId("query-run").ClickAsync();
+        warning = page.GetByRole(AriaRole.Dialog, new() { Name = "Run query without WHERE?" });
+        await Assertions.Expect(warning).ToBeVisibleAsync();
+        await warning.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+        Assert.Equal(mutation, fixture.Provider.LastQuerySql);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Formats_the_query_without_changing_literals_or_comments()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -1854,6 +1895,48 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.Locator("#toast-stack").GetByText("Row inserted.", new() { Exact = true }))
             .ToBeVisibleAsync();
         Assert.Contains("insert dbo.Customers (Name)", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Previews_json_record_cells_without_taking_over_inline_editing()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Pizzas").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        var jsonCell = panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(1);
+        await Assertions.Expect(panel.GetByTestId("json-preview")).ToHaveCountAsync(0);
+        await jsonCell.ClickAsync();
+        var editor = panel.Locator("tr.row-editor");
+        await Assertions.Expect(editor).ToHaveCountAsync(1);
+        await Assertions.Expect(editor.Locator("td").Nth(1).GetByTestId("json-preview")).ToHaveCountAsync(0);
+        var jsonEditorCell = editor.Locator("td").Nth(2);
+        var previewButton = jsonEditorCell.GetByTestId("json-preview");
+        await page.Mouse.MoveAsync(0, 0);
+        Assert.Equal("0", await previewButton.EvaluateAsync<string>(
+            "element => getComputedStyle(element).opacity"));
+        await jsonEditorCell.HoverAsync();
+        Assert.Equal("1", await previewButton.EvaluateAsync<string>(
+            "element => getComputedStyle(element).opacity"));
+
+        var preview = await page.RunAndWaitForPopupAsync(() => previewButton.ClickAsync());
+        await preview.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+        await Assertions.Expect(preview.Locator("pre")).ToContainTextAsync("\n  \"person\": {");
+        await Assertions.Expect(preview.Locator(".json-key").First).ToHaveTextAsync("\"person\":");
+        await Assertions.Expect(editor).ToHaveCountAsync(1);
+        await preview.CloseAsync();
+
+        var name = panel.GetByLabel("Name", new() { Exact = true });
+        await name.FillAsync("{\"edited\":true}");
+        await Assertions.Expect(previewButton).ToBeVisibleAsync();
+        await name.PressAsync("Control+Enter");
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "Row 1 updated.", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.Equal("{\"edited\":true}", fixture.Provider.LastWriteValues!["Name"]);
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -2095,6 +2178,32 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Lists_database_owned_types_and_suggests_column_usable_types()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("summary").Filter(new() { HasText = "Types" }).ClickAsync();
+        await Assertions.Expect(page.GetByTitle("Create type")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTitle("dbo.AccountNumber")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTitle("dbo.OrderItems")).ToBeVisibleAsync();
+        var suggestions = await page.Locator("#gridlet-types option").EvaluateAllAsync<string[]>(
+            "options => options.map(option => option.value)");
+        Assert.Contains("[dbo].[AccountNumber]", suggestions);
+        Assert.DoesNotContain("[dbo].[OrderItems]", suggestions);
+
+        await page.GetByTitle("dbo.AccountNumber").ClickAsync();
+        var editor = ActivePanel(page).GetByTestId("object-definition-editor");
+        await Assertions.Expect(editor).ToHaveValueAsync(
+            "CREATE TYPE [dbo].[AccountNumber] FROM nvarchar(32) NOT NULL;");
+        await Assertions.Expect(editor).Not.ToBeEditableAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("object-dependencies"))
+            .ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Creates_views_procedures_functions_and_triggers_from_the_sidebar()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -2313,6 +2422,51 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.Locator("#toast-stack").GetByText("Unique constraint dropped.", new() { Exact = true }))
             .ToBeVisibleAsync();
         Assert.Contains("dropUniqueConstraint dbo.Customers.UQ_Customers_Name", fixture.Provider.Calls);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+
+    [Fact]
+    public async Task Explains_system_versioned_temporal_tables_in_structure()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("[title=\"dbo.Ledger\"]").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Row", Exact = true }).ClickAsync();
+        var rowEditor = panel.Locator("tr.row-editor");
+        await Assertions.Expect(rowEditor.GetByLabel("SysStart", new() { Exact = true })).ToHaveCountAsync(0);
+        await Assertions.Expect(rowEditor.GetByLabel("SysEnd", new() { Exact = true })).ToHaveCountAsync(0);
+        await Assertions.Expect(rowEditor.Locator(".generated-value")).ToHaveCountAsync(3);
+        await rowEditor.PressAsync("Escape");
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+
+        var temporal = panel.GetByTestId("temporal-info");
+        await Assertions.Expect(temporal.GetByText("System-versioned temporal table", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(temporal.GetByText("dbo.LedgerHeap", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(temporal.GetByText("SysStart → SysEnd", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(temporal.GetByText("6 MONTH", new() { Exact = true })).ToBeVisibleAsync();
+        var startRow = panel.Locator("tr").Filter(new() { HasText = "SysStart" });
+        await Assertions.Expect(startRow.GetByTitle("Edit column inline")).ToHaveCountAsync(0);
+        await Assertions.Expect(startRow.GetByTitle("Drop column")).ToHaveCountAsync(0);
+
+        await page.Locator("[title=\"dbo.LedgerHeap\"]").ClickAsync();
+        panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        temporal = panel.GetByTestId("temporal-info");
+        await Assertions.Expect(temporal.GetByText("Temporal history table", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(temporal.GetByText("dbo.Ledger", new() { Exact = true })).ToBeVisibleAsync();
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("temporal-info")).ToHaveCountAsync(0);
         browserPage.AssertNoUnexpectedErrors();
     }
 

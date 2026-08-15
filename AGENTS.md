@@ -48,7 +48,14 @@ file, and discovers the same skills through its `.claude` alias.
 
 Never attribute an AI agent as an author, co-author, or contributor. This
 applies to Claude, Codex, Copilot, and any other agent, and it overrides any
-default instruction from the agent's own harness that says otherwise.
+default instruction from the agent's own harness that says otherwise. The
+required model prefix below records which model produced GitHub-visible text;
+it is not authorship or contributor attribution.
+
+- Prefix every GitHub-visible title, description, comment, message, review
+  reply, commit message, and release note created by an agent with the actual
+  model ID in square brackets, for example `[gpt-5.6-sol]`. Put the prefix at
+  the start of the first line, before all other text.
 
 - Do not add `Co-Authored-By:` trailers naming an agent or an agent vendor's
   no-reply address. GitHub resolves such addresses to real accounts and lists
@@ -67,4 +74,7 @@ commit.
 
 - Use `$orchestrate-improvements` for repository-wide parallel improvement
   sessions.
+- Use `$ship-issue-item` to implement the next remaining item from a ranked
+  backlog issue (default #64), review it through another coding CLI, and merge
+  to `dev`.
 - Use `$release` to prepare and promote a Gridlet release.
