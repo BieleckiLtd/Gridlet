@@ -349,6 +349,16 @@ public sealed class FakeGridletProvider :
                 request.Page, request.PageSize, TotalRows: 3,
                 RowIdentity: new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
                 RowKeys: [[10], [11], [12]])
+            : name == "Pizzas"
+            ? new TableDataPage(
+                [new ResultColumn("Id", "int"), new ResultColumn("Name", "nvarchar(100)")],
+                [[1, "{\"person\":{\"name\":\"Ada\",\"active\":true},\"scores\":[3,5,8]}"],
+                    [2, "{not valid JSON}"]],
+                request.Page,
+                request.PageSize,
+                TotalRows: 2,
+                RowIdentity: new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+                RowKeys: [[1], [2]])
             : name == "Heap"
             ? new TableDataPage(
                 [new ResultColumn("Name", "nvarchar(100)")],

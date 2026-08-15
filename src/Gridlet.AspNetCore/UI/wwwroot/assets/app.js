@@ -2653,7 +2653,9 @@
                 || (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey)) rejectEdit(event);
             });
             readOnlyInput.addEventListener('paste', rejectEdit);
-            editorRow.append(h('td', { class: value == null ? 'null' : '' }, readOnlyInput));
+            const readOnlyCell = h('td', { class: value == null ? 'null' : '' }, readOnlyInput);
+            addJsonEditorPreview(readOnlyCell, readOnlyInput);
+            editorRow.append(readOnlyCell);
             focusableByName.set(dataColumn.name.toLowerCase(), readOnlyInput);
           }
           continue;
@@ -2831,6 +2833,7 @@
         editorCell.append(h('div', {
           class: 'cell-editor' + (display ? ' fk-autocomplete' : ''),
         }, input, input._choices || null));
+        addJsonEditorPreview(editorCell, input);
         editorRow.append(editorCell);
         fields.push({
           column: c, input,
@@ -7656,6 +7659,103 @@
     const full = typeof value === 'string' ? value : String(value);
     const shown = full.length > 200 ? full.slice(0, 200) + '…' : full;
     return h('td', { title: full.length > 40 ? full : null, text: shown });
+  }
+
+  function jsonPreviewButton(getValue) {
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 16 16');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.classList.add('json-preview-icon');
+    const lens = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    lens.setAttribute('cx', '6.75');
+    lens.setAttribute('cy', '6.75');
+    lens.setAttribute('r', '4.25');
+    const handle = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    handle.setAttribute('d', 'M10 10l3.5 3.5');
+    icon.append(lens, handle);
+    return h('button', {
+      type: 'button', class: 'json-preview-button',
+      title: 'Preview formatted JSON in a new tab',
+      'aria-label': 'Preview formatted JSON in a new tab',
+      'data-testid': 'json-preview',
+      // Keep focus in the input. The row editor normally commits when focus leaves the row.
+      onpointerdown: (event) => event.preventDefault(),
+      onclick: (event) => {
+        event.stopPropagation();
+        const json = jsonContainerValue(getValue());
+        if (json !== null) openJsonPreview(json);
+      },
+    }, icon);
+  }
+
+  function addJsonEditorPreview(cell, input) {
+    let button = null;
+    const sync = () => {
+      const hasJson = jsonContainerValue(input.value) !== null;
+      cell.classList.toggle('json-cell', hasJson);
+      if (hasJson && !button) {
+        button = jsonPreviewButton(() => input.value);
+        cell.append(button);
+      } else if (!hasJson && button) {
+        button.remove();
+        button = null;
+      }
+    };
+    input.addEventListener('input', sync);
+    sync();
+  }
+
+  // A number, boolean, or quoted string may technically be JSON, but treating those as document
+  // values would put a preview button beside a large share of ordinary database cells.
+  function jsonContainerValue(value) {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function openJsonPreview(value) {
+    const preview = window.open('', '_blank');
+    if (!preview) {
+      toast('The JSON preview was blocked. Allow pop-ups for Gridlet and try again.');
+      return;
+    }
+    preview.opener = null;
+    const formatted = JSON.stringify(value, null, 2);
+    const doc = preview.document;
+    doc.title = 'JSON preview';
+    doc.documentElement.lang = 'en';
+    const viewport = doc.createElement('meta');
+    viewport.name = 'viewport';
+    viewport.content = 'width=device-width, initial-scale=1';
+    const style = doc.createElement('style');
+    style.textContent = `
+      :root { color-scheme: light dark; }
+      body { margin: 0; padding: 24px; background: #111827; color: #d1d5db; }
+      pre { max-width: 1200px; margin: 0 auto; padding: 20px; overflow: auto;
+        border: 1px solid #374151; border-radius: 10px; background: #0b1020;
+        box-shadow: 0 12px 32px rgb(0 0 0 / 25%); white-space: pre-wrap;
+        overflow-wrap: anywhere; tab-size: 2; font: 13px/1.55 ui-monospace, SFMono-Regular,
+        Consolas, "Liberation Mono", monospace; }
+      .json-key { color: #93c5fd; } .json-string { color: #86efac; }
+      .json-number { color: #fca5a5; } .json-literal { color: #c4b5fd; }
+      @media (prefers-color-scheme: light) {
+        body { background: #f3f4f6; color: #1f2937; }
+        pre { border-color: #d1d5db; background: white; box-shadow: 0 12px 32px rgb(0 0 0 / 8%); }
+        .json-key { color: #1d4ed8; } .json-string { color: #15803d; }
+        .json-number { color: #b91c1c; } .json-literal { color: #7e22ce; }
+      }`;
+    const pre = doc.createElement('pre');
+    const code = doc.createElement('code');
+    code.innerHTML = highlightJson(formatted);
+    pre.append(code);
+    doc.head.append(viewport, style);
+    doc.body.replaceChildren(pre);
   }
 
   // ---- export ---------------------------------------------------------------------------

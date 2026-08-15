@@ -1899,6 +1899,48 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Previews_json_record_cells_without_taking_over_inline_editing()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Pizzas").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        var jsonCell = panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(1);
+        await Assertions.Expect(panel.GetByTestId("json-preview")).ToHaveCountAsync(0);
+        await jsonCell.ClickAsync();
+        var editor = panel.Locator("tr.row-editor");
+        await Assertions.Expect(editor).ToHaveCountAsync(1);
+        await Assertions.Expect(editor.Locator("td").Nth(1).GetByTestId("json-preview")).ToHaveCountAsync(0);
+        var jsonEditorCell = editor.Locator("td").Nth(2);
+        var previewButton = jsonEditorCell.GetByTestId("json-preview");
+        await page.Mouse.MoveAsync(0, 0);
+        Assert.Equal("0", await previewButton.EvaluateAsync<string>(
+            "element => getComputedStyle(element).opacity"));
+        await jsonEditorCell.HoverAsync();
+        Assert.Equal("1", await previewButton.EvaluateAsync<string>(
+            "element => getComputedStyle(element).opacity"));
+
+        var preview = await page.RunAndWaitForPopupAsync(() => previewButton.ClickAsync());
+        await preview.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+        await Assertions.Expect(preview.Locator("pre")).ToContainTextAsync("\n  \"person\": {");
+        await Assertions.Expect(preview.Locator(".json-key").First).ToHaveTextAsync("\"person\":");
+        await Assertions.Expect(editor).ToHaveCountAsync(1);
+        await preview.CloseAsync();
+
+        var name = panel.GetByLabel("Name", new() { Exact = true });
+        await name.FillAsync("{\"edited\":true}");
+        await Assertions.Expect(previewButton).ToBeVisibleAsync();
+        await name.PressAsync("Control+Enter");
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "Row 1 updated.", new() { Exact = true })).ToBeVisibleAsync();
+        Assert.Equal("{\"edited\":true}", fixture.Provider.LastWriteValues!["Name"]);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Enables_friendly_foreign_key_display_and_searches_when_editing()
     {
         const string settingUrl =
