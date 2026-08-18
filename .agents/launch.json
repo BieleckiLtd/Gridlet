@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "demo",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "samples/Gridlet.Demo/Gridlet.Demo.csproj", "--no-launch-profile", "--urls", "http://localhost:5088"],
+      "port": 5088,
+      "url": "http://localhost:5088"
+    }
+  ]
+}

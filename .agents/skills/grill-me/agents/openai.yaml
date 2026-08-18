@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grill Me"
+  short_description: "Interview the user to sharpen a plan or design"
+  default_prompt: "Use $grill-me to stress-test my plan before implementation."
