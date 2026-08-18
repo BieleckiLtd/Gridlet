@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Gridlet.AspNetCore\Gridlet.AspNetCore.csproj" />
+    <ProjectReference Include="..\..\src\Gridlet.Components\Gridlet.Components.csproj" />
     <Compile Include="..\Gridlet.Tests\AspNetCore\Fakes\FakeGridletProvider.cs"
              Link="Fakes\FakeGridletProvider.cs" />
     <Compile Include="..\Gridlet.Tests\AspNetCore\Fakes\FakeGridletAgentService.cs"

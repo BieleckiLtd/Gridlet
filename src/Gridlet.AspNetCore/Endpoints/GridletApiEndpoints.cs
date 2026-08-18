@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using Gridlet.Abstractions;
 using Gridlet.AspNetCore.Agents;
 using Gridlet.AspNetCore.Contracts;
+using Gridlet.AspNetCore.Extensibility;
 using Gridlet.Auditing;
 using Gridlet.Models;
 using Microsoft.AspNetCore.Builder;
@@ -177,7 +178,10 @@ internal static partial class GridletApiEndpoints
             options.CurrentValue.Limits.MaxQueryResultRows,
             services.GetService<IGridletAgentService>()?.Info,
             options.CurrentValue.PublishedApiSegment,
-            services.GetService<IGridletVoiceService>()?.Info));
+            services.GetService<IGridletVoiceService>()?.Info,
+            services.GetServices<IGridletUiAssetProvider>()
+                .Select(m => new GridletUiModuleInfo(m.Name, m.Scripts, m.Styles))
+                .ToArray()));
     }
 
     private static Task<IResult> GetDatabases(

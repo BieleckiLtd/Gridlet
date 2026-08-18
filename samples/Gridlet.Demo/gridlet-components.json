@@ -1,0 +1,430 @@
+[
+  {
+    "Id": "7140b881776945d1b5415de33fe64651",
+    "Name": "Customer entry",
+    "SchemaVersion": 1,
+    "Definition": {
+      "layout": "free",
+      "width": 735,
+      "height": 460,
+      "css": ".btn {\nbackground: light-dark(rgba(228,228,228), black);\nborder: 1px solid black;\nborder-color: light-dark(red, green);\nborder-radius: 5px;\n}",
+      "controls": [
+        {
+          "id": "c8l396ufb",
+          "type": "textbox",
+          "name": "textbox1",
+          "x": 152,
+          "y": 64,
+          "w": 200,
+          "h": 24,
+          "props": {
+            "placeholder": "",
+            "readOnly": true
+          },
+          "css": "",
+          "elementId": "",
+          "classes": "",
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {
+            "value": "=data.Email"
+          },
+          "tip": "",
+          "events": {}
+        },
+        {
+          "id": "co2hek8sx",
+          "type": "button",
+          "name": "button1",
+          "x": 24,
+          "y": 160,
+          "w": 328,
+          "h": 64,
+          "props": {
+            "text": "Save Grace Hopper"
+          },
+          "css": "",
+          "elementId": "",
+          "classes": "btn",
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {
+            "text": "=(\u0022Save \u0022 \u002B nameBox.value)"
+          },
+          "tip": "",
+          "events": {}
+        },
+        {
+          "id": "czl7fci3u",
+          "type": "label",
+          "name": "label2",
+          "x": 24,
+          "y": 32,
+          "w": 120,
+          "h": 24,
+          "props": {
+            "text": "Name"
+          },
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {},
+          "css": "",
+          "elementId": "",
+          "classes": "",
+          "tip": "",
+          "events": {}
+        },
+        {
+          "id": "chr5u10v1",
+          "type": "label",
+          "name": "label3",
+          "x": 24,
+          "y": 64,
+          "w": 120,
+          "h": 24,
+          "props": {
+            "text": "Email"
+          },
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {},
+          "css": "",
+          "elementId": "",
+          "classes": "",
+          "tip": "",
+          "events": {}
+        },
+        {
+          "id": "cn6u6oa4b",
+          "type": "label",
+          "name": "label4",
+          "x": 24,
+          "y": 96,
+          "w": 120,
+          "h": 24,
+          "props": {
+            "text": "Points"
+          },
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {},
+          "css": "",
+          "elementId": "",
+          "classes": "",
+          "tip": "",
+          "events": {}
+        },
+        {
+          "id": "clu4e7tb0",
+          "type": "checkbox",
+          "name": "checkbox1",
+          "x": 152,
+          "y": 128,
+          "w": 200,
+          "h": 24,
+          "props": {
+            "text": "Yes"
+          },
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {
+            "value": "=data.MarketingOptIn"
+          },
+          "css": "",
+          "elementId": "",
+          "classes": "",
+          "tip": "",
+          "events": {}
+        },
+        {
+          "id": "cxyxcqx8o",
+          "type": "label",
+          "name": "label6",
+          "x": 24,
+          "y": 128,
+          "w": 120,
+          "h": 24,
+          "props": {
+            "text": "Marketing"
+          },
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {},
+          "css": "",
+          "elementId": "",
+          "classes": "",
+          "tip": "",
+          "events": {}
+        },
+        {
+          "id": "cvgdy9ey5",
+          "type": "textbox",
+          "name": "textbox2",
+          "x": 376,
+          "y": 32,
+          "w": 328,
+          "h": 192,
+          "props": {
+            "placeholder": "",
+            "readOnly": true,
+            "multiline": true
+          },
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {
+            "value": "=json(data, 2)"
+          },
+          "css": "",
+          "elementId": "",
+          "classes": "",
+          "tip": "",
+          "events": {}
+        },
+        {
+          "id": "c58uchwd4",
+          "type": "pager",
+          "name": "pager1",
+          "x": 576,
+          "y": 424,
+          "w": 152,
+          "h": 30,
+          "props": {
+            "edges": true,
+            "position": true
+          },
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {},
+          "css": "",
+          "elementId": "",
+          "classes": "",
+          "tip": "",
+          "events": {}
+        },
+        {
+          "id": "c7s3sm1v1",
+          "type": "button",
+          "name": "button2",
+          "x": 592,
+          "y": 240,
+          "w": 110,
+          "h": 32,
+          "props": {
+            "text": "Delete"
+          },
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {},
+          "css": "#button2 {\nbackground:red;\n}",
+          "elementId": "button2",
+          "classes": "btn",
+          "tip": "",
+          "events": {}
+        },
+        {
+          "id": "ch1f3a41e",
+          "type": "textbox",
+          "name": "textbox3",
+          "x": 24,
+          "y": 352,
+          "w": 680,
+          "h": 30,
+          "props": {
+            "placeholder": "",
+            "multiline": false,
+            "readOnly": false
+          },
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {
+            "value": "=width()"
+          },
+          "css": "",
+          "elementId": "",
+          "classes": "",
+          "tip": "",
+          "events": {}
+        },
+        {
+          "id": "cac1txunl",
+          "type": "textbox",
+          "name": "nameBox",
+          "x": 152,
+          "y": 32,
+          "w": 200,
+          "h": 24,
+          "props": {
+            "placeholder": "",
+            "multiline": false,
+            "readOnly": true
+          },
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {
+            "value": "=concat(data.FirstName, \u0022 \u0022, data.LastName)"
+          },
+          "css": "",
+          "elementId": "",
+          "classes": "",
+          "tip": "",
+          "events": {}
+        },
+        {
+          "id": "cde27g7wt",
+          "type": "textbox",
+          "name": "textbox5",
+          "x": 152,
+          "y": 96,
+          "w": 200,
+          "h": 24,
+          "props": {
+            "placeholder": "",
+            "multiline": false,
+            "readOnly": false
+          },
+          "colors": {
+            "light": {
+              "text": "",
+              "background": ""
+            },
+            "dark": {
+              "text": "",
+              "background": ""
+            }
+          },
+          "bind": {
+            "value": "=data.LoyaltyPoints"
+          },
+          "css": "",
+          "elementId": "",
+          "classes": "",
+          "tip": "",
+          "events": {}
+        }
+      ],
+      "showScrollbars": false,
+      "resizable": false,
+      "source": {
+        "endpointId": "88f788937a75458eb09753a38c88c120",
+        "route": "customers",
+        "parameters": {}
+      },
+      "elementId": "customerComponent",
+      "classes": "compact tinted",
+      "isolated": true,
+      "colors": {
+        "light": {
+          "text": "#b93104",
+          "background": "#fffbf5"
+        },
+        "dark": {
+          "text": "#049515",
+          "background": "#0a1133"
+        }
+      },
+      "bind": {},
+      "tip": "",
+      "modules": [
+        "my.js"
+      ],
+      "events": {}
+    },
+    "UpdatedAtUtc": "2026-08-18T20:07:47.3800458+00:00"
+  }
+]

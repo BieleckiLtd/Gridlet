@@ -1,0 +1,926 @@
+/* Gridlet components designer.
+   Uses the shell's own custom properties, so the designer follows the workspace theme without
+   restating any colours of its own. */
+
+/* The properties rail is a full-height column beside the toolbar, not below it, so there is no
+   dead strip above it. The toolbar spans only the canvas it acts on. */
+.gfd-designer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ---- the code tab ----
+   A module opens like anything else in the workspace: its own tab, beside the component that runs it. */
+.gfd-code-tab {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.gfd-code-note { font-size: 12px; }
+
+/* The editing surface: a transparent textarea over a highlighted copy of the same text, with the
+   line numbers beside them. All three scroll together, so they have to agree on every metric that
+   decides where a character lands. */
+.gfd-code-surface {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin: 8px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.gfd-code-lines,
+.gfd-code-highlight,
+.gfd-code-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  border: 0;
+}
+
+.gfd-code-lines {
+  width: 38px;
+  padding-right: 6px;
+  overflow: hidden;
+  text-align: right;
+  color: var(--line-number-text);
+  background: var(--line-number-bg);
+  border-right: 1px solid var(--border);
+  user-select: none;
+}
+
+.gfd-code-highlight,
+.gfd-code-input {
+  left: 38px;
+  padding-left: 8px;
+}
+
+.gfd-code-highlight {
+  pointer-events: none;
+  color: var(--text);
+}
+
+/* The text itself is invisible and only the caret and selection show, so what is read is the
+   highlighted copy underneath and what is edited is a plain textarea. */
+.gfd-code-input {
+  color: transparent;
+  background: transparent;
+  caret-color: var(--text);
+  resize: none;
+  outline: none;
+}
+
+/* One of Gridlet's own modules: readable, and visibly not yours to change. */
+.gfd-code-surface.read-only { background: var(--panel); }
+.gfd-code-surface.read-only .gfd-code-input { caret-color: transparent; }
+
+.gfd-code-input::selection { background: var(--selection-bg); color: var(--selection-text); }
+.gfd-code-input:focus { outline: none; }
+.gfd-code-surface:focus-within { border-color: var(--accent); }
+
+.gfd-tok-comment { color: var(--code-comment); font-style: italic; }
+.gfd-tok-string { color: var(--code-string); }
+.gfd-tok-number { color: var(--code-number); }
+.gfd-tok-keyword { color: var(--code-keyword); }
+.gfd-tok-function { color: var(--code-function); }
+.gfd-tok-type { color: var(--code-variable); }
+.gfd-tok-private { color: var(--code-variable); font-style: italic; }
+
+/* Which modules a component runs, on its Settings page. The checkbox is the whole relationship: the
+   document names a module, or it does not. */
+.gfd-module-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  overflow: visible;
+}
+
+.gfd-module-name {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gfd-row[data-module] { grid-template-columns: minmax(0, 1fr) auto 16px; }
+
+.gfd-module-open {
+  height: 19px;
+  padding: 0 7px;
+  border-color: transparent;
+  background: var(--panel-2);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.gfd-module-open:hover { border-color: var(--accent-dim); }
+
+.gfd-module-new {
+  width: 100%;
+  margin-top: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+/* A CSS box in the panel is six rows of a stylesheet. The button above it gives the same text a
+   whole tab, with numbered lines, highlighting and a list of what could come next. */
+.gfd-css-head {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+
+.gfd-css-expand {
+  height: 19px;
+  padding: 0 7px;
+  border-color: transparent;
+  background: var(--panel-2);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.gfd-css-expand:hover { border-color: var(--accent-dim); }
+
+/* What could come next, under the word being typed. It suggests: nothing is inserted until it is
+   chosen, and Escape puts it away. */
+.gfd-complete {
+  position: absolute;
+  z-index: 5;
+  min-width: 180px;
+  max-width: 320px;
+  max-height: 224px;
+  overflow: auto;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+}
+
+.gfd-complete-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.gfd-complete-item.active,
+.gfd-complete-item:hover { background: var(--accent-dim); }
+
+.gfd-complete-name { overflow: hidden; text-overflow: ellipsis; }
+
+.gfd-complete-detail {
+  margin-left: auto;
+  font-family: var(--sans);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* The property half of a declaration. The value half is left as ordinary text, so the two are
+   told apart by weight rather than by two colours competing in the same line. */
+.gfd-tok-property { color: var(--code-keyword); }
+
+/* A class offered under the file it is written in. */
+.gfd-module-class .gfd-module-label { padding-left: 16px; }
+
+/* What the last run threw, beside the modules that threw it. */
+.gfd-code-problems {
+  flex: 0 0 auto;
+  max-height: 30%;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 6px 8px;
+  border: 1px solid var(--danger-button-border);
+  border-radius: 6px;
+  background: var(--danger-button);
+  color: var(--error-text);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.gfd-code-problem + .gfd-code-problem { margin-top: 4px; }
+.gfd-code-problem strong { font-family: var(--mono); font-weight: 600; }
+
+.gfd-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The panel is a tool, not a page: rows are the height of their controls, labels are captions
+   rather than headings, and the space between things is only enough to tell them apart. Density
+   is set once here, so the whole panel tightens or loosens together. */
+.gfd-properties {
+  --gfd-rail-width: 272px;
+  --gfd-label-w: 58px;
+  --gfd-row-h: 22px;
+  --gfd-input-h: 21px;
+  position: relative;
+  width: var(--gfd-rail-width);
+  display: flex;
+  flex-direction: column;
+  border-inline-start: 1px solid var(--border);
+  background: var(--panel);
+  /* The subject and the tabs stay put; only the properties under them scroll. */
+  overflow: hidden;
+  padding: 8px 0 0;
+  font-size: 12px;
+}
+
+.gfd-rail-header { padding: 0 8px; }
+
+/* Collapsed behaviour is the shell's .side-rail, shared with the object sidebar. */
+.gfd-properties.collapsed { overflow: hidden; }
+
+.gfd-rail-grip {
+  position: absolute;
+  top: 0;
+  left: -5px;
+  bottom: 0;
+  width: 9px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 3;
+}
+
+.gfd-rail-grip:hover,
+.gfd-rail-grip.dragging {
+  background: linear-gradient(to right, transparent 4px, var(--accent) 4px, var(--accent) 5px, transparent 5px);
+}
+
+/* .rail-head supplies the row; the subject just needs to take the space the toggle does not. */
+.gfd-rail-header > .gfd-subject { flex: 1; }
+
+/* The way in to the binding reference, small enough to ignore and always in the same place. */
+.gfd-help {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border-radius: 50%;
+  color: var(--muted);
+  font: italic 700 11px/1 var(--sans);
+}
+
+.gfd-help:hover { color: var(--accent); border-color: var(--accent-dim); }
+
+.gfd-help-body { font-size: 13px; line-height: 1.5; max-width: 620px; }
+.gfd-help-body > p { margin: 0 0 14px; }
+.gfd-help-group { margin-bottom: 14px; }
+
+.gfd-help-group h4 {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.gfd-help-row {
+  display: grid;
+  grid-template-columns: minmax(0, 15em) minmax(0, 1fr);
+  gap: 4px 12px;
+  padding: 2px 0;
+  align-items: baseline;
+}
+
+.gfd-help-row code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+.gfd-help-functions {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--accent);
+}
+
+@media (max-width: 560px) {
+  .gfd-help-row { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* What the panel is currently editing, in the same place whatever that is. */
+.gfd-subject {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.gfd-subject-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.gfd-subject-name {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The switcher itself is unstyled here: it is .view-switcher and .view-btn from the shell, with
+   only the spacing around it set, and the width shared out between three icons. */
+.gfd-tabs { margin: 7px 8px 6px; }
+
+.gfd-tabs .view-btn {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 0;
+}
+
+/* The theme switcher is icon-only, so it does not need the text switcher's min-width. */
+.gfd-theme-btn { min-width: 0; padding: 5px 9px; }
+
+.gfd-tab-icon svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  margin: 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Collapsible blocks in the panel. The summary is the same heading the panel uses elsewhere, with
+   a marker in front of it. */
+.gfd-section { margin: 2px 0; }
+
+.gfd-section > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gfd-section > summary::-webkit-details-marker { display: none; }
+
+.gfd-section > summary::before {
+  content: '›';
+  font-size: 13px;
+  line-height: 1;
+  transition: transform 0.12s ease;
+}
+
+.gfd-section[open] > summary::before { transform: rotate(90deg); }
+
+.gfd-section > summary:hover { color: var(--text); }
+
+/* An empty document used only to measure browser defaults. It renders nothing. */
+.gfd-probe {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.gfd-generated-css {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+  margin: 0 0 4px;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--muted);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.gfd-code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Preview hands the whole width to the component: the property sheet is a design-time tool. */
+.gfd-designer.previewing .gfd-properties { display: none; }
+
+/* The control catalogue sits in the tab's toolbar. It wraps rather than scrolls, so a narrow
+   workspace pushes the catalogue onto a second row instead of hiding half of it. */
+.gfd-viewbar { flex-wrap: wrap; }
+
+.gfd-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* A group marker, not a title: it separates rows without taking a row's worth of space. */
+.gfd-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  margin-top: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.gfd-heading::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.gfd-properties-body > .gfd-heading:first-of-type { margin-top: 2px; }
+
+.gfd-properties-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 10px;
+}
+
+.gfd-palette-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: grab;
+  user-select: none;
+}
+
+.gfd-palette-item:hover { border-color: var(--accent-dim); }
+.gfd-palette-item:active { cursor: grabbing; }
+
+.gfd-palette-icon {
+  text-align: center;
+  color: var(--muted);
+}
+
+/* ---- canvas ---- */
+
+.gfd-surface {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+  background: var(--bg);
+}
+
+/* Geometry comes in as custom properties so a component's own CSS can override the computed value or
+   redefine the variable. Scoped custom rules carry an extra selector, so they win by specificity
+   without anyone needing !important. */
+.gfd-canvas {
+  width: var(--gfd-component-width);
+  height: var(--gfd-component-height);
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 12px var(--shadow);
+  /* The 8px placement grid is visible so snapping is predictable rather than mysterious. */
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--border) 45%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 45%, transparent) 1px, transparent 1px);
+  background-size: 8px 8px;
+  outline: none;
+}
+
+/* Where a control sits and how big it is comes from the generated sheet, which defines each
+   measurement as a variable and then uses it in the same rule — so the panel can show the whole
+   chain instead of half of it standing on a rule nobody can read. Only being taken out of the
+   flow stays here, because that is what makes a control a control rather than a styling choice. */
+.gfd-control {
+  position: absolute;
+  box-sizing: border-box;
+}
+
+
+.gfd-control.selected {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* A bound control keeps its class so custom CSS can find it, but nothing is drawn around it: the
+   selection outline is the only box the canvas draws, so a box on screen always means "selected".
+   What drives a control is on its tooltip and in the property panel, where reading it is a
+   deliberate act rather than a permanent mark over the layout. */
+
+.gfd-record-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.gfd-record-position {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 74px;
+  text-align: center;
+}
+
+.gfd-readonly-note {
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 9px;
+}
+
+.gfd-container {
+  position: absolute;
+  inset: 0;
+}
+
+/* The rubber band, while a selection is being drawn. It is scaffolding, not part of the component, so
+   it takes no pointer events and leaves nothing behind. */
+.gfd-marquee {
+  position: absolute;
+  z-index: 4;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  pointer-events: none;
+}
+
+.gfd-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border: 1px solid var(--panel);
+  z-index: 2;
+}
+
+.gfd-handle-e { right: -5px; top: calc(50% - 4px); cursor: ew-resize; }
+.gfd-handle-s { bottom: -5px; left: calc(50% - 4px); cursor: ns-resize; }
+.gfd-handle-se { right: -5px; bottom: -5px; cursor: nwse-resize; }
+
+/* ---- control appearance ----
+   Deliberately plain: a control should look like what it will render as, not like a designer
+   decoration, so the canvas reads as the component rather than as a diagram of one. */
+
+/* Each control kind's default appearance lives in the catalogue and is emitted into the generated
+   CSS, so it is visible in the panel and overridable by order. Only structure stays here.
+   The shell already styles every input, select, textarea and button, so controls inherit those. */
+
+.gfd-checkbox input { width: auto; height: auto; }
+
+/* The pager's own parts. The box it sits in is styled by the generated sheet like every other
+   control; these are the pieces inside it, kept plain so the workspace theme — or the browser, in
+   an isolated component — decides how they look. */
+.gfd-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.gfd-pager-btn {
+  min-width: 22px;
+  padding: 2px 6px;
+  line-height: 1.2;
+}
+
+.gfd-pager-position {
+  padding: 0 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.gfd-panel-title {
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+/* While designing, pointer events belong to the designer, not to the controls it is drawing.
+   Preview gives them back, which is the whole difference between the two views. */
+.gfd-canvas input,
+.gfd-canvas textarea,
+.gfd-canvas select,
+.gfd-canvas button { pointer-events: none; }
+
+.gfd-canvas.preview input,
+.gfd-canvas.preview textarea,
+.gfd-canvas.preview select,
+.gfd-canvas.preview button { pointer-events: auto; }
+
+/* No placement grid in preview: it is scaffolding, and the component is meant to look finished.
+   No grid either when it has been switched off, which is the same reason applied on request. */
+.gfd-canvas.preview,
+.gfd-canvas.no-grid { background-image: none; }
+
+/* ---- properties ----
+   One property, one row: caption, editor, and the switch that swaps the editor for an expression.
+   Every property gets the same row whatever it holds, so the panel reads as a table rather than as
+   a stack of differently shaped cards, and the eye can run straight down the values. */
+
+.gfd-row {
+  display: grid;
+  grid-template-columns: var(--gfd-label-w) minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 0 5px;
+  min-height: var(--gfd-row-h);
+}
+
+/* A property that needs the full width — a list of options, a block of CSS — keeps the same row,
+   with the editor dropped under its own caption instead of beside it. */
+.gfd-row.block {
+  grid-template-columns: minmax(0, 1fr) 16px;
+  grid-template-areas: 'label bind' 'cell cell';
+}
+
+.gfd-row.block > .gfd-row-label { grid-area: label; }
+.gfd-row.block > .gfd-cell { grid-area: cell; padding-bottom: 3px; }
+.gfd-row.block > .gfd-bind,
+.gfd-row.block > .gfd-bind-gap { grid-area: bind; }
+
+.gfd-row-label {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.gfd-row.bound > .gfd-row-label { color: var(--accent); }
+
+/* Several controls are selected and they do not agree about this one. The panel shows the first
+   one's value, and says as much rather than implying they all look like this. */
+.gfd-row.mixed > .gfd-row-label { font-style: italic; }
+.gfd-row.mixed > .gfd-row-label::after { content: ' ≠'; opacity: 0.8; }
+
+.gfd-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* One rule for every editor in the panel, so a select, a number and a colour line up on the same
+   baseline without each one being told to. */
+.gfd-properties-body input:not([type="checkbox"]):not([type="color"]),
+.gfd-properties-body select,
+.gfd-properties-body textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  height: var(--gfd-input-h);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.gfd-properties-body textarea {
+  height: auto;
+  padding: 4px 5px;
+  line-height: 1.45;
+}
+
+/* Spinners cost more width than they earn in a panel this narrow, and the arrow keys still step
+   the value with the cursor in the field. */
+.gfd-number { appearance: textfield; -moz-appearance: textfield; }
+.gfd-number::-webkit-outer-spin-button,
+.gfd-number::-webkit-inner-spin-button { appearance: none; margin: 0; }
+
+.gfd-check { margin: 0; width: 13px; height: 13px; }
+
+/* The binding switch. Faint on every row so it is discoverable without being asked about, clearer
+   under the pointer, and lit while it is driving the property — so a glance down the panel shows
+   what follows something else and nothing more. */
+.gfd-bind {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: color-mix(in srgb, var(--muted) 42%, transparent);
+  font: italic 700 12px/1 var(--mono);
+}
+
+.gfd-row:hover .gfd-bind,
+.gfd-bind:focus-visible { color: var(--muted); }
+.gfd-bind:hover { background: var(--panel-2); color: var(--text); border-color: transparent; }
+.gfd-bind.on { color: var(--accent); }
+
+/* Named through the body so this outranks the panel's shared input sizing above, which is written
+   against an attribute and would otherwise keep the expression at the plain-text size. */
+.gfd-properties-body .gfd-expr {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--accent);
+}
+
+/* An expression that cannot be worked out. The canvas shows the result of one that can, so only
+   the failure needs saying here — on the box, with the reason in its tooltip. */
+.gfd-properties-body .gfd-expr.bad {
+  color: var(--danger);
+  border-color: var(--danger);
+  text-decoration: underline wavy var(--danger);
+  text-underline-offset: 2px;
+}
+
+.gfd-css {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.gfd-lines { font-size: 12px; }
+
+.gfd-decl { display: block; }
+
+/* A declaration a stronger layer also sets: shown, but marked as not the one in effect. */
+.gfd-decl.overridden {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
+/* Light and dark side by side: the pair is one decision, so it is one row. A half that takes an
+   expression wraps onto its own line, where the expression is long enough to need the width. */
+.gfd-row.wide { grid-template-columns: var(--gfd-label-w) minmax(0, 1fr); }
+.gfd-row.head { min-height: 15px; }
+
+/* A grid rather than a wrapping row, so the dark half stays under the Dark caption even when the
+   light half has grown into a full-width expression above it. */
+.gfd-cell.pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 6px;
+}
+
+.gfd-colour-slot {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gfd-colour-slot:nth-child(2) { grid-column: 2; }
+
+/* The selection disagrees about this colour; the swatch shown is the first control's. */
+.gfd-colour-slot.mixed .gfd-swatch { border-style: dashed; border-color: var(--accent-dim); }
+.gfd-colour-slot.bound { grid-column: 1 / -1; }
+
+.gfd-pair-caption {
+  min-width: 0;
+  padding-left: 23px;
+  font-size: 10px;
+  color: var(--muted);
+  cursor: help;
+}
+
+/* The theme currently on screen: the column whose colours you are actually looking at. */
+.gfd-pair-caption.active { color: var(--accent); font-weight: 600; }
+.gfd-pair-caption.active::after { content: ' •'; }
+
+.gfd-swatch {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  padding: 1px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  cursor: pointer;
+}
+
+/* Holds whichever swatch the current colour calls for, so swapping one for the other leaves the
+   row's layout alone. */
+.gfd-swatch-slot { display: contents; }
+
+/* A formula decided the colour: the swatch reports it rather than taking one. */
+.gfd-swatch:disabled { cursor: default; opacity: 1; }
+
+/* What came out is not a colour at all, so there is nothing to put in a picker. */
+.gfd-swatch-bad {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  color: var(--danger, #e5484d);
+  border-color: var(--danger, #e5484d);
+  font-size: 12px;
+  line-height: 1;
+  cursor: help;
+}
+
+.gfd-properties-body .gfd-colour-text {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.gfd-clear {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 18px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.gfd-clear:hover { color: var(--text); background: var(--panel-2); }
+
+.gfd-align {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.gfd-align-btn {
+  flex: 1;
+  min-width: 0;
+  height: 19px;
+  padding: 0;
+  border-color: transparent;
+  background: var(--panel-2);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.gfd-align-btn:hover:not(:disabled) { border-color: var(--accent-dim); }
+
+/* Names you can click instead of type: the source's columns, offered where a value is chosen. */
+.gfd-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 2px 0 4px;
+}
+
+.gfd-chip {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+
+.gfd-chip.static { border: 1px solid var(--border); color: var(--muted); cursor: default; }
+
+/* Not a column but a thing you can bind to, so it reads as its own kind of chip. */
+.gfd-chip.row { color: var(--accent); }
+
+.gfd-delete { margin-top: 10px; width: 100%; padding: 3px 0; font-size: 12px; }
+
+/* .field-note carries the colour and size; this is only the spacing between notes. */
+.gfd-note { margin: 4px 0 6px; font-size: 11px; line-height: 1.45; }
+
+.module-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}

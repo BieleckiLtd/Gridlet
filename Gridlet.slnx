@@ -6,6 +6,7 @@
     <Project Path="src/Gridlet.AgentFramework/Gridlet.AgentFramework.csproj" />
     <Project Path="src/Gridlet.AspNetCore/Gridlet.AspNetCore.csproj" />
     <Project Path="src/Gridlet.Core/Gridlet.Core.csproj" />
+    <Project Path="src/Gridlet.Components/Gridlet.Components.csproj" />
     <Project Path="src/Gridlet.Sqlite/Gridlet.Sqlite.csproj" />
     <Project Path="src/Gridlet.SqlServer/Gridlet.SqlServer.csproj" />
     <Project Path="src/Gridlet.Voice/Gridlet.Voice.csproj" />
