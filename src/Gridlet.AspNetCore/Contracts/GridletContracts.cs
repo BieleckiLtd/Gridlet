@@ -10,7 +10,17 @@ public sealed record GridletMetaResponse(
     int MaxQueryResultRows,
     GridletAgentInfo? Agent = null,
     string PublishedApiSegment = "pub",
-    GridletVoiceInfo? Voice = null);
+    GridletVoiceInfo? Voice = null,
+    IReadOnlyList<GridletUiModuleInfo>? Modules = null);
+
+/// <summary>
+/// An optional package that is installed and contributes browser assets. The shell loads these
+/// after the base bundle, so a module the host did not install costs the browser nothing.
+/// </summary>
+public sealed record GridletUiModuleInfo(
+    string Name,
+    IReadOnlyList<string> Scripts,
+    IReadOnlyList<string> Styles);
 
 public sealed record GridletConnectionSummary(
     string Name,

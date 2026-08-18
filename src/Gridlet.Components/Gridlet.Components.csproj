@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <IsPackable>true</IsPackable>
+    <!-- The component document shape is still settling; keep this optional package prerelease until
+         the designer has been used against real components and the schema has stopped moving. -->
+    <PackageVersion>$(Version)-preview.1</PackageVersion>
+    <Description>Components designer for Gridlet: design data-entry components in the browser, store them as versioned documents, and bind them to published API endpoints.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Gridlet.AspNetCore\Gridlet.AspNetCore.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The designer ships its own browser assets. They are served from the module asset route and
+         announced through api/meta, so hosts without this package download none of it. -->
+    <EmbeddedResource Include="UI\wwwroot\**\*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Gridlet.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -2,6 +2,7 @@ using Gridlet;
 using Gridlet.Abstractions;
 using Gridlet.AspNetCore;
 using Gridlet.AspNetCore.Agents;
+using Gridlet.AspNetCore.Extensibility;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -30,7 +31,9 @@ public static class GridletEndpointRouteBuilderExtensions
             endpoints, pattern, validateAgentService: true);
 
         GridletUiEndpoints.Map(group, normalizedPattern);
-        GridletApiEndpoints.Map(group.MapGroup("/api"), options);
+        var api = group.MapGroup("/api");
+        GridletApiEndpoints.Map(api, options);
+        MapModuleEndpoints(endpoints, api);
         GridletPublishedEndpoints.Map(group, options.PublishedApiSegment);
 
         return group;
@@ -50,7 +53,9 @@ public static class GridletEndpointRouteBuilderExtensions
         var (group, options, _) = CreateGroup(
             endpoints, pattern, validateAgentService: true);
 
-        GridletApiEndpoints.Map(group.MapGroup("/api"), options);
+        var api = group.MapGroup("/api");
+        GridletApiEndpoints.Map(api, options);
+        MapModuleEndpoints(endpoints, api);
         GridletPublishedEndpoints.Map(group, options.PublishedApiSegment);
 
         return group;
@@ -77,6 +82,18 @@ public static class GridletEndpointRouteBuilderExtensions
         GridletPublishedEndpoints.Map(group, options.PublishedApiSegment);
 
         return group;
+    }
+
+    /// <summary>
+    /// Gives every installed optional package a chance to add endpoints inside Gridlet's authorized
+    /// API group. Nothing happens when no module package is referenced.
+    /// </summary>
+    private static void MapModuleEndpoints(IEndpointRouteBuilder endpoints, RouteGroupBuilder api)
+    {
+        foreach (var contributor in endpoints.ServiceProvider.GetServices<IGridletEndpointContributor>())
+        {
+            contributor.Map(api);
+        }
     }
 
     private static (RouteGroupBuilder Group, GridletOptions Options, string Pattern) CreateGroup(

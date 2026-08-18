@@ -270,6 +270,48 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Welcome_access_selector_stays_inside_the_card()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        // A typical desktop width where the saved-chat rail still sits beside the conversation,
+        // so the welcome card is narrower than the viewport.
+        await page.SetViewportSizeAsync(1280, 800);
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTestId("agent-open").ClickAsync();
+
+        var welcomeAccess = page.GetByTestId("agent-welcome-access");
+        var trigger = welcomeAccess.GetByTestId("agent-welcome-share-trigger");
+        await trigger.ClickAsync();
+        var menu = welcomeAccess.Locator(".agent-share-menu");
+        await Assertions.Expect(menu).ToBeVisibleAsync();
+        await menu.Locator("[data-scope='data']").ClickAsync();
+        await menu.Locator("[data-scope='api']").ClickAsync();
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(trigger).ToContainTextAsync("Schema + Data + Published API");
+
+        foreach (var width in new[] { 1280, 1100, 900, 700 })
+        {
+            await page.SetViewportSizeAsync(width, 800);
+            Assert.True(await page.EvaluateAsync<bool>("""
+                () => {
+                    const card = document.querySelector('[data-testid="agent-welcome-access"]');
+                    const trigger = card.querySelector('[data-testid="agent-welcome-share-trigger"]');
+                    const cardBox = card.getBoundingClientRect();
+                    const triggerBox = trigger.getBoundingClientRect();
+                    const padRight = parseFloat(getComputedStyle(card).paddingRight);
+                    return triggerBox.left >= cardBox.left
+                        && triggerBox.right <= cardBox.right + 0.5
+                        && triggerBox.right <= cardBox.right - padRight + 0.5
+                        && triggerBox.top >= cardBox.top
+                        && triggerBox.bottom <= cardBox.bottom + 0.5;
+                }
+                """), $"Selector overflowed the Agent access card at {width}px.");
+        }
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Narrow_composer_collapses_options_without_wrapping_or_squashing_icon_buttons()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -1578,7 +1620,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await page.ReloadAsync();
         await page.Locator("#new-query-btn").ClickAsync();
-        editor = page.GetByTestId("sql-editor");
+        // A reload now restores the query tab that was already open, so the editor has to be the
+        // one in the tab this test just opened rather than whichever matches first on the page.
+        editor = ActivePanel(page).GetByTestId("sql-editor");
         await ClickQueryActionAsync(ActivePanel(page), "query-history");
         history = page.GetByRole(AriaRole.Dialog, new() { Name = "Query history" });
         items = history.GetByTestId("query-history-item");
@@ -2148,6 +2192,50 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(control.Locator(".sql-highlight .sql-keyword").First)
             .ToHaveTextAsync("CREATE");
         Assert.Equal("sql", await control.GetAttributeAsync("data-editor-language"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// An unsaved definition is asked about at the two moments it is actually lost: closing the
+    /// tab, and changing to another view of the same object, which rebuilds the editor. Switching
+    /// to a different tab is neither — the tab stays open with the edit still in it — so it passes
+    /// without a word.
+    /// </summary>
+    [Fact]
+    public async Task Unsaved_definition_is_queried_on_close_and_view_change_but_not_on_a_tab_switch()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        // A view, not a table: a table's definition is shown rather than edited, so it is a view
+        // that has unsaved changes to ask about.
+        await page.Locator("summary").Filter(new() { HasText = "Views" }).ClickAsync();
+        await page.GetByTitle("dbo.vw_Orders").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Definition", Exact = true }).ClickAsync();
+
+        const string edited = "ALTER VIEW dbo.vw_Orders AS SELECT 3 AS Three;";
+        await panel.GetByTestId("sql-editor").FillAsync(edited);
+
+        // Away to another tab and back. The edit survives, and nothing was asked.
+        await page.Locator("#ask-btn").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("dialog")).ToHaveCountAsync(0);
+        await page.Locator(".tab-title").Filter(new() { HasTextString = "vw_Orders" }).First.ClickAsync();
+        await Assertions.Expect(page.GetByTestId("dialog")).ToHaveCountAsync(0);
+        await Assertions.Expect(ActivePanel(page).GetByTestId("sql-editor")).ToHaveValueAsync(edited);
+
+        // Another view of the same object rebuilds the body, so this one does ask.
+        await ActivePanel(page).GetByRole(AriaRole.Button, new() { Name = "Data", Exact = true })
+            .ClickAsync();
+        var dialog = page.GetByTestId("dialog");
+        await Assertions.Expect(dialog).ToContainTextAsync("Execute or discard");
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Discard changes" }).ClickAsync();
+
+        // Discarded, so the edit is gone and closing the tab has nothing left to ask about.
+        await page.Locator(".tab.active .tab-close").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("dialog")).ToHaveCountAsync(0);
+
         browserPage.AssertNoUnexpectedErrors();
     }
 

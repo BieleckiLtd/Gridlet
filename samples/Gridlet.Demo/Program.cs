@@ -44,6 +44,8 @@ if (OperatingSystem.IsWindows())
         });
 }
 
+gridlet.AddComponents();
+
 gridlet.AddAgentFramework(agents =>
     {
         // Gridlet reads the loaded window from Ollama itself; this declaration is only the
