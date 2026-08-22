@@ -18,7 +18,8 @@ implementing anything during the interview.
 ## Grounding
 
 - Gridlet is a .NET library: `Gridlet.Core`, `Gridlet.SqlServer`,
-  `Gridlet.Sqlite`, `Gridlet.AspNetCore`, and `Gridlet.AgentFramework`.
+  `Gridlet.Sqlite`, `Gridlet.AspNetCore`, `Gridlet.Voice`,
+  `Gridlet.AgentFramework`, and `Gridlet.Components`.
 - Features ship on `dev` through pull requests; the shared version lives in
   `Directory.Build.props`; `dotnet test --configuration Release` is the gate.
 - When a question can be answered from the codebase or a GitHub issue, read the

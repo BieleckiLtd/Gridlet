@@ -20,6 +20,7 @@ _UpgradeReport_Files/
 ## Local AI tooling
 .claude
 .codex
+opencode.json
 
 ## OS
 Thumbs.db
