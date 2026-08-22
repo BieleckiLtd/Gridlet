@@ -2,6 +2,7 @@ using System.Text.Json;
 using Gridlet.AspNetCore.Contracts;
 using Gridlet.Auditing;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -9,14 +10,29 @@ namespace Gridlet.AspNetCore;
 
 internal static class GridletEndpointHelpers
 {
-    private static ILogger _logger = NullLogger.Instance;
+    private static readonly AsyncLocal<ILogger?> CurrentLogger = new();
 
     /// <summary>
-    /// Supplies the logger used for unexpected endpoint failures. Called while Gridlet is mapped,
-    /// so the messages returned to callers are also recorded on the server.
+    /// Endpoint filter that publishes the logger for unexpected failures, taken from the request's
+    /// own service provider. Gridlet may be mapped more than once in a process (several hosts, or
+    /// parallel test servers), so the logger is scoped to the request being served rather than held
+    /// in shared state that the most recent mapping would win.
     /// </summary>
-    public static void UseLoggerFactory(ILoggerFactory? loggerFactory)
-        => _logger = loggerFactory?.CreateLogger("Gridlet.Endpoints") ?? NullLogger.Instance;
+    public static async ValueTask<object?> PublishRequestLogger(
+        EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    {
+        var previous = CurrentLogger.Value;
+        CurrentLogger.Value = context.HttpContext.RequestServices
+            .GetService<ILoggerFactory>()?.CreateLogger("Gridlet.Endpoints");
+        try
+        {
+            return await next(context);
+        }
+        finally
+        {
+            CurrentLogger.Value = previous;
+        }
+    }
 
     /// <summary>Maps Gridlet exceptions onto HTTP status codes with a consistent error body.</summary>
     public static async Task<IResult> Execute(Func<Task<IResult>> action)
@@ -55,7 +71,7 @@ internal static class GridletEndpointHelpers
             // Gridlet is an operator tool: surfacing the underlying message (e.g. login failed,
             // server unreachable) is intentional and more useful than a generic 500. It is logged
             // as well, so a failure the caller merely retries still leaves a record on the server.
-            _logger.LogError(ex, "Gridlet request failed: {Message}", ex.Message);
+            (CurrentLogger.Value ?? NullLogger.Instance).LogError(ex, "Gridlet request failed: {Message}", ex.Message);
             return Results.Json(
                 new GridletErrorResponse(ex.Message),
                 statusCode: StatusCodes.Status500InternalServerError);
