@@ -21,6 +21,59 @@
     return el;
   }
 
+  // ---- icons --------------------------------------------------------------
+  // Tabler Icons, outline set, copied in as path data. Copying beats depending: the workspace is
+  // one HTML file and two assets served from the assembly, and it stays that way. Each entry is
+  // the icon's own name in the set, so the original is one search away when one needs replacing.
+  //
+  // Tabler Icons - MIT Licence, Copyright (c) 2020-2026 Pawel Kuna. Credited in About > Licences.
+  //
+  // Weight, colour, caps and joins all come from the stylesheet, so an icon looks like the control
+  // it sits in rather than carrying its own idea of either.
+
+  const ICONS = {
+    'adjustments-horizontal': ['M12 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0', 'M4 6l8 0', 'M16 6l4 0', 'M6 12a2 2 0 1 0 4 0a2 2 0 1 0 -4 0', 'M4 12l2 0', 'M10 12l10 0', 'M15 18a2 2 0 1 0 4 0a2 2 0 1 0 -4 0', 'M4 18l11 0', 'M19 18l1 0'],
+    'alert-triangle': ['M12 9v4', 'M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0', 'M12 16h.01'],
+    'arrow-up': ['M12 5l0 14', 'M18 11l-6 -6', 'M6 11l6 -6'],
+    'chevron-right': ['M9 6l6 6l-6 6'],
+    copy: ['M7 9.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667l0 -8.666', 'M4.012 16.737a2.005 2.005 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1'],
+    'info-circle': ['M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0', 'M12 9h.01', 'M11 12h1v4h1'],
+    lock: ['M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-6', 'M11 16a1 1 0 1 0 2 0a1 1 0 0 0 -2 0', 'M8 11v-4a4 4 0 1 1 8 0v4'],
+    microphone: ['M9 5a3 3 0 0 1 3 -3a3 3 0 0 1 3 3v5a3 3 0 0 1 -3 3a3 3 0 0 1 -3 -3l0 -5', 'M5 10a7 7 0 0 0 14 0', 'M8 21l8 0', 'M12 17l0 4'],
+    plus: ['M12 5l0 14', 'M5 12l14 0'],
+    // Not from the set. The sharing control wears its mark inside the shield rather than beside
+    // it, and this narrower shield leaves room for one. Tabler's own shield is rounder and puts
+    // its mark outside the shape, which reads as a shield with a speck next to it at this size.
+    shield: ['M12 3l7 3v5c0 4.8-2.8 8.2-7 10-4.2-1.8-7-5.2-7-10V6l7-3z'],
+    volume: ['M15 8a5 5 0 0 1 0 8', 'M17.7 5a9 9 0 0 1 0 14', 'M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5'],
+  };
+
+  // The marks the shield wears, centred inside it: at 16px a mark hung off the corner reads as
+  // dirt on the icon rather than as part of it.
+  const SHIELD_CHECK_MARK = 'M8.5 12.2l2.3 2.3 4.8-5';
+  const SHIELD_WARNING_MARK = 'M12 8v5m0 3h.01';
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  /** One icon by name, as an <svg>. Extra paths carry their own class, for the ones CSS toggles. */
+  function icon(name, className = null, extras = []) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    if (className) svg.setAttribute('class', className);
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    const add = (d, cls) => {
+      const path = document.createElementNS(SVG_NS, 'path');
+      path.setAttribute('d', d);
+      if (cls) path.setAttribute('class', cls);
+      svg.append(path);
+      return path;
+    };
+    for (const d of ICONS[name]) add(d);
+    for (const extra of extras) add(extra.d, extra.class);
+    return svg;
+  }
+
   function toast(message, isError = true) {
     const el = h('div', { class: `toast${isError ? ' error' : ''}`, text: message });
     let remaining = 6000;
@@ -357,8 +410,9 @@
         label: 'Licences',
         render: () => h('div', {},
           h('h2', { text: 'Third-party software' }),
-          h('p', { text: 'Gridlet’s browser UI uses plain HTML, CSS, and JavaScript. Its provider and hosting packages use these third-party projects:' }),
+          h('p', { text: 'Gridlet’s browser UI uses plain HTML, CSS, and JavaScript, with one third-party asset. Its provider and hosting packages use these third-party projects:' }),
           h('ul', {},
+            h('li', {}, h('a', { href: 'https://github.com/tabler/tabler-icons', target: '_blank', rel: 'noopener', text: 'Tabler Icons ↗' }), ' — the interface icons, MIT Licence, © 2020-2026 Paweł Kuna'),
             h('li', {}, h('a', { href: 'https://github.com/dotnet/SqlClient', target: '_blank', rel: 'noopener', text: 'Microsoft.Data.SqlClient ↗' })),
             h('li', {}, h('a', { href: 'https://learn.microsoft.com/dotnet/standard/data/sqlite/', target: '_blank', rel: 'noopener', text: 'Microsoft.Data.Sqlite ↗' })),
             h('li', {}, h('a', { href: 'https://github.com/ericsink/SQLitePCL.raw', target: '_blank', rel: 'noopener', text: 'SQLitePCLRaw ↗' })),
@@ -1287,16 +1341,245 @@
     return editor;
   }
 
+  // ---- session ----------------------------------------------------------------
+  // Which tabs were open, and which one was in front. A tab that wants to come back describes
+  // itself through `restore`; anything without one is simply not restored, which keeps tabs that
+  // hold unsaved or live state (a new table's DDL, an agent conversation) from reappearing empty.
+
+  const SESSION_KEY = 'gridlet.session';
+
+  const tabRestorers = new Map();
+
+  function registerTabRestorer(kind, restore) {
+    tabRestorers.set(kind, restore);
+  }
+
+  function describeTab(tab) {
+    try {
+      return typeof tab.restore === 'function' ? tab.restore() : tab.restore || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveSession() {
+    if (!sessionRestored) return;
+    try {
+      const tabs = state.tabs.map(describeTab).filter(Boolean);
+      const active = state.tabs.findIndex((tab) => tab.id === state.activeTabId);
+      const activeDescribable = state.tabs
+        .slice(0, active < 0 ? 0 : active)
+        .filter((tab) => describeTab(tab)).length;
+      localStorage.setItem(SESSION_KEY, JSON.stringify({
+        tabs,
+        active: active >= 0 && describeTab(state.tabs[active]) ? activeDescribable : 0,
+      }));
+    } catch { /* storage can be unavailable in privacy-restricted browsers */ }
+  }
+
+  // Restoration runs once, at the end of boot. Until it has, nothing is written, so a half-built
+  // workspace cannot overwrite the session that is still being read.
+  let sessionRestored = false;
+
+  async function restoreSession() {
+    let session;
+    try { session = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch { session = null; }
+    sessionRestored = true;
+    if (!session?.tabs?.length) return;
+
+    for (const descriptor of session.tabs) {
+      const restore = tabRestorers.get(descriptor?.kind);
+      if (!restore) continue;
+      try {
+        await restore(descriptor);
+      } catch {
+        // One tab that cannot be rebuilt — a dropped table, a deleted component — must not stop the
+        // rest of the workspace from coming back.
+      }
+    }
+
+    const target = state.tabs[session.active];
+    if (target) setActiveTab(target.id);
+  }
+
+  // Objects for a scope other than the one the sidebar is showing, so a tab left open on another
+  // database can be rebuilt without switching the whole workspace to it.
+  async function objectsForScope(scope) {
+    const cached = state.objectsByScope.get(scopeKey(scope));
+    if (cached) return cached;
+    const objects = await api(urlsFor(scope).objects());
+    state.objectsByScope.set(scopeKey(scope), objects);
+    return objects;
+  }
+
+  registerTabRestorer('object', async (descriptor) => {
+    const objects = await objectsForScope(descriptor.scope);
+    const object = objects.find((candidate) =>
+      candidate.schema === descriptor.schema &&
+      candidate.name === descriptor.name &&
+      candidate.type === descriptor.type);
+    if (object) openObjectTab(object, descriptor.scope);
+  });
+
+  registerTabRestorer('query', (descriptor) => {
+    openQueryTab(descriptor.sql || '', descriptor.title || null, descriptor.scope);
+  });
+
+  registerTabRestorer('apis', () => openApisTab());
+
+  // ---- modules ----------------------------------------------------------------
+  // Optional packages (installed by the host) ship their own scripts and styles. The server
+  // announces them in api/meta; the shell loads them here and hands them a small, deliberate
+  // surface through window.gridlet. Nothing in this file knows what any individual module does.
+
+  const moduleActions = [];
+  const moduleSections = [];
+
+  // Adds a sidebar section on behalf of a module, listed with the database objects because that is
+  // where a person looks for the things they can open. The module owns its items; the shell owns
+  // the section chrome, the filter and the badge.
+  function registerSidebarSection(section) {
+    moduleSections.push(section);
+    const refresh = async () => {
+      try {
+        await section.load?.();
+      } catch (err) {
+        toast(`Failed to load ${section.label}: ${err.message}`);
+      }
+      renderTree();
+    };
+    refresh();
+    return { refresh };
+  }
+
+  function renderModuleSections(tree, filter) {
+    for (const section of moduleSections) {
+      const items = (section.items?.() || [])
+        .filter((item) => !filter || item.name.toLowerCase().includes(filter));
+      const summary = h('summary', {}, section.label + ' ',
+        h('span', { class: 'count', text: String(items.length) }));
+      if (section.onCreate) {
+        summary.append(h('button', {
+          class: 'mini-btn summary-add',
+          title: section.createTitle || 'Create',
+          onclick: (e) => { e.preventDefault(); e.stopPropagation(); section.onCreate(); },
+        }, '＋'));
+      }
+      tree.append(treeSection(`module-${section.id}`, false, summary,
+        h('div', { class: 'items' }, items.map((item) => h('button', {
+          class: 'tree-item',
+          title: item.title || item.name,
+          onclick: () => item.onOpen(),
+          oncontextmenu: item.contextItems
+            ? (event) => showContextMenu(event, item.contextItems())
+            : null,
+        },
+          h('span', {
+            class: 'badge badge-module',
+            text: section.badge || 'M',
+            title: section.label,
+          }),
+          h('span', { class: 'item-name', text: item.name })))), !!filter));
+    }
+  }
+
+  // Adds a top-bar button on behalf of a module. Placed before About so module actions sit with
+  // the app's own actions and take part in toolbar overflow.
+  function registerAction({ id, label, title, icon, onClick }) {
+    const button = h('button', {
+      id,
+      class: 'ghost app-action',
+      title: title || label,
+      onclick: onClick,
+    }, icon ? h('span', { class: 'app-action-icon module-action-icon', text: icon }) : null,
+      h('span', { text: label }));
+    $('#about-btn').before(button);
+    moduleActions.push(button);
+    return button;
+  }
+
+  // Opens a tab owned by a module. The key deduplicates, exactly as the built-in tabs do, so
+  // opening the same component twice focuses the tab that is already there.
+  function openModuleTab({ key, badge, title, render, restore }) {
+    const existing = state.tabs.find((t) => t.key === key);
+    if (existing) {
+      setActiveTab(existing.id);
+      return existing;
+    }
+
+    const tab = {
+      id: state.nextTabId++,
+      key,
+      badge,
+      // Module tabs share one badge colour rather than competing for the object-type palette.
+      badgeClass: 'badge-module',
+      title,
+      panel: h('div', { class: 'panel' }),
+      loaded: false,
+      load: () => {},
+      restore,
+    };
+    tab.load = () => render(tab.panel, tab);
+    addTab(tab);
+    return tab;
+  }
+
+  function loadModuleAsset(url, isStyle) {
+    return new Promise((resolve, reject) => {
+      const element = isStyle
+        ? h('link', { rel: 'stylesheet', href: url })
+        : h('script', { src: url });
+      element.addEventListener('load', () => resolve());
+      element.addEventListener('error', () => reject(new Error(`Failed to load ${url}`)));
+      document.head.append(element);
+    });
+  }
+
+  async function loadModules() {
+    const modules = state.meta.modules || [];
+    if (!modules.length) return;
+
+    // The surface a module may use. Deliberately small: everything here is something a module
+    // genuinely cannot do for itself, and nothing here reaches into the shell's internals.
+    window.gridlet = {
+      hostVersion: 1,
+      h,
+      api,
+      post,
+      del,
+      toast,
+      modal,
+      confirmModal,
+      showContextMenu,
+      registerAction,
+      registerSidebarSection,
+      // A module tab comes back after a reload by describing itself, the same way built-in tabs do.
+      registerTabRestorer,
+      openTab: openModuleTab,
+      closeTab,
+      // A module owns its tab's title, so it needs a way to redraw the bar after renaming.
+      refreshTabs: renderTabBar,
+      state,
+    };
+
+    for (const module of modules) {
+      const base = `assets/modules/${encodeURIComponent(module.name)}/`;
+      try {
+        for (const style of module.styles || []) await loadModuleAsset(base + style, true);
+        for (const script of module.scripts || []) await loadModuleAsset(base + script, false);
+      } catch (err) {
+        // A broken module must not take the workspace down with it.
+        toast(`The ${module.name} module failed to load: ${err.message}`);
+      }
+    }
+  }
+
   // ---- boot -------------------------------------------------------------------
 
   async function boot() {
     setupTheme();
     setupThemedSelect($('#connection-select'));
     setupThemedSelect($('#database-select'));
-    navigationOverflow = setupOverflowToolbar($('#topbar'), [
-      $('#version'), $('#about-btn'), $('#apis-btn'), $('#ask-btn'), $('#theme-btn'), $('#refresh-btn'),
-      $('.connection-pickers'), $('#new-query-btn'),
-    ], 'More app actions');
     document.body.append(h('datalist', { id: 'gridlet-types' }));
 
     try {
@@ -1305,6 +1588,15 @@
       toast('Failed to load Gridlet metadata: ' + err.message);
       return;
     }
+
+    // Modules register their top-bar actions before the overflow toolbar measures the bar, so a
+    // module button collapses into the overflow menu like every built-in one.
+    await loadModules();
+
+    navigationOverflow = setupOverflowToolbar($('#topbar'), [
+      $('#version'), $('#about-btn'), $('#apis-btn'), $('#ask-btn'), $('#theme-btn'), $('#refresh-btn'),
+      $('.connection-pickers'), $('#new-query-btn'), ...moduleActions,
+    ], 'More app actions');
 
     $('#version').textContent = 'v' + state.meta.version;
     // Browsers populate the installed voice list asynchronously; asking for it early means a
@@ -1323,6 +1615,10 @@
       event.returnValue = '';
     });
 
+    // A tab's contents can change without any tab event — typing in a query editor, for one — so
+    // the session is written again on the way out rather than only when tabs open and close.
+    window.addEventListener('pagehide', saveSession);
+
     const connSelect = $('#connection-select');
     connSelect.replaceChildren(
       ...state.meta.connections.map((c) => h('option', { value: c.name, text: c.name })));
@@ -1334,7 +1630,10 @@
     $('#new-query-btn').addEventListener('click', () => openQueryTab());
     $('#apis-btn').addEventListener('click', () => openApisTab());
     $('#about-btn').addEventListener('click', showAbout);
-    $('#search').addEventListener('input', () => renderTree());
+    $('#search').addEventListener('input', (event) => {
+      rememberFilter(event.target.value.trim());
+      renderTree();
+    });
     $('#sidebar').addEventListener('contextmenu', (event) => showContextMenu(event, [
       { label: 'Query', action: () => openQueryTab() },
       { label: 'Refresh objects', action: () => loadObjects() },
@@ -1345,12 +1644,15 @@
           ? [{ label: 'Create view', action: () => openNewSchemaObject('View') }] : []),
       ] : []),
     ]));
+    setupSidebarToggle();
     setupSidebarResize();
 
     if (state.meta.connections.length) {
       await selectConnection(state.meta.connections[0].name);
+      await restoreSession();
     } else {
       toast('No connections configured. Add one with options.AddConnection(...) in the host.');
+      sessionRestored = true;
     }
   }
 
@@ -1422,7 +1724,54 @@
     state.objects = objects;
     state.schemas = schemas;
     refreshTypeSuggestions();
+    restoreFilter();
     renderTree();
+  }
+
+  // The filter is part of how the tree was left, alongside which sections were expanded, and it is
+  // remembered per connection and database for the same reason those are: a filter that makes
+  // sense in one database is noise in another.
+  function restoreFilter() {
+    $('#search').value = readTreeView().$filter || '';
+  }
+
+  function rememberFilter(value) {
+    try {
+      const view = readTreeView();
+      if (value) view.$filter = value;
+      else delete view.$filter;
+      localStorage.setItem(treeViewStorageKey(), JSON.stringify(view));
+    } catch { /* storage can be unavailable in privacy-restricted browsers */ }
+  }
+
+  // The sidebar stays where it was left, so a workspace set up for wide canvases (a component designer,
+  // a wide result grid) survives a reload rather than springing back on every visit.
+  function setupSidebarToggle() {
+    const button = $('#sidebar-toggle');
+    const apply = (collapsed, remember) => {
+      $('#sidebar').classList.toggle('collapsed', collapsed);
+      button.setAttribute('aria-expanded', String(!collapsed));
+      const label = collapsed ? 'Expand the object sidebar' : 'Collapse the object sidebar';
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      if (remember) {
+        try { localStorage.setItem('gridlet.sidebarCollapsed', collapsed ? '1' : '0'); } catch { /* unavailable */ }
+      }
+    };
+
+    let collapsed = false;
+    try { collapsed = localStorage.getItem('gridlet.sidebarCollapsed') === '1'; } catch { /* unavailable */ }
+    apply(collapsed, false);
+    button.addEventListener('click', () => apply(!$('#sidebar').classList.contains('collapsed'), true));
+
+    // While collapsed the whole rail is the target, not just the icon on it. Expanding is the only
+    // thing a collapsed rail can do, so there is no reason to make someone aim.
+    $('#sidebar').addEventListener('click', (event) => {
+      // The button on the rail has already toggled; without this its click bubbles up here and
+      // expands again in the same gesture, so collapsing would never appear to work.
+      if (event.target.closest('#sidebar-toggle')) return;
+      if ($('#sidebar').classList.contains('collapsed')) apply(false, true);
+    });
   }
 
   function setupSidebarResize() {
@@ -1636,6 +1985,8 @@
         h('span', { class: 'badge badge-I', text: 'I', title: o.subKind || 'Internal object' }),
         h('span', { class: 'item-name', text: displayName(o) })))), !!filter));
     }
+
+    renderModuleSections(tree, filter);
   }
 
   function openSchemaDialog(existing = null) {
@@ -2101,7 +2452,7 @@
           ] : []),
         ]),
       },
-        h('span', { class: 'badge badge-' + tab.badge, text: tab.badge }),
+        h('span', { class: 'badge ' + (tab.badgeClass || 'badge-' + tab.badge), text: tab.badge }),
         h('span', { class: 'tab-title', text: tab.title }),
         // Tabs left behind by a connection or database switch say where they run.
         isCurrentScope(tab.scope) ? null
@@ -2111,18 +2462,36 @@
             title: `Runs on ${scopeTitle(tab.scope)}`,
             text: scopeLabel(tab.scope),
           }),
+        // Unsaved work shows as a dot where the close button is, the way an editor marks a modified
+        // file. It is the same control either way — resting on it turns the dot into the ×, so the
+        // mark never costs the row any width and closing is always in the same place.
         h('button', {
-          class: 'tab-close',
-          title: 'Close tab',
+          class: 'tab-close' + (tab.hasUnsavedDefinition ? ' unsaved' : ''),
+          title: tab.hasUnsavedDefinition ? 'Unsaved changes — click to close tab' : 'Close tab',
+          'data-testid': tab.hasUnsavedDefinition ? 'tab-unsaved' : null,
           onclick: (e) => { e.stopPropagation(); closeTab(tab.id); },
-        }, '×'))));
+        },
+          h('span', { class: 'tab-close-mark', 'aria-hidden': 'true', text: '●' }),
+          h('span', { class: 'tab-close-x', 'aria-hidden': 'true', text: '×' }),
+          h('span', {
+            class: 'sr-only',
+            text: tab.hasUnsavedDefinition ? 'Unsaved changes. Close tab' : 'Close tab',
+          })))));
   }
 
   function renderTabs() {
     renderTabBar();
 
     const panels = $('#panels');
-    panels.replaceChildren(...state.tabs.map((t) => t.panel));
+    // Keep existing panels mounted while switching tabs. Replacing the whole panel list blurs an
+    // active inline editor (and discards its focus) even though the editor's tab is still open.
+    const livePanels = new Set(state.tabs.map((tab) => tab.panel));
+    for (const panel of [...panels.children]) {
+      if (!livePanels.has(panel)) panel.remove();
+    }
+    for (const tab of state.tabs) {
+      if (tab.panel.parentElement !== panels) panels.append(tab.panel);
+    }
     for (const tab of state.tabs) {
       tab.panel.hidden = tab.id !== state.activeTabId;
     }
@@ -2135,6 +2504,10 @@
       active.load();
     }
     active?.onActivate?.();
+
+    // Every add, close and switch passes through here, so this is the one place the workspace
+    // needs to remember itself.
+    saveSession();
   }
 
   // ---- object tabs (tables, views, procedures, functions, triggers) -------------
@@ -2163,6 +2536,7 @@
       loaded: false,
       load: () => {},
       object: o,
+      restore: { kind: 'object', scope, schema: o.schema, name: o.name, type: o.type },
     };
 
     if (o.type === 'Table' || o.type === 'View') {
@@ -2239,10 +2613,17 @@
     };
 
     const switchView = async (view) => {
-      if (view !== currentView && !await canLeaveTab(tab)) return;
+      // A view change rebuilds the body, so an unsaved definition goes with it. That is this tab's
+      // own business rather than the workspace's: leaving the tab for another one keeps the edit,
+      // and only closing the tab or changing the view here throws it away.
+      if (view !== currentView && !await (tab.beforeViewChange?.() ?? true)) return;
       if (view !== 'Data') { activeDataLoad?.abort(); activeDataLoad = null; }
-      tab.beforeLeave = null;
-      tab.hasUnsavedDefinition = false;
+      tab.beforeViewChange = null;
+      tab.beforeClose = null;
+      if (tab.hasUnsavedDefinition) {
+        tab.hasUnsavedDefinition = false;
+        renderTabBar();
+      }
       currentView = view;
       const viewSwitcher = h('div', { class: 'view-switcher', role: 'group', 'aria-label': 'Object view' },
         views.map((v) =>
@@ -2927,6 +3308,9 @@
       });
       editorRow.addEventListener('focusout', () => {
         setTimeout(() => {
+          // Switching Gridlet tabs hides this row temporarily. Keep the editor alive so returning
+          // to its tab does not silently commit or discard the in-progress inline edit.
+          if (editorRow.closest('.panel')?.hidden) return;
           if (editorRow.isConnected && !editorRow.contains(document.activeElement) &&
               !editorRow._lookupPointerActive) commit();
         });
@@ -3714,6 +4098,7 @@
         await executeSql(sql, scope);
         appliedDefinition = editor.value;
         tab.hasUnsavedDefinition = false;
+        renderTabBar();
         toast(`${tab ? tab.title : o.name} updated.`, false);
         await refreshObjects(scope);
         return true;
@@ -3726,14 +4111,23 @@
     };
     save.addEventListener('click', () => executeDefinition());
     editor.textarea.addEventListener('input', () => {
-      tab.hasUnsavedDefinition = editor.value !== appliedDefinition;
+      const unsaved = editor.value !== appliedDefinition;
+      if (unsaved === tab.hasUnsavedDefinition) return;
+      // The tab bar carries the unsaved mark, so it is redrawn when the answer changes rather than
+      // on every keystroke.
+      tab.hasUnsavedDefinition = unsaved;
+      renderTabBar();
     });
-    tab.beforeLeave = () => {
+    // Asked at the two moments the edit is actually lost: closing the tab, and switching to another
+    // view of this object, which rebuilds the body and the editor with it. Switching to another
+    // *tab* is neither — this one stays open with the edit still in it — and the browser closing on
+    // unsaved work is caught by the guard on the window.
+    const confirmDefinitionChanges = () => {
       if (!tab.hasUnsavedDefinition) return Promise.resolve(true);
       return new Promise((resolve) => {
         let decision = false;
         modal('Unsaved definition changes',
-          h('p', { text: `Execute or discard the changes to ${tab.title} before leaving?` }), [
+          h('p', { text: `Execute or discard the changes to ${tab.title}?` }), [
             { label: 'Stay', onClick: (close) => close() },
             {
               label: 'Discard changes', danger: true, onClick: (close) => {
@@ -3752,6 +4146,8 @@
           ], () => resolve(decision));
       });
     };
+    tab.beforeClose = confirmDefinitionChanges;
+    tab.beforeViewChange = confirmDefinitionChanges;
     const useButton = useInQueryButton(o, scope);
     const executeButton = executeRoutineButton(o, scope);
     if (toolbar) {
@@ -4482,17 +4878,7 @@
       class: 'agent-share-help', id: shareTooltipId, role: 'tooltip',
       'data-testid': 'agent-share-help',
     });
-    const shareInfoIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    shareInfoIcon.setAttribute('viewBox', '0 0 24 24');
-    shareInfoIcon.setAttribute('aria-hidden', 'true');
-    shareInfoIcon.setAttribute('focusable', 'false');
-    const shareInfoCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    shareInfoCircle.setAttribute('cx', '12');
-    shareInfoCircle.setAttribute('cy', '12');
-    shareInfoCircle.setAttribute('r', '9');
-    const shareInfoMark = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    shareInfoMark.setAttribute('d', 'M12 10v6m0-9h.01');
-    shareInfoIcon.append(shareInfoCircle, shareInfoMark);
+    const shareInfoIcon = icon('info-circle');
     const shareInfoButton = h('button', {
       class: 'agent-share-info-button', type: 'button',
       'aria-label': 'About data shared with the AI Agent',
@@ -4502,20 +4888,10 @@
     const shareOptions = h('div', { class: 'agent-share-options' });
     shareMenu.append(h('div', { class: 'agent-share-menu-header' },
       h('span', { text: 'Data shared with AI Agent' }), shareInfo), shareOptions);
-    const shareSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    shareSvg.setAttribute('class', 'agent-share-icon');
-    shareSvg.setAttribute('viewBox', '0 0 24 24');
-    shareSvg.setAttribute('aria-hidden', 'true');
-    shareSvg.setAttribute('focusable', 'false');
-    const shareShield = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    shareShield.setAttribute('d', 'M12 3l7 3v5c0 4.8-2.8 8.2-7 10-4.2-1.8-7-5.2-7-10V6l7-3z');
-    const shareWarning = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    shareWarning.setAttribute('class', 'agent-share-warning');
-    shareWarning.setAttribute('d', 'M12 8v5m0 3h.01');
-    const shareCheck = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    shareCheck.setAttribute('class', 'agent-share-check');
-    shareCheck.setAttribute('d', 'M8.5 12.2l2.3 2.3 4.8-5');
-    shareSvg.append(shareShield, shareWarning, shareCheck);
+    const shareSvg = icon('shield', 'agent-share-icon', [
+      { d: SHIELD_WARNING_MARK, class: 'agent-share-warning' },
+      { d: SHIELD_CHECK_MARK, class: 'agent-share-check' },
+    ]);
     const shareSummary = h('span', { class: 'select-value' });
     const shareTrigger = h('button', {
       type: 'button', class: 'select-trigger agent-share-trigger',
@@ -4684,25 +5060,8 @@
       class: 'agent-messages', role: 'log', 'aria-live': 'off', 'aria-busy': 'false',
       'aria-label': 'Database chat', 'data-testid': 'agent-messages',
     });
-    const welcomeIcon = (className, paths) => {
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      svg.setAttribute('class', className);
-      svg.setAttribute('viewBox', '0 0 24 24');
-      svg.setAttribute('aria-hidden', 'true');
-      svg.setAttribute('focusable', 'false');
-      for (const pathData of paths) {
-        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        path.setAttribute('d', pathData);
-        svg.append(path);
-      }
-      return svg;
-    };
-    const cautionIcon = welcomeIcon('agent-welcome-caution-icon', [
-      'M12 3L2.8 20h18.4L12 3z', 'M12 9v5m0 3h.01',
-    ]);
-    const accessIcon = welcomeIcon('agent-welcome-access-icon', [
-      'M7 10V8a5 5 0 0110 0v2', 'M6 10h12v10H6z', 'M12 14v2',
-    ]);
+    const cautionIcon = icon('alert-triangle', 'agent-welcome-caution-icon');
+    const accessIcon = icon('lock', 'agent-welcome-access-icon');
     const welcome = h('div', { class: 'agent-welcome' },
       h('div', { class: 'agent-welcome-intro' },
         h('strong', { text: 'Ask about this database' }),
@@ -4741,26 +5100,21 @@
       placeholder: 'Ask a question about this database…', 'aria-label': 'Message',
       'data-testid': 'agent-composer',
     });
-    const composerIcon = (className, pathData = null) => {
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      svg.setAttribute('class', `agent-composer-submit-icon ${className}`);
-      svg.setAttribute('viewBox', '0 0 24 24');
-      svg.setAttribute('aria-hidden', 'true');
-      svg.setAttribute('focusable', 'false');
-      const shape = document.createElementNS('http://www.w3.org/2000/svg', pathData ? 'path' : 'rect');
-      if (pathData) shape.setAttribute('d', pathData);
-      else {
-        shape.setAttribute('x', '7');
-        shape.setAttribute('y', '7');
-        shape.setAttribute('width', '10');
-        shape.setAttribute('height', '10');
-        shape.setAttribute('rx', '1');
-      }
-      svg.append(shape);
-      return svg;
-    };
-    const sendIcon = composerIcon('agent-composer-send-icon', 'M12 19V5M6 11l6-6 6 6');
-    const stopIcon = composerIcon('agent-composer-stop-icon');
+    const sendIcon = icon('arrow-up', 'agent-composer-submit-icon agent-composer-send-icon');
+    // The stop square is a filled shape rather than an outline: it is the one control here that
+    // has to read as "running, press to stop" at a glance, and an outline square reads as empty.
+    const stopIcon = document.createElementNS(SVG_NS, 'svg');
+    stopIcon.setAttribute('class', 'agent-composer-submit-icon agent-composer-stop-icon');
+    stopIcon.setAttribute('viewBox', '0 0 24 24');
+    stopIcon.setAttribute('aria-hidden', 'true');
+    stopIcon.setAttribute('focusable', 'false');
+    const stopSquare = document.createElementNS(SVG_NS, 'rect');
+    stopSquare.setAttribute('x', '7');
+    stopSquare.setAttribute('y', '7');
+    stopSquare.setAttribute('width', '10');
+    stopSquare.setAttribute('height', '10');
+    stopSquare.setAttribute('rx', '1');
+    stopIcon.append(stopSquare);
     stopIcon.setAttribute('hidden', '');
     const actionButton = h('button', {
       class: 'primary agent-composer-submit', type: 'button', title: 'Send message',
@@ -4794,20 +5148,7 @@
       'data-testid': 'agent-context-tooltip',
     });
     const SpeechRecognitionApi = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const microphoneSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    microphoneSvg.setAttribute('class', 'agent-dictation-icon');
-    microphoneSvg.setAttribute('viewBox', '0 0 24 24');
-    microphoneSvg.setAttribute('aria-hidden', 'true');
-    microphoneSvg.setAttribute('focusable', 'false');
-    const microphoneBody = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    microphoneBody.setAttribute('x', '9');
-    microphoneBody.setAttribute('y', '3');
-    microphoneBody.setAttribute('width', '6');
-    microphoneBody.setAttribute('height', '11');
-    microphoneBody.setAttribute('rx', '3');
-    const microphoneStand = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    microphoneStand.setAttribute('d', 'M5.5 11a6.5 6.5 0 0013 0M12 17.5V21M9 21h6');
-    microphoneSvg.append(microphoneBody, microphoneStand);
+    const microphoneSvg = icon('microphone', 'agent-dictation-icon');
     const unsupportedDictationLabel =
       'Dictation is not supported in this browser. Try a Chromium-based browser such as Edge or Chrome.';
     const dictationButton = h('button', {
@@ -4842,8 +5183,8 @@
       class: 'agent-composer-shell', 'data-testid': 'agent-composer-shell',
       'aria-busy': 'false',
     }, composer, composeActions);
-    const optionsIcon = composerIcon('agent-options-icon',
-      'M4 7h4m4 0h8M4 17h8m4 0h4M8 4v6M16 14v6');
+    const optionsIcon = icon(
+      'adjustments-horizontal', 'agent-composer-submit-icon agent-options-icon');
     const composerOverflow = setupOverflowToolbar(
       composeActions, [composerOptions], 'Chat options');
     composerOverflow.more.classList.add('agent-composer-overflow');
@@ -5180,20 +5521,7 @@
       welcome.remove();
       let lastReasoningValue = '';
       let lastContentValue = role === 'user' ? content : '';
-      const copyIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      copyIcon.setAttribute('class', 'agent-message-copy-icon');
-      copyIcon.setAttribute('viewBox', '0 0 24 24');
-      copyIcon.setAttribute('aria-hidden', 'true');
-      copyIcon.setAttribute('focusable', 'false');
-      const copyBack = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      copyBack.setAttribute('x', '8');
-      copyBack.setAttribute('y', '8');
-      copyBack.setAttribute('width', '11');
-      copyBack.setAttribute('height', '11');
-      copyBack.setAttribute('rx', '1.5');
-      const copyFront = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      copyFront.setAttribute('d', 'M16 8V6.5A1.5 1.5 0 0014.5 5h-9A1.5 1.5 0 004 6.5v9A1.5 1.5 0 005.5 17H8');
-      copyIcon.append(copyBack, copyFront);
+      const copyIcon = icon('copy', 'agent-message-copy-icon');
       const copyMessage = h('button', {
         class: 'agent-message-copy', type: 'button',
         title: role === 'user' ? 'Copy your message' : 'Copy this response',
@@ -5212,20 +5540,12 @@
       // The speaker button exists only for agent responses, and only when the host registered a
       // voice service and this browser can actually synthesize speech.
       const speakMessage = role === 'assistant' && voiceSettings() ? (() => {
-        const speakIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        speakIcon.setAttribute('class', 'agent-message-speak-icon');
-        speakIcon.setAttribute('viewBox', '0 0 24 24');
-        speakIcon.setAttribute('aria-hidden', 'true');
-        speakIcon.setAttribute('focusable', 'false');
-        const speakerCone = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        speakerCone.setAttribute('d', 'M11 5.5 6.5 9H4v6h2.5L11 18.5z');
-        const speakerWaveNear = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        speakerWaveNear.setAttribute('class', 'agent-message-speak-wave');
-        speakerWaveNear.setAttribute('d', 'M14.5 9.5a3.5 3.5 0 010 5');
-        const speakerWaveFar = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        speakerWaveFar.setAttribute('class', 'agent-message-speak-wave');
-        speakerWaveFar.setAttribute('d', 'M17 7a7 7 0 010 10');
-        speakIcon.append(speakerCone, speakerWaveNear, speakerWaveFar);
+        // The cone is the icon's own last path; the two arcs before it keep the wave class, so
+        // the rules that animate them while speaking still find them.
+        const speakIcon = icon('volume', 'agent-message-speak-icon');
+        for (const wave of [...speakIcon.children].slice(0, 2)) {
+          wave.setAttribute('class', 'agent-message-speak-wave');
+        }
         const button = h('button', {
           class: 'agent-message-speak', type: 'button',
           title: 'Read this response aloud',
@@ -5794,26 +6114,12 @@
     const historyList = h('div', {
       class: 'agent-history-list', role: 'list', 'data-testid': 'agent-history-list',
     });
-    const historyToggleIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    historyToggleIcon.setAttribute('class', 'agent-history-toggle-icon');
-    historyToggleIcon.setAttribute('viewBox', '0 0 24 24');
-    historyToggleIcon.setAttribute('aria-hidden', 'true');
-    historyToggleIcon.setAttribute('focusable', 'false');
-    const historyTogglePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    historyTogglePath.setAttribute('d', 'M9 5l7 7-7 7');
-    historyToggleIcon.append(historyTogglePath);
+    const historyToggleIcon = icon('chevron-right', 'agent-history-toggle-icon');
     const historyToggle = h('button', {
       class: 'mini-btn agent-history-toggle', type: 'button',
       'data-testid': 'agent-history-toggle',
     }, historyToggleIcon);
-    const newChatIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    newChatIcon.setAttribute('class', 'agent-history-new-icon');
-    newChatIcon.setAttribute('viewBox', '0 0 24 24');
-    newChatIcon.setAttribute('aria-hidden', 'true');
-    newChatIcon.setAttribute('focusable', 'false');
-    const newChatPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    newChatPath.setAttribute('d', 'M12 5v14M5 12h14');
-    newChatIcon.append(newChatPath);
+    const newChatIcon = icon('plus', 'agent-history-new-icon');
     const newChatButton = h('button', {
       class: 'mini-btn agent-history-new', type: 'button', title: 'Start a new chat',
       'aria-label': 'Start a new chat', 'data-testid': 'agent-new-chat',
@@ -6388,6 +6694,9 @@
       loaded: true,
       load: () => {},
       panel: null,
+      // Read at save time rather than captured here, so the SQL that comes back is the SQL that
+      // was on screen, not whatever the tab happened to open with.
+      restore: () => ({ kind: 'query', scope, sql: editor.value, title: tab.title }),
     };
 
     // ---- execution plans ----------------------------------------------------------------
@@ -7224,6 +7533,7 @@
       key: 'published-apis',
       badge: 'A',
       title: 'Published APIs',
+      restore: { kind: 'apis' },
       panel: h('div', { class: 'panel' },
         h('div', { class: 'viewbar' },
           h('span', { class: 'spacer' }),
@@ -7662,28 +7972,18 @@
   }
 
   function jsonPreviewButton(getValue) {
-    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    icon.setAttribute('viewBox', '0 0 16 16');
-    icon.setAttribute('aria-hidden', 'true');
-    icon.classList.add('json-preview-icon');
-    const lens = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    lens.setAttribute('cx', '6.75');
-    lens.setAttribute('cy', '6.75');
-    lens.setAttribute('r', '4.25');
-    const handle = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    handle.setAttribute('d', 'M10 10l3.5 3.5');
-    icon.append(lens, handle);
+    const icon = h('span', { class: 'json-preview-icon', text: '</>', 'aria-hidden': 'true' });
     return h('button', {
       type: 'button', class: 'json-preview-button',
-      title: 'Preview formatted JSON in a new tab',
-      'aria-label': 'Preview formatted JSON in a new tab',
+      title: 'Preview formatted JSON in a new Gridlet tab',
+      'aria-label': 'Preview formatted JSON in a new Gridlet tab',
       'data-testid': 'json-preview',
       // Keep focus in the input. The row editor normally commits when focus leaves the row.
       onpointerdown: (event) => event.preventDefault(),
       onclick: (event) => {
         event.stopPropagation();
         const json = jsonContainerValue(getValue());
-        if (json !== null) openJsonPreview(json);
+        if (json !== null) openJsonPreviewTab(json);
       },
     }, icon);
   }
@@ -7719,43 +8019,29 @@
     }
   }
 
-  function openJsonPreview(value) {
-    const preview = window.open('', '_blank');
-    if (!preview) {
-      toast('The JSON preview was blocked. Allow pop-ups for Gridlet and try again.');
-      return;
-    }
-    preview.opener = null;
-    const formatted = JSON.stringify(value, null, 2);
-    const doc = preview.document;
-    doc.title = 'JSON preview';
-    doc.documentElement.lang = 'en';
-    const viewport = doc.createElement('meta');
-    viewport.name = 'viewport';
-    viewport.content = 'width=device-width, initial-scale=1';
-    const style = doc.createElement('style');
-    style.textContent = `
-      :root { color-scheme: light dark; }
-      body { margin: 0; padding: 24px; background: #111827; color: #d1d5db; }
-      pre { max-width: 1200px; margin: 0 auto; padding: 20px; overflow: auto;
-        border: 1px solid #374151; border-radius: 10px; background: #0b1020;
-        box-shadow: 0 12px 32px rgb(0 0 0 / 25%); white-space: pre-wrap;
-        overflow-wrap: anywhere; tab-size: 2; font: 13px/1.55 ui-monospace, SFMono-Regular,
-        Consolas, "Liberation Mono", monospace; }
-      .json-key { color: #93c5fd; } .json-string { color: #86efac; }
-      .json-number { color: #fca5a5; } .json-literal { color: #c4b5fd; }
-      @media (prefers-color-scheme: light) {
-        body { background: #f3f4f6; color: #1f2937; }
-        pre { border-color: #d1d5db; background: white; box-shadow: 0 12px 32px rgb(0 0 0 / 8%); }
-        .json-key { color: #1d4ed8; } .json-string { color: #15803d; }
-        .json-number { color: #b91c1c; } .json-literal { color: #7e22ce; }
-      }`;
-    const pre = doc.createElement('pre');
-    const code = doc.createElement('code');
-    code.innerHTML = highlightJson(formatted);
-    pre.append(code);
-    doc.head.append(viewport, style);
-    doc.body.replaceChildren(pre);
+  function openJsonPreviewTab(value) {
+    const responseView = createVirtualCodeViewer('Formatted JSON');
+    const responsePresentation = createJsonPresentation((text, syntax) =>
+      responseView.setText(text || '(empty JSON)', syntax));
+    const tab = {
+      id: state.nextTabId++,
+      key: null,
+      badge: '{}',
+      title: 'JSON preview',
+      panel: h('div', { class: 'panel' },
+        h('div', { class: 'panel-body api-preview-body' },
+          h('section', { class: 'api-response' },
+            h('div', { class: 'api-response-toolbar' },
+              h('strong', { text: 'JSON preview' }),
+              h('span', { class: 'spacer' }),
+              h('div', { class: 'view-switcher api-format-switcher' },
+                responsePresentation.rawButton, responsePresentation.prettyButton)),
+            responseView.element))),
+      loaded: true,
+      load: () => {},
+    };
+    responsePresentation.setText(JSON.stringify(value), true);
+    addTab(tab);
   }
 
   // ---- export ---------------------------------------------------------------------------

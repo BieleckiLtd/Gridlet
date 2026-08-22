@@ -182,6 +182,7 @@ UI can map `MapGridletApi` or `MapGridletPublished` instead.
 | [`Gridlet.SqlServer`](https://www.nuget.org/packages/Gridlet.SqlServer) | SQL Server provider. |
 | [`Gridlet.Sqlite`](https://www.nuget.org/packages/Gridlet.Sqlite) | SQLite provider. |
 | [`Gridlet.AgentFramework`](https://www.nuget.org/packages/Gridlet.AgentFramework) | Optional prerelease AI integration. |
+| [`Gridlet.Components`](https://www.nuget.org/packages/Gridlet.Components) | Optional prerelease browser-based components designer. |
 | [`Gridlet.Voice`](https://www.nuget.org/packages/Gridlet.Voice) | Optional read-aloud support for agent responses. |
 | [`Gridlet.Core`](https://www.nuget.org/packages/Gridlet.Core) | Provider abstractions, models, options and auditing. |
 

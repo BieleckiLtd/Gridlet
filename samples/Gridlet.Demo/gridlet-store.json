@@ -169,6 +169,20 @@
       "Enabled": true,
       "UpdatedAtUtc": "2026-08-09T10:10:03.2899468+00:00",
       "MaxRows": 50
+    },
+    {
+      "Id": "88f788937a75458eb09753a38c88c120",
+      "Name": "Customers list",
+      "Method": "GET",
+      "Route": "customers",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "SELECT CustomerId, FirstName, LastName, Email, LoyaltyPoints, MarketingOptIn FROM Customers ORDER BY CustomerId",
+      "Parameters": [],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-08-15T18:28:49.3265475+00:00",
+      "MaxRows": null
     }
   ]
 }

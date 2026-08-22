@@ -1,4 +1,8 @@
-:root {
+/* The palette is defined on the root and on any element carrying data-theme, so a region of the
+   page can be themed independently of the workspace — a component designer previewing a light component
+   inside a dark workspace, for instance. */
+:root,
+[data-theme="dark"] {
   color-scheme: dark;
   --bg: #0f1115;
   --panel: #151922;
@@ -43,7 +47,7 @@
   --sans: system-ui, "Segoe UI", Roboto, sans-serif;
 }
 
-:root[data-theme="light"] {
+[data-theme="light"] {
   color-scheme: light;
   --bg: #f7f9fc;
   --panel: #ffffff;
@@ -260,7 +264,7 @@ button.ghost { background: transparent; }
   flex: 0 0 auto;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -294,7 +298,7 @@ button.ghost { background: transparent; }
   height: 17px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -330,6 +334,61 @@ button.ghost { background: transparent; }
   border-right: 1px solid var(--border);
 }
 
+/* Shared chrome for collapsible side panels: this sidebar and any module's own rail. Collapsing
+   leaves a rail rather than nothing, because the control that brings the panel back lives on it,
+   and the whole rail is the target. The width override beats an inline width written by a grip. */
+/* Both overrides are forced on purpose. Width has to beat the inline value a resize grip writes,
+   and min-width has to beat a panel's own id-level minimum, which would otherwise pin the rail
+   open at its expanded size. */
+.side-rail.collapsed {
+  width: 48px !important;
+  min-width: 48px !important;
+  padding: 8px 0 0;
+  cursor: pointer;
+}
+
+/* A panel's first row carries the toggle alongside whatever else belongs at the top — a filter, a
+   heading. Collapsed, that row is all that survives, and inside it only the toggle. */
+.rail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rail-head > .panel-toggle { flex: 0 0 auto; margin: 0; }
+
+.side-rail.collapsed > *:not(.rail-head) { display: none; }
+.side-rail.collapsed .rail-head > *:not(.panel-toggle) { display: none; }
+
+.side-rail.collapsed .rail-head {
+  justify-content: center;
+  margin: 0;
+}
+
+.side-rail.collapsed .panel-toggle {
+  padding: 6px;
+  color: var(--accent);
+}
+
+/* The rail as a whole is the button, so it lights up as one rather than only under the icon. */
+.side-rail.collapsed:hover .panel-toggle { color: var(--view-active-text); }
+
+.panel-toggle { padding: 5px 7px; }
+
+.panel-toggle svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  display: block;
+}
+
+/* A panel on the right is the same control mirrored, so the divider sits on the outward edge. */
+.panel-toggle.flip svg { transform: scaleX(-1); }
+
 #sidebar-grip {
   position: absolute;
   top: 0;
@@ -347,7 +406,8 @@ button.ghost { background: transparent; }
   background: linear-gradient(to right, transparent 4px, var(--accent) 4px, var(--accent) 5px, transparent 5px);
 }
 
-#search { margin: 10px; }
+.sidebar-head { margin: 8px 10px 10px; }
+#search { flex: 1; min-width: 0; }
 
 .tree { overflow: auto; flex: 1; padding: 0 6px 12px; }
 
@@ -422,6 +482,9 @@ button.ghost { background: transparent; }
 .badge-H { background: #234a3f; color: #74d4b0; }
 .badge-I { background: #493b3b; color: #d7b8b8; }
 .badge-VT { width: auto; min-width: 17px; padding: 0 3px; background: #244c55; color: #88dce8; }
+/* Badges for optional modules. One neutral tone for all of them, so a module never has to claim
+   a letter colour that a database object type already uses. */
+.badge-module { width: auto; min-width: 17px; padding: 0 3px; background: #3d3a52; color: #c3bbe8; }
 
 :root[data-theme="light"] .badge-T { background: #dcefe3; color: #23663c; }
 :root[data-theme="light"] .badge-V { background: #dce8fa; color: #285b9f; }
@@ -434,6 +497,7 @@ button.ghost { background: transparent; }
 :root[data-theme="light"] .badge-H { background: #d8efe6; color: #1f6650; }
 :root[data-theme="light"] .badge-I { background: #eee3e3; color: #704848; }
 :root[data-theme="light"] .badge-VT { background: #d8eef1; color: #246674; }
+:root[data-theme="light"] .badge-module { background: #e6e4f2; color: #4b4470; }
 
 /* ---- content / tabs ---- */
 #content { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; overflow: hidden; }
@@ -482,6 +546,34 @@ button.ghost { background: transparent; }
   border-radius: 4px;
 }
 .tab-close:hover { color: var(--danger); }
+
+/* A tab with unsaved work wears a dot in place of its ×, the way an editor marks a modified file.
+   Resting on the tab turns the dot back into the ×, so the mark costs the row no width and the
+   close button never moves. Both glyphs occupy the same cell, so neither swap shifts anything. */
+.tab-close-mark,
+.tab-close-x {
+  grid-area: glyph;
+  line-height: 1;
+}
+
+.tab-close:has(.tab-close-mark) {
+  display: grid;
+  grid-template-areas: 'glyph';
+  place-items: center;
+  width: 18px;
+  padding: 0;
+}
+
+.tab-close-mark { display: none; font-size: 11px; }
+.tab-close.unsaved .tab-close-mark { display: block; color: var(--accent); }
+.tab-close.unsaved .tab-close-x { display: none; }
+
+/* Reaching for the tab is reaching for its close button, so the × comes back before the pointer
+   arrives. Keyboard focus does the same, or the button could never be seen as one. */
+.tab:hover .tab-close.unsaved .tab-close-mark,
+.tab-close.unsaved:focus-visible .tab-close-mark { display: none; }
+.tab:hover .tab-close.unsaved .tab-close-x,
+.tab-close.unsaved:focus-visible .tab-close-x { display: block; }
 
 /* ---- contextual menus ---- */
 .context-menu {
@@ -620,8 +712,7 @@ table.grid td { font-family: var(--mono); font-size: 12.5px; }
 .json-preview-button:hover,
 .json-preview-button:focus-visible { color: var(--text); background: var(--accent-dim); }
 .json-preview-icon {
-  width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5;
-  stroke-linecap: round; stroke-linejoin: round;
+  color: inherit; font: 700 10px/1 var(--mono); letter-spacing: -1px;
 }
 @media (hover: none) {
   .json-preview-button { opacity: 1; pointer-events: auto; }
@@ -799,7 +890,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   height: 14px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
   transform: rotate(0deg);
@@ -818,7 +909,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   height: 13px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 1;
   stroke-linecap: round;
 }
 .agent-history-grip {
@@ -973,7 +1064,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   height: 42px;
   fill: none;
   stroke: var(--warning);
-  stroke-width: 1.8;
+  stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -982,9 +1073,12 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   font-size: 17px;
 }
 .agent-welcome-caution-copy p { margin: 5px 0 0; color: var(--text); font-size: 13px; }
+/* Columns must be allowed to shrink: the card is often narrower than the viewport once the
+   object sidebar and saved-chat rail have taken their share, and the long access summary
+   must stay inside the border rather than forcing the track past it. */
 .agent-welcome-access {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) minmax(240px, 360px);
+  grid-template-columns: auto minmax(8rem, 1fr) minmax(0, 24rem);
   align-items: center;
   gap: 18px;
   padding: 18px 22px;
@@ -1004,7 +1098,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   height: 24px;
   fill: none;
   stroke: var(--text);
-  stroke-width: 1.8;
+  stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1012,11 +1106,38 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 .agent-welcome-access-copy strong { color: var(--text); font-size: 15px; }
 .agent-welcome-access-copy span,
 .agent-welcome-access-choice > .muted { font-size: 12px; }
-.agent-welcome-access-choice { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
-.agent-welcome-share-picker,
-.agent-welcome-share-trigger { width: 100%; }
-.agent-welcome-share-trigger { height: 40px; color: var(--text); }
-.agent-welcome-share-trigger .agent-share-icon { width: 20px; height: 20px; }
+.agent-welcome-access-choice {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-direction: column;
+  gap: 7px;
+}
+.agent-welcome-share-picker {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+}
+.agent-welcome-share-trigger {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 40px;
+  color: var(--text);
+}
+.agent-welcome-share-trigger .select-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-welcome-share-trigger .agent-share-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
 .agent-welcome-share-picker[data-sharing="none"] .agent-share-icon { color: var(--ok); }
 .agent-welcome-share-picker[data-sharing="active"] .agent-share-icon { color: var(--privacy); }
 .agent-welcome-share-picker[data-sharing="none"] .agent-share-warning { display: none; }
@@ -1091,7 +1212,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   height: 13px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.7;
+  stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1118,7 +1239,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   height: 13px;
   fill: currentColor;
   stroke: currentColor;
-  stroke-width: 1.7;
+  stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1546,7 +1667,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   height: 16px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.7;
+  stroke-width: 1;
   stroke-linecap: round;
 }
 .agent-share-option {
@@ -1667,7 +1788,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   height: 22px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1717,7 +1838,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   height: 18px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1803,7 +1924,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   height: 19px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }

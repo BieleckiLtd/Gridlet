@@ -16,6 +16,8 @@ public sealed class BrowserAppFixture : IAsyncLifetime
     private WebApplication? app;
     private IPlaywright? playwright;
     private string? storePath;
+    private string? componentsPath;
+    private string? scriptsPath;
 
     public Uri BaseAddress { get; private set; } = null!;
 
@@ -30,6 +32,10 @@ public sealed class BrowserAppFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         storePath = Path.Combine(Path.GetTempPath(), $"gridlet-browser-tests-{Guid.NewGuid():n}.json");
+        // Components and their modules live outside Gridlet's own state file, so the tests get their own
+        // pair of temporary locations and clean both up.
+        componentsPath = Path.Combine(Path.GetTempPath(), $"gridlet-browser-components-{Guid.NewGuid():n}.json");
+        scriptsPath = Path.Combine(Path.GetTempPath(), $"gridlet-browser-modules-{Guid.NewGuid():n}");
 
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
@@ -52,6 +58,11 @@ public sealed class BrowserAppFixture : IAsyncLifetime
             options.Security.AllowAnonymous = true;
             options.Security.AllowAnonymousAgentCredentials = true;
             options.Storage.FilePath = storePath;
+        })
+        .AddComponents(components =>
+        {
+            components.FilePath = componentsPath;
+            components.ScriptsPath = scriptsPath;
         });
         builder.Services.AddSingleton<IGridletProvider>(Provider);
         builder.Services.AddSingleton<IGridletAgentService>(Agent);
@@ -99,6 +110,16 @@ public sealed class BrowserAppFixture : IAsyncLifetime
         if (storePath is not null)
         {
             File.Delete(storePath);
+        }
+
+        if (componentsPath is not null)
+        {
+            File.Delete(componentsPath);
+        }
+
+        if (scriptsPath is not null && Directory.Exists(scriptsPath))
+        {
+            Directory.Delete(scriptsPath, recursive: true);
         }
     }
 }

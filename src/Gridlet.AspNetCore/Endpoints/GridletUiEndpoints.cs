@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Gridlet.AspNetCore.Extensibility;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -28,6 +29,31 @@ internal static class GridletUiEndpoints
 
     public static void Map(RouteGroupBuilder group, string pattern)
     {
+        // Assets contributed by optional packages. Mapped before the built-in asset route so a
+        // module name can never be shadowed by a file in this assembly.
+        group.MapGet("/assets/modules/{module}/{**assetPath}", (
+            string module, string assetPath, HttpContext context,
+            IEnumerable<IGridletUiAssetProvider> providers) =>
+        {
+            var provider = providers.FirstOrDefault(p =>
+                string.Equals(p.Name, module, StringComparison.OrdinalIgnoreCase));
+            var stream = provider?.Open(assetPath);
+            if (stream is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (!ContentTypes.TryGetContentType(assetPath, out var contentType))
+            {
+                contentType = "application/octet-stream";
+            }
+
+            // Module assets are versioned by their own assembly, not this one, so they get no
+            // shared ETag. Revalidation keeps a module upgrade from serving stale scripts.
+            context.Response.Headers.CacheControl = "private, no-cache";
+            return Results.Stream(stream, contentType);
+        }).ExcludeFromDescription();
+
         group.MapGet("/", (HttpContext context) =>
         {
             // The UI uses <base href> so assets and API calls work at any mount path,

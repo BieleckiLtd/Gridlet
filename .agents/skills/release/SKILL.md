@@ -5,12 +5,12 @@ description: Cut and publish a Gridlet release by reviewing release contents on 
 
 # Gridlet release
 
-Publish Gridlet through GitHub Actions. Merging the protected `dev` branch into `main` triggers `.github/workflows/publish.yml`, which tests, packs, authenticates to nuget.org with Trusted Publishing, publishes all five packages, and creates the matching GitHub release and tag.
+Publish Gridlet through GitHub Actions. Merging the protected `dev` branch into `main` triggers `.github/workflows/publish.yml`, which tests, packs, authenticates to nuget.org with Trusted Publishing, publishes all seven packages, and creates the matching GitHub release and tag.
 
 ## Repository facts
 
 - Read and change the single `<Version>` in `Directory.Build.props`; never version individual projects.
-- Publish stable `Gridlet.Core`, `Gridlet.SqlServer`, `Gridlet.Sqlite`, and `Gridlet.AspNetCore` packages plus `Gridlet.AgentFramework` at `<Version>-preview.1`.
+- Publish stable `Gridlet.Core`, `Gridlet.SqlServer`, `Gridlet.Sqlite`, `Gridlet.AspNetCore`, and `Gridlet.Voice` packages plus `Gridlet.AgentFramework` and `Gridlet.Components` at `<Version>-preview.1`.
 - Use `origin` (`BieleckiLtd/Gridlet`), prepare releases on `dev`, and promote them to `main`.
 - Treat `patch` as the default bump; treat a feature release as `minor`.
 - Do not look for or use a local NuGet API key. CI uses OIDC Trusted Publishing.
@@ -33,7 +33,9 @@ Publish Gridlet through GitHub Actions. Merging the protected `dev` branch into 
     - `https://www.nuget.org/packages/Gridlet.SqlServer/<version>`
     - `https://www.nuget.org/packages/Gridlet.Sqlite/<version>`
     - `https://www.nuget.org/packages/Gridlet.AspNetCore/<version>`
+    - `https://www.nuget.org/packages/Gridlet.Voice/<version>`
     - `https://www.nuget.org/packages/Gridlet.AgentFramework/<version>-preview.1`
+    - `https://www.nuget.org/packages/Gridlet.Components/<version>-preview.1`
 
 ## Guardrails
 

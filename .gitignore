@@ -18,8 +18,9 @@ _UpgradeReport_Files/
 !.vscode/tasks.json
 
 ## Local AI tooling
-.claude/
-.codex/
+.claude
+.codex
+opencode.json
 
 ## OS
 Thumbs.db
