@@ -47,7 +47,8 @@ public sealed class FakeGridletProvider :
         SupportsSessions: true,
         SupportsQueryPlans: true,
         SupportsSequences: true,
-        SupportsImport: true);
+        SupportsImport: true,
+        SupportsDefaultConstraints: true);
 
     public ISchemaReader Schema => this;
 
@@ -142,10 +143,13 @@ public sealed class FakeGridletProvider :
                 Description: name == "Customers" ? "People who buy from the store" : null),
             [
                 new ColumnInfo("Id", "int", false, true, false, name != "NoKeys", null, 0),
-                new ColumnInfo("Name", "nvarchar(100)", false, false, false, false, null, 1,
+                new ColumnInfo("Name", "nvarchar(100)", false, false, false, false, "('N/A')", 1,
                     Description: name == "Customers" ? "Customer display name" : null),
+                ..(name == "Customers"
+                    ? new[] { new ColumnInfo("Status", "int", true, false, false, false, null, 2) }
+                    : Array.Empty<ColumnInfo>()),
                 new ColumnInfo("SysStart", "datetime2", false, false,
-                    name is not ("Ledger" or "LedgerHeap"), false, null, 2,
+                    name is not ("Ledger" or "LedgerHeap"), false, null, name == "Customers" ? 3 : 2,
                     name is "Ledger" or "LedgerHeap" ? null : "GENERATED ALWAYS",
                     IsHidden: name is not ("Ledger" or "LedgerHeap")),
                 ..(name is "Ledger" or "LedgerHeap"
@@ -171,6 +175,7 @@ public sealed class FakeGridletProvider :
             name is "NoKeys" or "LedgerHeap"
                 ? null
                 : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+            DefaultConstraints: [new DefaultConstraintInfo("DF_" + name + "_Name", "('N/A')", "Name")],
             Temporal: name switch
             {
                 "Ledger" => new TemporalTableInfo(TemporalTableKinds.SystemVersioned,
@@ -700,6 +705,22 @@ public sealed class FakeGridletProvider :
         CancellationToken cancellationToken = default)
     {
         Calls.Add($"dropUniqueConstraint {schema}.{table}.{constraint.Name ?? $"#{constraint.Ordinal}"}");
+        return Task.CompletedTask;
+    }
+
+    public Task AddDefaultConstraintAsync(
+        GridletConnectionContext context, string schema, string table, DefaultConstraintDesign defaultConstraint,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"addDefaultConstraint {schema}.{table}.{defaultConstraint.Column}.{defaultConstraint.Name ?? "(unnamed)"} expression={defaultConstraint.Expression}");
+        return Task.CompletedTask;
+    }
+
+    public Task DropDefaultConstraintAsync(
+        GridletConnectionContext context, string schema, string table, ConstraintReference constraint,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"dropDefaultConstraint {schema}.{table}.{constraint.Name ?? $"#{constraint.Ordinal}"}");
         return Task.CompletedTask;
     }
 

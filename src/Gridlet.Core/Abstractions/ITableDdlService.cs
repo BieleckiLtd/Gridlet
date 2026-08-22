@@ -84,6 +84,26 @@ public interface ITableDdlService
         CancellationToken cancellationToken = default)
         => throw new GridletValidationException("This provider does not support UNIQUE constraint management.");
 
+    /// <summary>
+    /// Adds a named DEFAULT constraint to a column. Providers without named defaults (SQLite) manage
+    /// defaults through the column definition and refuse this operation.
+    /// </summary>
+    Task AddDefaultConstraintAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        DefaultConstraintDesign defaultConstraint,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support DEFAULT constraint management.");
+
+    Task DropDefaultConstraintAsync(
+        GridletConnectionContext context,
+        string schema,
+        string table,
+        ConstraintReference constraint,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support DEFAULT constraint management.");
+
     Task DropUniqueConstraintAsync(
         GridletConnectionContext context,
         string schema,

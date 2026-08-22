@@ -274,6 +274,17 @@ public sealed record UniqueConstraintInfo(
     int FillFactor = 0,
     bool IsDisabled = false);
 
+/// <summary>
+/// A named DEFAULT constraint on a column. SQL Server models defaults as separate objects; on
+/// providers without named defaults (SQLite) the value lives on the column itself and this list is
+/// empty.
+/// </summary>
+public sealed record DefaultConstraintInfo(
+    string Name,
+    string Definition,
+    string Column,
+    int Ordinal = 0);
+
 /// <summary>How a provider identifies one row of a table for editing.</summary>
 /// <param name="Kind">
 /// One of <see cref="RowIdentityKinds"/>: the declared primary key, a unique key over
@@ -384,8 +395,25 @@ public sealed record TableDefinition(
     IReadOnlyList<UniqueConstraintInfo> UniqueConstraints,
     RowIdentityInfo? RowIdentity = null,
     IReadOnlyList<string>? TableOptions = null,
-    TemporalTableInfo? Temporal = null)
+    TemporalTableInfo? Temporal = null,
+    IReadOnlyList<DefaultConstraintInfo>? DefaultConstraints = null)
 {
+    /// <summary>Creates the previous nine-field shape without relying on optional-parameter ABI.</summary>
+    public TableDefinition(
+        DbObjectInfo @object,
+        IReadOnlyList<ColumnInfo> columns,
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ForeignKeyInfo> foreignKeys,
+        IReadOnlyList<CheckConstraintInfo> checkConstraints,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints,
+        RowIdentityInfo? rowIdentity,
+        IReadOnlyList<string>? tableOptions,
+        TemporalTableInfo? temporal)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints,
+            rowIdentity, tableOptions, temporal, null)
+    {
+    }
+
     /// <summary>Creates the previous eight-field shape without relying on optional-parameter ABI.</summary>
     public TableDefinition(
         DbObjectInfo @object,

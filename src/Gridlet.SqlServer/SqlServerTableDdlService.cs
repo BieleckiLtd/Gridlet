@@ -173,8 +173,12 @@ public sealed class SqlServerTableDdlService : ITableDdlService
 
                 if (!string.IsNullOrWhiteSpace(column.DefaultExpression))
                 {
+                    // Reuse the existing constraint name so a name the user chose is not
+                    // silently replaced by the conventional one.
                     await ExecuteAsync(connection, transaction,
-                        SqlServerDdlBuilder.BuildAddDefault(schema, table, column.Name, column.DefaultExpression), cancellationToken);
+                        BuildReplacementDefault(schema, table, column.Name,
+                            column.DefaultExpression, defaultConstraint),
+                        cancellationToken);
                 }
             }
 
@@ -225,6 +229,18 @@ public sealed class SqlServerTableDdlService : ITableDdlService
         CancellationToken cancellationToken = default)
         => ExecuteAsync(context,
             SqlServerDdlBuilder.BuildDropUniqueConstraint(schema, table, constraint), cancellationToken);
+
+    public Task AddDefaultConstraintAsync(
+        GridletConnectionContext context, string schema, string table, DefaultConstraintDesign defaultConstraint,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(context,
+            SqlServerDdlBuilder.BuildAddDefaultConstraint(schema, table, defaultConstraint), cancellationToken);
+
+    public Task DropDefaultConstraintAsync(
+        GridletConnectionContext context, string schema, string table, ConstraintReference constraint,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(context,
+            SqlServerDdlBuilder.BuildDropDefaultConstraint(schema, table, constraint), cancellationToken);
 
     public Task CreateIndexAsync(
         GridletConnectionContext context, string schema, string table, IndexDesign index,
@@ -377,4 +393,11 @@ public sealed class SqlServerTableDdlService : ITableDdlService
         }
         return value;
     }
+
+    internal static string BuildReplacementDefault(
+        string schema, string table, string column, string expression, string? existingConstraintName)
+        => existingConstraintName is null
+            ? SqlServerDdlBuilder.BuildAddDefault(schema, table, column, expression)
+            : SqlServerDdlBuilder.BuildAddDefaultConstraint(schema, table,
+                new DefaultConstraintDesign(existingConstraintName, column, expression));
 }

@@ -131,6 +131,10 @@ public class DdlEndpointTests
         });
         var dropUnique = await client.PostAsJsonAsync($"{table}/unique-constraints/drop",
             new { name = "UQ_Widgets_Code" });
+        var addDefault = await client.PostAsJsonAsync($"{table}/default-constraints",
+            new { name = "DF_Widgets_Code", column = "Code", expression = "'N/A'" });
+        var dropDefault = await client.PostAsJsonAsync($"{table}/default-constraints/drop",
+            new { name = "DF_Widgets_Code" });
         var createIndex = await client.PostAsJsonAsync($"{table}/indexes", new
         {
             name = "IX_Widgets_Age",
@@ -140,12 +144,14 @@ public class DdlEndpointTests
         });
         var dropIndex = await client.DeleteAsync($"{table}/indexes/IX_Widgets_Age");
 
-        Assert.All([addCheck, dropCheck, addUnique, dropUnique, createIndex, dropIndex],
+        Assert.All([addCheck, dropCheck, addUnique, dropUnique, addDefault, dropDefault, createIndex, dropIndex],
             response => Assert.Equal(HttpStatusCode.OK, response.StatusCode));
         Assert.Contains("addCheckConstraint dbo.Widgets.CK_Widgets_Age expression=Age >= 0", fake.Calls);
         Assert.Contains("dropCheckConstraint dbo.Widgets.#2", fake.Calls);
         Assert.Contains("addUniqueConstraint dbo.Widgets.UQ_Widgets_Code (Code)", fake.Calls);
         Assert.Contains("dropUniqueConstraint dbo.Widgets.UQ_Widgets_Code", fake.Calls);
+        Assert.Contains("addDefaultConstraint dbo.Widgets.Code.DF_Widgets_Code expression='N/A'", fake.Calls);
+        Assert.Contains("dropDefaultConstraint dbo.Widgets.DF_Widgets_Code", fake.Calls);
         Assert.Contains("createIndex dbo.Widgets.IX_Widgets_Age (Age:DESC) unique=True filter=Age IS NOT NULL", fake.Calls);
         Assert.Contains("dropIndex dbo.Widgets.IX_Widgets_Age", fake.Calls);
     }
@@ -153,6 +159,7 @@ public class DdlEndpointTests
     [Theory]
     [InlineData("check-constraints")]
     [InlineData("unique-constraints")]
+    [InlineData("default-constraints")]
     public async Task Empty_constraint_reference_is_rejected(string route)
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();
@@ -166,6 +173,6 @@ public class DdlEndpointTests
         Assert.Contains("name or ordinal", await response.Content.ReadAsStringAsync(),
             StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(fake.Calls, call => call.StartsWith("dropCheckConstraint") ||
-            call.StartsWith("dropUniqueConstraint"));
+            call.StartsWith("dropUniqueConstraint") || call.StartsWith("dropDefaultConstraint"));
     }
 }

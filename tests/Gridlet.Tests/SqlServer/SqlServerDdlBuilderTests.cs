@@ -180,6 +180,30 @@ public class SqlServerDdlBuilderTests
     }
 
     [Fact]
+    public void Builds_default_constraint_operations()
+    {
+        Assert.Equal(
+            "ALTER TABLE [sales].[Orders] ADD CONSTRAINT [DF_Orders_CreatedAt] DEFAULT (GETDATE()) FOR [CreatedAt];",
+            SqlServerDdlBuilder.BuildAddDefaultConstraint("sales", "Orders",
+                new DefaultConstraintDesign("DF_Orders_CreatedAt", "CreatedAt", "GETDATE()")));
+        Assert.Equal(
+            "ALTER TABLE [sales].[Orders] ADD DEFAULT (0) FOR [Status];",
+            SqlServerDdlBuilder.BuildAddDefaultConstraint("sales", "Orders",
+                new DefaultConstraintDesign(null, "Status", "0")));
+        Assert.Equal(
+            "ALTER TABLE [sales].[Orders] DROP CONSTRAINT [DF_Orders_CreatedAt];",
+            SqlServerDdlBuilder.BuildDropDefaultConstraint(
+                "sales", "Orders", new ConstraintReference("DF_Orders_CreatedAt")));
+
+        Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.BuildAddDefaultConstraint(
+            "sales", "Orders", new DefaultConstraintDesign("DF_Orders", " ", "0")));
+        Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.BuildAddDefaultConstraint(
+            "sales", "Orders", new DefaultConstraintDesign("DF_Orders", "Status", "GETDATE(); DROP TABLE Orders")));
+        Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.BuildDropDefaultConstraint(
+            "sales", "Orders", new ConstraintReference()));
+    }
+
+    [Fact]
     public void Builds_rich_rowstore_and_columnstore_indexes()
     {
         Assert.Equal(
