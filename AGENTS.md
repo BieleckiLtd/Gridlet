@@ -62,6 +62,10 @@ it is not authorship or contributor attribution.
   them in the repository's contributor panel.
 - Do not add generated-by footers, badges, or advertising links to commit
   messages, pull request titles and bodies, issues, or release notes.
+  `.agents/settings.json` turns these off for Claude Code (`attribution.commit`,
+  `attribution.pr`, and `attribution.sessionUrl`). Some surfaces append a footer
+  server-side after an agent posts; when that happens, edit the footer out of the
+  posted text rather than leaving it.
 - The human running the agent is the sole author. Write commit messages and
   pull requests in the repository's own voice, describing the change rather
   than the tool that produced it.

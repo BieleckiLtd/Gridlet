@@ -3,6 +3,7 @@ using Gridlet.Abstractions;
 using Gridlet.AspNetCore;
 using Gridlet.AspNetCore.Agents;
 using Gridlet.AspNetCore.Extensibility;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -130,7 +131,13 @@ public static class GridletEndpointRouteBuilderExtensions
         // being guessed from the documented default when an agent needs to name a real URL.
         endpoints.ServiceProvider.GetService<GridletMountPath>()?.Set(pattern);
 
+
+
         var group = endpoints.MapGroup(pattern);
+
+        // Unexpected endpoint failures are returned to the caller and logged as well. The filter
+        // runs for every endpoint in the group and supplies the request's own logger factory.
+        group.AddEndpointFilter(GridletEndpointHelpers.PublishRequestLogger);
 
         if (options.Security.AuthorizationPolicy is { Length: > 0 } policy)
         {

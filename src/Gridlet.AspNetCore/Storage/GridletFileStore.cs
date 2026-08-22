@@ -14,6 +14,9 @@ namespace Gridlet.AspNetCore.Storage;
 internal sealed class GridletFileStore(IOptions<GridletOptions> options, IHostEnvironment environment)
     : ISavedQueryStore, IPublishedEndpointStore, IForeignKeyDisplayStore
 {
+    private const int SwapAttempts = 6;
+    private const int SwapRetryDelayMs = 15;
+
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -182,8 +185,7 @@ internal sealed class GridletFileStore(IOptions<GridletOptions> options, IHostEn
         var temporaryPath = Path.Combine(
             directory,
             $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.tmp");
-        var destinationExists = File.Exists(fullPath);
-        var unixMode = destinationExists && !OperatingSystem.IsWindows()
+        var unixMode = !OperatingSystem.IsWindows() && File.Exists(fullPath)
             ? File.GetUnixFileMode(fullPath)
             : (UnixFileMode?)null;
         try
@@ -203,17 +205,7 @@ internal sealed class GridletFileStore(IOptions<GridletOptions> options, IHostEn
                 File.SetUnixFileMode(temporaryPath, preservedUnixMode);
             }
 
-            if (destinationExists)
-            {
-                // On Windows File.Replace uses the platform replacement API, which retains the
-                // destination file's ACL and metadata. On Unix the mode was copied above.
-                File.Replace(temporaryPath, fullPath, destinationBackupFileName: null);
-            }
-            else
-            {
-                // Do not overwrite a file created by another process after the existence check.
-                File.Move(temporaryPath, fullPath);
-            }
+            SwapIntoPlace(temporaryPath, fullPath);
         }
         finally
         {
@@ -228,6 +220,39 @@ internal sealed class GridletFileStore(IOptions<GridletOptions> options, IHostEn
             catch (UnauthorizedAccessException)
             {
                 // Best-effort cleanup after a failed write/rename.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Moves <paramref name="temporaryPath"/> onto <paramref name="fullPath"/>, retrying briefly.
+    /// On Windows another process (virus scanner, search indexer) routinely holds a freshly created
+    /// file open for a fraction of a second, which makes the swap fail; the destination can also
+    /// appear between attempts, so its existence is re-checked every time rather than assumed.
+    /// </summary>
+    private static void SwapIntoPlace(string temporaryPath, string fullPath)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                if (File.Exists(fullPath))
+                {
+                    // On Windows File.Replace uses the platform replacement API, which retains the
+                    // destination file's ACL and metadata. On Unix the mode was copied by the caller.
+                    File.Replace(temporaryPath, fullPath, destinationBackupFileName: null);
+                }
+                else
+                {
+                    File.Move(temporaryPath, fullPath);
+                }
+
+                return;
+            }
+            catch (Exception ex) when (attempt < SwapAttempts && ex is IOException or UnauthorizedAccessException)
+            {
+                // Transient sharing violation, or the destination appeared after the check above.
+                Thread.Sleep(SwapRetryDelayMs * attempt);
             }
         }
     }
