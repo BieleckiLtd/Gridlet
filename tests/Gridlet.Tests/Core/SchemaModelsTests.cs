@@ -83,4 +83,26 @@ public sealed class SchemaModelsTests
 
         Assert.NotNull(constructor);
     }
+
+    [Fact]
+    public void Pre_default_constraint_public_constructor_shapes_remain_available()
+    {
+        var tableDefinitionConstructor = typeof(TableDefinition).GetConstructor(
+        [
+            typeof(DbObjectInfo), typeof(IReadOnlyList<ColumnInfo>), typeof(IReadOnlyList<IndexInfo>),
+            typeof(IReadOnlyList<ForeignKeyInfo>), typeof(IReadOnlyList<CheckConstraintInfo>),
+            typeof(IReadOnlyList<UniqueConstraintInfo>), typeof(RowIdentityInfo),
+            typeof(IReadOnlyList<string>), typeof(TemporalTableInfo),
+        ]);
+        var capabilitiesConstructor = typeof(GridletProviderCapabilities).GetConstructor(
+        [
+            typeof(string), typeof(bool), typeof(bool), typeof(bool), typeof(bool), typeof(bool),
+            typeof(bool), typeof(IReadOnlyList<string>), typeof(string), typeof(string), typeof(string),
+            typeof(bool), typeof(bool), typeof(bool), typeof(bool), typeof(bool),
+            typeof(IReadOnlyList<string>), typeof(bool), typeof(bool),
+        ]);
+
+        Assert.NotNull(tableDefinitionConstructor);
+        Assert.NotNull(capabilitiesConstructor);
+    }
 }

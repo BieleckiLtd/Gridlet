@@ -15,6 +15,20 @@ public sealed class SqlServerProviderTests
         Assert.True(capabilities.SupportsIndexes);
         Assert.True(capabilities.SupportsSequences);
         Assert.True(capabilities.SupportsImport);
+        Assert.True(capabilities.SupportsDefaultConstraints);
+    }
+
+    [Fact]
+    public void Altering_a_column_preserves_its_existing_default_constraint_name()
+    {
+        Assert.Equal(
+            "ALTER TABLE [sales].[Orders] ADD CONSTRAINT [DF_Custom_Created] DEFAULT (GETDATE()) FOR [Created];",
+            SqlServerTableDdlService.BuildReplacementDefault(
+                "sales", "Orders", "Created", "GETDATE()", "DF_Custom_Created"));
+        Assert.Equal(
+            "ALTER TABLE [sales].[Orders] ADD CONSTRAINT [DF_Orders_Status] DEFAULT (0) FOR [Status];",
+            SqlServerTableDdlService.BuildReplacementDefault(
+                "sales", "Orders", "Status", "0", null));
     }
 
     [Fact]

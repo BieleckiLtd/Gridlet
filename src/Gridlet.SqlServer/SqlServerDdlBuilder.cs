@@ -447,6 +447,27 @@ public static partial class SqlServerDdlBuilder
     public static string BuildDropIndex(string schema, string table, string indexName)
         => $"DROP INDEX {SqlServerIdentifier.Quote(indexName)} ON {SqlServerIdentifier.QuoteQualified(schema, table)};";
 
+    public static string BuildAddDefaultConstraint(
+        string schema,
+        string table,
+        DefaultConstraintDesign defaultConstraint)
+    {
+        if (string.IsNullOrWhiteSpace(defaultConstraint.Column))
+        {
+            throw new GridletValidationException("A default constraint needs a column.");
+        }
+
+        var target = SqlServerIdentifier.QuoteQualified(schema, table);
+        var name = string.IsNullOrWhiteSpace(defaultConstraint.Name)
+            ? ""
+            : $"CONSTRAINT {SqlServerIdentifier.Quote(defaultConstraint.Name)} ";
+        var expression = SqlServerExpressionSafety.RequireSingleExpression(
+            defaultConstraint.Expression,
+            "default constraint");
+        return $"ALTER TABLE {target} ADD {name}DEFAULT ({expression}) " +
+               $"FOR {SqlServerIdentifier.Quote(defaultConstraint.Column)};";
+    }
+
     public static string BuildDropCheckConstraint(
         string schema,
         string table,
@@ -458,6 +479,12 @@ public static partial class SqlServerDdlBuilder
         string table,
         ConstraintReference constraint)
         => BuildDropNamedConstraint(schema, table, constraint, "UNIQUE");
+
+    public static string BuildDropDefaultConstraint(
+        string schema,
+        string table,
+        ConstraintReference constraint)
+        => BuildDropNamedConstraint(schema, table, constraint, "DEFAULT");
 
     private static string BuildDropNamedConstraint(
         string schema,

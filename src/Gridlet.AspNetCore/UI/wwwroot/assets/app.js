@@ -573,6 +573,8 @@
       dropCheckConstraint: (s, n) => `${objBase(s, n)}/check-constraints/drop`,
       uniqueConstraints: (s, n) => `${objBase(s, n)}/unique-constraints`,
       dropUniqueConstraint: (s, n) => `${objBase(s, n)}/unique-constraints/drop`,
+      defaultConstraints: (s, n) => `${objBase(s, n)}/default-constraints`,
+      dropDefaultConstraint: (s, n) => `${objBase(s, n)}/default-constraints/drop`,
       indexes: (s, n) => `${objBase(s, n)}/indexes`,
       index: (s, n, index) => `${objBase(s, n)}/indexes/${enc(index)}`,
       foreignKeys: (s, n) => `${objBase(s, n)}/foreign-keys`,
@@ -718,7 +720,7 @@
     createTriggerExample: 'CREATE TRIGGER dbo.NewTrigger ON dbo.SomeTable AFTER INSERT AS SELECT 1;',
     objectEditMode: 'Alter', supportsCheckConstraints: false,
     supportsUniqueConstraints: false, supportsIndexes: false, supportsSequences: false,
-    supportsImport: false,
+    supportsImport: false, supportsDefaultConstraints: false,
   };
   const capabilitiesFor = (scope) => connectionFor(scope).capabilities || DEFAULT_CAPABILITIES;
   const currentCapabilities = () => capabilitiesFor(state);
@@ -3339,11 +3341,19 @@
       const canDrop = currentConn().allowDdl && canDropObject(o);
       const canCheckConstraints = canDesign && currentCapabilities().supportsCheckConstraints;
       const canUniqueConstraints = canDesign && currentCapabilities().supportsUniqueConstraints;
-      const canIndexes = canDesign && currentCapabilities().supportsIndexes;
+      const canDefaultConstraints = canDesign && currentCapabilities().supportsDefaultConstraints;
       const temporal = s.temporal;
       const isTemporalPeriodColumn = (column) => temporal?.kind === 'systemVersioned' &&
         [temporal.periodStartColumn, temporal.periodEndColumn]
           .some((name) => name && name.toLowerCase() === column.name.toLowerCase());
+      const defaultConstraintColumns = s.columns.filter((column) => {
+        const type = (column.dataType || '').toLowerCase().split('(')[0].trim();
+        return !column.isComputed && !column.isHidden && !column.isIdentity &&
+          !column.defaultDefinition && !isTemporalPeriodColumn(column) &&
+          type !== 'rowversion' && type !== 'timestamp';
+      });
+      const canAddDefaultConstraint = canDefaultConstraints && defaultConstraintColumns.length > 0;
+      const canIndexes = canDesign && currentCapabilities().supportsIndexes;
 
       actionBar.replaceChildren(...[
         canDesign ? h('button', { onclick: () => columnsBody.append(makeColumnEditor(null)) }, '＋ Add column') : null,
@@ -3352,6 +3362,7 @@
         canDesign ? h('button', { onclick: () => openForeignKeyDialog() }, '＋ Foreign key') : null,
         canCheckConstraints ? h('button', { onclick: () => openCheckConstraintDialog() }, '＋ Check') : null,
         canUniqueConstraints ? h('button', { onclick: () => openUniqueConstraintDialog() }, '＋ Unique') : null,
+        canAddDefaultConstraint ? h('button', { onclick: () => openDefaultConstraintDialog() }, '＋ Default') : null,
         canIndexes ? h('button', { onclick: () => openIndexDialog() }, '＋ Index') : null,
         canDrop ? h('button', {
           text: 'Rename…', 'data-testid': 'rename-object', onclick: () => renameObject(o, scope),
@@ -3604,6 +3615,36 @@
                 name: name.value.trim() || null, columns,
               });
               close(); toast('Unique constraint added.', false); invalidateStructure(); renderStructure();
+            } catch (err) { showError(err.message); }
+          } },
+        ]);
+      };
+
+      const openDefaultConstraintDialog = () => {
+        const name = h('input', {
+          type: 'text', value: `DF_${o.name}_`, 'data-testid': 'default-name',
+          placeholder: 'Optional constraint name',
+        });
+        const column = h('select', { 'data-testid': 'default-column' },
+          defaultConstraintColumns.map((c) => h('option', { value: c.name, text: c.name })));
+        const expression = h('input', {
+          type: 'text', 'data-testid': 'default-expression',
+          placeholder: 'e.g. GETDATE()',
+        });
+        modal('Add default constraint', h('div', { class: 'constraint-dialog' },
+          h('label', { class: 'field-label' }, 'Constraint name (optional)', name),
+          h('label', { class: 'field-label' }, 'Column', column),
+          h('label', { class: 'field-label' }, 'Expression', expression)), [
+          { label: 'Cancel', onClick: (close) => close() },
+          { label: 'Add default', primary: true, onClick: async (close, showError) => {
+            if (!expression.value.trim()) { showError('Enter a default expression.'); return; }
+            try {
+              await post(urls.defaultConstraints(o.schema, o.name), {
+                name: name.value.trim() || null,
+                column: column.value,
+                expression: expression.value.trim(),
+              });
+              close(); toast('Default constraint added.', false); invalidateStructure(); renderStructure();
             } catch (err) { showError(err.message); }
           } },
         ]);
@@ -3886,6 +3927,28 @@
                       name: constraint.name || null, ordinal: constraint.ordinal ?? null,
                     });
                     toast('Unique constraint dropped.', false); invalidateStructure(); renderStructure();
+                  }, 'Drop'),
+              }, '🗑') : null)))))));
+      }
+
+      if (s.defaultConstraints?.length) {
+        sections.push(
+          h('h3', { text: 'Default constraints' }),
+          h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
+            h('thead', {}, h('tr', {}, ['Name', 'Expression', 'Column', ''].map((text) => h('th', { text })))),
+            h('tbody', {}, s.defaultConstraints.map((constraint) => h('tr', {},
+              h('td', { text: constraint.name || `#${constraint.ordinal}` }),
+              h('td', { class: 'mono', text: constraint.definition }),
+              h('td', { text: constraint.column || '' }),
+              h('td', { class: 'cell-actions' }, canDefaultConstraints ? h('button', {
+                class: 'mini-btn', title: 'Drop default constraint',
+                'aria-label': `Drop default constraint ${constraint.name || `#${constraint.ordinal}`}`,
+                onclick: () => confirmModal(
+                  'Drop default constraint', `Drop default constraint ${constraint.name || `#${constraint.ordinal}`}?`, async () => {
+                    await post(urls.dropDefaultConstraint(o.schema, o.name), {
+                      name: constraint.name || null, ordinal: constraint.ordinal ?? null,
+                    });
+                    toast('Default constraint dropped.', false); invalidateStructure(); renderStructure();
                   }, 'Drop'),
               }, '🗑') : null)))))));
       }

@@ -125,7 +125,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                    cc.definition AS computed_definition, cc.is_persisted,
                    CONVERT(bigint, ic.seed_value), CONVERT(bigint, ic.increment_value),
                    c.collation_name, CONVERT(nvarchar(4000), ep.value) AS [description],
-                   CONVERT(int, COLUMNPROPERTY(c.object_id, c.name, 'IsHidden')) AS is_hidden
+                   CONVERT(int, COLUMNPROPERTY(c.object_id, c.name, 'IsHidden')) AS is_hidden,
+                   dc.name AS default_constraint_name
             FROM sys.columns c
             JOIN sys.types t ON t.user_type_id = c.user_type_id
             LEFT JOIN sys.default_constraints dc
@@ -293,11 +294,13 @@ public sealed class SqlServerSchemaReader : ISchemaReader
         // Result set 2: columns (primary-key flag filled in after result set 3).
         await reader.NextResultAsync(cancellationToken);
         var columns = new List<ColumnInfo>();
+        var defaultConstraints = new List<DefaultConstraintInfo>();
         var ordinal = 0;
         while (await reader.ReadAsync(cancellationToken))
         {
+            var columnName = reader.GetString(0);
             columns.Add(new ColumnInfo(
-                Name: reader.GetString(0),
+                Name: columnName,
                 DataType: SqlServerDataTypeFormatter.Format(
                     reader.GetString(1), reader.GetInt16(2), reader.GetByte(3), reader.GetByte(4)),
                 IsNullable: reader.GetBoolean(5),
@@ -313,6 +316,14 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                 Collation: reader.IsDBNull(13) ? null : reader.GetString(13),
                 Description: reader.IsDBNull(14) ? null : reader.GetString(14),
                 IsHidden: !reader.IsDBNull(15) && reader.GetInt32(15) != 0));
+            if (!reader.IsDBNull(16))
+            {
+                defaultConstraints.Add(new DefaultConstraintInfo(
+                    Name: reader.GetString(16),
+                    Definition: reader.IsDBNull(8) ? "" : reader.GetString(8),
+                    Column: columnName,
+                    Ordinal: defaultConstraints.Count));
+            }
         }
 
         // Result set 3: primary key columns.
@@ -525,7 +536,8 @@ public sealed class SqlServerSchemaReader : ISchemaReader
                     UniqueKeyCandidates(indexInfos, uniqueConstraintInfos),
                     columns.ToDictionary(c => c.Name, c => c.IsNullable, StringComparer.OrdinalIgnoreCase))
                 : null,
-            Temporal: temporal);
+            Temporal: temporal,
+            DefaultConstraints: defaultConstraints);
     }
 
     internal static TemporalTableInfo? CreateTemporalTableInfo(

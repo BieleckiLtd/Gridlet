@@ -130,6 +130,8 @@ internal static partial class GridletApiEndpoints
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/check-constraints/drop", DropCheckConstraint);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/unique-constraints", AddUniqueConstraint);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/unique-constraints/drop", DropUniqueConstraint);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/default-constraints", AddDefaultConstraint);
+        api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/default-constraints/drop", DropDefaultConstraint);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/indexes", CreateIndex);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/indexes/{index}", DropIndex);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-keys", AddForeignKey);
@@ -422,7 +424,7 @@ internal static partial class GridletApiEndpoints
             return Results.Ok(new TableStructureResponse(
                 ToDto(definition.Object), definition.Columns, definition.Indexes, definition.ForeignKeys,
                 definition.CheckConstraints, definition.UniqueConstraints, definition.RowIdentity,
-                definition.TableOptions, displays, definition.Temporal));
+                definition.TableOptions, displays, definition.Temporal, definition.DefaultConstraints));
         });
 
     private static Task<IResult> SaveForeignKeyDisplay(
@@ -1558,6 +1560,24 @@ internal static partial class GridletApiEndpoints
         => DropConstraintReference(connection, database, schema, name, body,
             "ddl.dropUniqueConstraint", resolver, audit, httpContext,
             (resolved, reference, ct) => resolved.Provider.Ddl.DropUniqueConstraintAsync(
+                resolved.Context, schema, name, reference, ct), cancellationToken);
+
+    private static Task<IResult> AddDefaultConstraint(
+        string connection, string database, string schema, string name, DefaultConstraintDesign body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{schema}.{name}.{body.Column}.{body.Name ?? "(unnamed)"}",
+            "ddl.addDefaultConstraint", resolver, audit, httpContext,
+            (resolved, ct) => resolved.Provider.Ddl.AddDefaultConstraintAsync(
+                resolved.Context, schema, name, body, ct), cancellationToken);
+
+    private static Task<IResult> DropDefaultConstraint(
+        string connection, string database, string schema, string name, ConstraintReference body,
+        IGridletConnectionResolver resolver, IGridletAuditSink audit,
+        HttpContext httpContext, CancellationToken cancellationToken)
+        => DropConstraintReference(connection, database, schema, name, body,
+            "ddl.dropDefaultConstraint", resolver, audit, httpContext,
+            (resolved, reference, ct) => resolved.Provider.Ddl.DropDefaultConstraintAsync(
                 resolved.Context, schema, name, reference, ct), cancellationToken);
 
     private static Task<IResult> DropConstraintReference(

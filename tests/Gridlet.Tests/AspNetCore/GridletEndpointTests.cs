@@ -275,6 +275,21 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public void Pre_default_constraint_table_structure_response_constructor_remains_available()
+    {
+        var constructor = typeof(TableStructureResponse).GetConstructor(
+        [
+            typeof(DbObjectDto), typeof(IReadOnlyList<ColumnInfo>), typeof(IReadOnlyList<IndexInfo>),
+            typeof(IReadOnlyList<ForeignKeyInfo>), typeof(IReadOnlyList<CheckConstraintInfo>),
+            typeof(IReadOnlyList<UniqueConstraintInfo>), typeof(RowIdentityInfo),
+            typeof(IReadOnlyList<string>), typeof(IReadOnlyList<ForeignKeyDisplayDto>),
+            typeof(TemporalTableInfo),
+        ]);
+
+        Assert.NotNull(constructor);
+    }
+
+    [Fact]
     public async Task Data_endpoint_returns_a_page()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();

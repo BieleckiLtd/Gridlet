@@ -34,7 +34,8 @@ public sealed class SqlServerGridletProvider :
         SupportsSessions: true,
         SupportsQueryPlans: true,
         SupportsSequences: true,
-        SupportsImport: true);
+        SupportsImport: true,
+        SupportsDefaultConstraints: true);
 
     public ISchemaReader Schema { get; } = new SqlServerSchemaReader();
 

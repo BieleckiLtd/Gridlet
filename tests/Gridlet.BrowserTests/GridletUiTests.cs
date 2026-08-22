@@ -2520,6 +2520,29 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.Locator("#toast-stack").GetByText("Unique constraint dropped.", new() { Exact = true }))
             .ToBeVisibleAsync();
         Assert.Contains("dropUniqueConstraint dbo.Customers.UQ_Customers_Name", fixture.Provider.Calls);
+
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "＋ Default", Exact = true }))
+            .ToBeVisibleAsync();
+        var defaultRow = panel.Locator("tr").Filter(new() { HasText = "DF_Customers_Name" });
+        await Assertions.Expect(defaultRow.GetByText("('N/A')", new() { Exact = true })).ToBeVisibleAsync();
+        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Default", Exact = true }).ClickAsync();
+        var defaultDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Add default constraint" });
+        await Assertions.Expect(defaultDialog.GetByTestId("default-column").Locator("option"))
+            .ToHaveTextAsync(["Status"]);
+        await defaultDialog.GetByTestId("default-name").FillAsync("DF_Customers_Status_Zero");
+        await defaultDialog.GetByTestId("default-expression").FillAsync("(0)");
+        await defaultDialog.GetByRole(AriaRole.Button, new() { Name = "Add default", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText("Default constraint added.", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        Assert.Contains("addDefaultConstraint dbo.Customers.Status.DF_Customers_Status_Zero expression=(0)",
+            fixture.Provider.Calls);
+
+        await defaultRow.GetByLabel("Drop default constraint DF_Customers_Name", new() { Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Dialog, new() { Name = "Drop default constraint" })
+            .GetByRole(AriaRole.Button, new() { Name = "Drop", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText("Default constraint dropped.", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        Assert.Contains("dropDefaultConstraint dbo.Customers.DF_Customers_Name", fixture.Provider.Calls);
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -2549,6 +2572,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(temporal.GetByText("SysStart → SysEnd", new() { Exact = true }))
             .ToBeVisibleAsync();
         await Assertions.Expect(temporal.GetByText("6 MONTH", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "＋ Default", Exact = true }))
+            .ToHaveCountAsync(0);
         var startRow = panel.Locator("tr").Filter(new() { HasText = "SysStart" });
         await Assertions.Expect(startRow.GetByTitle("Edit column inline")).ToHaveCountAsync(0);
         await Assertions.Expect(startRow.GetByTitle("Drop column")).ToHaveCountAsync(0);

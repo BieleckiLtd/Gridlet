@@ -82,8 +82,25 @@ public sealed record TableStructureResponse(
     RowIdentityInfo? RowIdentity = null,
     IReadOnlyList<string>? TableOptions = null,
     IReadOnlyList<ForeignKeyDisplayDto>? ForeignKeyDisplays = null,
-    TemporalTableInfo? Temporal = null)
+    TemporalTableInfo? Temporal = null,
+    IReadOnlyList<DefaultConstraintInfo>? DefaultConstraints = null)
 {
+    public TableStructureResponse(
+        DbObjectDto @object,
+        IReadOnlyList<ColumnInfo> columns,
+        IReadOnlyList<IndexInfo> indexes,
+        IReadOnlyList<ForeignKeyInfo> foreignKeys,
+        IReadOnlyList<CheckConstraintInfo> checkConstraints,
+        IReadOnlyList<UniqueConstraintInfo> uniqueConstraints,
+        RowIdentityInfo? rowIdentity,
+        IReadOnlyList<string>? tableOptions,
+        IReadOnlyList<ForeignKeyDisplayDto>? foreignKeyDisplays,
+        TemporalTableInfo? temporal)
+        : this(@object, columns, indexes, foreignKeys, checkConstraints, uniqueConstraints,
+            rowIdentity, tableOptions, foreignKeyDisplays, temporal, null)
+    {
+    }
+
     public TableStructureResponse(
         DbObjectDto @object,
         IReadOnlyList<ColumnInfo> columns,

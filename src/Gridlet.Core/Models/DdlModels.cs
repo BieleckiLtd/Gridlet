@@ -81,10 +81,14 @@ public sealed record IndexDesign(
     int FillFactor = 0,
     bool IsDisabled = false);
 
-/// <summary>
-/// Identifies a constraint by provider name or by its ordinal when the provider supports unnamed
-/// constraints (notably SQLite).
-/// </summary>
+/// <summary>A DEFAULT constraint designed in the structure editor.</summary>
+public sealed record DefaultConstraintDesign(
+    string? Name,
+    string Column,
+    string Expression);
+
+/// <summary>Identifies a constraint by provider name or by its ordinal when the provider supports unnamed
+/// constraints (notably SQLite).</summary>
 public sealed record ConstraintReference(string? Name = null, int? Ordinal = null);
 
 /// <summary>A foreign-key constraint designed in the structure editor.</summary>
