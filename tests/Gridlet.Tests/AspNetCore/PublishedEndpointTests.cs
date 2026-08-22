@@ -545,7 +545,8 @@ public class PublishedEndpointTests
         })).Content.ReadFromJsonAsync<PublishedEndpoint>();
 
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/gridlet/pub/ephemeral")).StatusCode);
-        await client.DeleteAsync($"/gridlet/api/published/{saved!.Id}");
+        var deleted = await client.DeleteAsync($"/gridlet/api/published/{saved!.Id}");
+        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/gridlet/pub/ephemeral")).StatusCode);
     }
 }

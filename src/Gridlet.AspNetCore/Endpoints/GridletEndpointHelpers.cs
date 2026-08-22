@@ -2,11 +2,22 @@ using System.Text.Json;
 using Gridlet.AspNetCore.Contracts;
 using Gridlet.Auditing;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Gridlet.AspNetCore;
 
 internal static class GridletEndpointHelpers
 {
+    private static ILogger _logger = NullLogger.Instance;
+
+    /// <summary>
+    /// Supplies the logger used for unexpected endpoint failures. Called while Gridlet is mapped,
+    /// so the messages returned to callers are also recorded on the server.
+    /// </summary>
+    public static void UseLoggerFactory(ILoggerFactory? loggerFactory)
+        => _logger = loggerFactory?.CreateLogger("Gridlet.Endpoints") ?? NullLogger.Instance;
+
     /// <summary>Maps Gridlet exceptions onto HTTP status codes with a consistent error body.</summary>
     public static async Task<IResult> Execute(Func<Task<IResult>> action)
     {
@@ -42,7 +53,9 @@ internal static class GridletEndpointHelpers
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Gridlet is an operator tool: surfacing the underlying message (e.g. login failed,
-            // server unreachable) is intentional and more useful than a generic 500.
+            // server unreachable) is intentional and more useful than a generic 500. It is logged
+            // as well, so a failure the caller merely retries still leaves a record on the server.
+            _logger.LogError(ex, "Gridlet request failed: {Message}", ex.Message);
             return Results.Json(
                 new GridletErrorResponse(ex.Message),
                 statusCode: StatusCodes.Status500InternalServerError);

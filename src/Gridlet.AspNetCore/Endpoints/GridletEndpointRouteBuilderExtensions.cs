@@ -5,6 +5,7 @@ using Gridlet.AspNetCore.Agents;
 using Gridlet.AspNetCore.Extensibility;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 // ReSharper disable once CheckNamespace; conventional namespace for endpoint extensions.
@@ -129,6 +130,10 @@ public static class GridletEndpointRouteBuilderExtensions
         // The prefix is a mapping-time choice, so it is published to services here rather than
         // being guessed from the documented default when an agent needs to name a real URL.
         endpoints.ServiceProvider.GetService<GridletMountPath>()?.Set(pattern);
+
+        // Unexpected endpoint failures are returned to the caller and logged; without this the
+        // host's logger factory is never seen by the static endpoint helper.
+        GridletEndpointHelpers.UseLoggerFactory(endpoints.ServiceProvider.GetService<ILoggerFactory>());
 
         var group = endpoints.MapGroup(pattern);
 
