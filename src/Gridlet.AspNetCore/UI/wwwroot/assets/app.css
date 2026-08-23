@@ -793,11 +793,12 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 .sql-diagnostic { padding: 4px 10px; border-top: 1px solid var(--border); font: 11.5px var(--sans); }
 .sql-invalid { color: var(--error-text); }
 .sql-completions {
-  position: absolute; z-index: 5; left: 55px; bottom: 8px; width: min(360px, calc(100% - 70px));
+  position: absolute; z-index: 5; top: 0; left: 0;
+  min-width: 180px; max-width: min(360px, calc(100% - 16px));
   max-height: 210px; overflow: auto; padding: 4px; border: 1px solid var(--code-border);
   border-radius: 6px; background: var(--code-popup); box-shadow: 0 8px 25px var(--shadow);
 }
-.sql-completions button { display: block; width: 100%; padding: 4px 8px; border: 0; text-align: left; font-family: var(--mono); background: transparent; }
+.sql-completions button { display: block; min-width: 100%; padding: 4px 8px; border: 0; text-align: left; white-space: nowrap; font-family: var(--mono); background: transparent; }
 .sql-completions button:hover, .sql-completions button.active { background: var(--accent-dim); }
 .inline-editor .sql-editor { flex: 1; resize: none; }
 

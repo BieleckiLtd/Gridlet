@@ -1245,6 +1245,21 @@
     return found ? found[0] : '';
   }
 
+  // Completion rows are monospaced, so one measured glyph width is enough to place the popup
+  // at the caret without mirroring the whole textarea.
+  const sqlCharWidth = (() => {
+    const cache = new Map();
+    let context = null;
+    return (font) => {
+      if (cache.has(font)) return cache.get(font);
+      context = context || document.createElement('canvas').getContext('2d');
+      context.font = font;
+      const width = context.measureText('0'.repeat(20)).width / 20;
+      cache.set(font, width);
+      return width;
+    };
+  })();
+
   function createSqlEditor(initialValue = '', placeholder = '', options = {}) {
     const scope = options.scope || state;
     const lines = h('div', { class: 'sql-lines', 'aria-hidden': 'true' });
@@ -1274,6 +1289,30 @@
       diagnostic.hidden = !problem;
     };
     const hideCompletion = () => { completion.hidden = true; matches = []; };
+    // The popup follows the caret instead of sitting at the bottom of the surface, so it never
+    // covers the line being typed. It flips above the caret and shrinks when space runs out.
+    const positionCompletion = () => {
+      if (completion.hidden) return;
+      const style = getComputedStyle(input);
+      const lineHeight = parseFloat(style.lineHeight) || 20;
+      const tabSize = parseInt(style.tabSize, 10) || 4;
+      const rows = input.value.slice(0, input.selectionStart).split('\n');
+      const current = rows[rows.length - 1];
+      let column = 0;
+      for (const character of current) column = character === '\t' ? column + tabSize - (column % tabSize) : column + 1;
+      const caretLeft = parseFloat(style.paddingLeft) + column * sqlCharWidth(style.font) - input.scrollLeft;
+      const caretTop = parseFloat(style.paddingTop) + (rows.length - 1) * lineHeight - input.scrollTop;
+      const margin = 6, gap = 2;
+      const below = surface.clientHeight - (caretTop + lineHeight) - margin - gap;
+      const above = caretTop - margin - gap;
+      const flip = below < Math.min(above, 120);
+      completion.style.maxHeight = `${Math.max(48, Math.min(210, flip ? above : below))}px`;
+      completion.style.top = flip
+        ? `${Math.max(margin, caretTop - gap - completion.offsetHeight)}px`
+        : `${caretTop + lineHeight + gap}px`;
+      const maxLeft = Math.max(margin, surface.clientWidth - completion.offsetWidth - margin);
+      completion.style.left = `${Math.max(margin, Math.min(caretLeft, maxLeft))}px`;
+    };
     const complete = async (force = false) => {
       const request = ++completionRequest;
       const prefix = sqlCompletionPrefix(input.value, input.selectionStart);
@@ -1290,6 +1329,7 @@
         onmousedown: (e) => { e.preventDefault(); insert(x, prefix.length); },
       })));
       completion.hidden = false;
+      positionCompletion();
     };
     const insert = (value, prefixLength = 0) => {
       const start = input.selectionStart - prefixLength, end = input.selectionEnd;
@@ -1298,7 +1338,7 @@
       hideCompletion(); input.focus();
     };
     input.addEventListener('input', () => { refresh(); if (!options.readOnly) complete(); });
-    input.addEventListener('scroll', () => { highlight.scrollTop = input.scrollTop; highlight.scrollLeft = input.scrollLeft; lines.scrollTop = input.scrollTop; });
+    input.addEventListener('scroll', () => { highlight.scrollTop = input.scrollTop; highlight.scrollLeft = input.scrollLeft; lines.scrollTop = input.scrollTop; positionCompletion(); });
     input.addEventListener('blur', () => setTimeout(hideCompletion, 120));
     input.addEventListener('keydown', (e) => {
       if (options.readOnly) return;
