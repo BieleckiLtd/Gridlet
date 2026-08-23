@@ -1427,6 +1427,8 @@
     openQueryTab(descriptor.sql || '', descriptor.title || null, descriptor.scope);
   });
 
+  registerTabRestorer('diagram', (descriptor) => openDiagramTab(descriptor.scope));
+
   registerTabRestorer('apis', () => openApisTab());
 
   // ---- modules ----------------------------------------------------------------
@@ -1597,7 +1599,7 @@
 
     navigationOverflow = setupOverflowToolbar($('#topbar'), [
       $('#version'), $('#about-btn'), $('#apis-btn'), $('#ask-btn'), $('#theme-btn'), $('#refresh-btn'),
-      $('.connection-pickers'), $('#new-query-btn'), ...moduleActions,
+      $('.connection-pickers'), $('#new-query-btn'), $('#diagram-btn'), ...moduleActions,
     ], 'More app actions');
 
     $('#version').textContent = 'v' + state.meta.version;
@@ -1629,6 +1631,7 @@
     $('#database-select').addEventListener('change', () => selectDatabase($('#database-select').value));
     $('#refresh-btn').addEventListener('click', () => loadObjects());
     $('#ask-btn').addEventListener('click', () => openAgentTab());
+    $('#diagram-btn').addEventListener('click', () => openDiagramTab());
     $('#new-query-btn').addEventListener('click', () => openQueryTab());
     $('#apis-btn').addEventListener('click', () => openApisTab());
     $('#about-btn').addEventListener('click', showAbout);
@@ -1638,6 +1641,7 @@
     });
     $('#sidebar').addEventListener('contextmenu', (event) => showContextMenu(event, [
       { label: 'Query', action: () => openQueryTab() },
+      { label: 'ER diagram', action: () => openDiagramTab() },
       { label: 'Refresh objects', action: () => loadObjects() },
       ...(currentConn().allowDdl ? [
         { separator: true },
@@ -2364,6 +2368,348 @@
   }
 
   // ---- tabs -------------------------------------------------------------------
+
+  function openDiagramTab(scope = scopeOf()) {
+    const key = `diagram:${scopeKey(scope)}`;
+    const existing = state.tabs.find((candidate) => candidate.key === key);
+    if (existing) {
+      setActiveTab(existing.id);
+      return;
+    }
+
+    const panel = h('div', { class: 'panel er-panel', 'data-testid': 'er-diagram' });
+    const tab = {
+      id: state.nextTabId++, key, scope, badge: 'ER', badgeClass: 'badge-diagram',
+      title: 'Relationships', panel, loaded: false,
+      load: () => loadDiagramTab(tab),
+      restore: { kind: 'diagram', scope },
+    };
+    addTab(tab);
+  }
+
+  const diagramTableKey = (schema, name) => `${schema}\u0000${name}`.toLowerCase();
+
+  function diagramSvgElement(tag, attributes = {}) {
+    const element = document.createElementNS(SVG_NS, tag);
+    for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
+    return element;
+  }
+
+  async function loadDiagramTab(tab) {
+    const scope = tab.scope;
+    const toolbar = h('div', { class: 'viewbar er-toolbar' });
+    const filter = h('input', {
+      type: 'search', placeholder: 'Filter tables or columns…',
+      'aria-label': 'Filter relationship diagram', 'data-testid': 'er-filter',
+    });
+    const summary = h('span', { class: 'muted er-summary', text: 'Loading table metadata…' });
+    const viewport = h('div', { class: 'er-viewport' },
+      h('div', { class: 'loading', text: 'Loading table metadata…' }));
+    toolbar.append(filter, summary);
+    tab.panel.replaceChildren(toolbar, viewport);
+
+    let objects;
+    try {
+      objects = (await objectsForScope(scope))
+        .filter((object) => object.type === 'Table' && !object.isInternal && !isVirtualObject(object))
+        .sort((a, b) => displayName(a, scope).localeCompare(displayName(b, scope)));
+    } catch (err) {
+      viewport.replaceChildren(errorBox(err.message));
+      summary.textContent = 'Diagram unavailable';
+      return;
+    }
+
+    if (!objects.length) {
+      viewport.replaceChildren(h('div', { class: 'empty-message', text: 'This database has no visible tables.' }));
+      summary.textContent = '0 tables';
+      return;
+    }
+
+    // Large databases should not turn one diagram request into an unbounded connection burst.
+    // Six workers keep metadata loading responsive while respecting ordinary connection-pool sizes.
+    const definitions = new Array(objects.length);
+    const failures = [];
+    let next = 0;
+    const worker = async () => {
+      while (next < objects.length) {
+        const index = next++;
+        const object = objects[index];
+        try {
+          definitions[index] = await api(urlsFor(scope).structure(object.schema, object.name));
+        } catch (err) {
+          failures.push({ object, message: err.message });
+          definitions[index] = { object, columns: [], indexes: [], foreignKeys: [], unavailable: true };
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(6, objects.length) }, worker));
+
+    const relationships = definitions.flatMap((definition) =>
+      (definition.foreignKeys || []).map((foreignKey) => ({ source: definition, foreignKey })));
+    const visibleDiagramColumns = (definition) =>
+      (definition.columns || []).filter((column) => !column.isHidden);
+
+    const render = () => {
+      const query = filter.value.trim().toLowerCase();
+      const matchingKeys = new Set(definitions.filter((definition) => {
+        if (!query) return true;
+        const object = definition.object;
+        return displayName(object, scope).toLowerCase().includes(query)
+          || visibleDiagramColumns(definition)
+            .some((column) => column.name.toLowerCase().includes(query));
+      }).map((definition) => diagramTableKey(definition.object.schema, definition.object.name)));
+
+      // When filtering, retain directly related tables as context. A matching Orders card is much
+      // less useful if the referenced Pizzas card and the line between them disappear.
+      const visibleKeys = new Set(matchingKeys);
+      if (query) {
+        for (const relationship of relationships) {
+          const sourceKey = diagramTableKey(
+            relationship.source.object.schema, relationship.source.object.name);
+          const targetKey = diagramTableKey(
+            relationship.foreignKey.referencedSchema, relationship.foreignKey.referencedTable);
+          if (matchingKeys.has(sourceKey) || matchingKeys.has(targetKey)) {
+            visibleKeys.add(sourceKey);
+            visibleKeys.add(targetKey);
+          }
+        }
+      }
+
+      const visible = definitions.filter((definition) => visibleKeys.has(
+        diagramTableKey(definition.object.schema, definition.object.name)));
+      if (!visible.length) {
+        viewport.replaceChildren(h('div', { class: 'empty-message', text: 'No tables or columns match this filter.' }));
+        summary.textContent = `0 of ${definitions.length} tables`;
+        return;
+      }
+
+      const visibleRelationships = relationships.filter((relationship) => {
+        const sourceKey = diagramTableKey(
+          relationship.source.object.schema, relationship.source.object.name);
+        const targetKey = diagramTableKey(
+          relationship.foreignKey.referencedSchema, relationship.foreignKey.referencedTable);
+        return visibleKeys.has(sourceKey) && visibleKeys.has(targetKey);
+      });
+      // Fan parallel and reverse relationships around their shared card pair. Slotting by an
+      // unordered key gives both directions the same perpendicular axis instead of mirroring them
+      // back onto the same curve.
+      const relationshipGroups = new Map();
+      for (const relationship of visibleRelationships) {
+        const sourceKey = diagramTableKey(
+          relationship.source.object.schema, relationship.source.object.name);
+        const targetKey = diagramTableKey(
+          relationship.foreignKey.referencedSchema, relationship.foreignKey.referencedTable);
+        const groupKey = [sourceKey, targetKey].sort().join('\u0001');
+        if (!relationshipGroups.has(groupKey)) relationshipGroups.set(groupKey, []);
+        relationshipGroups.get(groupKey).push(relationship);
+      }
+      const relationshipSlots = new Map();
+      for (const group of relationshipGroups.values()) {
+        group.forEach((relationship, index) => relationshipSlots.set(relationship, {
+          index,
+          count: group.length,
+          offset: (index - (group.length - 1) / 2) * 28,
+        }));
+      }
+      const degree = new Map(visible.map((definition) => [
+        diagramTableKey(definition.object.schema, definition.object.name), 0,
+      ]));
+      for (const relationship of visibleRelationships) {
+        const sourceKey = diagramTableKey(
+          relationship.source.object.schema, relationship.source.object.name);
+        const targetKey = diagramTableKey(
+          relationship.foreignKey.referencedSchema, relationship.foreignKey.referencedTable);
+        degree.set(sourceKey, (degree.get(sourceKey) || 0) + 1);
+        degree.set(targetKey, (degree.get(targetKey) || 0) + 1);
+      }
+      visible.sort((a, b) => {
+        const keyA = diagramTableKey(a.object.schema, a.object.name);
+        const keyB = diagramTableKey(b.object.schema, b.object.name);
+        return (degree.get(keyB) || 0) - (degree.get(keyA) || 0)
+          || displayName(a.object, scope).localeCompare(displayName(b.object, scope));
+      });
+
+      const cardWidth = 260;
+      const cardHeight = 270;
+      const horizontalGap = 120;
+      const verticalGap = 90;
+      // The extra top margin leaves self-referencing relationships room to loop above a card.
+      const largestSelfGroup = Math.max(0, ...Array.from(relationshipGroups.values())
+        .filter((group) => {
+          const relationship = group[0];
+          return diagramTableKey(relationship.source.object.schema, relationship.source.object.name)
+            === diagramTableKey(relationship.foreignKey.referencedSchema,
+              relationship.foreignKey.referencedTable);
+        }).map((group) => group.length));
+      const canvasTop = Math.max(96, 72 + Math.max(0, largestSelfGroup - 1) * 18);
+      const columns = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(visible.length))));
+      const rows = Math.ceil(visible.length / columns);
+      const canvasWidth = 32 + columns * cardWidth + (columns - 1) * horizontalGap + 32;
+      const canvasHeight = canvasTop + rows * cardHeight + (rows - 1) * verticalGap + 32;
+      const positions = new Map();
+      const cards = [];
+
+      visible.forEach((definition, index) => {
+        const object = definition.object;
+        const key = diagramTableKey(object.schema, object.name);
+        const column = index % columns;
+        const row = Math.floor(index / columns);
+        const left = 32 + column * (cardWidth + horizontalGap);
+        const top = canvasTop + row * (cardHeight + verticalGap);
+        positions.set(key, { left, top });
+
+        const primaryColumns = new Set((definition.indexes || [])
+          .filter((item) => item.isPrimaryKey)
+          .flatMap((item) => item.keyColumns?.map((keyColumn) => keyColumn.name || keyColumn.column)
+            || item.columns || [])
+          .map((name) => String(name).toLowerCase()));
+        const foreignColumns = new Set((definition.foreignKeys || [])
+          .flatMap((item) => item.columns || [])
+          .map((pair) => String(pair.column || pair.sourceColumn || '').toLowerCase()));
+        const columnRows = visibleDiagramColumns(definition).map((item) => h('span', {
+          class: 'er-column',
+        },
+          h('span', { class: 'er-column-name', text: item.name }),
+          primaryColumns.has(item.name.toLowerCase()) ? h('span', { class: 'er-key er-key-pk', text: 'PK' }) : null,
+          foreignColumns.has(item.name.toLowerCase()) ? h('span', { class: 'er-key er-key-fk', text: 'FK' }) : null,
+          h('span', { class: 'er-column-type', text: item.dataType })));
+        const objectName = displayName(object, scope);
+        const card = h('article', {
+          class: `er-table${definition.unavailable ? ' unavailable' : ''}`,
+          'data-testid': 'er-table', 'data-table': objectName,
+        },
+          h('button', {
+            type: 'button', class: 'er-table-open', title: `Open ${objectName}`,
+            'aria-label': `Open ${objectName}`, onclick: () => openObjectTab(object, scope),
+          }, h('span', { class: 'er-table-title', text: objectName })),
+          definition.unavailable
+            ? h('span', { class: 'er-unavailable', text: 'Metadata unavailable' })
+            : h('div', {
+              class: 'er-columns', tabindex: '0', 'aria-label': `Columns in ${objectName}`,
+            }, columnRows));
+        card.style.left = `${left}px`;
+        card.style.top = `${top}px`;
+        cards.push(card);
+      });
+
+      const svg = diagramSvgElement('svg', {
+        class: 'er-links', width: canvasWidth, height: canvasHeight,
+        viewBox: `0 0 ${canvasWidth} ${canvasHeight}`, 'aria-hidden': 'true',
+      });
+      const defs = diagramSvgElement('defs');
+      const marker = diagramSvgElement('marker', {
+        id: `er-arrow-${tab.id}`, viewBox: '0 0 10 10', refX: '9', refY: '5',
+        markerWidth: '6', markerHeight: '6', orient: 'auto-start-reverse',
+      });
+      marker.append(diagramSvgElement('path', { d: 'M 0 0 L 10 5 L 0 10 z' }));
+      defs.append(marker);
+      svg.append(defs);
+
+      visibleRelationships.forEach((relationship, index) => {
+        const sourceKey = diagramTableKey(
+          relationship.source.object.schema, relationship.source.object.name);
+        const targetKey = diagramTableKey(
+          relationship.foreignKey.referencedSchema, relationship.foreignKey.referencedTable);
+        const source = positions.get(sourceKey);
+        const target = positions.get(targetKey);
+        if (!source || !target) return;
+        const isSelfReference = sourceKey === targetKey;
+        const slot = relationshipSlots.get(relationship) || { index: 0, count: 1, offset: 0 };
+        let pathData;
+        let labelX;
+        let labelY;
+        if (isSelfReference) {
+          const loopHeight = 48 + slot.index * 18;
+          const centerX = source.left + cardWidth / 2;
+          const startX = centerX - 44;
+          const endX = centerX + 44;
+          pathData = `M ${startX} ${source.top} C ${startX} ${source.top - loopHeight}, `
+            + `${endX} ${source.top - loopHeight}, ${endX} ${source.top}`;
+          labelX = centerX;
+          labelY = source.top - loopHeight - 6;
+        } else {
+          let sourceX = source.left + cardWidth / 2;
+          let sourceY = source.top + cardHeight / 2;
+          let targetX = target.left + cardWidth / 2;
+          let targetY = target.top + cardHeight / 2;
+          const deltaX = targetX - sourceX;
+          const deltaY = targetY - sourceY;
+          const bend = 45 + (index % 3) * 14;
+          const distance = Math.hypot(deltaX, deltaY) || 1;
+          let perpendicularX = -deltaY / distance;
+          let perpendicularY = deltaX / distance;
+          if (sourceKey.localeCompare(targetKey) > 0) {
+            perpendicularX *= -1;
+            perpendicularY *= -1;
+          }
+          let directionX = 0;
+          let directionY = 0;
+          if (Math.abs(deltaX) >= Math.abs(deltaY)) {
+            const direction = Math.sign(deltaX) || 1;
+            sourceX += direction * cardWidth / 2;
+            targetX -= direction * cardWidth / 2;
+            directionX = direction;
+          } else {
+            const direction = Math.sign(deltaY) || 1;
+            sourceY += direction * cardHeight / 2;
+            targetY -= direction * cardHeight / 2;
+            directionY = direction;
+          }
+          const curveX = perpendicularX * slot.offset;
+          const curveY = perpendicularY * slot.offset;
+          pathData = `M ${sourceX} ${sourceY} C `
+            + `${sourceX + directionX * bend + curveX} ${sourceY + directionY * bend + curveY}, `
+            + `${targetX - directionX * bend + curveX} ${targetY - directionY * bend + curveY}, `
+            + `${targetX} ${targetY}`;
+          labelX = (sourceX + targetX) / 2 + curveX * 0.75;
+          labelY = (sourceY + targetY) / 2 + curveY * 0.75 - 6;
+        }
+        const path = diagramSvgElement('path', {
+          class: 'er-link',
+          d: pathData,
+          'marker-end': `url(#er-arrow-${tab.id})`, 'data-testid': 'er-relationship',
+          'data-relationship': relationship.foreignKey.name,
+          'data-self-reference': String(isSelfReference),
+        });
+        const title = diagramSvgElement('title');
+        title.textContent = relationship.foreignKey.name;
+        path.append(title);
+        svg.append(path);
+        const label = diagramSvgElement('text', {
+          class: 'er-link-label', x: String(labelX),
+          y: String(labelY), 'text-anchor': 'middle',
+          'data-relationship-label': relationship.foreignKey.name,
+        });
+        label.textContent = relationship.foreignKey.name;
+        svg.append(label);
+      });
+
+      const accessibleRelationships = h('ul', {
+        class: 'sr-only', 'aria-label': 'Relationships', 'data-testid': 'er-relationship-list',
+      }, visibleRelationships.map((relationship) => {
+        const foreignKey = relationship.foreignKey;
+        const pairs = (foreignKey.columns || []).map((pair) =>
+          `${pair.column} to ${pair.referencedColumn}`).join(', ');
+        const sourceName = displayName(relationship.source.object, scope);
+        const targetName = displayName({
+          schema: foreignKey.referencedSchema, name: foreignKey.referencedTable,
+        }, scope);
+        return h('li', { text: `${sourceName} `
+          + `references ${targetName} `
+          + `through ${foreignKey.name}${pairs ? `: ${pairs}` : ''}.` });
+      }));
+      const canvas = h('div', { class: 'er-canvas' }, svg, accessibleRelationships, cards);
+      canvas.style.width = `${canvasWidth}px`;
+      canvas.style.height = `${canvasHeight}px`;
+      viewport.replaceChildren(canvas);
+      summary.textContent = `${visible.length}${query ? ` of ${definitions.length}` : ''} tables · `
+        + `${visibleRelationships.length} relationship${visibleRelationships.length === 1 ? '' : 's'}`
+        + (failures.length ? ` · ${failures.length} unavailable` : '');
+    };
+
+    filter.addEventListener('input', render);
+    render();
+  }
 
   function addTab(tab) {
     const active = state.tabs.find((candidate) => candidate.id === state.activeTabId);
