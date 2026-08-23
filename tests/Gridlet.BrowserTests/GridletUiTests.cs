@@ -10,6 +10,263 @@ namespace Gridlet.BrowserTests;
 public sealed class GridletUiTests(BrowserAppFixture fixture)
 {
     [Fact]
+    public async Task Shows_a_database_relationship_diagram_with_filter_context_and_table_navigation()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        var diagram = page.GetByTestId("er-diagram");
+        await Assertions.Expect(diagram.GetByTestId("er-table").Filter(new() { HasText = "dbo.Orders" }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(diagram.GetByTestId("er-table").Filter(new() { HasText = "dbo.Pizzas" }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(diagram.GetByTestId("er-table")).ToHaveCountAsync(7);
+        await Assertions.Expect(diagram.Locator("[data-table='dbo.SearchIndex']")).ToHaveCountAsync(0);
+        await Assertions.Expect(diagram.Locator("[data-table='dbo.Customers_fts_data']")).ToHaveCountAsync(0);
+        await Assertions.Expect(diagram.Locator("[data-table='dbo.vw_Orders']")).ToHaveCountAsync(0);
+        await Assertions.Expect(diagram.GetByTestId("er-table").Filter(new() { HasText = "dbo.Pizzas" })
+            .GetByText("SysStart", new() { Exact = true })).ToHaveCountAsync(0);
+        await Assertions.Expect(diagram.Locator("[data-relationship='FK_Orders_Pizzas']"))
+            .ToHaveCountAsync(1);
+        await Assertions.Expect(diagram.Locator(".er-link-label"))
+            .ToHaveTextAsync("FK_Orders_Pizzas");
+        await Assertions.Expect(diagram.GetByTestId("er-relationship-list"))
+            .ToContainTextAsync("dbo.Orders references dbo.Pizzas through FK_Orders_Pizzas: PizzaId to Id.");
+        await Assertions.Expect(diagram.Locator(".er-summary"))
+            .ToContainTextAsync("1 relationship");
+        await Assertions.Expect(diagram.GetByTestId("er-table").Filter(new() { HasText = "dbo.Orders" })
+            .Locator(".er-key-pk")).ToHaveTextAsync("PK");
+        await Assertions.Expect(diagram.GetByTestId("er-table").Filter(new() { HasText = "dbo.Orders" })
+            .Locator(".er-key-fk")).ToHaveTextAsync("FK");
+
+        await diagram.GetByTestId("er-filter").FillAsync("PizzaId");
+        await Assertions.Expect(diagram.GetByTestId("er-table")).ToHaveCountAsync(2);
+        await Assertions.Expect(diagram.GetByTestId("er-table").Filter(new() { HasText = "dbo.Orders" }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(diagram.GetByTestId("er-table").Filter(new() { HasText = "dbo.Pizzas" }))
+            .ToBeVisibleAsync();
+        var filteredOrdersBox = await diagram.Locator("[data-table='dbo.Orders']").BoundingBoxAsync();
+        var filteredPizzasBox = await diagram.Locator("[data-table='dbo.Pizzas']").BoundingBoxAsync();
+        var filteredLinkBox = await diagram.Locator("[data-relationship='FK_Orders_Pizzas']")
+            .BoundingBoxAsync();
+        Assert.NotNull(filteredOrdersBox);
+        Assert.NotNull(filteredPizzasBox);
+        Assert.NotNull(filteredLinkBox);
+        // Chromium's path box includes a few pixels of marker/stroke overhang at an endpoint.
+        Assert.InRange(Math.Abs(filteredLinkBox.X - (filteredOrdersBox.X + filteredOrdersBox.Width)), 0, 5);
+        Assert.InRange(Math.Abs(filteredLinkBox.X + filteredLinkBox.Width - filteredPizzasBox.X), 0, 5);
+
+        await diagram.GetByTestId("er-table").Filter(new() { HasText = "dbo.Orders" })
+            .Locator(".er-table-open").ClickAsync();
+        await Assertions.Expect(page.Locator(".tab.active .tab-title")).ToHaveTextAsync("dbo.Orders");
+
+        // Install the saved workspace before application boot. Setting it immediately before a
+        // reload is not sufficient because the outgoing page persists its own current workspace
+        // during pagehide.
+        await page.AddInitScriptAsync("""
+            localStorage.setItem('gridlet.session', JSON.stringify({
+                tabs: [{ kind: 'diagram', scope: { connection: 'Main', database: 'FakeDb' } }],
+                active: 0
+            }));
+            """);
+        await page.ReloadAsync();
+        await Assertions.Expect(page.GetByTestId("er-diagram")).ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_draws_a_self_reference_outside_its_table_card()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/objects/dbo/Pizzas/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = """
+                    {
+                      "object":{"schema":"dbo","name":"Pizzas","type":"Table"},
+                      "columns":[
+                        {"name":"Id","dataType":"int","isHidden":false},
+                        {"name":"ParentId","dataType":"int","isHidden":false}
+                      ],
+                      "indexes":[{"name":"PK_Pizzas","isPrimaryKey":true,"columns":["Id"]}],
+                      "foreignKeys":[{
+                        "name":"FK_Pizzas_Parent",
+                        "referencedSchema":"dbo",
+                        "referencedTable":"Pizzas",
+                        "columns":[{"column":"ParentId","referencedColumn":"Id"}]
+                      }],
+                      "checkConstraints":[],
+                      "uniqueConstraints":[]
+                    }
+                    """,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        var diagram = page.GetByTestId("er-diagram");
+        var pizzas = diagram.Locator("[data-table='dbo.Pizzas']");
+        var selfLink = diagram.Locator("[data-relationship='FK_Pizzas_Parent']");
+        await Assertions.Expect(selfLink).ToHaveAttributeAsync("data-self-reference", "true");
+        await Assertions.Expect(diagram.GetByTestId("er-relationship-list"))
+            .ToContainTextAsync("dbo.Pizzas references dbo.Pizzas through FK_Pizzas_Parent: ParentId to Id.");
+
+        var cardBox = await pizzas.BoundingBoxAsync();
+        var linkBox = await selfLink.BoundingBoxAsync();
+        Assert.NotNull(cardBox);
+        Assert.NotNull(linkBox);
+        Assert.True(linkBox.Y < cardBox.Y - 20,
+            $"Expected self-reference loop above card; link y={linkBox.Y}, card y={cardBox.Y}.");
+        Assert.True(linkBox.Height > 30,
+            $"Expected a visible loop rather than a collapsed line; height={linkBox.Height}.");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_fans_out_parallel_and_reverse_relationships()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/objects/dbo/Orders/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = """
+                    {
+                      "object":{"schema":"dbo","name":"Orders","type":"Table"},
+                      "columns":[
+                        {"name":"Id","dataType":"int"},
+                        {"name":"PizzaId","dataType":"int"},
+                        {"name":"BackupPizzaId","dataType":"int"}
+                      ],
+                      "indexes":[{"name":"PK_Orders","isPrimaryKey":true,"columns":["Id"]}],
+                      "foreignKeys":[
+                        {"name":"FK_Orders_Pizzas","referencedSchema":"dbo","referencedTable":"Pizzas",
+                         "columns":[{"column":"PizzaId","referencedColumn":"Id"}]},
+                        {"name":"FK_Orders_BackupPizzas","referencedSchema":"dbo","referencedTable":"Pizzas",
+                         "columns":[{"column":"BackupPizzaId","referencedColumn":"Id"}]}
+                      ],
+                      "checkConstraints":[],"uniqueConstraints":[]
+                    }
+                    """,
+            }));
+        await page.RouteAsync("**/objects/dbo/Pizzas/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = """
+                    {
+                      "object":{"schema":"dbo","name":"Pizzas","type":"Table"},
+                      "columns":[
+                        {"name":"Id","dataType":"int"},
+                        {"name":"LastOrderId","dataType":"int"}
+                      ],
+                      "indexes":[{"name":"PK_Pizzas","isPrimaryKey":true,"columns":["Id"]}],
+                      "foreignKeys":[
+                        {"name":"FK_Pizzas_Orders","referencedSchema":"dbo","referencedTable":"Orders",
+                         "columns":[{"column":"LastOrderId","referencedColumn":"Id"}]}
+                      ],
+                      "checkConstraints":[],"uniqueConstraints":[]
+                    }
+                    """,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        var diagram = page.GetByTestId("er-diagram");
+        string[] names = ["FK_Orders_Pizzas", "FK_Orders_BackupPizzas", "FK_Pizzas_Orders"];
+        var paths = new List<string>();
+        var labelCenters = new List<(float X, float Y)>();
+        foreach (var name in names)
+        {
+            var link = diagram.Locator($"[data-relationship='{name}']");
+            await Assertions.Expect(link).ToHaveCountAsync(1);
+            paths.Add((await link.GetAttributeAsync("d"))!);
+
+            var labelBox = await diagram.Locator($"[data-relationship-label='{name}']").BoundingBoxAsync();
+            Assert.NotNull(labelBox);
+            labelCenters.Add((labelBox.X + labelBox.Width / 2, labelBox.Y + labelBox.Height / 2));
+        }
+
+        Assert.Equal(3, paths.Distinct().Count());
+        for (var first = 0; first < labelCenters.Count; first++)
+        {
+            for (var second = first + 1; second < labelCenters.Count; second++)
+            {
+                var deltaX = labelCenters[first].X - labelCenters[second].X;
+                var deltaY = labelCenters[first].Y - labelCenters[second].Y;
+                Assert.True(MathF.Sqrt(deltaX * deltaX + deltaY * deltaY) > 8,
+                    $"Expected relationship labels {names[first]} and {names[second]} to be separated.");
+            }
+        }
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_uses_provider_appropriate_accessible_names()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
+
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        var relationships = page.GetByTestId("er-diagram").GetByTestId("er-relationship-list");
+        await Assertions.Expect(relationships)
+            .ToContainTextAsync("Orders references Pizzas through FK_Orders_Pizzas: PizzaId to Id.");
+        await Assertions.Expect(relationships).Not.ToContainTextAsync("dbo.Orders references");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_degrades_for_unavailable_table_metadata()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/objects/dbo/NoKeys/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 503,
+                ContentType = "application/problem+json",
+                Body = "{\"detail\":\"metadata offline\"}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        var diagram = page.GetByTestId("er-diagram");
+        await Assertions.Expect(diagram.GetByTestId("er-table").Filter(new() { HasText = "dbo.NoKeys" }))
+            .ToContainTextAsync("Metadata unavailable");
+        await Assertions.Expect(diagram.Locator(".er-summary")).ToContainTextAsync("1 unavailable");
+        browserPage.AssertNoUnexpectedErrors("503");
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_explains_an_empty_database()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = "[]",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("er-diagram"))
+            .ToContainTextAsync("This database has no visible tables.");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Talks_with_the_database_using_an_ephemeral_user_key()
     {
         await using var browserPage = await fixture.NewPageAsync();
