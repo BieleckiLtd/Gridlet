@@ -1608,6 +1608,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(comparison.Locator("tbody tr")).ToHaveCountAsync(1);
         await Assertions.Expect(comparison.GetByTestId("export-csv")).ToBeVisibleAsync();
         await Assertions.Expect(comparison.GetByTestId("export-json")).ToBeVisibleAsync();
+        await Assertions.Expect(comparison.GetByTestId("export-xlsx")).ToBeVisibleAsync();
+        await Assertions.Expect(comparison.GetByTestId("export-parquet")).ToBeVisibleAsync();
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -3803,6 +3805,19 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal("SQL_1-result1.json", jsonDownload.SuggestedFilename);
         using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
         Assert.Equal(42, document.RootElement[0].GetProperty("Answer").GetInt32());
+
+        var excelDownload = await page.RunAndWaitForDownloadAsync(
+            () => page.GetByTestId("export-xlsx").ClickAsync());
+        Assert.Equal("SQL_1-result1.xlsx", excelDownload.SuggestedFilename);
+        var excel = await ReadDownloadBytesAsync(excelDownload);
+        Assert.Equal("PK", System.Text.Encoding.ASCII.GetString(excel, 0, 2));
+
+        var parquetDownload = await page.RunAndWaitForDownloadAsync(
+            () => page.GetByTestId("export-parquet").ClickAsync());
+        Assert.Equal("SQL_1-result1.parquet", parquetDownload.SuggestedFilename);
+        var parquet = await ReadDownloadBytesAsync(parquetDownload);
+        Assert.Equal("PAR1", System.Text.Encoding.ASCII.GetString(parquet, 0, 4));
+        Assert.Equal("PAR1", System.Text.Encoding.ASCII.GetString(parquet, parquet.Length - 4, 4));
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -6527,5 +6542,13 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await using var stream = await download.CreateReadStreamAsync();
         using var reader = new StreamReader(stream);
         return await reader.ReadToEndAsync();
+    }
+
+    private static async Task<byte[]> ReadDownloadBytesAsync(IDownload download)
+    {
+        await using var stream = await download.CreateReadStreamAsync();
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer);
+        return buffer.ToArray();
     }
 }

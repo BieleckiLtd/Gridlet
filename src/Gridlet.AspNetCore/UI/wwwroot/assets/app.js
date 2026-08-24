@@ -616,6 +616,7 @@
       queryJobs: () => `${dbBase()}/query/jobs`,
       queryJob: (id, after = null) => `${dbBase()}/query/jobs/${enc(id)}`
         + (after == null ? '' : `?after=${after}&waitMs=1000`),
+      resultExport: (format) => `api/exports/${enc(format)}`,
       queryPlan: () => `${dbBase()}/query/plan`,
       sessions: () => `${dbBase()}/sessions`,
       session: (id) => `api/sessions/${enc(id)}`,
@@ -11526,6 +11527,7 @@
   // ---- export ---------------------------------------------------------------------------
 
   function exportButtons(columns, rows, baseName, apiDefinition = null, serverExport = null) {
+    const exportScope = apiDefinition?.scope || null;
     const copy = h('button', {
       class: 'ghost', title: 'Copy all loaded rows', 'data-testid': 'copy-results',
       'aria-haspopup': 'menu', 'aria-expanded': 'false',
@@ -11544,6 +11546,19 @@
         },
       ]),
     }, 'Copy ▾');
+    const richExportButton = (format, label) => {
+      const button = h('button', {
+        class: 'ghost', title: `Download as ${label}`,
+        'data-testid': `export-${format}`,
+        onclick: async () => {
+          button.disabled = true;
+          try { await exportRichData(columns, rows, format, baseName, exportScope); }
+          catch (err) { toast(err.message); }
+          finally { button.disabled = false; }
+        },
+      }, label);
+      return button;
+    };
     return h('span', { class: 'export-buttons' },
       copy,
       h('button', {
@@ -11558,6 +11573,8 @@
         'data-testid': 'export-json',
         onclick: () => serverExport ? serverExport('json') : exportData(columns, rows, 'json', baseName),
       }, serverExport ? 'Full JSON' : 'JSON'),
+      richExportButton('xlsx', 'Excel'),
+      richExportButton('parquet', 'Parquet'),
       apiDefinition?.sql ? h('button', {
         class: 'ghost', title: 'Publish as an API endpoint', 'data-testid': 'publish-api',
         onclick: () => openPublishDialog(apiDefinition.sql, apiDefinition.name, apiDefinition.scope),
@@ -11695,6 +11712,39 @@
       ...rows.map((row) => `| ${columns.map((_, index) =>
         markdownCell(resultCopyValue(row, index))).join(' | ')} |`),
     ].join('\n');
+  }
+
+  async function exportRichData(columns, rows, format, baseName, scope) {
+    const response = await fetch(urls.resultExport(format), {
+      method: 'POST',
+      headers: {
+        Accept: format === 'xlsx'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : 'application/vnd.apache.parquet',
+        'Content-Type': 'application/json',
+        'X-Gridlet-Request': '1',
+      },
+      body: JSON.stringify({
+        columns, rows,
+        providerName: scope ? connectionFor(scope).providerName : null,
+      }),
+    });
+    if (!response.ok) {
+      let message = `${response.status} ${response.statusText}`;
+      try {
+        const body = await response.json();
+        message = body.error || body.detail || body.title || message;
+      } catch { /* response was not JSON */ }
+      throw new Error(message);
+    }
+
+    const href = URL.createObjectURL(await response.blob());
+    const link = h('a', {
+      href,
+      download: (baseName || 'gridlet-export').replace(/[^\w.-]+/g, '_') + '.' + format,
+    });
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(href));
   }
 
   function exportData(columns, rows, format, baseName) {
