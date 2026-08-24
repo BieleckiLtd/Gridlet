@@ -547,6 +547,7 @@
       schema: (s) => `${dbBase()}/schemas/${enc(s)}`,
       data: (s, n, q) => `${objBase(s, n)}/data?${q}`,
       dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
+      profile: (s, n, q) => `${objBase(s, n)}/profile?${q}`,
       structure: (s, n) => `${objBase(s, n)}/structure`,
       definition: (s, n, type = null) => `${objBase(s, n)}/definition${type ? `?type=${enc(type)}` : ''}`,
       dependencies: (s, n) => `${objBase(s, n)}/dependencies`,
@@ -5127,7 +5128,7 @@
     const grid = { sort: null, dir: 'asc', filters: [...(tab.initialFilters || [])] };
     tab.initialFilters = null;
     tab.dataFilters = () => grid.filters.map((filter) => ({ ...filter }));
-    const views = ['Data', 'Structure', 'Definition'];
+    const views = ['Data', 'Profile', 'Structure', 'Definition'];
     const viewBar = h('div', { class: 'viewbar' });
     const body = h('div', { class: 'panel-body' });
     const actionBar = h('div', { class: 'object-actions' });
@@ -5136,6 +5137,11 @@
     let structurePromise = null;
     let structureGeneration = -1;
     let activeDataLoad = null;
+    let activeProfileLoad = null;
+    tab.onClose = () => {
+      activeDataLoad?.abort();
+      activeProfileLoad?.abort();
+    };
 
     const ensureStructure = () => {
       if (!structurePromise || structureGeneration !== state.metadataGeneration) {
@@ -5199,6 +5205,7 @@
         activeDataLoad = null;
         tab.refreshData = null;
       }
+      if (view !== 'Profile') { activeProfileLoad?.abort(); activeProfileLoad = null; }
       tab.beforeViewChange = null;
       tab.beforeClose = null;
       if (tab.hasUnsavedDefinition) {
@@ -5221,6 +5228,7 @@
       actionBar.replaceChildren();
       viewBar.replaceChildren(viewSwitcher);
       if (view === 'Data') renderData();
+      else if (view === 'Profile') renderProfile();
       else if (view === 'Structure') renderStructure();
       else {
         const definitionActions = h('div', { class: 'inline-form' });
@@ -5229,6 +5237,166 @@
         if (o.type === 'Table') renderTableDefinition(body, o, tab, definitionActions);
         else renderObjectDefinition(body, o, tab, definitionActions);
       }
+    };
+
+    const renderProfile = async () => {
+      activeProfileLoad?.abort();
+      activeProfileLoad = null;
+      body.replaceChildren(h('div', { class: 'loading', text: 'Loading columns…' }));
+      actionBar.replaceChildren();
+      let structure;
+      try {
+        structure = await ensureStructure();
+      } catch (err) {
+        body.replaceChildren(errorBox(err.message));
+        return;
+      }
+      const columns = (structure.columns || []).filter((column) => !column.isHidden);
+      if (!columns.length) {
+        body.replaceChildren(h('div', { class: 'empty-inline', text: 'This object has no profileable columns.' }));
+        return;
+      }
+
+      const column = h('select', {
+        'aria-label': 'Profile column', 'data-testid': 'profile-column',
+      }, ...columns.map((candidate) => h('option', {
+        value: candidate.name, text: `${candidate.name} (${candidate.dataType})`,
+      })));
+      const topValues = h('input', {
+        type: 'number', min: '1', max: '50', value: '10',
+        'aria-label': 'Top values count', 'data-testid': 'profile-top-count',
+      });
+      const useFilters = h('input', {
+        type: 'checkbox', disabled: grid.filters.length ? null : '',
+        'data-testid': 'profile-use-filters',
+      });
+      const run = h('button', {
+        type: 'button', class: 'primary', text: 'Profile', 'data-testid': 'profile-run',
+      });
+      const cancel = h('button', {
+        type: 'button', text: 'Cancel', hidden: '', 'data-testid': 'profile-cancel',
+      });
+      const status = h('span', {
+        class: 'muted profile-status', role: 'status', 'aria-live': 'polite',
+        'data-testid': 'profile-status', text: 'Ready.',
+      });
+      const controls = h('div', { class: 'profile-toolbar' },
+        h('label', {}, 'Column ', column),
+        h('label', {}, 'Top values ', topValues),
+        h('label', { class: 'checkbox-row' }, useFilters,
+          grid.filters.length
+            ? `Use ${grid.filters.length} current data filter${grid.filters.length === 1 ? '' : 's'}`
+            : 'No current data filters'),
+        run, cancel, h('span', { class: 'spacer' }), status);
+      const results = h('div', {
+        class: 'profile-results', 'data-testid': 'profile-results',
+      });
+      body.replaceChildren(h('div', { class: 'column-profile' }, controls, results));
+
+      const setRunning = (running) => {
+        column.disabled = running;
+        topValues.disabled = running;
+        useFilters.disabled = running || !grid.filters.length;
+        run.disabled = running;
+        cancel.hidden = !running;
+      };
+      const format = (value) => value == null ? 'Unavailable' : Number(value).toLocaleString();
+      const percent = (count, total) => total
+        ? `${((Number(count) / Number(total)) * 100).toFixed(1)}%` : '0.0%';
+      let request = 0;
+      const load = async () => {
+        const current = ++request;
+        activeProfileLoad?.abort();
+        const controller = new AbortController();
+        activeProfileLoad = controller;
+        const requestedTop = Math.min(50, Math.max(1, Number(topValues.value) || 10));
+        topValues.value = String(requestedTop);
+        const params = new URLSearchParams({
+          column: column.value, topValues: String(requestedTop),
+        });
+        if (useFilters.checked && grid.filters.length) {
+          params.set('filter', JSON.stringify(grid.filters));
+        }
+        setRunning(true);
+        status.textContent = `Profiling ${column.value}…`;
+        results.replaceChildren(h('div', { class: 'loading', text: 'Computing exact aggregates…' }));
+        try {
+          const profile = await api(urls.profile(o.schema, o.name, params), {
+            signal: controller.signal,
+          });
+          if (current !== request) return;
+          const nonNull = Number(profile.totalCount) - Number(profile.nullCount);
+          const cards = h('div', { class: 'profile-cards' },
+            h('div', { class: 'profile-card', 'data-profile-metric': 'rows' }, h('span', { text: 'Rows' }),
+              h('strong', { text: format(profile.totalCount) })),
+            h('div', { class: 'profile-card', 'data-profile-metric': 'non-null' }, h('span', { text: 'Non-null' }),
+              h('strong', { text: format(nonNull) }),
+              h('small', { text: percent(nonNull, profile.totalCount) })),
+            h('div', { class: 'profile-card', 'data-profile-metric': 'null' }, h('span', { text: 'Null' }),
+              h('strong', { text: format(profile.nullCount) }),
+              h('small', { text: percent(profile.nullCount, profile.totalCount) })),
+            h('div', { class: 'profile-card', 'data-profile-metric': 'distinct' }, h('span', { text: 'Distinct non-null' }),
+              h('strong', { text: format(profile.distinctCount) })));
+          const range = h('div', { class: 'profile-range' },
+            h('div', {}, h('span', { class: 'muted', text: 'Minimum' }),
+              h('code', { text: dataCompareValueText(profile.minimum) })),
+            h('div', {}, h('span', { class: 'muted', text: 'Maximum' }),
+              h('code', { text: dataCompareValueText(profile.maximum) })));
+          const topRows = (profile.topValues || []).map((entry) => [
+            entry.value, Number(entry.count),
+            percent(entry.count, profile.totalCount),
+          ]);
+          const topHeader = h('div', { class: 'profile-section-title' },
+            h('h3', { text: 'Top values' }),
+            topRows.length ? exportButtons(
+              [
+                { name: 'Value', dataTypeName: profile.dataType },
+                { name: 'Count', dataTypeName: 'bigint' },
+                { name: 'Share', dataTypeName: 'text' },
+              ], topRows, `${o.name}-${profile.column}-profile`) : null);
+          const topBody = h('tbody');
+          for (const row of topRows) {
+            topBody.append(h('tr', {},
+              h('td', { class: 'mono', text: dataCompareValueText(row[0]) }),
+              h('td', { text: row[1].toLocaleString() }),
+              h('td', { text: row[2] })));
+          }
+          const topContent = topRows.length
+            ? h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
+              h('thead', {}, h('tr', {},
+                ...['Value', 'Count', 'Share'].map((text) => h('th', { text })))), topBody))
+            : h('p', { class: 'muted', text: 'No grouped values are available.' });
+          const topSection = h('section', { class: 'profile-top' }, topHeader, topContent);
+          results.replaceChildren(
+            h('div', { class: 'profile-heading' },
+              h('div', {}, h('h2', { text: profile.column }),
+                h('span', { class: 'muted', text: profile.dataType })),
+              h('span', { class: 'muted', text: useFilters.checked ? 'Current filtered rows' : 'All rows' })),
+            profile.limitation ? h('div', { class: 'warning-box', text: profile.limitation }) : null,
+            cards, range, topSection);
+          status.textContent = `Profiled ${Number(profile.totalCount).toLocaleString()} row${Number(profile.totalCount) === 1 ? '' : 's'}`;
+        } catch (err) {
+          if (current !== request || err.name === 'AbortError') return;
+          status.textContent = 'Profile unavailable';
+          results.replaceChildren(errorBox(err.message));
+        } finally {
+          if (current === request) {
+            setRunning(false);
+            if (activeProfileLoad === controller) activeProfileLoad = null;
+          }
+        }
+      };
+      run.addEventListener('click', load);
+      column.addEventListener('change', load);
+      cancel.addEventListener('click', () => {
+        request++;
+        activeProfileLoad?.abort();
+        activeProfileLoad = null;
+        setRunning(false);
+        status.textContent = 'Profile cancelled.';
+        results.replaceChildren();
+      });
+      await load();
     };
 
     const renderData = async () => {

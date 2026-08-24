@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Gridlet.Tests.AspNetCore.Fakes;
 using Gridlet.Abstractions;
 using Gridlet.AspNetCore.Contracts;
@@ -344,6 +345,53 @@ public class GridletEndpointTests
                 Assert.Equal(FilterOperator.IsNull, second.Operator);
                 Assert.Null(second.Value);
             });
+    }
+
+    [Fact]
+    public async Task Column_profile_returns_exact_statistics_and_bounds_its_request()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        var filter = Uri.EscapeDataString(
+            """[{"column":"Name","operator":"contains","value":"ada"}]""");
+
+        var profile = await client.GetFromJsonAsync<ColumnProfile>(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/profile"
+            + $"?column=Status&topValues=999&filter={filter}");
+
+        Assert.NotNull(profile);
+        Assert.Equal("Status", profile.Column);
+        Assert.Equal(1, profile.TotalCount);
+        Assert.Equal(0, profile.NullCount);
+        Assert.Equal(1, profile.DistinctCount);
+        Assert.Equal(1, Assert.IsType<JsonElement>(profile.Minimum).GetInt32());
+        Assert.Equal(1, Assert.IsType<JsonElement>(profile.Maximum).GetInt32());
+        Assert.Collection(profile.TopValues,
+            value =>
+            {
+                Assert.Equal(1, Assert.IsType<JsonElement>(value.Value).GetInt32());
+                Assert.Equal(1, value.Count);
+            });
+        Assert.Contains("profile dbo.Customers.Status top(50) filters(1)", fake.Calls);
+    }
+
+    [Fact]
+    public async Task Column_profile_rejects_a_missing_or_oversized_column_name()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var missing = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/profile");
+        var oversized = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/profile?column="
+            + new string('a', 257));
+
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, oversized.StatusCode);
+        Assert.Contains("profile column is required", await missing.Content.ReadAsStringAsync());
+        Assert.Contains("profile column name is too long", await oversized.Content.ReadAsStringAsync());
     }
 
     [Fact]

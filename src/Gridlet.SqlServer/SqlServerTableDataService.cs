@@ -166,6 +166,134 @@ public sealed class SqlServerTableDataService : ITableDataService
             rowKeys);
     }
 
+    public async Task<ColumnProfile> GetColumnProfileAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        ColumnProfileRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var qualifiedName = SqlServerIdentifier.QuoteQualified(schema, name);
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        string? columnName = null;
+        string? dataType = null;
+        string? systemType = null;
+        var filterColumnNames = new List<string>();
+        await using (var metadata = connection.CreateCommand())
+        {
+            metadata.CommandText =
+                "SELECT c.name, TYPE_NAME(c.user_type_id), TYPE_NAME(c.system_type_id), c.is_hidden " +
+                "FROM sys.columns c WHERE c.object_id = OBJECT_ID(@object) ORDER BY c.column_id;";
+            metadata.Parameters.AddWithValue("@object", qualifiedName);
+            await using var reader = await metadata.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var candidateName = reader.GetString(0);
+                var isHidden = reader.GetBoolean(3);
+                if (!isHidden)
+                {
+                    filterColumnNames.Add(candidateName);
+                }
+                if (!string.Equals(candidateName, request.Column, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                columnName = candidateName;
+                dataType = reader.IsDBNull(1) ? null : reader.GetString(1);
+                systemType = reader.IsDBNull(2) ? dataType : reader.GetString(2);
+                if (isHidden)
+                {
+                    throw new GridletValidationException(
+                        $"Hidden column '{columnName}' is not available in table data.");
+                }
+            }
+
+            if (columnName is null)
+            {
+                throw new GridletValidationException(
+                    $"Profile column '{request.Column}' does not exist on {qualifiedName}.");
+            }
+            if (string.IsNullOrWhiteSpace(dataType) || string.IsNullOrWhiteSpace(systemType))
+            {
+                throw new GridletValidationException(
+                    $"The type of profile column '{columnName}' could not be determined.");
+            }
+        }
+
+        var unsupportedGrouping = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "text", "ntext", "image", "xml", "geography", "geometry", "hierarchyid",
+        };
+        var rangeTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "tinyint", "smallint", "int", "bigint", "decimal", "numeric", "float", "real",
+            "money", "smallmoney", "date", "datetime", "datetime2", "smalldatetime", "time",
+            "datetimeoffset", "char", "nchar", "varchar", "nvarchar", "uniqueidentifier",
+        };
+        var canGroup = !unsupportedGrouping.Contains(systemType);
+        var canRange = rangeTypes.Contains(systemType);
+        var quotedColumn = SqlServerIdentifier.Quote(columnName);
+        var filter = SqlServerSqlBuilder.BuildFilterClause(request.Filters, filterColumnNames);
+
+        await using var aggregate = connection.CreateCommand();
+        aggregate.CommandText =
+            $"SELECT COUNT_BIG(*), COUNT_BIG({quotedColumn}), " +
+            (canGroup ? $"COUNT_BIG(DISTINCT {quotedColumn})" : "CAST(NULL AS bigint)") + ", " +
+            (canRange ? $"MIN({quotedColumn}), MAX({quotedColumn})" :
+                "CAST(NULL AS nvarchar(1)), CAST(NULL AS nvarchar(1))") +
+            $" FROM {qualifiedName}{filter.Clause};";
+        AddFilterParameters(aggregate, filter.Parameters);
+        long totalCount;
+        long nonNullCount;
+        long? distinctCount;
+        object? minimum;
+        object? maximum;
+        await using (var reader = await aggregate.ExecuteReaderAsync(cancellationToken))
+        {
+            await reader.ReadAsync(cancellationToken);
+            totalCount = reader.GetInt64(0);
+            nonNullCount = reader.GetInt64(1);
+            distinctCount = reader.IsDBNull(2) ? null : reader.GetInt64(2);
+            minimum = SqlServerValues.Materialize(reader.GetValue(3));
+            maximum = SqlServerValues.Materialize(reader.GetValue(4));
+        }
+
+        var topValues = new List<ColumnProfileValue>();
+        if (canGroup)
+        {
+            await using var top = connection.CreateCommand();
+            top.CommandText =
+                $"SELECT TOP (@topValues) {quotedColumn}, COUNT_BIG(*) AS frequency " +
+                $"FROM {qualifiedName}{filter.Clause} GROUP BY {quotedColumn} " +
+                "ORDER BY frequency DESC;";
+            top.Parameters.AddWithValue("@topValues", Math.Clamp(request.TopValues, 1, 50));
+            AddFilterParameters(top, filter.Parameters);
+            await using var reader = await top.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                topValues.Add(new ColumnProfileValue(
+                    SqlServerValues.Materialize(reader.GetValue(0)), reader.GetInt64(1)));
+            }
+        }
+
+        var limitation = !canGroup
+            ? $"The {dataType} type cannot be grouped; distinct count, range, and top values are unavailable."
+            : !canRange
+                ? $"The {dataType} type does not support MIN/MAX; range is unavailable."
+                : null;
+        return new ColumnProfile(
+            columnName,
+            dataType,
+            totalCount,
+            totalCount - nonNullCount,
+            distinctCount,
+            minimum,
+            maximum,
+            topValues,
+            limitation);
+    }
+
     private static void AddFilterParameters(
         Microsoft.Data.SqlClient.SqlCommand command,
         IReadOnlyList<(string Name, object? Value)> parameters)

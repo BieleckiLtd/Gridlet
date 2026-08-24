@@ -3542,6 +3542,117 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Profiles_a_selected_column_and_exports_the_exact_top_values()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Profile", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profiled 2 rows");
+        await Assertions.Expect(panel.Locator("[data-profile-metric='rows']"))
+            .ToContainTextAsync("2");
+        Assert.DoesNotContain("SysStart",
+            await panel.GetByTestId("profile-column").Locator("option").AllTextContentsAsync());
+
+        await panel.GetByTestId("profile-column").SelectOptionAsync("Status");
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profiled 2 rows");
+        await Assertions.Expect(panel.Locator("[data-profile-metric='null']"))
+            .ToContainTextAsync("1");
+        await Assertions.Expect(panel.Locator("[data-profile-metric='distinct']"))
+            .ToContainTextAsync("1");
+        await Assertions.Expect(panel.Locator(".profile-top").GetByText("NULL", new() { Exact = true }))
+            .ToBeVisibleAsync();
+
+        var jsonDownload = await page.RunAndWaitForDownloadAsync(
+            () => panel.GetByTestId("export-json").ClickAsync());
+        Assert.Equal("Customers-Status-profile.json", jsonDownload.SuggestedFilename);
+        using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
+        Assert.Equal(JsonValueKind.Null, document.RootElement[0].GetProperty("Value").ValueKind);
+        Assert.Equal(1, document.RootElement[0].GetProperty("Count").GetInt32());
+        Assert.Equal("50.0%", document.RootElement[0].GetProperty("Share").GetString());
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Profiles_the_same_filtered_row_scope_as_the_data_grid()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var profileRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/profile?", StringComparison.Ordinal)) profileRequests.Add(request.Url);
+        };
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await panel.GetByTestId("add-filter").ClickAsync();
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Filter rows" });
+        await dialog.GetByLabel("Filter column").SelectOptionAsync("Name");
+        await dialog.GetByLabel("Filter operator").SelectOptionAsync("contains");
+        await dialog.GetByLabel("Filter value").FillAsync("ada");
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Apply", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("filter-chip")).ToBeVisibleAsync();
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Profile", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profiled 2 rows");
+        await panel.GetByTestId("profile-use-filters").CheckAsync();
+        await panel.GetByTestId("profile-run").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profiled 1 row");
+        Assert.Contains(profileRequests, url => Uri.UnescapeDataString(url).Contains(
+            """filter=[{"column":"Name","operator":"contains","value":"ada"}]""",
+            StringComparison.Ordinal));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Cancels_a_column_profile_without_leaving_stale_results()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await page.RouteAsync("**/objects/dbo/Customers/profile?*", async route =>
+        {
+            started.TrySetResult();
+            await release.Task;
+            try
+            {
+                await route.FulfillAsync(new()
+                {
+                    Status = 200,
+                    ContentType = "application/json",
+                    Body = "{\"column\":\"Id\",\"dataType\":\"int\",\"totalCount\":2,"
+                        + "\"nullCount\":0,\"distinctCount\":2,\"minimum\":1,\"maximum\":2,"
+                        + "\"topValues\":[]}",
+                });
+            }
+            catch (PlaywrightException)
+            {
+                // The fetch was intentionally aborted before this synthetic response was released.
+            }
+        });
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Profile", Exact = true }).ClickAsync();
+        await started.Task;
+        await Assertions.Expect(panel.GetByTestId("profile-cancel")).ToBeVisibleAsync();
+        await panel.GetByTestId("profile-cancel").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profile cancelled.");
+        await Assertions.Expect(panel.GetByTestId("profile-results")).ToBeEmptyAsync();
+        release.TrySetResult();
+        await Assertions.Expect(panel.GetByTestId("profile-results")).ToBeEmptyAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Tailors_object_explorer_and_designer_to_provider_capabilities()
     {
         await using var browserPage = await fixture.NewPageAsync();
