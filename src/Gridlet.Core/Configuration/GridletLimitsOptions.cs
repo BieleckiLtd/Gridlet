@@ -46,4 +46,16 @@ public sealed class GridletLimitsOptions
     /// closes it. Defaults to <c>15</c> minutes and must be at least <c>1</c>.
     /// </summary>
     public int QuerySessionIdleTimeoutMinutes { get; set; } = 15;
+
+    /// <summary>
+    /// Maximum ordinary (non-session) queries that may continue as server-side jobs at once.
+    /// Defaults to <c>8</c> and must be at least <c>1</c>.
+    /// </summary>
+    public int MaxQueryJobs { get; set; } = 8;
+
+    /// <summary>
+    /// How long a finished query job and its capped results remain available for reattachment.
+    /// Defaults to <c>15</c> minutes and must be at least <c>1</c>.
+    /// </summary>
+    public int QueryJobRetentionMinutes { get; set; } = 15;
 }

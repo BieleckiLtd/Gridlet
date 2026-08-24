@@ -196,4 +196,18 @@ public class GridletOptionsValidatorTests
         Assert.True(result.Failed);
         Assert.Contains("MaxPageSize", result.FailureMessage);
     }
+
+    [Fact]
+    public void Invalid_query_job_limits_fail()
+    {
+        var result = Validate(options =>
+        {
+            options.Limits.MaxQueryJobs = 0;
+            options.Limits.QueryJobRetentionMinutes = 0;
+        });
+
+        Assert.True(result.Failed);
+        Assert.Contains("MaxQueryJobs", result.FailureMessage);
+        Assert.Contains("QueryJobRetentionMinutes", result.FailureMessage);
+    }
 }

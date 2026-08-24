@@ -3823,6 +3823,125 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Keeps_a_query_job_running_while_another_workspace_tab_is_active()
+    {
+        fixture.Provider.PrepareLongQuery();
+        try
+        {
+            await using var browserPage = await fixture.NewPageAsync();
+            var page = browserPage.Page;
+            await OpenQueryAsync(page, "job-wait");
+
+            await page.GetByTestId("query-run").ClickAsync();
+            await Assertions.Expect(page.GetByTestId("query-status"))
+                .ToContainTextAsync("Running in background");
+
+            await page.GetByTitle("dbo.Customers").ClickAsync();
+            await Assertions.Expect(ActivePanel(page).GetByRole(
+                AriaRole.Cell, new() { Name = "Ada" })).ToBeVisibleAsync();
+
+            fixture.Provider.ReleaseLongQuery();
+            await page.Locator("#tabbar .tab").Filter(new() { HasText = "SQL 1" }).ClickAsync();
+            var queryPanel = ActivePanel(page);
+            await Assertions.Expect(queryPanel.GetByRole(
+                AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+            await Assertions.Expect(queryPanel.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+            browserPage.AssertNoUnexpectedErrors();
+        }
+        finally
+        {
+            fixture.Provider.ReleaseLongQuery();
+        }
+    }
+
+    [Fact]
+    public async Task Reattaches_to_a_running_query_job_after_page_reload()
+    {
+        fixture.Provider.PrepareLongQuery();
+        try
+        {
+            await using var browserPage = await fixture.NewPageAsync();
+            var page = browserPage.Page;
+            await OpenQueryAsync(page, "job-wait");
+
+            await page.GetByTestId("query-run").ClickAsync();
+            await Assertions.Expect(page.GetByTestId("query-status"))
+                .ToContainTextAsync("Running in background");
+
+            await page.ReloadAsync();
+            var queryPanel = ActivePanel(page);
+            await Assertions.Expect(queryPanel.GetByTestId("sql-editor")).ToHaveValueAsync("job-wait");
+            await Assertions.Expect(queryPanel.GetByTestId("query-status"))
+                .ToContainTextAsync("Running in background");
+
+            fixture.Provider.ReleaseLongQuery();
+            await Assertions.Expect(queryPanel.GetByRole(
+                AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+            await Assertions.Expect(queryPanel.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+            browserPage.AssertNoUnexpectedErrors();
+        }
+        finally
+        {
+            fixture.Provider.ReleaseLongQuery();
+        }
+    }
+
+    [Fact]
+    public async Task Cancels_a_running_query_job_on_the_server()
+    {
+        fixture.Provider.PrepareLongQuery();
+        try
+        {
+            await using var browserPage = await fixture.NewPageAsync();
+            var page = browserPage.Page;
+            await OpenQueryAsync(page, "job-wait");
+
+            await page.GetByTestId("query-run").ClickAsync();
+            await Assertions.Expect(page.GetByTestId("query-status"))
+                .ToContainTextAsync("Running in background");
+            await page.GetByTestId("query-cancel").ClickAsync();
+
+            await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("Cancelled");
+            await Assertions.Expect(page.GetByTestId("query-results").GetByRole(
+                AriaRole.Cell, new() { Name = "42" })).ToHaveCountAsync(0);
+            Assert.Equal(1, fixture.Provider.LongQueryCancellations);
+            browserPage.AssertNoUnexpectedErrors();
+        }
+        finally
+        {
+            fixture.Provider.ReleaseLongQuery();
+        }
+    }
+
+    [Fact]
+    public async Task Records_a_query_job_that_the_server_cannot_start()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT unavailable");
+        await page.RouteAsync("**/query/jobs", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 503,
+                ContentType = "application/json",
+                Body = "{\"error\":\"No query worker is available.\"}",
+            }));
+
+        await page.GetByTestId("query-run").ClickAsync();
+
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("Failed");
+        await Assertions.Expect(page.GetByTestId("query-results").GetByText(
+            "No query worker is available.", new() { Exact = true })).ToBeVisibleAsync();
+        await ClickQueryActionAsync(ActivePanel(page), "query-history");
+        var record = page.GetByRole(AriaRole.Dialog, new() { Name = "Query history" })
+            .GetByTestId("query-history-item");
+        await Assertions.Expect(record).ToHaveCountAsync(1);
+        await Assertions.Expect(record).ToContainTextAsync("SELECT unavailable");
+        await Assertions.Expect(record).ToContainTextAsync("Failed");
+        browserPage.AssertNoUnexpectedErrors("503");
+    }
+
+    [Fact]
     public async Task Warns_before_running_update_or_delete_without_a_where_clause()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -4073,7 +4192,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         history = page.GetByRole(AriaRole.Dialog, new() { Name = "Query history" });
         await history.GetByRole(AriaRole.Button, new() { Name = "Clear history", Exact = true }).ClickAsync();
         await Assertions.Expect(history.GetByTestId("query-history-empty")).ToBeVisibleAsync();
-        browserPage.AssertNoUnexpectedErrors("400");
+        browserPage.AssertNoUnexpectedErrors();
     }
 
     [Fact]
@@ -4324,7 +4443,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("Failed");
         await Assertions.Expect(page.GetByTestId("query-run")).ToBeEnabledAsync();
         await Assertions.Expect(page.GetByTestId("query-cancel")).ToBeDisabledAsync();
-        browserPage.AssertNoUnexpectedErrors("400");
+        browserPage.AssertNoUnexpectedErrors();
     }
 
     [Fact]
@@ -5166,6 +5285,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             "CREATE TRIGGER AuditCustomers AFTER INSERT ON Customers BEGIN SELECT 2; END;";
         await panel.GetByTestId("sql-editor").FillAsync(definition);
         await panel.GetByRole(AriaRole.Button, new() { Name = "Execute", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "AuditCustomers updated.", new() { Exact = true })).ToBeVisibleAsync();
 
         Assert.Equal(
             "BEGIN IMMEDIATE;\nDROP TRIGGER IF EXISTS [dbo].[AuditCustomers];\n" + definition + "\nCOMMIT;",

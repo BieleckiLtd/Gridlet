@@ -125,6 +125,16 @@ public sealed class GridletOptionsValidator : IValidateOptions<GridletOptions>
             failures.Add("Limits.QuerySessionIdleTimeoutMinutes must be at least 1.");
         }
 
+        if (limits.MaxQueryJobs < 1)
+        {
+            failures.Add("Limits.MaxQueryJobs must be at least 1.");
+        }
+
+        if (limits.QueryJobRetentionMinutes < 1)
+        {
+            failures.Add("Limits.QueryJobRetentionMinutes must be at least 1.");
+        }
+
         return failures.Count > 0
             ? ValidateOptionsResult.Fail(failures)
             : ValidateOptionsResult.Success;

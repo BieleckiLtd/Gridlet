@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Gridlet.Tests.AspNetCore.Fakes;
@@ -126,5 +127,31 @@ public class GridletAuthorizationTests
         Assert.Equal(HttpStatusCode.NotFound, stranger.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, strangerClose.StatusCode);
         Assert.Equal("[]", strangerList);
+    }
+
+    [Fact]
+    public async Task A_query_job_is_reachable_only_by_the_user_who_started_it()
+    {
+        var (app, client) = await StartSecuredAsync();
+        await using var _ = app;
+
+        client.DefaultRequestHeaders.Add("X-Test-User", "ada@example.com");
+        var started = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "SELECT 42" });
+        started.EnsureSuccessStatusCode();
+        var id = System.Text.Json.JsonDocument.Parse(await started.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("id").GetString();
+        var path = $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{id}";
+
+        var owner = await client.GetAsync(path + "?waitMs=0");
+        client.DefaultRequestHeaders.Remove("X-Test-User");
+        client.DefaultRequestHeaders.Add("X-Test-User", "grace@example.com");
+        var stranger = await client.GetAsync(path + "?waitMs=0");
+        var strangerCancel = await client.DeleteAsync(path);
+
+        Assert.Equal(HttpStatusCode.OK, owner.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, stranger.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, strangerCancel.StatusCode);
     }
 }
