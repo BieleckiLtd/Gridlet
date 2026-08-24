@@ -3823,6 +3823,73 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Copies_loaded_results_as_sql_json_and_markdown()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+        await OpenQueryAsync(page, "copy-formats");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+
+        async Task CopyAsync(string menuItem)
+        {
+            await ActivePanel(page).GetByTestId("copy-results").ClickAsync();
+            await page.GetByRole(AriaRole.Menuitem, new() { Name = menuItem, Exact = true }).ClickAsync();
+        }
+        async Task<string> ReadClipboardAsync() =>
+            (await page.EvaluateAsync<string>("navigator.clipboard.readText()"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([Odd]]Name], [Note], [Active], [Missing], [Payload]) VALUES\n" +
+            "    (N'Łódź O''Brien', N'line 1\nline | <2>', 1, NULL, 0x00FF);",
+            await ReadClipboardAsync());
+
+        await CopyAsync("Copy as JSON");
+        using (var json = JsonDocument.Parse(
+            await ReadClipboardAsync()))
+        {
+            var row = Assert.Single(json.RootElement.EnumerateArray());
+            Assert.Equal("Łódź O'Brien", row.GetProperty("Odd]Name").GetString());
+            Assert.Equal("line 1\nline | <2>", row.GetProperty("Note").GetString());
+            Assert.True(row.GetProperty("Active").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, row.GetProperty("Missing").ValueKind);
+            Assert.Equal("AP8=", row.GetProperty("Payload").GetString());
+        }
+
+        await CopyAsync("Copy as Markdown");
+        Assert.Equal(
+            "| Odd]Name | Note | Active | Missing | Payload |\n" +
+            "| --- | --- | --- | --- | --- |\n" +
+            "| Łódź O'Brien | line 1<br>line \\| &lt;2&gt; | true | NULL | AP8= |",
+            await ReadClipboardAsync());
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByRole(
+            AriaRole.Cell, new() { Name = "Grace" })).ToBeVisibleAsync();
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [dbo].[Customers] ([Id], [Name]) VALUES\n" +
+            "    (1, N'Ada'),\n" +
+            "    (2, N'Grace');",
+            await ReadClipboardAsync());
+
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-formats");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([Odd]]Name], [Note], [Active], [Missing], [Payload]) VALUES\n" +
+            "    ('Łódź O''Brien', 'line 1\nline | <2>', 1, NULL, X'00FF');",
+            await ReadClipboardAsync());
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Keeps_a_query_job_running_while_another_workspace_tab_is_active()
     {
         fixture.Provider.PrepareLongQuery();

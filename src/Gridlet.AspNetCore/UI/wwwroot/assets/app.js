@@ -5957,8 +5957,11 @@
       const createExportControls = () => exportButtons(
         data.columns, data.rows, o.name,
         currentConn().allowSqlExecution
-          ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope }
-          : null,
+          ? {
+            sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope,
+            insertTarget: sqlName(o),
+          }
+          : { scope, insertTarget: sqlName(o) },
         identity ? fullExport : null);
       actionBar.replaceChildren(...[
         o.type === 'Table' && !o.isInternal && !isVirtualObject(o)
@@ -11452,7 +11455,25 @@
   // ---- export ---------------------------------------------------------------------------
 
   function exportButtons(columns, rows, baseName, apiDefinition = null, serverExport = null) {
+    const copy = h('button', {
+      class: 'ghost', title: 'Copy all loaded rows', 'data-testid': 'copy-results',
+      onclick: (event) => showContextMenu(event, [
+        {
+          label: 'Copy as SQL INSERT',
+          action: () => copyResultData(columns, rows, 'sql', apiDefinition),
+        },
+        {
+          label: 'Copy as JSON',
+          action: () => copyResultData(columns, rows, 'json', apiDefinition),
+        },
+        {
+          label: 'Copy as Markdown',
+          action: () => copyResultData(columns, rows, 'markdown', apiDefinition),
+        },
+      ]),
+    }, 'Copy ▾');
     return h('span', { class: 'export-buttons' },
+      copy,
       h('button', {
         class: 'ghost',
         title: serverExport ? 'Download all filtered rows as CSV' : 'Download as CSV',
@@ -11465,18 +11486,104 @@
         'data-testid': 'export-json',
         onclick: () => serverExport ? serverExport('json') : exportData(columns, rows, 'json', baseName),
       }, serverExport ? 'Full JSON' : 'JSON'),
-      apiDefinition ? h('button', {
+      apiDefinition?.sql ? h('button', {
         class: 'ghost', title: 'Publish as an API endpoint', 'data-testid': 'publish-api',
         onclick: () => openPublishDialog(apiDefinition.sql, apiDefinition.name, apiDefinition.scope),
       }, 'API') : null);
+  }
+
+  async function copyResultData(columns, rows, format, definition = null) {
+    let content;
+    if (format === 'sql') {
+      const providerName = definition?.scope
+        ? connectionFor(definition.scope).providerName
+        : '';
+      content = resultRowsAsSqlInsert(
+        columns, rows, definition?.insertTarget || '[TargetTable]', providerName);
+    } else if (format === 'markdown') {
+      content = resultRowsAsMarkdown(columns, rows);
+    } else {
+      content = JSON.stringify(resultRowsAsObjects(columns, rows), null, 2);
+    }
+
+    try {
+      await navigator.clipboard.writeText(content);
+      toast(`${rows.length} loaded row${rows.length === 1 ? '' : 's'} copied as ${
+        format === 'sql' ? 'SQL INSERT' : format === 'json' ? 'JSON' : 'Markdown'}.`, false);
+    } catch {
+      toast('Copy failed - clipboard unavailable.');
+    }
+  }
+
+  function resultRowsAsObjects(columns, rows) {
+    const names = [];
+    const used = new Set();
+    for (const column of columns) {
+      const base = String(column.name);
+      let name = base;
+      let suffix = 2;
+      while (used.has(name)) name = `${base}_${suffix++}`;
+      used.add(name);
+      names.push(name);
+    }
+    return rows.map((row) => Object.fromEntries(
+      names.map((name, index) => [name, row[index]])));
+  }
+
+  function resultRowsAsSqlInsert(columns, rows, target, providerName) {
+    if (!columns.length || !rows.length) return '-- No loaded rows to insert.';
+    const names = columns.map((column) => quoteSqlIdentifier(column.name)).join(', ');
+    const values = rows.map((row) => '    (' + columns.map((column, index) =>
+      resultSqlLiteral(row[index], column, providerName)).join(', ') + ')');
+    return `INSERT INTO ${target} (${names}) VALUES\n${values.join(',\n')};`;
+  }
+
+  function quoteSqlIdentifier(value) {
+    return `[${String(value).replaceAll(']', ']]')}]`;
+  }
+
+  function resultSqlLiteral(value, column, providerName) {
+    if (value === null || value === undefined) return 'NULL';
+    if (typeof value === 'boolean') return value ? '1' : '0';
+    if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
+
+    const provider = String(providerName || '').toLowerCase();
+    const dataType = String(column.dataTypeName || '').toLowerCase();
+    const isBinary = provider.includes('sqlite')
+      ? /\bblob\b/.test(dataType)
+      : /\b(?:binary|varbinary|image|rowversion|timestamp)\b/.test(dataType);
+    if (isBinary && typeof value === 'string') {
+      try {
+        const bytes = Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+        const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('').toUpperCase();
+        return provider.includes('sqlite') ? `X'${hex}'` : `0x${hex}`;
+      } catch { /* malformed binary values fall back to an escaped string literal */ }
+    }
+
+    const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    const prefix = provider.includes('sqlserver') ? 'N' : '';
+    return `${prefix}'${text.replaceAll("'", "''")}'`;
+  }
+
+  function resultRowsAsMarkdown(columns, rows) {
+    const markdownCell = (value) => {
+      if (value === null || value === undefined) return 'NULL';
+      const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+        .replaceAll('|', '\\|').replace(/\r?\n/g, '<br>');
+    };
+    const header = `| ${columns.map((column) => markdownCell(column.name)).join(' | ')} |`;
+    const separator = `| ${columns.map(() => '---').join(' | ')} |`;
+    return [header, separator,
+      ...rows.map((row) => `| ${columns.map((_, index) => markdownCell(row[index])).join(' | ')} |`),
+    ].join('\n');
   }
 
   function exportData(columns, rows, format, baseName) {
     let content;
     let type;
     if (format === 'json') {
-      content = JSON.stringify(
-        rows.map((r) => Object.fromEntries(columns.map((c, i) => [c.name, r[i]]))), null, 2);
+      content = JSON.stringify(resultRowsAsObjects(columns, rows), null, 2);
       type = 'application/json';
     } else {
       const escape = (v) => {
