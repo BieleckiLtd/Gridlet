@@ -548,6 +548,7 @@
       data: (s, n, q) => `${objBase(s, n)}/data?${q}`,
       dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
       profile: (s, n, q) => `${objBase(s, n)}/profile?${q}`,
+      dataExport: (s, n, q) => `${objBase(s, n)}/data/export?${q}`,
       structure: (s, n) => `${objBase(s, n)}/structure`,
       definition: (s, n, type = null) => `${objBase(s, n)}/definition${type ? `?type=${enc(type)}` : ''}`,
       dependencies: (s, n) => `${objBase(s, n)}/dependencies`,
@@ -5941,7 +5942,18 @@
         exportButtons(data.columns, data.rows, o.name,
           currentConn().allowSqlExecution
             ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope }
-            : null),
+            : null,
+          (format) => {
+            const params = new URLSearchParams({ format });
+            if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
+            if (grid.filters.length) params.set('filter', JSON.stringify(grid.filters));
+            const link = h('a', {
+              href: urls.dataExport(o.schema, o.name, params), download: '', hidden: '',
+            });
+            document.body.append(link);
+            link.click();
+            link.remove();
+          }),
         h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
         status,
         o.type === 'Table' && currentConn().allowWrites && !o.isInternal && canDropObject(o)
@@ -11148,16 +11160,20 @@
 
   // ---- export ---------------------------------------------------------------------------
 
-  function exportButtons(columns, rows, baseName, apiDefinition = null) {
+  function exportButtons(columns, rows, baseName, apiDefinition = null, serverExport = null) {
     return h('span', { class: 'export-buttons' },
       h('button', {
-        class: 'ghost', title: 'Download as CSV', 'data-testid': 'export-csv',
-        onclick: () => exportData(columns, rows, 'csv', baseName),
-      }, 'CSV'),
+        class: 'ghost',
+        title: serverExport ? 'Download all filtered rows as CSV' : 'Download as CSV',
+        'data-testid': 'export-csv',
+        onclick: () => serverExport ? serverExport('csv') : exportData(columns, rows, 'csv', baseName),
+      }, serverExport ? 'Full CSV' : 'CSV'),
       h('button', {
-        class: 'ghost', title: 'Download as JSON', 'data-testid': 'export-json',
-        onclick: () => exportData(columns, rows, 'json', baseName),
-      }, 'JSON'),
+        class: 'ghost',
+        title: serverExport ? 'Download all filtered rows as JSON' : 'Download as JSON',
+        'data-testid': 'export-json',
+        onclick: () => serverExport ? serverExport('json') : exportData(columns, rows, 'json', baseName),
+      }, serverExport ? 'Full JSON' : 'JSON'),
       apiDefinition ? h('button', {
         class: 'ghost', title: 'Publish as an API endpoint', 'data-testid': 'publish-api',
         onclick: () => openPublishDialog(apiDefinition.sql, apiDefinition.name, apiDefinition.scope),

@@ -320,6 +320,98 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Csv_export_streams_every_row_beyond_the_interactive_cap_in_provider_pages()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.DefaultPageSize = 2;
+            options.Limits.MaxPageSize = 2;
+            options.Limits.MaxQueryResultRows = 1;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Ledger/data/export?format=csv");
+        var csv = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/csv", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal("Ledger.csv", response.Content.Headers.ContentDisposition!.FileNameStar);
+        Assert.Equal(5, csv.Split("\r\n", StringSplitOptions.RemoveEmptyEntries).Length);
+        Assert.StartsWith("Id,Name,SysStart,SysEnd\r\n", csv);
+        Assert.Contains("1,Ada,2026-01-01T00:00:00.0000000", csv);
+        Assert.Contains("4,Alan,2026-01-04T00:00:00.0000000", csv);
+        Assert.Equal([(1, 2), (2, 2)], fake.DataPageRequests);
+    }
+
+    [Fact]
+    public async Task Json_export_preserves_values_and_the_current_sort_and_filter_scope()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        var filter = Uri.EscapeDataString(
+            """[{"column":"Name","operator":"contains","value":"ad a"}]""");
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data/export"
+            + $"?format=json&sort=Name&dir=desc&filter={filter}");
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal(2, document.RootElement.GetArrayLength());
+        Assert.Equal(1, document.RootElement[0].GetProperty("Id").GetInt32());
+        Assert.Equal("Ada", document.RootElement[0].GetProperty("Name").GetString());
+        Assert.Equal("Name", fake.LastDataRequest!.SortColumn);
+        Assert.Equal(SortDirection.Descending, fake.LastDataRequest.SortDirection);
+        var applied = Assert.Single(fake.LastDataRequest.Filters!);
+        Assert.Equal("Name", applied.Column);
+        Assert.Equal(FilterOperator.Contains, applied.Operator);
+        Assert.Equal("ad a", applied.Value);
+    }
+
+    [Fact]
+    public async Task Export_rejects_an_unknown_format_before_reading_the_provider()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data/export?format=xml");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("csv or json", await response.Content.ReadAsStringAsync());
+        Assert.Empty(fake.DataPageRequests);
+    }
+
+    [Fact]
+    public async Task Streaming_exports_preserve_csv_escaping_and_json_value_types()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        const string export =
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/ExportCases/data/export";
+
+        var csv = await client.GetStringAsync(export + "?format=csv");
+        var json = await client.GetStringAsync(export + "?format=json");
+        using var document = JsonDocument.Parse(json);
+        var row = document.RootElement[0];
+
+        Assert.Equal(
+            "Text,Binary,When,Nullable\r\n\"a,\"\"b\r\nc\",AP8=,2026-01-02T03:04:05.0000000Z,\r\n",
+            csv);
+        Assert.Equal("a,\"b\r\nc", row.GetProperty("Text").GetString());
+        Assert.Equal("AP8=", row.GetProperty("Binary").GetString());
+        Assert.Equal(DateTimeKind.Utc, row.GetProperty("When").GetDateTime().Kind);
+        Assert.Equal(JsonValueKind.Null, row.GetProperty("Nullable").ValueKind);
+    }
+
+    [Fact]
     public async Task Data_requests_carry_filters_to_the_provider()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();

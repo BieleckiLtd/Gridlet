@@ -3690,6 +3690,36 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Downloads_the_full_table_even_when_the_browser_retains_one_row()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("localStorage.setItem('gridlet.queryMaxRows', '1')");
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("[title='dbo.Ledger']").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("1 row(s) - safety cap reached", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(panel.GetByTestId("export-csv")).ToHaveTextAsync("Full CSV");
+
+        var csvDownload = await page.RunAndWaitForDownloadAsync(
+            () => panel.GetByTestId("export-csv").ClickAsync());
+        Assert.Equal("Ledger.csv", csvDownload.SuggestedFilename);
+        var csv = await ReadDownloadAsync(csvDownload);
+        Assert.Equal(5, csv.Split("\r\n", StringSplitOptions.RemoveEmptyEntries).Length);
+        Assert.Contains("4,Alan", csv);
+
+        var jsonDownload = await page.RunAndWaitForDownloadAsync(
+            () => panel.GetByTestId("export-json").ClickAsync());
+        Assert.Equal("Ledger.json", jsonDownload.SuggestedFilename);
+        using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
+        Assert.Equal(4, document.RootElement.GetArrayLength());
+        Assert.Equal("Alan", document.RootElement[3].GetProperty("Name").GetString());
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Tailors_object_explorer_and_designer_to_provider_capabilities()
     {
         await using var browserPage = await fixture.NewPageAsync();

@@ -60,6 +60,7 @@ internal static partial class GridletApiEndpoints
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data", GetObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data/stream", StreamObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/profile", GetColumnProfile);
+        api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data/export", ExportObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/structure", GetObjectStructure);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", SaveForeignKeyDisplay);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", DeleteForeignKeyDisplay);
@@ -369,6 +370,52 @@ internal static partial class GridletApiEndpoints
                 httpContext, new QueryStreamEvent("error", Message: clientMessage));
         }
     }
+
+    private static Task<IResult> ExportObjectData(
+        string connection,
+        string database,
+        string schema,
+        string name,
+        string? format,
+        string? sort,
+        string? dir,
+        string? filter,
+        IGridletConnectionResolver resolver,
+        IOptionsMonitor<GridletOptions> options,
+        CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var exportFormat = format?.Trim().ToLowerInvariant() ?? "csv";
+            if (exportFormat is not ("csv" or "json"))
+            {
+                throw new GridletValidationException("Export format must be csv or json.");
+            }
+
+            var resolved = resolver.Resolve(connection, database);
+            var pageSize = options.CurrentValue.Limits.MaxPageSize;
+            var direction = string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase)
+                ? SortDirection.Descending : SortDirection.Ascending;
+            var filters = ParseFilters(filter);
+            // Fetch the first page before response headers are committed. Object, sort, and filter
+            // validation errors can therefore retain the API's normal structured status/body.
+            var firstPage = await resolved.Provider.Data.GetPageAsync(
+                resolved.Context,
+                schema,
+                name,
+                new TableDataRequest(1, pageSize, sort, direction, filters),
+                cancellationToken);
+            return new GridletTableExportResult(
+                resolved.Provider.Data,
+                resolved.Context,
+                schema,
+                name,
+                exportFormat,
+                sort,
+                direction,
+                filters,
+                pageSize,
+                firstPage);
+        });
 
     /// <summary>
     /// Reads the <c>filter</c> query parameter, a JSON array of conditions. JSON rather than a

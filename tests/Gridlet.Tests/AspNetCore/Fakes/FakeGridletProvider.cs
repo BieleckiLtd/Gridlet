@@ -294,6 +294,9 @@ public sealed class FakeGridletProvider :
     /// <summary>The filters the most recent page request carried, so their parsing can be asserted.</summary>
     public IReadOnlyList<TableDataFilter>? LastDataFilters { get; private set; }
 
+    /// <summary>The most recent complete page request, including sort and paging details.</summary>
+    public TableDataRequest? LastDataRequest { get; private set; }
+
     /// <summary>Every page asked for, in order, so a caller's paging can be asserted.</summary>
     public List<(int Page, int PageSize)> DataPageRequests { get; } = [];
 
@@ -301,6 +304,7 @@ public sealed class FakeGridletProvider :
         GridletConnectionContext context, string schema, string name, TableDataRequest request,
         CancellationToken cancellationToken = default)
     {
+        LastDataRequest = request;
         LastDataFilters = request.Filters;
         DataPageRequests.Add((request.Page, request.PageSize));
         return GetPageCore(name, request);
@@ -377,7 +381,14 @@ public sealed class FakeGridletProvider :
     }
 
     private static Task<TableDataPage> GetFixedPage(string name, TableDataRequest request)
-        => Task.FromResult(name == "Orders"
+        => Task.FromResult(name == "ExportCases"
+            ? new TableDataPage(
+                [new ResultColumn("Text", "nvarchar(max)"), new ResultColumn("Binary", "varbinary(max)"),
+                    new ResultColumn("When", "datetime2"), new ResultColumn("Nullable", "int")],
+                [["a,\"b\r\nc", new byte[] { 0, 255 },
+                    new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc), null]],
+                request.Page, request.PageSize, TotalRows: 1)
+            : name == "Orders"
             ? new TableDataPage(
                 [new ResultColumn("Id", "int"), new ResultColumn("PizzaId", "int"),
                     new ResultColumn("Promotion", "nvarchar(100)")],
