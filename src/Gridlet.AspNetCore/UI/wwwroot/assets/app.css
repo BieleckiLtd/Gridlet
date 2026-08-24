@@ -702,6 +702,54 @@ button.ghost { background: transparent; }
   .er-summary { margin-left: 0; }
 }
 
+/* ---- schema comparison ---- */
+.badge-compare {
+  background: color-mix(in srgb, var(--ok) 20%, var(--panel)); color: var(--ok);
+}
+.schema-compare-panel { overflow: hidden; }
+.schema-compare-toolbar { flex: 0 0 auto; flex-wrap: wrap; gap: 8px; }
+.schema-compare-toolbar label { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 11px; }
+.schema-compare-toolbar select { min-width: 125px; }
+.schema-compare-arrow { color: var(--muted); font-size: 18px; }
+.schema-compare-status { margin-left: auto; }
+.schema-compare-results {
+  display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 14px;
+  overflow: auto; padding: 14px;
+}
+.schema-compare-summary { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.schema-change-count, .schema-change {
+  padding: 2px 6px; border-radius: 999px; font: 700 10px/1.4 var(--mono); text-transform: uppercase;
+}
+.schema-change-count.missing, .schema-change.missing {
+  background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent);
+}
+.schema-change-count.different, .schema-change.different {
+  background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning);
+}
+.schema-change-count.extra, .schema-change.extra {
+  background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted);
+}
+.schema-change-count.unavailable, .schema-change.unavailable {
+  background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger);
+}
+.schema-change-grid { flex: 0 0 auto; max-height: min(34vh, 360px); }
+.schema-change-grid .data-grid { min-width: 700px; }
+.schema-migration-preview { display: flex; min-height: 360px; flex: 1; flex-direction: column; gap: 8px; }
+.schema-migration-preview .section-heading { display: flex; gap: 12px; align-items: center; }
+.schema-migration-preview .section-heading h3 { margin: 0; }
+.schema-migration-preview .section-heading p { margin: 3px 0 0; }
+.schema-migration-preview .section-heading > .inline-form { margin-left: auto; }
+.schema-migration-preview .sql-editor { min-height: 300px; flex: 1; }
+
+@media (max-width: 760px) {
+  .schema-compare-toolbar { align-items: stretch; }
+  .schema-compare-toolbar label, .schema-compare-toolbar select { width: 100%; }
+  .schema-compare-arrow { display: none; }
+  .schema-compare-status { width: 100%; margin-left: 0; }
+  .schema-migration-preview .section-heading { align-items: stretch; flex-direction: column; }
+  .schema-migration-preview .section-heading > .inline-form { margin-left: 0; }
+}
+
 /* ---- data grid ---- */
 .grid-scroll { overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .grid-scroll.virtualized { max-height: min(60vh, 640px); }
