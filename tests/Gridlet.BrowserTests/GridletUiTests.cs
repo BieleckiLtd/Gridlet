@@ -1839,6 +1839,162 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Object_search_finds_definition_text_across_every_connection()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("definitions");
+        await search.GetByTestId("object-search-query").FillAsync("AFTER INSERT");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("3 matches");
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("3 databases · 3 connections");
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(3);
+        await Assertions.Expect(search.GetByText("Main / FakeDb", new() { Exact = false }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(search.GetByText("DdlOnly / FakeDb", new() { Exact = false }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(search.GetByText("SQLite / FakeDb", new() { Exact = false }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-results"))
+            .ToContainTextAsync("dbo.AuditCustomers");
+        await Assertions.Expect(search.GetByTestId("object-search-results"))
+            .ToContainTextAsync("Line 1:");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_name_search_skips_definitions_and_opens_the_original_scope()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var definitionRequests = 0;
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/definition", StringComparison.Ordinal)) definitionRequests++;
+        };
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("names");
+        await search.GetByTestId("object-search-query").FillAsync("AccountNumber");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("3 matches");
+        Assert.Equal(0, definitionRequests);
+        await search.Locator("[title*='SQLite / FakeDb']").ClickAsync();
+        await Assertions.Expect(page.Locator(".tab.active").GetByTestId("tab-scope"))
+            .ToHaveTextAsync("SQLite / FakeDb");
+        await Assertions.Expect(page.Locator("#connection-select")).ToHaveValueAsync("Main");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_search_includes_system_databases_only_when_requested()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("names");
+        await search.GetByTestId("object-search-query").FillAsync("dbo.Customers");
+        await search.GetByTestId("object-search-run").ClickAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(3);
+
+        await search.GetByLabel("System databases").CheckAsync();
+        await search.GetByTestId("object-search-run").ClickAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("6 databases · 3 connections");
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(6);
+        await Assertions.Expect(search.GetByText("Main / master", new() { Exact = false }))
+            .ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_search_isolates_connection_failures_and_restores_its_workspace()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/SQLite/databases", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 503, ContentType = "application/json",
+                Body = "{\"error\":\"catalog offline\"}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("names");
+        await search.GetByTestId("object-search-query").FillAsync("dbo.Customers");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("2 matches");
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("1 failure");
+        await Assertions.Expect(search.GetByTestId("object-search-results"))
+            .ToContainTextAsync("SQLite: catalog offline");
+
+        await page.ReloadAsync();
+        search = page.GetByTestId("object-search");
+        await Assertions.Expect(search.GetByTestId("object-search-query"))
+            .ToHaveValueAsync("dbo.Customers");
+        await Assertions.Expect(search.GetByTestId("object-search-mode"))
+            .ToHaveValueAsync("names");
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("2 matches");
+        browserPage.AssertNoUnexpectedErrors("503", "503");
+    }
+
+    [Fact]
+    public async Task Object_search_cancels_every_pending_definition_request_without_stale_results()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("""
+            (() => {
+              const originalFetch = window.fetch;
+              window.__objectSearchAborts = 0;
+              window.fetch = (input, init = {}) => {
+                const url = String(input);
+                if (url.includes('/definition?')) {
+                  return new Promise((resolve, reject) => {
+                    const abort = () => {
+                      window.__objectSearchAborts++;
+                      reject(new DOMException('Aborted', 'AbortError'));
+                    };
+                    if (init.signal?.aborted) abort();
+                    else init.signal?.addEventListener('abort', abort, { once: true });
+                  });
+                }
+                return originalFetch.call(window, input, init);
+              };
+            })();
+            """);
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-query").FillAsync("CREATE");
+        await search.GetByTestId("object-search-run").ClickAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-cancel")).ToBeVisibleAsync();
+        await search.GetByTestId("object-search-cancel").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToHaveTextAsync("Search cancelled.");
+        await page.WaitForFunctionAsync("() => window.__objectSearchAborts > 0");
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Talks_with_the_database_using_an_ephemeral_user_key()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -4692,6 +4848,15 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(comparison.GetByTestId("data-target-object"))
             .ToHaveValueAsync("dbo/customers");
         return comparison;
+    }
+
+    private static async Task<ILocator> OpenObjectSearchAsync(IPage page)
+    {
+        await page.GetByTestId("object-search-open").ClickAsync();
+        var search = page.GetByTestId("object-search");
+        await Assertions.Expect(search).ToBeVisibleAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-query")).ToBeFocusedAsync();
+        return search;
     }
 
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
