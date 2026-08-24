@@ -1468,6 +1468,8 @@
   });
 
   registerTabRestorer('diagram', (descriptor) => openDiagramTab(descriptor.scope));
+  registerTabRestorer('schema-compare', (descriptor) =>
+    openSchemaCompareTab(descriptor.source, descriptor.target));
 
   registerTabRestorer('apis', () => openApisTab());
 
@@ -1638,8 +1640,9 @@
     await loadModules();
 
     navigationOverflow = setupOverflowToolbar($('#topbar'), [
-      $('#version'), $('#about-btn'), $('#apis-btn'), $('#ask-btn'), $('#theme-btn'), $('#refresh-btn'),
-      $('.connection-pickers'), $('#new-query-btn'), $('#diagram-btn'), ...moduleActions,
+      $('#version'), $('#about-btn'), $('#apis-btn'), $('#schema-compare-btn'), $('#ask-btn'),
+      $('#theme-btn'), $('#refresh-btn'), $('.connection-pickers'), $('#new-query-btn'), $('#diagram-btn'),
+      ...moduleActions,
     ], 'More app actions');
 
     $('#version').textContent = 'v' + state.meta.version;
@@ -1672,6 +1675,7 @@
     $('#refresh-btn').addEventListener('click', () => loadObjects());
     $('#ask-btn').addEventListener('click', () => openAgentTab());
     $('#diagram-btn').addEventListener('click', () => openDiagramTab());
+    $('#schema-compare-btn').addEventListener('click', () => openSchemaCompareTab());
     $('#new-query-btn').addEventListener('click', () => openQueryTab());
     $('#apis-btn').addEventListener('click', () => openApisTab());
     $('#about-btn').addEventListener('click', showAbout);
@@ -1682,6 +1686,7 @@
     $('#sidebar').addEventListener('contextmenu', (event) => showContextMenu(event, [
       { label: 'Query', action: () => openQueryTab() },
       { label: 'ER diagram', action: () => openDiagramTab() },
+      { label: 'Compare schemas', action: () => openSchemaCompareTab() },
       { label: 'Refresh objects', action: () => loadObjects() },
       ...(currentConn().allowDdl ? [
         { separator: true },
@@ -2749,6 +2754,1184 @@
 
     filter.addEventListener('input', render);
     render();
+  }
+
+  // ---- schema comparison ------------------------------------------------------
+
+  const comparisonTableKey = (object, objectScope, targetScope) => {
+    const targetCapabilities = capabilitiesFor(targetScope);
+    const schema = targetCapabilities.supportsSchemas
+      ? (capabilitiesFor(objectScope).supportsSchemas
+        ? object.schema : targetCapabilities.defaultSchema)
+      : '';
+    return `${schema || ''}\u0000${object.name}`.toLowerCase();
+  };
+
+  const comparisonColumns = (definition) => {
+    const periodColumns = new Set([
+      definition.temporal?.periodStartColumn,
+      definition.temporal?.periodEndColumn,
+    ].filter(Boolean).map((name) => name.toLowerCase()));
+    return (definition.columns || []).filter((column) =>
+      !column.isHidden || periodColumns.has(column.name.toLowerCase()));
+  };
+
+  const migrationIsSqlite = (scope) =>
+    String(connectionFor(scope).providerName || '').toLowerCase().includes('sqlite');
+
+  const migrationReferentialAction = (action, targetScope) => {
+    const normalized = String(action || 'NO_ACTION').toUpperCase().replaceAll('_', ' ');
+    return !migrationIsSqlite(targetScope) && normalized === 'RESTRICT' ? 'NO ACTION' : normalized;
+  };
+
+  const migrationQuote = (name, scope) => migrationIsSqlite(scope)
+    ? `"${String(name).replaceAll('"', '""')}"`
+    : `[${String(name).replaceAll(']', ']]')}]`;
+
+  function migrationObject(object, sourceScope, targetScope) {
+    const sourceCapabilities = capabilitiesFor(sourceScope);
+    const targetCapabilities = capabilitiesFor(targetScope);
+    return {
+      schema: targetCapabilities.supportsSchemas
+        ? (sourceCapabilities.supportsSchemas ? object.schema : targetCapabilities.defaultSchema)
+        : object.schema,
+      name: object.name,
+    };
+  }
+
+  function migrationName(object, sourceScope, targetScope) {
+    const mapped = migrationObject(object, sourceScope, targetScope);
+    return capabilitiesFor(targetScope).supportsSchemas
+      ? `${migrationQuote(mapped.schema, targetScope)}.${migrationQuote(mapped.name, targetScope)}`
+      : migrationQuote(mapped.name, targetScope);
+  }
+
+  function migrationType(dataType, targetScope) {
+    const type = String(dataType || '').trim();
+    const upper = type.toUpperCase().replace(/\s+/g, ' ');
+    if (migrationIsSqlite(targetScope)) {
+      if (upper.includes('INT')) return 'INTEGER';
+      if (/CHAR|CLOB|TEXT/.test(upper)) return 'TEXT';
+      if (/BLOB|BINARY|IMAGE/.test(upper) || !upper) return 'BLOB';
+      if (/REAL|FLOA|DOUB/.test(upper)) return 'REAL';
+      return 'NUMERIC';
+    }
+    if (upper === 'INTEGER') return 'bigint';
+    if (upper === 'TEXT') return 'nvarchar(max)';
+    if (upper === 'BLOB') return 'varbinary(max)';
+    if (upper === 'REAL') return 'float';
+    if (upper === 'NUMERIC') return 'decimal(38, 10)';
+    return type || 'nvarchar(max)';
+  }
+
+  function comparisonPortableType(dataType) {
+    const upper = String(dataType || '').trim().toUpperCase();
+    if (/\b(?:TINYINT|SMALLINT|INT|BIGINT|INTEGER)\b/.test(upper)) return 'integer';
+    if (/CHAR|CLOB|TEXT|XML|JSON/.test(upper)) return 'text';
+    if (/BLOB|BINARY|IMAGE|VARBINARY/.test(upper)) return 'blob';
+    if (/REAL|FLOA|DOUB/.test(upper)) return 'real';
+    return 'numeric';
+  }
+
+  const migrationSameProvider = (sourceScope, targetScope) =>
+    String(connectionFor(sourceScope).providerName).toLowerCase()
+      === String(connectionFor(targetScope).providerName).toLowerCase();
+
+  function migrationColumnCollationIssue(column, sourceScope, targetScope) {
+    if (!column.collation || migrationSameProvider(sourceScope, targetScope)) return null;
+    if (migrationIsSqlite(targetScope)
+      && ['BINARY', 'NOCASE', 'RTRIM'].includes(String(column.collation).toUpperCase())) return null;
+    return `collation ${column.collation} is not portable to ${connectionFor(targetScope).providerName}`;
+  }
+
+  const migrationCommentSql = (sql) => String(sql).split('\n').map((line) => `-- ${line}`).join('\n');
+
+  const comparisonText = (value) => String(value || '')
+    .trim().replace(/\s+/g, ' ').replace(/^\((.*)\)$/s, '$1').toLowerCase();
+
+  function comparisonColumnFingerprint(column, columnScope, otherScope) {
+    const sameProvider = String(connectionFor(columnScope).providerName).toLowerCase()
+      === String(connectionFor(otherScope).providerName).toLowerCase();
+    return [
+      sameProvider
+        ? comparisonText(column.dataType)
+        : comparisonPortableType(column.dataType),
+      Boolean(column.isNullable),
+      Boolean(column.isIdentity),
+      column.isIdentity ? Number(column.identitySeed ?? 1) : '',
+      column.isIdentity ? Number(column.identityIncrement ?? 1) : '',
+      Boolean(column.isComputed),
+      Boolean(column.isPersisted),
+      sameProvider ? comparisonText(column.collation) : '',
+      comparisonText(column.defaultDefinition),
+      comparisonText(column.computedDefinition || column.generatedExpression),
+    ].join('|');
+  }
+
+  const orderedIndexKeys = (value) => value.keyColumns?.length
+    ? [...value.keyColumns].sort((a, b) => a.ordinal - b.ordinal)
+    : (value.columns || []).map((column, index) => ({ column, ordinal: index + 1 }));
+
+  const migrationIndexColumns = (index) => orderedIndexKeys(index)
+    .map((key) => key.column).filter(Boolean).map(String);
+
+  function migrationIndexTerm(key, targetScope) {
+    let term = key.expression || (key.column ? migrationQuote(key.column, targetScope) : '(expression)');
+    if (key.collation) term += ` COLLATE ${key.collation}`;
+    if (key.isDescending) term += ' DESC';
+    return term;
+  }
+
+  const migrationIndexTerms = (value, targetScope) => orderedIndexKeys(value)
+    .map((key) => migrationIndexTerm(key, targetScope));
+
+  const migrationPrimaryKeyTerms = (index, targetScope) => orderedIndexKeys(index)
+    .map((key) => `${key.column ? migrationQuote(key.column, targetScope) : key.expression || '(expression)'}`
+      + `${migrationIsSqlite(targetScope) && key.collation ? ` COLLATE ${key.collation}` : ''}`
+      + `${key.isDescending ? ' DESC' : ''}`);
+
+  function migrationUnsupportedKeyReason(value, targetScope) {
+    const keys = orderedIndexKeys(value);
+    if (!migrationIsSqlite(targetScope) && keys.some((key) => key.expression || key.collation)) {
+      return 'uses an expression or per-key collation that cannot be emitted safely for SQL Server';
+    }
+    if (migrationIsSqlite(targetScope) && keys.some((key) => key.collation
+      && !['BINARY', 'NOCASE', 'RTRIM'].includes(String(key.collation).toUpperCase()))) {
+      return 'uses a source-provider collation that is not built into SQLite';
+    }
+    return null;
+  }
+
+  const comparisonIndexColumns = (index) => migrationIndexColumns(index)
+    .map((name) => name.toLowerCase());
+
+  const comparisonIndexFingerprint = (index, indexScope, otherScope) => {
+    const sameProvider = !indexScope || !otherScope
+      || String(connectionFor(indexScope).providerName).toLowerCase()
+        === String(connectionFor(otherScope).providerName).toLowerCase();
+    return [
+    Boolean(index.isPrimaryKey), Boolean(index.isUnique), Boolean(index.isDisabled),
+    orderedIndexKeys(index).map((key) => [
+      comparisonText(key.column), comparisonText(key.expression),
+      Boolean(key.isDescending), sameProvider ? comparisonText(key.collation) : '',
+    ].join(':')).join(','),
+    sameProvider
+      ? (index.includedColumns || []).map((name) => String(name).toLowerCase()).sort().join(',')
+      : '',
+    comparisonText(index.filterDefinition),
+    ].join('|');
+  };
+
+  const comparisonForeignKeyFingerprint = (foreignKey, sourceScope, targetScope) => {
+    const targetObject = migrationObject({
+      schema: foreignKey.referencedSchema, name: foreignKey.referencedTable,
+    }, sourceScope, targetScope);
+    return [
+      capabilitiesFor(targetScope).supportsSchemas ? targetObject.schema.toLowerCase() : '',
+      targetObject.name.toLowerCase(),
+      (foreignKey.columns || []).map((pair) =>
+        `${String(pair.column).toLowerCase()}:${String(pair.referencedColumn).toLowerCase()}`).join(','),
+      migrationReferentialAction(foreignKey.onDelete, targetScope),
+      migrationReferentialAction(foreignKey.onUpdate, targetScope),
+    ].join('|');
+  };
+
+  function migrationColumn(column, targetScope, sourceScope = targetScope,
+    sqliteAutoincrementColumn = null) {
+    const name = migrationQuote(column.name, targetScope);
+    if (column.isComputed) {
+      const expression = String(column.computedDefinition || column.generatedExpression || '').trim();
+      return migrationIsSqlite(targetScope)
+        ? `${name} GENERATED ALWAYS AS (${expression || '/* expression */'}) `
+          + `${column.isPersisted ? 'STORED' : 'VIRTUAL'}`
+        : `${name} AS (${expression || '/* expression */'})${column.isPersisted ? ' PERSISTED' : ''}`;
+    }
+    const type = migrationType(column.dataType, targetScope);
+    const seed = Number(column.identitySeed ?? 1);
+    const increment = Number(column.identityIncrement ?? 1);
+    if (migrationIsSqlite(targetScope) && column.isIdentity
+      && column.name.toLowerCase() === sqliteAutoincrementColumn?.toLowerCase()
+      && type === 'INTEGER' && seed === 1 && increment === 1) {
+      return `${name} INTEGER PRIMARY KEY AUTOINCREMENT`;
+    }
+    let sql = `${name} ${type}`;
+    if (column.collation && !migrationColumnCollationIssue(column, sourceScope, targetScope)) {
+      sql += ` COLLATE ${column.collation}`;
+    }
+    if (!migrationIsSqlite(targetScope) && column.isIdentity) {
+      sql += ` IDENTITY(${seed}, ${increment})`;
+    }
+    sql += column.isNullable ? ' NULL' : ' NOT NULL';
+    if (column.defaultDefinition) sql += ` DEFAULT ${String(column.defaultDefinition).trim()}`;
+    return sql;
+  }
+
+  function migrationPrimaryKey(definition) {
+    return (definition.indexes || []).find((index) => index.isPrimaryKey) || null;
+  }
+
+  function migrationSqliteAutoincrementColumn(definition, targetScope) {
+    if (!migrationIsSqlite(targetScope)) return null;
+    const keys = orderedIndexKeys(migrationPrimaryKey(definition) || {});
+    if (keys.length !== 1 || !keys[0].column) return null;
+    const column = comparisonColumns(definition).find((candidate) =>
+      candidate.name.toLowerCase() === keys[0].column.toLowerCase());
+    if (!column?.isIdentity || migrationType(column.dataType, targetScope) !== 'INTEGER'
+      || Number(column.identitySeed ?? 1) !== 1 || Number(column.identityIncrement ?? 1) !== 1) return null;
+    return column.name;
+  }
+
+  function migrationCreateTable(definition, sourceScope, targetScope) {
+    const tableName = migrationName(definition.object, sourceScope, targetScope);
+    const temporal = !migrationIsSqlite(targetScope)
+      && definition.temporal?.kind === 'systemVersioned' ? definition.temporal : null;
+    const primaryKey = migrationPrimaryKey(definition);
+    const sqliteAutoincrementColumn = migrationSqliteAutoincrementColumn(definition, targetScope);
+    const body = comparisonColumns(definition).map((column) => {
+      const role = column.name.toLowerCase() === temporal?.periodStartColumn?.toLowerCase()
+        ? 'START'
+        : column.name.toLowerCase() === temporal?.periodEndColumn?.toLowerCase() ? 'END' : null;
+      if (!role) {
+        return `  ${migrationColumn(
+          column, targetScope, sourceScope, sqliteAutoincrementColumn)}`;
+      }
+      let sql = `${migrationQuote(column.name, targetScope)} ${migrationType(column.dataType, targetScope)}`
+        + ` GENERATED ALWAYS AS ROW ${role}${column.isHidden ? ' HIDDEN' : ''}`
+        + `${column.isNullable ? ' NULL' : ' NOT NULL'}`;
+      if (column.defaultDefinition) sql += ` DEFAULT ${String(column.defaultDefinition).trim()}`;
+      return `  ${sql}`;
+    });
+    if (primaryKey && !sqliteAutoincrementColumn) {
+      const columns = migrationPrimaryKeyTerms(primaryKey, targetScope).join(', ');
+      body.push(`  CONSTRAINT ${migrationQuote(primaryKey.name || `PK_${definition.object.name}`, targetScope)} `
+        + `PRIMARY KEY (${columns})`);
+    }
+    for (const constraint of (definition.checkConstraints || [])
+      .filter((item) => !item.isDisabled && item.isTrusted !== false)) {
+      const prefix = constraint.name
+        ? `CONSTRAINT ${migrationQuote(constraint.name, targetScope)} ` : '';
+      body.push(`  ${prefix}CHECK (${constraint.definition})`);
+    }
+    if (migrationIsSqlite(targetScope)) {
+      for (const foreignKey of definition.foreignKeys || []) {
+        const sourceColumns = (foreignKey.columns || [])
+          .map((pair) => migrationQuote(pair.column, targetScope)).join(', ');
+        const targetColumns = (foreignKey.columns || [])
+          .map((pair) => migrationQuote(pair.referencedColumn, targetScope)).join(', ');
+        const referenced = migrationName({
+          schema: foreignKey.referencedSchema, name: foreignKey.referencedTable,
+        }, sourceScope, targetScope);
+        const name = foreignKey.name
+          ? `CONSTRAINT ${migrationQuote(foreignKey.name, targetScope)} ` : '';
+        body.push(`  ${name}FOREIGN KEY (${sourceColumns}) REFERENCES ${referenced} (${targetColumns}) `
+          + `ON DELETE ${migrationReferentialAction(foreignKey.onDelete, targetScope)} `
+          + `ON UPDATE ${migrationReferentialAction(foreignKey.onUpdate, targetScope)}`);
+      }
+    }
+    if (temporal?.periodStartColumn && temporal.periodEndColumn) {
+      body.push(`  PERIOD FOR SYSTEM_TIME (${migrationQuote(temporal.periodStartColumn, targetScope)}, `
+        + `${migrationQuote(temporal.periodEndColumn, targetScope)})`);
+    }
+    let suffix = '';
+    if (migrationIsSqlite(sourceScope) && migrationIsSqlite(targetScope)) {
+      const options = (definition.tableOptions || [])
+        .map((option) => String(option).trim().toUpperCase())
+        .filter((option) => ['STRICT', 'WITHOUT ROWID'].includes(option));
+      if (options.length) suffix = ` ${options.join(', ')}`;
+    } else if (temporal) {
+      const options = [];
+      if (temporal.relatedSchema && temporal.relatedTable) {
+        options.push(`HISTORY_TABLE = ${migrationName({
+          schema: temporal.relatedSchema, name: temporal.relatedTable,
+        }, sourceScope, targetScope)}`);
+      }
+      if (temporal.historyRetentionPeriod >= 0 && temporal.historyRetentionUnit) {
+        options.push(`HISTORY_RETENTION_PERIOD = ${temporal.historyRetentionPeriod} `
+          + `${String(temporal.historyRetentionUnit).toUpperCase()}`);
+      }
+      suffix = ` WITH (SYSTEM_VERSIONING = ON${options.length ? ` (${options.join(', ')})` : ''})`;
+    }
+    return `CREATE TABLE ${tableName} (\n${body.join(',\n')}\n)${suffix};`;
+  }
+
+  function migrationCreateIndex(index, object, sourceScope, targetScope) {
+    const unsupported = migrationUnsupportedKeyReason(index, targetScope);
+    if (unsupported) {
+      return `-- REVIEW: index ${index.name} on ${migrationName(object, sourceScope, targetScope)} `
+        + `${unsupported}; filter: ${index.filterDefinition || '(none)'}.`;
+    }
+    if (index.isDisabled) {
+      return `-- REVIEW: index ${index.name} on ${migrationName(object, sourceScope, targetScope)} `
+        + 'is disabled on the source and was not created as an enforced target index.';
+    }
+    const columns = migrationIndexTerms(index, targetScope).join(', ');
+    const included = !migrationIsSqlite(targetScope) && index.includedColumns?.length
+      ? ` INCLUDE (${index.includedColumns.map((column) => migrationQuote(column, targetScope)).join(', ')})`
+      : '';
+    const filter = index.filterDefinition ? ` WHERE ${index.filterDefinition}` : '';
+    return `CREATE ${index.isUnique ? 'UNIQUE ' : ''}INDEX `
+      + `${migrationQuote(index.name || `IX_${object.name}`, targetScope)} `
+      + `ON ${migrationName(object, sourceScope, targetScope)} (${columns})${included}${filter};`;
+  }
+
+  function migrationAddForeignKey(foreignKey, object, sourceScope, targetScope) {
+    const sourceColumns = (foreignKey.columns || [])
+      .map((pair) => migrationQuote(pair.column, targetScope)).join(', ');
+    const targetColumns = (foreignKey.columns || [])
+      .map((pair) => migrationQuote(pair.referencedColumn, targetScope)).join(', ');
+    const referenced = migrationName({
+      schema: foreignKey.referencedSchema, name: foreignKey.referencedTable,
+    }, sourceScope, targetScope);
+    if (migrationIsSqlite(targetScope)) {
+      return `-- REVIEW: SQLite requires rebuilding ${migrationName(object, sourceScope, targetScope)} `
+        + `to add foreign key ${foreignKey.name} (${sourceColumns}) REFERENCES ${referenced} (${targetColumns}).`;
+    }
+    const onDelete = migrationReferentialAction(foreignKey.onDelete, targetScope);
+    const onUpdate = migrationReferentialAction(foreignKey.onUpdate, targetScope);
+    return `ALTER TABLE ${migrationName(object, sourceScope, targetScope)} ADD CONSTRAINT `
+      + `${migrationQuote(foreignKey.name, targetScope)} FOREIGN KEY (${sourceColumns}) `
+      + `REFERENCES ${referenced} (${targetColumns}) ON DELETE ${onDelete} ON UPDATE ${onUpdate};`;
+  }
+
+  const comparisonCheckFingerprint = (constraint) => [
+    comparisonText(constraint.definition), Boolean(constraint.isDisabled),
+    constraint.isTrusted !== false,
+  ].join('|');
+
+  const comparisonUniqueColumns = (constraint) => orderedIndexKeys({ keyColumns: constraint.columns || [] })
+    .map((key) => comparisonText(key.column || key.expression));
+
+  const comparisonUniqueFingerprint = (constraint, constraintScope, otherScope) => {
+    const sameProvider = !constraintScope || !otherScope
+      || String(connectionFor(constraintScope).providerName).toLowerCase()
+        === String(connectionFor(otherScope).providerName).toLowerCase();
+    return [Boolean(constraint.isDisabled),
+    orderedIndexKeys({ keyColumns: constraint.columns || [] }).map((key) => [
+      comparisonText(key.column), comparisonText(key.expression),
+      Boolean(key.isDescending), sameProvider ? comparisonText(key.collation) : '',
+    ].join(':')).join(','),
+    ].join('|');
+  };
+
+  const comparisonUniqueAsIndexFingerprint = (constraint, constraintScope, otherScope) =>
+    comparisonIndexFingerprint({
+      isPrimaryKey: false,
+      isUnique: true,
+      isDisabled: constraint.isDisabled,
+      keyColumns: constraint.columns || [],
+      includedColumns: [],
+      filterDefinition: null,
+    }, constraintScope, otherScope);
+
+  function migrationAddCheck(constraint, object, sourceScope, targetScope) {
+    if (constraint.isDisabled || constraint.isTrusted === false) {
+      return `-- REVIEW: check constraint ${constraint.name || comparisonText(constraint.definition)} on `
+        + `${migrationName(object, sourceScope, targetScope)} is `
+        + `${constraint.isDisabled ? 'disabled' : 'not trusted'} on the source and was not enforced on the target.`;
+    }
+    if (migrationIsSqlite(targetScope)) {
+      return `-- REVIEW: SQLite requires rebuilding ${migrationName(object, sourceScope, targetScope)} `
+        + `to add check constraint ${constraint.name || comparisonCheckFingerprint(constraint)}.`;
+    }
+    const name = constraint.name
+      ? `CONSTRAINT ${migrationQuote(constraint.name, targetScope)} ` : '';
+    return `ALTER TABLE ${migrationName(object, sourceScope, targetScope)} ADD ${name}`
+      + `CHECK (${constraint.definition});`;
+  }
+
+  function migrationAddUnique(constraint, object, sourceScope, targetScope) {
+    if (constraint.isDisabled) {
+      return `-- REVIEW: unique constraint ${constraint.name || '(unnamed)'} on `
+        + `${migrationName(object, sourceScope, targetScope)} is disabled on the source `
+        + 'and was not created as an enforced target constraint.';
+    }
+    const keys = orderedIndexKeys({ keyColumns: constraint.columns || [] });
+    const unsupported = migrationUnsupportedKeyReason({ keyColumns: keys }, targetScope);
+    if (unsupported) {
+      return `-- REVIEW: unique constraint ${constraint.name || '(unnamed)'} on `
+        + `${migrationName(object, sourceScope, targetScope)} ${unsupported}.`;
+    }
+    const columns = keys.map((key) => migrationIndexTerm(key, targetScope)).join(', ');
+    const name = constraint.name || `UQ_${object.name}_${comparisonUniqueColumns(constraint).join('_')}`;
+    return migrationIsSqlite(targetScope)
+      ? `CREATE UNIQUE INDEX ${migrationQuote(name, targetScope)} `
+        + `ON ${migrationName(object, sourceScope, targetScope)} (${columns});`
+      : `ALTER TABLE ${migrationName(object, sourceScope, targetScope)} ADD CONSTRAINT `
+        + `${migrationQuote(name, targetScope)} UNIQUE (${columns});`;
+  }
+
+  async function loadSchemaSnapshot(scope) {
+    const objects = (await api(urlsFor(scope).objects()))
+      .filter((object) => object.type === 'Table' && !object.isInternal && !isVirtualObject(object))
+      .sort((a, b) => displayName(a, scope).localeCompare(displayName(b, scope)));
+    const definitions = new Array(objects.length);
+    const failures = [];
+    let next = 0;
+    const worker = async () => {
+      while (next < objects.length) {
+        const index = next++;
+        const object = objects[index];
+        try {
+          definitions[index] = await api(urlsFor(scope).structure(object.schema, object.name));
+        } catch (err) {
+          failures.push({ object, message: err.message });
+          definitions[index] = { object, unavailable: true, columns: [], indexes: [], foreignKeys: [] };
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(6, objects.length) }, worker));
+    return { scope, definitions, failures };
+  }
+
+  function comparisonCreationOrder(definitions, sourceScope, targetScope) {
+    const byKey = new Map(definitions.map((definition) => [
+      comparisonTableKey(definition.object, sourceScope, targetScope), definition,
+    ]));
+    const visiting = new Set();
+    const visited = new Set();
+    const ordered = [];
+    const visit = (definition) => {
+      if (visited.has(definition)) return;
+      if (visiting.has(definition)) return;
+      visiting.add(definition);
+      for (const foreignKey of definition.foreignKeys || []) {
+        const dependency = byKey.get(comparisonTableKey({
+          schema: foreignKey.referencedSchema,
+          name: foreignKey.referencedTable,
+        }, sourceScope, targetScope));
+        if (dependency) visit(dependency);
+      }
+      visiting.delete(definition);
+      visited.add(definition);
+      ordered.push(definition);
+    };
+    definitions.forEach(visit);
+    return ordered;
+  }
+
+  function compareSchemaSnapshots(source, target) {
+    const changes = [];
+    const scripts = { createHistory: [], create: [], alter: [], index: [], foreignKey: [], review: [] };
+    const targetByKey = new Map(target.definitions.map((definition) => [
+      comparisonTableKey(definition.object, target.scope, target.scope), definition,
+    ]));
+    const sourceDefinitions = comparisonCreationOrder(source.definitions, source.scope, target.scope);
+    const sourceGroups = new Map();
+    for (const definition of sourceDefinitions) {
+      const key = comparisonTableKey(definition.object, source.scope, target.scope);
+      if (!sourceGroups.has(key)) sourceGroups.set(key, []);
+      sourceGroups.get(key).push(definition);
+    }
+    const collidingKeys = new Set([...sourceGroups.entries()]
+      .filter(([, definitions]) => definitions.length > 1)
+      .map(([key]) => key));
+    const foreignKeyTargetKey = (foreignKey) => comparisonTableKey({
+      schema: foreignKey.referencedSchema,
+      name: foreignKey.referencedTable,
+    }, source.scope, target.scope);
+    const createCollationIssues = (definition) => comparisonColumns(definition)
+      .map((column) => migrationColumnCollationIssue(column, source.scope, target.scope))
+      .filter(Boolean);
+    const createBlockingIssues = (definition) => [
+      ...createCollationIssues(definition),
+      ...(migrationIsSqlite(target.scope) && definition.temporal
+        ? ['temporal configuration and its period defaults are not portable to SQLite'] : []),
+      ...(migrationPrimaryKey(definition)?.isDisabled
+        ? ['the source primary key is disabled and cannot be recreated safely as enforced'] : []),
+    ];
+    const missingColumnReviewReason = (column, definition) => {
+      const columnKey = column.name.toLowerCase();
+      const primaryColumns = new Set(comparisonIndexColumns(migrationPrimaryKey(definition) || {}));
+      const periodColumns = new Set([
+        definition.temporal?.periodStartColumn,
+        definition.temporal?.periodEndColumn,
+      ].filter(Boolean).map((name) => name.toLowerCase()));
+      if (migrationIsSqlite(target.scope)
+        && (primaryColumns.has(columnKey) || column.isIdentity || column.isComputed
+          || periodColumns.has(columnKey))) {
+        if (periodColumns.has(columnKey)) {
+          return 'a temporal period column and its default cannot be preserved on SQLite';
+        }
+        return (column.isComputed ? 'adding a generated column' : 'adding an identity or primary-key column')
+          + ' requires rebuilding the SQLite table';
+      }
+      const collationIssue = migrationColumnCollationIssue(column, source.scope, target.scope);
+      if (collationIssue) return collationIssue;
+      if (!column.isNullable && !column.defaultDefinition && !column.isComputed) {
+        return 'the column is required and has no default; backfill existing rows first';
+      }
+      return null;
+    };
+    const blockedColumnsByTable = new Map();
+    for (const definition of sourceDefinitions) {
+      const key = comparisonTableKey(definition.object, source.scope, target.scope);
+      const targetDefinition = targetByKey.get(key);
+      if (!targetDefinition || definition.unavailable || targetDefinition.unavailable) continue;
+      const targetColumnNames = new Set(comparisonColumns(targetDefinition)
+        .map((column) => column.name.toLowerCase()));
+      const blocked = new Set(comparisonColumns(definition)
+        .filter((column) => !targetColumnNames.has(column.name.toLowerCase())
+          && missingColumnReviewReason(column, definition))
+        .map((column) => column.name.toLowerCase()));
+      let computedAdded;
+      do {
+        computedAdded = false;
+        for (const column of comparisonColumns(definition)) {
+          const columnKey = column.name.toLowerCase();
+          if (!column.isComputed || targetColumnNames.has(columnKey) || blocked.has(columnKey)) continue;
+          const expression = comparisonText(column.computedDefinition || column.generatedExpression);
+          if (expression && [...blocked].some((name) => {
+            const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return expression.includes(`[${name.replaceAll(']', ']]')}]`)
+              || expression.includes(`"${name.replaceAll('"', '""')}"`)
+              || new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`, 'i').test(expression);
+          })) {
+            blocked.add(columnKey);
+            computedAdded = true;
+          }
+        }
+      } while (computedAdded);
+      if (blocked.size) blockedColumnsByTable.set(key, blocked);
+    }
+    const foreignKeyReferencesBlockedColumn = (foreignKey) => {
+      const blocked = blockedColumnsByTable.get(foreignKeyTargetKey(foreignKey));
+      return Boolean(blocked && (foreignKey.columns || []).some((pair) =>
+        blocked.has(String(pair.referencedColumn).toLowerCase())));
+    };
+    const sourceByKey = new Map(sourceDefinitions.map((definition) => [
+      comparisonTableKey(definition.object, source.scope, target.scope), definition,
+    ]));
+    const blockedCreateKeys = new Set(collidingKeys);
+    for (const definition of sourceDefinitions) {
+      const key = comparisonTableKey(definition.object, source.scope, target.scope);
+      if (!targetByKey.has(key) && (definition.unavailable || createBlockingIssues(definition).length)) {
+        blockedCreateKeys.add(key);
+      }
+    }
+    if (migrationIsSqlite(target.scope)) {
+      let added;
+      do {
+        added = false;
+        for (const definition of sourceDefinitions) {
+          const key = comparisonTableKey(definition.object, source.scope, target.scope);
+          if (!targetByKey.has(key) && !blockedCreateKeys.has(key)
+            && (definition.foreignKeys || []).some((foreignKey) =>
+              blockedCreateKeys.has(foreignKeyTargetKey(foreignKey))
+              || foreignKeyReferencesBlockedColumn(foreignKey))) {
+            blockedCreateKeys.add(key);
+            added = true;
+          }
+        }
+      } while (added);
+    }
+    const temporalHistoryIssue = (definition) => {
+      if (definition.temporal?.kind !== 'systemVersioned'
+        || !definition.temporal.relatedTable || migrationIsSqlite(target.scope)) return null;
+      const relatedKey = comparisonTableKey({
+        schema: definition.temporal.relatedSchema,
+        name: definition.temporal.relatedTable,
+      }, source.scope, target.scope);
+      const targetHistory = targetByKey.get(relatedKey);
+      if (targetHistory && !targetHistory.unavailable) return null;
+      const sourceHistory = sourceByKey.get(relatedKey);
+      if (!sourceHistory || sourceHistory.unavailable || blockedCreateKeys.has(relatedKey)) {
+        return `history table ${definition.temporal.relatedSchema}.`
+          + `${definition.temporal.relatedTable} is unavailable or its CREATE requires review`;
+      }
+      return null;
+    };
+    let temporalAdded;
+    do {
+      temporalAdded = false;
+      for (const definition of sourceDefinitions) {
+        const key = comparisonTableKey(definition.object, source.scope, target.scope);
+        if (!targetByKey.has(key) && !blockedCreateKeys.has(key) && temporalHistoryIssue(definition)) {
+          blockedCreateKeys.add(key);
+          temporalAdded = true;
+        }
+      }
+    } while (temporalAdded);
+    const reportedCollisions = new Set();
+    const sourceKeys = new Set();
+    const addChange = (status, object, detail) => changes.push({ status, object, detail });
+
+    for (const sourceDefinition of sourceDefinitions) {
+      const key = comparisonTableKey(sourceDefinition.object, source.scope, target.scope);
+      sourceKeys.add(key);
+      const targetDefinition = targetByKey.get(key);
+      const objectName = displayName(sourceDefinition.object, source.scope);
+      if (collidingKeys.has(key)) {
+        addChange('unavailable', objectName,
+          'Multiple source schemas map to this name on the schema-less target');
+        if (!reportedCollisions.has(key)) {
+          const names = sourceGroups.get(key).map((definition) =>
+            displayName(definition.object, source.scope)).join(', ');
+          scripts.review.push(`-- NOT SCRIPTED: ${names} all map to `
+            + `${migrationQuote(sourceDefinition.object.name, target.scope)} on the schema-less target.`);
+          reportedCollisions.add(key);
+        }
+        continue;
+      }
+      if (sourceDefinition.unavailable) {
+        addChange('unavailable', objectName, 'Source metadata unavailable');
+        scripts.review.push(`-- NOT COMPARED: source metadata for ${objectName} was unavailable.`);
+        continue;
+      }
+      if (!targetDefinition) {
+        addChange('missing', objectName, 'Table is missing from target');
+        const createSql = migrationCreateTable(sourceDefinition, source.scope, target.scope);
+        const blockingIssues = createBlockingIssues(sourceDefinition);
+        const blockedReferences = (sourceDefinition.foreignKeys || [])
+          .filter((foreignKey) => blockedCreateKeys.has(foreignKeyTargetKey(foreignKey))
+            || foreignKeyReferencesBlockedColumn(foreignKey));
+        const createIssues = [...new Set([
+          ...blockingIssues,
+          ...[temporalHistoryIssue(sourceDefinition)].filter(Boolean),
+          ...(migrationIsSqlite(target.scope) && blockedReferences.length
+            ? ['one or more foreign keys reference a table whose CREATE requires review'] : []),
+        ])];
+        const safeCreateSql = createIssues.length
+          ? `-- REVIEW: ${objectName} was not scripted automatically because ${createIssues.join('; ')}.\n`
+            + migrationCommentSql(createSql)
+          : createSql;
+        const createBucket = sourceDefinition.temporal?.kind === 'historyTable'
+          && !migrationIsSqlite(target.scope) ? scripts.createHistory : scripts.create;
+        createBucket.push(safeCreateSql);
+        for (const constraint of (sourceDefinition.checkConstraints || [])
+          .filter((item) => item.isDisabled || item.isTrusted === false)) {
+          scripts.review.push(migrationAddCheck(
+            constraint, sourceDefinition.object, source.scope, target.scope));
+        }
+        if (createIssues.length) {
+          const dependentCount = (sourceDefinition.indexes || []).filter((item) => !item.isPrimaryKey).length
+            + (sourceDefinition.uniqueConstraints || []).length
+            + (!migrationIsSqlite(target.scope) ? (sourceDefinition.foreignKeys || []).length : 0);
+          if (dependentCount) {
+            scripts.review.push(`-- NOT SCRIPTED: ${dependentCount} dependent index or constraint `
+              + `statement${dependentCount === 1 ? '' : 's'} for ${objectName}; create the table first.`);
+          }
+        } else {
+          for (const index of (sourceDefinition.indexes || []).filter((item) => !item.isPrimaryKey)) {
+            scripts.index.push(migrationCreateIndex(
+              index, sourceDefinition.object, source.scope, target.scope));
+          }
+          for (const constraint of sourceDefinition.uniqueConstraints || []) {
+            scripts.index.push(migrationAddUnique(
+              constraint, sourceDefinition.object, source.scope, target.scope));
+          }
+          if (!migrationIsSqlite(target.scope)) {
+            for (const foreignKey of sourceDefinition.foreignKeys || []) {
+              if (foreignKeyReferencesBlockedColumn(foreignKey)) {
+                scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.`
+                  + `${foreignKey.name || '(unnamed)'} references a column whose ADD requires review.`);
+              } else if (blockedCreateKeys.has(foreignKeyTargetKey(foreignKey))) {
+                scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.`
+                  + `${foreignKey.name || '(unnamed)'} references a table whose CREATE requires review.`);
+              } else {
+                scripts.foreignKey.push(migrationAddForeignKey(
+                  foreignKey, sourceDefinition.object, source.scope, target.scope));
+              }
+            }
+          }
+        }
+        if (sourceDefinition.temporal && migrationIsSqlite(target.scope)) {
+          scripts.review.push(`-- REVIEW: temporal configuration for ${objectName} cannot be `
+            + 'preserved on a SQLite target.');
+        }
+        if ((sourceDefinition.tableOptions || []).length
+          && !(migrationIsSqlite(source.scope) && migrationIsSqlite(target.scope))) {
+          scripts.review.push(`-- REVIEW: source table options for ${objectName} are provider-specific `
+            + 'and were not added to the target CREATE TABLE.');
+        }
+        const sqliteAutoincrementColumn = migrationSqliteAutoincrementColumn(
+          sourceDefinition, target.scope);
+        for (const column of comparisonColumns(sourceDefinition).filter((item) => item.isIdentity)) {
+          if (migrationIsSqlite(target.scope)
+            && column.name.toLowerCase() !== sqliteAutoincrementColumn?.toLowerCase()) {
+            scripts.review.push(`-- REVIEW: identity ${objectName}.${column.name} cannot be represented `
+              + 'as SQLite AUTOINCREMENT; the CREATE TABLE preserves its key but not its generator.');
+          }
+        }
+        continue;
+      }
+      if (targetDefinition.unavailable) {
+        addChange('unavailable', objectName, 'Target metadata unavailable');
+        scripts.review.push(`-- NOT COMPARED: target metadata for ${objectName} was unavailable.`);
+        continue;
+      }
+
+      const targetColumns = new Map(comparisonColumns(targetDefinition)
+        .map((column) => [column.name.toLowerCase(), column]));
+      const blockedColumnKeys = blockedColumnsByTable.get(key) || new Set();
+      const sourceColumnNames = new Set();
+      for (const column of comparisonColumns(sourceDefinition)) {
+        const columnKey = column.name.toLowerCase();
+        sourceColumnNames.add(columnKey);
+        const targetColumn = targetColumns.get(columnKey);
+        const display = `${objectName}.${column.name}`;
+        if (!targetColumn) {
+          addChange('missing', display, 'Column is missing from target');
+          const statement = `ALTER TABLE ${migrationName(sourceDefinition.object, source.scope, target.scope)} `
+            + `ADD ${migrationColumn(column, target.scope, source.scope)};`;
+          const reviewReason = missingColumnReviewReason(column, sourceDefinition);
+          const computedDependencyReason = column.isComputed && blockedColumnKeys.has(columnKey)
+            ? 'the computed expression depends on a column whose ADD requires review'
+            : null;
+          if (reviewReason || computedDependencyReason) {
+            scripts.alter.push(`-- REVIEW: ${display} was not scripted automatically because `
+              + `${reviewReason || computedDependencyReason}.\n-- ${statement}`);
+          } else {
+            scripts.alter.push(statement);
+          }
+        } else if (comparisonColumnFingerprint(column, source.scope, target.scope)
+          !== comparisonColumnFingerprint(targetColumn, target.scope, source.scope)) {
+          addChange('different', display,
+            `${column.dataType}${column.isNullable ? ' NULL' : ' NOT NULL'} → target `
+            + `${targetColumn.dataType}${targetColumn.isNullable ? ' NULL' : ' NOT NULL'}`);
+          scripts.review.push(`-- REVIEW: ${display} differs. Source expects `
+            + `${migrationColumn(column, target.scope, source.scope)}; target alteration is provider-specific.`);
+        }
+      }
+      for (const column of comparisonColumns(targetDefinition)) {
+        if (!sourceColumnNames.has(column.name.toLowerCase())) {
+          addChange('extra', `${displayName(targetDefinition.object, target.scope)}.${column.name}`,
+            'Column exists only in target; no DROP generated');
+          scripts.review.push(`-- RETAINED: target-only column ${column.name} on `
+            + `${migrationName(sourceDefinition.object, source.scope, target.scope)}.`);
+        }
+      }
+
+      const sourcePrimary = migrationPrimaryKey(sourceDefinition);
+      const targetPrimary = migrationPrimaryKey(targetDefinition);
+      if (comparisonIndexFingerprint(sourcePrimary || {}, source.scope, target.scope)
+        !== comparisonIndexFingerprint(targetPrimary || {}, target.scope, source.scope)) {
+        addChange('different', objectName, 'Primary key differs; review before rebuilding or altering it');
+        scripts.review.push(`-- REVIEW: primary key on ${migrationName(
+          sourceDefinition.object, source.scope, target.scope)} differs.`);
+      }
+
+      const targetIndexes = new Set((targetDefinition.indexes || [])
+        .filter((index) => !index.isPrimaryKey)
+        .map((index) => comparisonIndexFingerprint(index, target.scope, source.scope)));
+      const targetIndexesByName = new Map((targetDefinition.indexes || [])
+        .filter((index) => !index.isPrimaryKey && index.name)
+        .map((index) => [index.name.toLowerCase(), index]));
+      const targetUniqueObjectsByName = new Map((targetDefinition.uniqueConstraints || [])
+        .filter((constraint) => constraint.name)
+        .map((constraint) => [constraint.name.toLowerCase(), constraint]));
+      const targetUniqueAsIndexes = new Set((targetDefinition.uniqueConstraints || [])
+        .map((constraint) => comparisonUniqueAsIndexFingerprint(
+          constraint, target.scope, source.scope)));
+      const sourceUniqueAsIndexes = new Set((sourceDefinition.uniqueConstraints || [])
+        .map((constraint) => comparisonUniqueAsIndexFingerprint(
+          constraint, source.scope, target.scope)));
+      const sourceIndexes = new Set();
+      const sourceIndexNames = new Set();
+      const keyUsesBlockedColumn = (key) => key.column
+        ? blockedColumnKeys.has(String(key.column).toLowerCase())
+        : Boolean(key.expression && blockedColumnKeys.size);
+      const indexUsesBlockedColumn = (index) => orderedIndexKeys(index).some(keyUsesBlockedColumn)
+        || (index.includedColumns || []).some((column) =>
+          blockedColumnKeys.has(String(column).toLowerCase()));
+      for (const index of (sourceDefinition.indexes || []).filter((item) => !item.isPrimaryKey)) {
+        const fingerprint = comparisonIndexFingerprint(index, source.scope, target.scope);
+        sourceIndexes.add(fingerprint);
+        sourceIndexNames.add(index.name.toLowerCase());
+        if (!targetIndexes.has(fingerprint)
+          && !(index.isUnique && targetUniqueAsIndexes.has(fingerprint))) {
+          const sameName = targetIndexesByName.get(index.name.toLowerCase())
+            || targetUniqueObjectsByName.get(index.name.toLowerCase());
+          if (sameName) {
+            addChange('different', `${objectName}.${index.name}`,
+              'Index exists on target but its definition or enforcement state differs');
+            scripts.review.push(`-- REVIEW: index ${objectName}.${index.name} already exists on the target `
+              + 'with a different definition or enforcement state; no duplicate CREATE was generated.');
+          } else if (indexUsesBlockedColumn(index)) {
+            addChange('missing', `${objectName}.${index.name}`, 'Index is missing from target');
+            scripts.review.push(`-- NOT SCRIPTED: index ${objectName}.${index.name} depends on a column `
+              + 'whose ADD requires review.');
+          } else {
+            addChange('missing', `${objectName}.${index.name}`, 'Index is missing from target');
+            scripts.index.push(migrationCreateIndex(
+              index, sourceDefinition.object, source.scope, target.scope));
+          }
+        }
+      }
+      for (const index of (targetDefinition.indexes || []).filter((item) => !item.isPrimaryKey)) {
+        if (!sourceIndexNames.has(index.name.toLowerCase())
+          && !sourceIndexes.has(comparisonIndexFingerprint(index, target.scope, source.scope))
+          && !sourceUniqueAsIndexes.has(comparisonIndexFingerprint(
+            index, target.scope, source.scope))) {
+          addChange('extra', `${displayName(targetDefinition.object, target.scope)}.${index.name}`,
+            'Index exists only in target; no DROP generated');
+        }
+      }
+
+      const targetForeignKeys = new Set((targetDefinition.foreignKeys || [])
+        .map((foreignKey) => comparisonForeignKeyFingerprint(foreignKey, target.scope, target.scope)));
+      const sourceForeignKeys = new Set();
+      for (const foreignKey of sourceDefinition.foreignKeys || []) {
+        const fingerprint = comparisonForeignKeyFingerprint(foreignKey, source.scope, target.scope);
+        sourceForeignKeys.add(fingerprint);
+        if (!targetForeignKeys.has(fingerprint)) {
+          addChange('missing', `${objectName}.${foreignKey.name}`, 'Foreign key is missing from target');
+          const blockedSourceColumn = (foreignKey.columns || []).some((pair) =>
+            blockedColumnKeys.has(String(pair.column).toLowerCase()));
+          if (blockedSourceColumn) {
+            scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.`
+              + `${foreignKey.name || '(unnamed)'} depends on a column whose ADD requires review.`);
+          } else if (foreignKeyReferencesBlockedColumn(foreignKey)) {
+            scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.`
+              + `${foreignKey.name || '(unnamed)'} references a column whose ADD requires review.`);
+          } else if (blockedCreateKeys.has(foreignKeyTargetKey(foreignKey))) {
+            scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.`
+              + `${foreignKey.name || '(unnamed)'} references a table whose CREATE requires review.`);
+          } else {
+            scripts.foreignKey.push(migrationAddForeignKey(
+              foreignKey, sourceDefinition.object, source.scope, target.scope));
+          }
+        }
+      }
+      for (const foreignKey of targetDefinition.foreignKeys || []) {
+        if (!sourceForeignKeys.has(comparisonForeignKeyFingerprint(
+          foreignKey, target.scope, target.scope))) {
+          addChange('extra', `${displayName(targetDefinition.object, target.scope)}.${foreignKey.name}`,
+            'Foreign key exists only in target; no DROP generated');
+        }
+      }
+
+      const targetChecks = new Set((targetDefinition.checkConstraints || [])
+        .map(comparisonCheckFingerprint));
+      const targetChecksByName = new Map((targetDefinition.checkConstraints || [])
+        .filter((constraint) => constraint.name)
+        .map((constraint) => [constraint.name.toLowerCase(), constraint]));
+      const sourceChecks = new Set();
+      const sourceCheckNames = new Set();
+      for (const constraint of sourceDefinition.checkConstraints || []) {
+        const fingerprint = comparisonCheckFingerprint(constraint);
+        sourceChecks.add(fingerprint);
+        if (constraint.name) sourceCheckNames.add(constraint.name.toLowerCase());
+        if (!targetChecks.has(fingerprint)) {
+          const sameName = constraint.name
+            ? targetChecksByName.get(constraint.name.toLowerCase()) : null;
+          if (sameName) {
+            addChange('different', `${objectName}.${constraint.name}`,
+              'Check constraint exists on target but its definition or enforcement state differs');
+            scripts.review.push(`-- REVIEW: check constraint ${objectName}.${constraint.name} already exists `
+              + 'on the target with a different definition or enforcement state; no duplicate ADD was generated.');
+          } else if (blockedColumnKeys.size) {
+            addChange('missing', `${objectName}.${constraint.name || 'CHECK'}`,
+              'Check constraint is missing from target');
+            scripts.review.push(`-- NOT SCRIPTED: check constraint ${objectName}.`
+              + `${constraint.name || '(unnamed)'} may depend on a column whose ADD requires review.`);
+          } else {
+            addChange('missing', `${objectName}.${constraint.name || 'CHECK'}`,
+              'Check constraint is missing from target');
+            scripts.alter.push(migrationAddCheck(
+              constraint, sourceDefinition.object, source.scope, target.scope));
+          }
+        }
+      }
+      for (const constraint of targetDefinition.checkConstraints || []) {
+        if (!(constraint.name && sourceCheckNames.has(constraint.name.toLowerCase()))
+          && !sourceChecks.has(comparisonCheckFingerprint(constraint))) {
+          addChange('extra', `${displayName(targetDefinition.object, target.scope)}.${constraint.name || 'CHECK'}`,
+            'Check constraint exists only in target; no DROP generated');
+        }
+      }
+
+      const targetUniques = new Set((targetDefinition.uniqueConstraints || [])
+        .map((constraint) => comparisonUniqueFingerprint(
+          constraint, target.scope, source.scope)));
+      const sourceUniques = new Set();
+      const sourceUniqueNames = new Set();
+      for (const constraint of sourceDefinition.uniqueConstraints || []) {
+        const fingerprint = comparisonUniqueFingerprint(constraint, source.scope, target.scope);
+        sourceUniques.add(fingerprint);
+        if (constraint.name) sourceUniqueNames.add(constraint.name.toLowerCase());
+        const indexFingerprint = comparisonUniqueAsIndexFingerprint(
+          constraint, source.scope, target.scope);
+        if (!targetUniques.has(fingerprint) && !targetIndexes.has(indexFingerprint)) {
+          const sameName = constraint.name
+            ? targetUniqueObjectsByName.get(constraint.name.toLowerCase())
+              || targetIndexesByName.get(constraint.name.toLowerCase()) : null;
+          if (sameName) {
+            addChange('different', `${objectName}.${constraint.name}`,
+              'Unique constraint exists on target but its definition or enforcement state differs');
+            scripts.review.push(`-- REVIEW: unique constraint ${objectName}.${constraint.name} already exists `
+              + 'on the target with a different definition or enforcement state; no duplicate ADD was generated.');
+          } else if (orderedIndexKeys({ keyColumns: constraint.columns || [] }).some(keyUsesBlockedColumn)) {
+            addChange('missing', `${objectName}.${constraint.name || 'UNIQUE'}`,
+              'Unique constraint is missing from target');
+            scripts.review.push(`-- NOT SCRIPTED: unique constraint ${objectName}.`
+              + `${constraint.name || '(unnamed)'} depends on a column whose ADD requires review.`);
+          } else {
+            addChange('missing', `${objectName}.${constraint.name || 'UNIQUE'}`,
+              'Unique constraint is missing from target');
+            scripts.index.push(migrationAddUnique(
+              constraint, sourceDefinition.object, source.scope, target.scope));
+          }
+        }
+      }
+      for (const constraint of targetDefinition.uniqueConstraints || []) {
+        const indexFingerprint = comparisonUniqueAsIndexFingerprint(
+          constraint, target.scope, source.scope);
+        if (!(constraint.name && sourceUniqueNames.has(constraint.name.toLowerCase()))
+          && !sourceUniques.has(comparisonUniqueFingerprint(
+          constraint, target.scope, source.scope))
+          && !sourceIndexes.has(indexFingerprint)) {
+          addChange('extra', `${displayName(targetDefinition.object, target.scope)}.${constraint.name || 'UNIQUE'}`,
+            'Unique constraint exists only in target; no DROP generated');
+        }
+      }
+
+      const sourceOptions = [...(sourceDefinition.tableOptions || [])]
+        .map(comparisonText).filter(Boolean).sort();
+      const targetOptions = [...(targetDefinition.tableOptions || [])]
+        .map(comparisonText).filter(Boolean).sort();
+      const sourceTemporal = sourceDefinition.temporal
+        ? JSON.stringify(sourceDefinition.temporal) : '';
+      const targetTemporal = targetDefinition.temporal
+        ? JSON.stringify(targetDefinition.temporal) : '';
+      if (sourceOptions.join('|') !== targetOptions.join('|') || sourceTemporal !== targetTemporal) {
+        addChange('different', objectName, 'Table options or temporal configuration differ');
+        scripts.review.push(`-- REVIEW: table options or temporal configuration on `
+          + `${migrationName(sourceDefinition.object, source.scope, target.scope)} differ.`);
+      }
+    }
+
+    for (const targetDefinition of target.definitions) {
+      const key = comparisonTableKey(targetDefinition.object, target.scope, target.scope);
+      if (sourceKeys.has(key)) continue;
+      addChange('extra', displayName(targetDefinition.object, target.scope),
+        'Table exists only in target; no DROP generated');
+      scripts.review.push(`-- RETAINED: target-only table ${displayName(targetDefinition.object, target.scope)}.`);
+    }
+
+    const header = [
+      '-- Gridlet schema migration preview',
+      `-- Source: ${scopeTitle(source.scope)}`,
+      `-- Target: ${scopeTitle(target.scope)}`,
+      '-- Review this script before execution. Gridlet never drops target-only schema automatically.',
+    ];
+    const sections = [
+      ['Create temporal history tables', scripts.createHistory],
+      ['Create missing tables', scripts.create],
+      ['Add missing columns', scripts.alter],
+      ['Create missing indexes', scripts.index],
+      ['Add missing foreign keys', scripts.foreignKey],
+      ['Manual review', scripts.review],
+    ].filter(([, statements]) => statements.length)
+      .flatMap(([title, statements]) => [`\n-- ${title}`, ...statements.map((sql) => `\n${sql}`)]);
+    if (!sections.length) sections.push('\n-- Compared table metadata matches.');
+    return { changes, script: [...header, ...sections].join('\n') };
+  }
+
+  function openSchemaCompareTab(source = scopeOf(), target = null) {
+    const otherConnection = state.meta?.connections.find((connection) => connection.name !== source.connection);
+    const initialTarget = target || {
+      connection: otherConnection?.name || source.connection,
+      database: source.database,
+    };
+    const key = `schema-compare:${scopeKey(source)}:${scopeKey(initialTarget)}`;
+    const existing = state.tabs.find((candidate) => candidate.key === key);
+    if (existing) {
+      setActiveTab(existing.id);
+      return;
+    }
+    const panel = h('div', { class: 'panel schema-compare-panel', 'data-testid': 'schema-compare' });
+    const tab = {
+      id: state.nextTabId++, key, scope: source, source, target: initialTarget,
+      badge: 'Δ', badgeClass: 'badge-compare', title: 'Schema compare', panel, loaded: false,
+      load: () => loadSchemaCompareTab(tab),
+      restore: () => ({ kind: 'schema-compare', source: tab.source, target: tab.target }),
+    };
+    addTab(tab);
+  }
+
+  async function loadSchemaCompareTab(tab) {
+    const connections = state.meta?.connections || [];
+    const sourceConnection = h('select', { 'aria-label': 'Source connection', 'data-testid': 'schema-source-connection' },
+      connections.map((connection) => h('option', { value: connection.name, text: connection.name })));
+    const sourceDatabase = h('select', { 'aria-label': 'Source database', 'data-testid': 'schema-source-database' });
+    const targetConnection = h('select', { 'aria-label': 'Target connection', 'data-testid': 'schema-target-connection' },
+      connections.map((connection) => h('option', { value: connection.name, text: connection.name })));
+    const targetDatabase = h('select', { 'aria-label': 'Target database', 'data-testid': 'schema-target-database' });
+    sourceConnection.value = tab.source.connection;
+    targetConnection.value = tab.target.connection;
+    const compareButton = h('button', {
+      class: 'primary', text: 'Compare schemas', 'data-testid': 'schema-compare-run',
+    });
+    const swapButton = h('button', {
+      text: '⇄ Swap', title: 'Swap source and target', 'data-testid': 'schema-compare-swap',
+    });
+    const status = h('span', {
+      class: 'muted schema-compare-status', role: 'status', 'aria-live': 'polite',
+      'data-testid': 'schema-compare-status', text: 'Choose two databases, then compare.',
+    });
+    const results = h('div', { class: 'schema-compare-results', 'data-testid': 'schema-compare-results' });
+    const controls = h('div', { class: 'viewbar schema-compare-toolbar' },
+      h('label', {}, h('span', { text: 'Source' }), sourceConnection),
+      sourceDatabase,
+      h('span', { class: 'schema-compare-arrow', text: '→', 'aria-hidden': 'true' }),
+      h('label', {}, h('span', { text: 'Target' }), targetConnection),
+      targetDatabase, swapButton, compareButton, status);
+    tab.panel.replaceChildren(controls, results);
+
+    const databaseRequests = new WeakMap();
+    const loadingDatabases = new WeakSet();
+    let databaseLoads = 0;
+    let comparisonRunning = false;
+    const updateCompareControls = () => {
+      compareButton.disabled = comparisonRunning || databaseLoads > 0;
+      swapButton.disabled = comparisonRunning || databaseLoads > 0;
+      sourceConnection.disabled = comparisonRunning;
+      targetConnection.disabled = comparisonRunning;
+      sourceDatabase.disabled = comparisonRunning || loadingDatabases.has(sourceDatabase);
+      targetDatabase.disabled = comparisonRunning || loadingDatabases.has(targetDatabase);
+    };
+    const populateDatabases = async (connectionSelect, databaseSelect, preferred) => {
+      const request = (databaseRequests.get(databaseSelect) || 0) + 1;
+      databaseRequests.set(databaseSelect, request);
+      databaseLoads += 1;
+      loadingDatabases.add(databaseSelect);
+      updateCompareControls();
+      let databases;
+      try {
+        databases = await api(urls.databases(connectionSelect.value));
+      } catch (err) {
+        if (request === databaseRequests.get(databaseSelect)) {
+          status.textContent = `Database list unavailable: ${err.message}`;
+          databaseSelect.replaceChildren();
+        }
+        return;
+      } finally {
+        databaseLoads -= 1;
+        if (request === databaseRequests.get(databaseSelect)) loadingDatabases.delete(databaseSelect);
+        updateCompareControls();
+      }
+      if (request !== databaseRequests.get(databaseSelect)) return;
+      const available = databases.filter((database) => !database.isSystem);
+      databaseSelect.replaceChildren(...available.map((database) =>
+        h('option', { value: database.name, text: database.name })));
+      if (available.some((database) => database.name === preferred)) databaseSelect.value = preferred;
+    };
+
+    await Promise.all([
+      populateDatabases(sourceConnection, sourceDatabase, tab.source.database),
+      populateDatabases(targetConnection, targetDatabase, tab.target.database),
+    ]);
+
+    sourceConnection.addEventListener('change', async () => {
+      await populateDatabases(sourceConnection, sourceDatabase, null);
+      results.replaceChildren();
+    });
+    targetConnection.addEventListener('change', async () => {
+      await populateDatabases(targetConnection, targetDatabase, null);
+      results.replaceChildren();
+    });
+    swapButton.addEventListener('click', async () => {
+      const source = { connection: sourceConnection.value, database: sourceDatabase.value };
+      const target = { connection: targetConnection.value, database: targetDatabase.value };
+      sourceConnection.value = target.connection;
+      targetConnection.value = source.connection;
+      await Promise.all([
+        populateDatabases(sourceConnection, sourceDatabase, target.database),
+        populateDatabases(targetConnection, targetDatabase, source.database),
+      ]);
+      results.replaceChildren();
+      status.textContent = 'Source and target swapped. Compare to refresh the preview.';
+    });
+
+    let comparisonRequest = 0;
+    compareButton.addEventListener('click', async () => {
+      if (databaseLoads > 0 || comparisonRunning) return;
+      const request = ++comparisonRequest;
+      const sourceScope = { connection: sourceConnection.value, database: sourceDatabase.value };
+      const targetScope = { connection: targetConnection.value, database: targetDatabase.value };
+      if (!sourceScope.database || !targetScope.database) {
+        status.textContent = 'Choose both databases.';
+        return;
+      }
+      tab.source = sourceScope;
+      tab.target = targetScope;
+      tab.scope = sourceScope;
+      comparisonRunning = true;
+      updateCompareControls();
+      status.textContent = `Comparing ${scopeTitle(sourceScope)} with ${scopeTitle(targetScope)}…`;
+      results.replaceChildren(h('div', { class: 'loading', text: 'Loading schema metadata…' }));
+      try {
+        const [sourceSnapshot, targetSnapshot] = await Promise.all([
+          loadSchemaSnapshot(sourceScope), loadSchemaSnapshot(targetScope),
+        ]);
+        if (request !== comparisonRequest) return;
+        const comparison = compareSchemaSnapshots(sourceSnapshot, targetSnapshot);
+        const counts = comparison.changes.reduce((all, change) => {
+          all[change.status] = (all[change.status] || 0) + 1;
+          return all;
+        }, {});
+        const failures = sourceSnapshot.failures.length + targetSnapshot.failures.length;
+        status.textContent = comparison.changes.length
+          ? `${comparison.changes.length} difference${comparison.changes.length === 1 ? '' : 's'}`
+            + (failures ? ` · ${failures} unavailable` : '')
+          : 'Schemas match for compared table metadata';
+        const summary = h('div', { class: 'schema-compare-summary', 'data-testid': 'schema-compare-summary' },
+          h('strong', { text: `${scopeTitle(sourceScope)} → ${scopeTitle(targetScope)}` }),
+          h('span', { class: 'muted', text: `${sourceSnapshot.definitions.length} source tables · `
+            + `${targetSnapshot.definitions.length} target tables` }),
+          ...['missing', 'different', 'extra', 'unavailable'].filter((name) => counts[name])
+            .map((name) => h('span', {
+              class: `schema-change-count ${name}`, text: `${counts[name]} ${name}`,
+            })));
+        const changeTable = comparison.changes.length ? h('div', { class: 'grid-scroll schema-change-grid' },
+          h('table', { class: 'data-grid' },
+            h('thead', {}, h('tr', {},
+              h('th', { text: 'Change' }), h('th', { text: 'Object' }), h('th', { text: 'Detail' }))),
+            h('tbody', {}, comparison.changes.map((change) => h('tr', {},
+              h('td', {}, h('span', {
+                class: `schema-change ${change.status}`, text: change.status,
+              })),
+              h('td', { class: 'mono', text: change.object }),
+              h('td', { text: change.detail }))))))
+          : h('div', { class: 'empty-message', text: 'No table schema differences found.' });
+        const editor = createSqlEditor(comparison.script, '', {
+          readOnly: true, label: 'Migration SQL preview', testId: 'schema-migration-sql', scope: targetScope,
+        });
+        const copyButton = h('button', {
+          text: 'Copy migration SQL', 'data-testid': 'schema-compare-copy',
+          onclick: async () => {
+            try {
+              await navigator.clipboard.writeText(comparison.script);
+              toast('Migration SQL copied.', false);
+            } catch { toast('Copy failed - clipboard unavailable.'); }
+          },
+        });
+        const targetConnectionInfo = connectionFor(targetScope);
+        const useButton = targetConnectionInfo.allowSqlExecution && targetConnectionInfo.allowDdl
+          ? h('button', {
+            class: 'primary', text: 'Open in target query', 'data-testid': 'schema-compare-use-query',
+            onclick: () => openQueryTab(comparison.script, 'Schema migration', targetScope),
+          }) : null;
+        results.replaceChildren(summary, changeTable,
+          h('section', { class: 'schema-migration-preview' },
+            h('div', { class: 'section-heading' },
+              h('div', {}, h('h3', { text: 'Migration preview' }),
+                h('p', { class: 'muted', text: 'Target-dialect SQL; destructive target-only changes remain comments.' })),
+              h('div', { class: 'inline-form' }, copyButton, useButton)),
+            editor));
+        renderTabBar();
+        saveSession();
+      } catch (err) {
+        if (request !== comparisonRequest) return;
+        status.textContent = 'Comparison unavailable';
+        results.replaceChildren(errorBox(err.message));
+      } finally {
+        if (request === comparisonRequest) {
+          comparisonRunning = false;
+          updateCompareControls();
+        }
+      }
+    });
   }
 
   function addTab(tab) {
