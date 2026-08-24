@@ -1464,7 +1464,8 @@
       candidate.schema === descriptor.schema &&
       candidate.name === descriptor.name &&
       candidate.type === descriptor.type);
-    if (object) openObjectTab(object, descriptor.scope);
+    if (object) openObjectTab(object, descriptor.scope,
+      descriptor.filters?.length ? { filters: descriptor.filters } : null);
   });
 
   registerTabRestorer('query', (descriptor) => {
@@ -5035,12 +5036,13 @@
 
   // ---- object tabs (tables, views, procedures, functions, triggers) -------------
 
-  function openObjectTab(o, scope = scopeOf()) {
+  function openObjectTab(o, scope = scopeOf(), navigation = null) {
     const key = objectTabKey(o, scope);
     const existing = state.tabs.find((t) => t.key === key);
     if (existing) {
       setActiveTab(existing.id);
-      return;
+      if (navigation?.filters?.length) existing.navigateToFilters?.(navigation.filters);
+      return existing;
     }
 
     const badge = objectBadge(o);
@@ -5055,7 +5057,11 @@
       loaded: false,
       load: () => {},
       object: o,
-      restore: { kind: 'object', scope, schema: o.schema, name: o.name, type: o.type },
+      initialFilters: navigation?.filters || [],
+      restore: () => ({
+        kind: 'object', scope, schema: o.schema, name: o.name, type: o.type,
+        filters: tab.dataFilters?.() || [],
+      }),
     };
 
     if (o.type === 'Table' || o.type === 'View') {
@@ -5074,6 +5080,7 @@
     }
 
     addTab(tab);
+    return tab;
   }
 
   function buildDataObjectTab(tab, o) {
@@ -5083,7 +5090,9 @@
     const urls = urlsFor(scope);
     const currentConn = () => connectionFor(scope);
     const currentCapabilities = () => capabilitiesFor(scope);
-    const grid = { sort: null, dir: 'asc', filters: [] };
+    const grid = { sort: null, dir: 'asc', filters: [...(tab.initialFilters || [])] };
+    tab.initialFilters = null;
+    tab.dataFilters = () => grid.filters.map((filter) => ({ ...filter }));
     const views = ['Data', 'Structure', 'Definition'];
     const viewBar = h('div', { class: 'viewbar' });
     const body = h('div', { class: 'panel-body' });
@@ -5195,7 +5204,7 @@
       }
       const valueKey = (value) => JSON.stringify(value);
       let lookupWarningShown = false;
-      const friendlyCell = (value, column) => {
+      const rawFriendlyCell = (value, column) => {
         if (value === null || value === undefined) return renderCell(value);
         const display = displays.get(column.name.toLowerCase());
         if (!display || display.failed) return renderCell(value);
@@ -5220,6 +5229,73 @@
             h('span', { class: 'fk-value-label null', text: 'Missing reference' }));
         }
         return renderCell(value);
+      };
+      const outgoingByColumn = new Map();
+      for (const foreignKey of structure?.foreignKeys || []) {
+        for (const pair of foreignKey.columns || []) {
+          const key = pair.column.toLowerCase();
+          if (!outgoingByColumn.has(key)) outgoingByColumn.set(key, []);
+          outgoingByColumn.get(key).push(foreignKey);
+        }
+      }
+      const followForeignKey = async (foreignKey, row) => {
+        const filters = [];
+        for (const pair of foreignKey.columns || []) {
+          const index = data.columns.findIndex((column) =>
+            column.name.toLowerCase() === pair.column.toLowerCase());
+          if (index < 0 || row[index] === null || row[index] === undefined) {
+            toast(`Cannot follow ${foreignKey.name}; its complete key is not present in this row.`);
+            return;
+          }
+          filters.push({
+            column: pair.referencedColumn, operator: 'equals', value: String(row[index]),
+          });
+        }
+        try {
+          const objects = await objectsForScope(scope);
+          const target = objects.find((candidate) => candidate.type === 'Table'
+            && candidate.schema.toLowerCase() === foreignKey.referencedSchema.toLowerCase()
+            && candidate.name.toLowerCase() === foreignKey.referencedTable.toLowerCase());
+          if (!target) {
+            toast(`Referenced table ${foreignKey.referencedSchema}.${foreignKey.referencedTable} is unavailable.`);
+            return;
+          }
+          openObjectTab(target, scope, { filters });
+        } catch (err) {
+          toast(`Could not follow ${foreignKey.name}. ${err.message}`);
+        }
+      };
+      const friendlyCell = (value, column, row) => {
+        const cell = rawFriendlyCell(value, column);
+        const foreignKeys = outgoingByColumn.get(column.name.toLowerCase()) || [];
+        const followable = foreignKeys.filter((foreignKey) => (foreignKey.columns || []).every((pair) => {
+          const index = data.columns.findIndex((candidate) =>
+            candidate.name.toLowerCase() === pair.column.toLowerCase());
+          return index >= 0 && row?.[index] !== null && row?.[index] !== undefined;
+        }));
+        if (!followable.length) return cell;
+        const targetText = followable.length === 1
+          ? `${followable[0].referencedSchema}.${followable[0].referencedTable}`
+          : `${followable.length} referenced tables`;
+        const accessibleValue = cell.textContent || String(value);
+        const link = h('button', {
+          type: 'button', class: 'fk-follow',
+          title: `Follow foreign key to ${targetText}`,
+          'aria-label': `Follow ${column.name} value ${String(value)} to ${targetText}`,
+          onclick: (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (followable.length === 1) followForeignKey(followable[0], row);
+            else showContextMenu(event, followable.map((foreignKey) => ({
+              label: `${foreignKey.name} → ${foreignKey.referencedSchema}.${foreignKey.referencedTable}`,
+              action: () => followForeignKey(foreignKey, row),
+            })));
+          },
+        }, ...cell.childNodes);
+        cell.classList.add('foreign-key-cell');
+        cell.setAttribute('aria-label', accessibleValue);
+        cell.replaceChildren(link);
+        return cell;
       };
       const resolveFriendlyValues = async (rows) => {
         for (const [columnName, display] of displays) {
@@ -5323,7 +5399,115 @@
             toast(rows.length === 1 ? 'Row deleted.' : `${rows.length} rows deleted.`, false);
             renderData();
           }),
-      } : null;
+        } : null;
+
+      const incomingPanel = h('section', {
+        class: 'incoming-references', hidden: '', 'data-testid': 'incoming-references',
+      });
+      let incomingRequest = 0;
+      let incomingMetadataPromise = null;
+      const loadIncomingMetadata = () => (incomingMetadataPromise ??= (async () => {
+        const objects = (await objectsForScope(scope)).filter((candidate) =>
+          candidate.type === 'Table' && !candidate.isInternal && !isVirtualObject(candidate));
+        const definitions = new Array(objects.length);
+        const failures = [];
+        let next = 0;
+        const worker = async () => {
+          while (next < objects.length) {
+            const index = next++;
+            const object = objects[index];
+            if (object.schema.toLowerCase() === o.schema.toLowerCase()
+              && object.name.toLowerCase() === o.name.toLowerCase()) {
+              definitions[index] = structure;
+              continue;
+            }
+            const cacheKey = `${scopeKey(scope)} ${object.schema}.${object.name}`.toLowerCase();
+            try {
+              let definition = state.structures.get(cacheKey);
+              if (!definition) {
+                definition = await api(urlsFor(scope).structure(object.schema, object.name), {
+                  signal: controller.signal,
+                });
+                state.structures.set(cacheKey, definition);
+              }
+              definitions[index] = definition;
+            } catch (err) {
+              if (err.name === 'AbortError') throw err;
+              failures.push(`${object.schema}.${object.name}: ${err.message}`);
+            }
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(6, objects.length) }, worker));
+        const relationships = [];
+        definitions.forEach((definition, index) => {
+          for (const foreignKey of definition?.foreignKeys || []) {
+            if (foreignKey.referencedSchema.toLowerCase() === o.schema.toLowerCase()
+              && foreignKey.referencedTable.toLowerCase() === o.name.toLowerCase()) {
+              relationships.push({ source: objects[index], foreignKey });
+            }
+          }
+        });
+        return { relationships, failures };
+      })());
+
+      const showIncomingReferences = async (selectedRows) => {
+        const current = ++incomingRequest;
+        if (!selectedRows.length) {
+          incomingPanel.hidden = true;
+          incomingPanel.replaceChildren();
+          return;
+        }
+        incomingPanel.hidden = false;
+        if (selectedRows.length !== 1) {
+          incomingPanel.replaceChildren(h('h3', { text: 'Incoming references' }),
+            h('p', { class: 'muted', text: 'Select one row to inspect incoming foreign keys.' }));
+          return;
+        }
+        const row = selectedRows[0];
+        incomingPanel.replaceChildren(h('h3', { text: `Incoming references to ${describeRow(row)}` }),
+          h('div', { class: 'loading', text: 'Loading relationship metadata…' }));
+        try {
+          const metadata = await loadIncomingMetadata();
+          if (current !== incomingRequest || !incomingPanel.isConnected) return;
+          const entries = metadata.relationships.map(({ source, foreignKey }) => {
+            const filters = [];
+            let available = true;
+            for (const pair of foreignKey.columns || []) {
+              const index = columnIndex(pair.referencedColumn);
+              if (index < 0) { available = false; break; }
+              const value = row[index];
+              filters.push(value === null || value === undefined
+                ? { column: pair.column, operator: 'isNull', value: null }
+                : { column: pair.column, operator: 'equals', value: String(value) });
+            }
+            const mapping = (foreignKey.columns || []).map((pair) =>
+              `${source.schema}.${source.name}.${pair.column} → ${o.schema}.${o.name}.${pair.referencedColumn}`).join(', ');
+            return h('div', { class: 'incoming-reference', 'data-testid': 'incoming-reference' },
+              h('span', { class: 'badge badge-FK', text: 'FK' }),
+              h('span', { class: 'incoming-reference-body' },
+                h('strong', { text: `${source.schema}.${source.name}` }),
+                h('span', { class: 'muted', text: foreignKey.name }),
+                h('span', { class: 'mono', text: mapping })),
+              h('button', {
+                type: 'button', disabled: available ? null : '',
+                title: available ? `Open rows in ${source.schema}.${source.name} that reference this row`
+                  : 'The referenced key is not present in the loaded columns',
+                text: 'Open referencing rows',
+                onclick: () => openObjectTab(source, scope, { filters }),
+              }));
+          });
+          incomingPanel.replaceChildren(h('h3', { text: `Incoming references to ${describeRow(row)}` }),
+            metadata.failures.length ? h('div', {
+              class: 'warning-box', text: `${metadata.failures.length} table${metadata.failures.length === 1 ? '' : 's'} could not be inspected.`,
+              title: metadata.failures.join('\n'),
+            }) : null,
+            entries.length ? h('div', { class: 'incoming-reference-list' }, ...entries)
+              : h('p', { class: 'muted', text: 'No visible tables have a foreign key to this row.' }));
+        } catch (err) {
+          if (current !== incomingRequest || err.name === 'AbortError') return;
+          incomingPanel.replaceChildren(h('h3', { text: 'Incoming references' }), errorBox(err.message));
+        }
+      };
 
       // Filtering happens in SQL, on every row of the object, not on the page already fetched -
       // otherwise "find the row" would only ever search the first few hundred rows.
@@ -5363,6 +5547,7 @@
                 operator: operator.value,
                 value: needsValue(operator.value) ? value.value : null,
               }];
+              saveSession();
               close();
               renderData();
             },
@@ -5387,6 +5572,7 @@
               class: 'chip-remove', title: 'Remove this filter', 'aria-label': 'Remove filter',
               onclick: () => {
                 grid.filters = grid.filters.filter((_, position) => position !== index);
+                saveSession();
                 renderData();
               },
             }, '×')));
@@ -5394,7 +5580,7 @@
         if (grid.filters.length > 1) {
           bar.append(h('button', {
             class: 'ghost', 'data-testid': 'clear-filters',
-            onclick: () => { grid.filters = []; renderData(); },
+            onclick: () => { grid.filters = []; saveSession(); renderData(); },
           }, 'Clear all'));
         }
         return bar;
@@ -5453,7 +5639,7 @@
           class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
         }) : null,
       ].filter(Boolean));
-      body.replaceChildren(filterBar(), scroll);
+      body.replaceChildren(filterBar(), scroll, incomingPanel);
       const gridView = progressiveDataGrid(scroll, {
         columns: data.columns,
         rows: data.rows,
@@ -5463,6 +5649,7 @@
         direction: () => grid.dir,
         onRender: (value) => { table = value; },
         renderCell: friendlyCell,
+        onSelectionChange: showIncomingReferences,
         onSort: (column) => {
           if (grid.sort === column) grid.dir = grid.dir === 'asc' ? 'desc' : 'asc';
           else { grid.sort = column; grid.dir = 'asc'; }
@@ -5801,7 +5988,7 @@
             for (const [name, value] of Object.entries(values)) existingRow[columnIndex(name)] = value;
             rowKey?.refresh?.(existingRow);
             existingRowElement.querySelectorAll('td:not(.row-selector)').forEach((cell, index) => {
-              const rendered = friendly.renderCell(existingRow[index], dataColumns[index]);
+              const rendered = friendly.renderCell(existingRow[index], dataColumns[index], existingRow);
               cell.className = rendered.className;
               cell.replaceChildren(...rendered.childNodes);
               if (rendered.title) cell.title = rendered.title;
@@ -6599,6 +6786,14 @@
       body.replaceChildren(h('div', { class: 'structure' }, sections));
     };
 
+    tab.navigateToFilters = async (filters) => {
+      const editor = tab.panel.querySelector('tr.row-editor');
+      if (editor && !await editor._commitEditor()) return;
+      grid.filters = (filters || []).map((filter) => ({ ...filter }));
+      saveSession();
+      if (currentView === 'Data') await renderData();
+      else await switchView('Data');
+    };
     tab.load = () => switchView('Data');
   }
 
@@ -10329,6 +10524,8 @@
           }
           rowElements.forEach((element, index) => element.classList.toggle('selected', selected.has(rowOffset + index)));
           table.focus({ preventScroll: true });
+          options.onSelectionChange?.([...selected].sort((a, b) => a - b)
+            .map((index) => allRows[index]).filter(Boolean));
         };
         tr.classList.toggle('selected', selected.has(globalIndex));
         tr.prepend(h('td', { class: 'row-selector', title: 'Select row', onclick: selectRow }, String(globalIndex + 1)));
@@ -10337,6 +10534,7 @@
             cell.addEventListener('click', async () => {
               selected.clear(); selected.add(globalIndex); selection.anchor = globalIndex;
               rowElements.forEach((element, index) => element.classList.toggle('selected', selected.has(rowOffset + index)));
+              options.onSelectionChange?.([row]);
               await options.rowActions.onEdit(row, tr, columns[columnIndex].name, rowIndex);
             });
           });
@@ -10406,6 +10604,7 @@
         onSort: options.onSort,
         rowActions,
         renderCell: options.renderCell,
+        onSelectionChange: options.onSelectionChange,
       });
       if (virtual) {
         const tbody = table.tBodies[0];

@@ -948,8 +948,38 @@ td.null { color: var(--muted); font-style: italic; }
 .fk-display-invalid { color: var(--danger); }
 .fk-display-invalid .mini-btn,
 .structure td > .mini-btn { margin-left: 6px; }
+.foreign-key-cell { padding: 0 !important; }
+.fk-follow {
+  width: 100%; min-height: 26px; padding: 3px 7px; border: 0; border-radius: 0;
+  background: transparent; color: inherit; font: inherit; text-align: left; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  text-underline-offset: 2px;
+}
+.fk-follow:hover, .fk-follow:focus-visible {
+  background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent);
+}
+.fk-follow:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
 .fk-lookup-input { min-width: 180px; }
 td.empty-row { text-align: center; font-family: var(--sans); }
+
+.incoming-references {
+  flex: 0 0 auto; max-height: min(32vh, 300px); overflow: auto; margin-top: 10px;
+  padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2);
+}
+.incoming-references h3 { margin: 0 0 8px; font-size: 12px; }
+.incoming-reference-list { display: flex; flex-direction: column; gap: 6px; }
+.incoming-reference {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
+  gap: 9px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel);
+}
+.incoming-reference-body { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.incoming-reference-body .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; }
+@media (max-width: 620px) {
+  .incoming-reference { grid-template-columns: auto minmax(0, 1fr); }
+  .incoming-reference > button { grid-column: 1 / -1; }
+}
 
 .pager { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
 .object-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 2px 12px 10px; }
