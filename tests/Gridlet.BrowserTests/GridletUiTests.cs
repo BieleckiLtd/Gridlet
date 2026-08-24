@@ -1521,6 +1521,324 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Data_compare_matches_identical_rows_and_restores_its_workspace()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        await Assertions.Expect(comparison.GetByTestId("data-target-connection"))
+            .ToHaveValueAsync("DdlOnly");
+        await Assertions.Expect(comparison.GetByTestId("data-target-object"))
+            .ToHaveValueAsync("dbo/customers");
+        await Assertions.Expect(comparison.GetByLabel("Id", new() { Exact = true }))
+            .ToBeCheckedAsync();
+        await Assertions.Expect(comparison.GetByLabel("SysStart", new() { Exact = true }))
+            .ToHaveCountAsync(0);
+        await comparison.GetByTestId("data-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToHaveTextAsync("Rows match within the loaded data");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-summary"))
+            .ToContainTextAsync("2 source rows · 2 target rows");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-results"))
+            .ToContainTextAsync("No row differences found within the loaded data.");
+
+        await page.ReloadAsync();
+        comparison = page.GetByTestId("data-compare");
+        await Assertions.Expect(comparison).ToBeVisibleAsync();
+        await Assertions.Expect(comparison.GetByTestId("data-target-connection"))
+            .ToHaveValueAsync("DdlOnly");
+        await Assertions.Expect(comparison.GetByLabel("Id", new() { Exact = true }))
+            .ToBeCheckedAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Data_compare_reports_changed_and_one_sided_rows_with_column_drift()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string sourceStream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"int"},{"name":"Name","dataType":"nvarchar(100)"},{"name":"SourceOnly","dataType":"int"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Customers"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[1,"Ada",10],[2,"Grace",20]],"rowKeys":[[1],[2]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":2}
+            """;
+        const string targetStream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"INTEGER"},{"name":"Name","dataType":"TEXT"},{"name":"TargetOnly","dataType":"TEXT"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Customers"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[1,"Ada changed","x"],[3,"Linus","y"]],"rowKeys":[[1],[3]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":true}
+            {"type":"completed","recordsAffected":2}
+            """;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = sourceStream,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = targetStream,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        await comparison.GetByTestId("data-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToContainTextAsync("3 row differences");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToContainTextAsync("partial");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-summary"))
+            .ToContainTextAsync("1 changed");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-summary"))
+            .ToContainTextAsync("1 source only");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-summary"))
+            .ToContainTextAsync("1 target only");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-partial")).ToBeVisibleAsync();
+        await Assertions.Expect(comparison.GetByTestId("data-compare-results"))
+            .ToContainTextAsync("Source-only columns: SourceOnly");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-results"))
+            .ToContainTextAsync("Target-only columns: TargetOnly");
+        await Assertions.Expect(comparison.Locator("tbody tr")).ToHaveCountAsync(3);
+        await comparison.GetByTestId("data-compare-filter").FillAsync("Ada changed");
+        await Assertions.Expect(comparison.Locator("tbody tr")).ToHaveCountAsync(1);
+        await Assertions.Expect(comparison.GetByTestId("export-csv")).ToBeVisibleAsync();
+        await Assertions.Expect(comparison.GetByTestId("export-json")).ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Data_compare_uses_composite_identity_and_surfaces_duplicate_keys()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string structure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Customers\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"TenantId\",\"dataType\":\"int\"},"
+            + "{\"name\":\"Id\",\"dataType\":\"int\"},{\"name\":\"Name\","
+            + "\"dataType\":\"nvarchar(100)\"}],\"indexes\":[],\"foreignKeys\":[],"
+            + "\"checkConstraints\":[],\"uniqueConstraints\":[],\"rowIdentity\":{"
+            + "\"kind\":\"primaryKey\",\"columns\":[\"TenantId\",\"Id\"],\"source\":\"PK_Customers\"}}";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        const string sourceStream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"TenantId"},{"name":"Id"},{"name":"Name"}],"rowIdentity":{"kind":"primaryKey","columns":["TenantId","Id"],"source":"PK_Customers"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[7,1,"One"],[7,1,"Duplicate"]],"rowKeys":[[7,1],[7,1]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":2}
+            """;
+        const string targetStream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"TenantId"},{"name":"Id"},{"name":"Name"}],"rowIdentity":{"kind":"primaryKey","columns":["TenantId","Id"],"source":"PK_Customers"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[7,1,"One"]],"rowKeys":[[7,1]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":1}
+            """;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = sourceStream,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = targetStream,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        await Assertions.Expect(comparison.GetByLabel("TenantId", new() { Exact = true }))
+            .ToBeCheckedAsync();
+        await Assertions.Expect(comparison.GetByLabel("Id", new() { Exact = true }))
+            .ToBeCheckedAsync();
+        await comparison.GetByTestId("data-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("data-compare-summary"))
+            .ToContainTextAsync("1 duplicate");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-results"))
+            .ToContainTextAsync("TenantId = 7, Id = 1");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-results"))
+            .ToContainTextAsync("Duplicate");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Data_compare_requires_an_explicit_key_when_no_row_identity_exists()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string structure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Customers\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"Code\",\"dataType\":\"int\"},"
+            + "{\"name\":\"Name\",\"dataType\":\"nvarchar(100)\"}],\"indexes\":[],"
+            + "\"foreignKeys\":[],\"checkConstraints\":[],\"uniqueConstraints\":[],\"rowIdentity\":null}";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        var codeKey = comparison.GetByLabel("Code", new() { Exact = true });
+        await Assertions.Expect(codeKey).Not.ToBeCheckedAsync();
+        await Assertions.Expect(comparison.GetByTestId("data-compare-run")).ToBeDisabledAsync();
+        await codeKey.CheckAsync();
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToHaveTextAsync("Ready to compare.");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-run")).ToBeEnabledAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Data_compare_sends_the_cap_and_stable_key_sort_to_both_streams()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var compareRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/data/stream", StringComparison.Ordinal)
+                && request.Url.Contains("maxRows=1", StringComparison.Ordinal)
+                && request.Url.Contains("sort=Id", StringComparison.Ordinal)) compareRequests.Add(request.Url);
+        };
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        await comparison.GetByTestId("data-compare-cap").FillAsync("1");
+        await comparison.GetByTestId("data-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToHaveTextAsync("Rows match within the loaded data");
+        Assert.Equal(2, compareRequests.Count);
+        Assert.All(compareRequests, url =>
+        {
+            Assert.Contains("maxRows=1", url, StringComparison.Ordinal);
+            Assert.Contains("sort=Id", url, StringComparison.Ordinal);
+            Assert.Contains("dir=asc", url, StringComparison.Ordinal);
+        });
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Data_compare_uses_streamed_row_keys_without_sorting_by_a_pseudo_column()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string structure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Customers\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"Name\",\"dataType\":\"TEXT\"}],"
+            + "\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],\"uniqueConstraints\":[],"
+            + "\"rowIdentity\":{\"kind\":\"rowId\",\"columns\":[\"rowid\"],\"source\":\"rowid\"}}";
+        const string stream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Name","dataType":"TEXT"}],"rowIdentity":{"kind":"rowId","columns":["rowid"],"source":"rowid"}}
+            {"type":"rows","resultSetIndex":0,"rows":[["Ada"],["Grace"]],"rowKeys":[[1],[2]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":2}
+            """;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = stream,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = stream,
+            }));
+        var compareRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/data/stream", StringComparison.Ordinal)
+                && request.Url.Contains("maxRows=2000", StringComparison.Ordinal))
+                compareRequests.Add(request.Url);
+        };
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        await Assertions.Expect(comparison.GetByLabel("rowid", new() { Exact = true }))
+            .ToBeCheckedAsync();
+        await comparison.GetByTestId("data-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToHaveTextAsync("Rows match within the loaded data");
+        Assert.Equal(2, compareRequests.Count);
+        Assert.All(compareRequests, url => Assert.DoesNotContain("sort=", url, StringComparison.Ordinal));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Data_compare_aborts_the_sibling_stream_when_one_side_fails()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("""
+            (() => {
+              const originalFetch = window.fetch;
+              window.fetch = (input, init = {}) => {
+                const url = String(input);
+                if (url.includes('/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/data/stream')
+                    && url.includes('maxRows=1234')) {
+                  return new Promise((resolve, reject) => {
+                    const abort = () => {
+                      window.__dataCompareTargetAborted = true;
+                      reject(new DOMException('Aborted', 'AbortError'));
+                    };
+                    if (init.signal?.aborted) abort();
+                    else init.signal?.addEventListener('abort', abort, { once: true });
+                  });
+                }
+                return originalFetch.call(window, input, init);
+              };
+            })();
+            """);
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+        {
+            if (!route.Request.Url.Contains("maxRows=1234", StringComparison.Ordinal))
+                return route.ContinueAsync();
+            return route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 503, ContentType = "application/json",
+                Body = "{\"error\":\"source comparison offline\"}",
+            });
+        });
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        await comparison.GetByTestId("data-compare-cap").FillAsync("1234");
+        await comparison.GetByTestId("data-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToHaveTextAsync("Comparison unavailable");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-results"))
+            .ToContainTextAsync("source comparison offline");
+        await page.WaitForFunctionAsync("() => window.__dataCompareTargetAborted === true");
+        browserPage.AssertNoUnexpectedErrors("503");
+    }
+
+    [Fact]
     public async Task Talks_with_the_database_using_an_ephemeral_user_key()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -4357,6 +4675,22 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTestId("schema-compare-open").ClickAsync();
         var comparison = page.GetByTestId("schema-compare");
         await Assertions.Expect(comparison).ToBeVisibleAsync();
+        return comparison;
+    }
+
+    private static async Task<ILocator> OpenDataCompareAsync(IPage page)
+    {
+        await Assertions.Expect(page.Locator("#database-select")).ToHaveValueAsync("FakeDb");
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var table = ActivePanel(page);
+        await Assertions.Expect(table.GetByTestId("data-compare-open")).ToBeVisibleAsync();
+        await table.GetByTestId("data-compare-open").ClickAsync();
+        var comparison = page.GetByTestId("data-compare");
+        await Assertions.Expect(comparison).ToBeVisibleAsync();
+        await Assertions.Expect(comparison.GetByTestId("data-target-database"))
+            .ToHaveValueAsync("FakeDb");
+        await Assertions.Expect(comparison.GetByTestId("data-target-object"))
+            .ToHaveValueAsync("dbo/customers");
         return comparison;
     }
 

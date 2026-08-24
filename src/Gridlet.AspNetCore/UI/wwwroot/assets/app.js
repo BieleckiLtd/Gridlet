@@ -1470,6 +1470,17 @@
   registerTabRestorer('diagram', (descriptor) => openDiagramTab(descriptor.scope));
   registerTabRestorer('schema-compare', (descriptor) =>
     openSchemaCompareTab(descriptor.source, descriptor.target));
+  registerTabRestorer('data-compare', async (descriptor) => {
+    const objects = await objectsForScope(descriptor.source);
+    const object = objects.find((candidate) =>
+      candidate.type === 'Table'
+      && candidate.schema === descriptor.sourceObject?.schema
+      && candidate.name === descriptor.sourceObject?.name);
+    if (object) {
+      openDataCompareTab(descriptor.source, object, descriptor.target,
+        descriptor.keyColumns, descriptor.maxRows);
+    }
+  });
 
   registerTabRestorer('apis', () => openApisTab());
 
@@ -2386,6 +2397,9 @@
     const items = [{ label: 'Open', action: () => openObjectTab(o) }];
     if (o.type === 'Table' || o.type === 'View') {
       items.push({ label: 'Query data', action: () => openQueryTab(objectQuerySql(o), displayName(o)) });
+    }
+    if (o.type === 'Table' && !o.isInternal && !isVirtualObject(o)) {
+      items.push({ label: 'Compare data…', action: () => openDataCompareTab(scopeOf(), o) });
     }
     if (isRoutine(o) && currentConn().allowSqlExecution) {
       items.push({ label: 'Execute…', action: () => openRoutineExecuteDialog(o) });
@@ -3934,6 +3948,558 @@
     });
   }
 
+  // ---- row-level data comparison ---------------------------------------------
+
+  const dataCompareObjectKey = (object) =>
+    `${encodeURIComponent(object.schema || '')}/${encodeURIComponent(object.name)}`.toLowerCase();
+
+  function openDataCompareTab(source, sourceObject, target = null, keyColumns = null, maxRows = null) {
+    const otherConnection = state.meta?.connections.find((connection) => connection.name !== source.connection);
+    const initialTarget = target || {
+      connection: otherConnection?.name || source.connection,
+      database: source.database,
+      schema: sourceObject.schema,
+      name: sourceObject.name,
+    };
+    const key = `data-compare:${scopeKey(source)}:${dataCompareObjectKey(sourceObject)}:${scopeKey(initialTarget)}`;
+    const existing = state.tabs.find((candidate) => candidate.key === key);
+    if (existing) {
+      setActiveTab(existing.id);
+      return;
+    }
+    const panel = h('div', { class: 'panel data-compare-panel', 'data-testid': 'data-compare' });
+    const tab = {
+      id: state.nextTabId++, key, scope: source, source, sourceObject,
+      target: initialTarget, keyColumns: keyColumns || [], maxRows,
+      badge: '≠', badgeClass: 'badge-compare', title: `Data compare: ${sourceObject.name}`,
+      panel, loaded: false, load: () => loadDataCompareTab(tab),
+      restore: () => ({
+        kind: 'data-compare', source: tab.source,
+        sourceObject: {
+          schema: tab.sourceObject.schema, name: tab.sourceObject.name, type: tab.sourceObject.type,
+        },
+        target: tab.target, keyColumns: tab.keyColumns, maxRows: tab.maxRows,
+      }),
+    };
+    addTab(tab);
+  }
+
+  async function loadDataCompareRows(scope, object, sortColumn, maxRows, signal) {
+    const snapshot = {
+      scope, object, columns: [], rows: [], rowKeys: [], rowIdentity: null,
+      truncated: false, completed: false,
+    };
+    const params = new URLSearchParams({ maxRows: String(maxRows) });
+    if (sortColumn) {
+      params.set('sort', sortColumn);
+      params.set('dir', 'asc');
+    }
+    await streamNdjson(urlsFor(scope).dataStream(object.schema, object.name, params), { signal }, (event) => {
+      if (event.type === 'resultSet') {
+        snapshot.columns = event.columns || [];
+        snapshot.rowIdentity = event.rowIdentity || null;
+      } else if (event.type === 'rows') {
+        snapshot.rows.push(...(event.rows || []));
+        const keys = event.rowKeys || [];
+        for (let index = 0; index < (event.rows || []).length; index++) {
+          snapshot.rowKeys.push(keys[index] || null);
+        }
+      } else if (event.type === 'resultSetCompleted') {
+        snapshot.truncated = Boolean(event.truncated);
+      } else if (event.type === 'completed') {
+        snapshot.completed = true;
+      } else if (event.type === 'error') {
+        throw new Error(event.message || 'Data loading failed.');
+      }
+    });
+    if (!snapshot.completed) throw new Error('Data loading ended before the server reported completion.');
+    return snapshot;
+  }
+
+  function dataCompareStableValue(value) {
+    if (Array.isArray(value)) return value.map(dataCompareStableValue);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.keys(value).sort()
+        .map((key) => [key, dataCompareStableValue(value[key])]));
+    }
+    return value;
+  }
+
+  const dataCompareValueToken = (value) => JSON.stringify([
+    value === null ? 'null' : typeof value,
+    dataCompareStableValue(value),
+  ]);
+
+  const dataCompareValueText = (value) => {
+    if (value === null || value === undefined) return 'NULL';
+    if (typeof value === 'object') return JSON.stringify(dataCompareStableValue(value));
+    return String(value);
+  };
+
+  function dataCompareColumnValue(snapshot, rowIndex, columnName) {
+    const columnIndex = snapshot.columns.findIndex((column) =>
+      column.name.toLowerCase() === columnName.toLowerCase());
+    if (columnIndex >= 0) return snapshot.rows[rowIndex][columnIndex];
+    const identityIndex = snapshot.rowIdentity?.columns?.findIndex((name) =>
+      name.toLowerCase() === columnName.toLowerCase()) ?? -1;
+    return identityIndex >= 0 ? snapshot.rowKeys[rowIndex]?.[identityIndex] : undefined;
+  }
+
+  function dataCompareRowObject(snapshot, rowIndex, columnNames = null) {
+    const wanted = columnNames
+      ? new Set(columnNames.map((name) => name.toLowerCase())) : null;
+    return Object.fromEntries(snapshot.columns
+      .map((column, index) => [column.name, snapshot.rows[rowIndex][index]])
+      .filter(([name]) => !wanted || wanted.has(name.toLowerCase())));
+  }
+
+  function compareDataRows(source, target, keyColumns) {
+    const sourceColumns = new Map(source.columns.map((column) => [column.name.toLowerCase(), column]));
+    const targetColumns = new Map(target.columns.map((column) => [column.name.toLowerCase(), column]));
+    const sharedColumns = source.columns
+      .filter((column) => targetColumns.has(column.name.toLowerCase()))
+      .map((column) => column.name);
+    const sourceOnlyColumns = source.columns
+      .filter((column) => !targetColumns.has(column.name.toLowerCase())).map((column) => column.name);
+    const targetOnlyColumns = target.columns
+      .filter((column) => !sourceColumns.has(column.name.toLowerCase())).map((column) => column.name);
+
+    const bucketRows = (snapshot) => {
+      const buckets = new Map();
+      snapshot.rows.forEach((row, rowIndex) => {
+        const values = keyColumns.map((column) => dataCompareColumnValue(snapshot, rowIndex, column));
+        if (values.some((value) => value === undefined)) {
+          throw new Error(`Key column ${keyColumns[values.findIndex((value) => value === undefined)]} `
+            + `is not available in ${scopeTitle(snapshot.scope)}.`);
+        }
+        const token = JSON.stringify(values.map(dataCompareValueToken));
+        const label = keyColumns.map((column, index) =>
+          `${column} = ${dataCompareValueText(values[index])}`).join(', ');
+        if (!buckets.has(token)) buckets.set(token, { label, rows: [] });
+        buckets.get(token).rows.push(rowIndex);
+      });
+      return buckets;
+    };
+
+    const sourceBuckets = bucketRows(source);
+    const targetBuckets = bucketRows(target);
+    const tokens = new Set([...sourceBuckets.keys(), ...targetBuckets.keys()]);
+    const differences = [];
+    for (const token of tokens) {
+      const sourceBucket = sourceBuckets.get(token);
+      const targetBucket = targetBuckets.get(token);
+      const key = sourceBucket?.label || targetBucket.label;
+      if ((sourceBucket?.rows.length || 0) > 1 || (targetBucket?.rows.length || 0) > 1) {
+        differences.push({
+          status: 'duplicate', key, changedColumns: [],
+          sourceValue: sourceBucket
+            ? sourceBucket.rows.map((index) => dataCompareRowObject(source, index)) : null,
+          targetValue: targetBucket
+            ? targetBucket.rows.map((index) => dataCompareRowObject(target, index)) : null,
+        });
+        continue;
+      }
+      if (!targetBucket) {
+        differences.push({
+          status: 'source-only', key, changedColumns: [],
+          sourceValue: dataCompareRowObject(source, sourceBucket.rows[0]), targetValue: null,
+        });
+        continue;
+      }
+      if (!sourceBucket) {
+        differences.push({
+          status: 'target-only', key, changedColumns: [], sourceValue: null,
+          targetValue: dataCompareRowObject(target, targetBucket.rows[0]),
+        });
+        continue;
+      }
+      const sourceIndex = sourceBucket.rows[0];
+      const targetIndex = targetBucket.rows[0];
+      const changedColumns = sharedColumns.filter((column) =>
+        dataCompareValueToken(dataCompareColumnValue(source, sourceIndex, column))
+          !== dataCompareValueToken(dataCompareColumnValue(target, targetIndex, column)));
+      if (changedColumns.length) {
+        differences.push({
+          status: 'changed', key, changedColumns,
+          sourceValue: dataCompareRowObject(source, sourceIndex, changedColumns),
+          targetValue: dataCompareRowObject(target, targetIndex, changedColumns),
+        });
+      }
+    }
+    differences.sort((left, right) => left.key.localeCompare(right.key));
+    return { differences, sharedColumns, sourceOnlyColumns, targetOnlyColumns };
+  }
+
+  function renderDataCompareResults(container, comparison, source, target, keyColumns) {
+    const counts = comparison.differences.reduce((all, item) => {
+      all[item.status] = (all[item.status] || 0) + 1;
+      return all;
+    }, {});
+    const partial = source.truncated || target.truncated;
+    const summary = h('div', { class: 'data-compare-summary', 'data-testid': 'data-compare-summary' },
+      h('strong', { text: `${scopeTitle(source.scope)} → ${scopeTitle(target.scope)}` }),
+      h('span', { class: 'muted', text: `${source.rows.length} source rows · ${target.rows.length} target rows` }),
+      ...['changed', 'source-only', 'target-only', 'duplicate'].filter((name) => counts[name])
+        .map((name) => h('span', {
+          class: `data-change-count ${name}`, text: `${counts[name]} ${name.replace('-', ' ')}`,
+        })));
+    const notes = h('div', { class: 'data-compare-notes' },
+      partial ? h('div', {
+        class: 'warning-box', 'data-testid': 'data-compare-partial',
+        text: 'Partial comparison: at least one side reached the row cap. Missing rows are not conclusive.',
+      }) : null,
+      comparison.sourceOnlyColumns.length ? h('div', {
+        class: 'muted', text: `Source-only columns: ${comparison.sourceOnlyColumns.join(', ')}`,
+      }) : null,
+      comparison.targetOnlyColumns.length ? h('div', {
+        class: 'muted', text: `Target-only columns: ${comparison.targetOnlyColumns.join(', ')}`,
+      }) : null,
+      h('div', { class: 'muted', text: `Matched by ${keyColumns.join(' + ')}. Values are compared with type-sensitive equality.` }));
+    const filter = h('input', {
+      type: 'search', placeholder: 'Filter differences…', 'aria-label': 'Filter data differences',
+      'data-testid': 'data-compare-filter',
+    });
+    const grid = h('div', { class: 'grid-scroll data-compare-grid' });
+    const exportColumns = ['Status', 'Key', 'ChangedColumns', 'Source', 'Target']
+      .map((name) => ({ name }));
+    const exportRows = comparison.differences.map((difference) => [
+      difference.status,
+      difference.key,
+      difference.changedColumns.join(', '),
+      difference.sourceValue === null ? null : JSON.stringify(difference.sourceValue),
+      difference.targetValue === null ? null : JSON.stringify(difference.targetValue),
+    ]);
+    const exports = exportButtons(exportColumns, exportRows,
+      `${source.object.name}-data-diff`);
+
+    const render = () => {
+      const query = filter.value.trim().toLowerCase();
+      const visible = comparison.differences.filter((difference) => {
+        const text = `${difference.status} ${difference.key} ${difference.changedColumns.join(' ')} `
+          + `${JSON.stringify(difference.sourceValue)} ${JSON.stringify(difference.targetValue)}`;
+        return !query || text.toLowerCase().includes(query);
+      });
+      if (!visible.length) {
+        grid.replaceChildren(h('div', {
+          class: 'empty-message',
+          text: comparison.differences.length
+            ? 'No differences match this filter.'
+            : 'No row differences found within the loaded data.',
+        }));
+        return;
+      }
+      grid.replaceChildren(h('table', { class: 'data-grid' },
+        h('thead', {}, h('tr', {},
+          h('th', { text: 'Status' }), h('th', { text: 'Key' }),
+          h('th', { text: 'Changed columns' }), h('th', { text: 'Source' }),
+          h('th', { text: 'Target' }))),
+        h('tbody', {}, visible.map((difference) => h('tr', {},
+          h('td', {}, h('span', {
+            class: `data-change ${difference.status}`, text: difference.status.replace('-', ' '),
+          })),
+          h('td', { class: 'mono', text: difference.key }),
+          h('td', { text: difference.changedColumns.join(', ') || '—' }),
+          h('td', {}, difference.sourceValue === null
+            ? h('span', { class: 'null', text: '—' })
+            : h('pre', { class: 'data-compare-value', text: JSON.stringify(difference.sourceValue, null, 2) })),
+          h('td', {}, difference.targetValue === null
+            ? h('span', { class: 'null', text: '—' })
+            : h('pre', { class: 'data-compare-value', text: JSON.stringify(difference.targetValue, null, 2) })))))));
+    };
+    filter.addEventListener('input', render);
+    render();
+    container.replaceChildren(summary, notes,
+      h('div', { class: 'data-compare-result-toolbar' }, filter, h('span', { class: 'spacer' }), exports),
+      grid);
+  }
+
+  async function loadDataCompareTab(tab) {
+    const sourceLabel = h('strong', {
+      class: 'data-compare-source',
+      text: `${scopeTitle(tab.source)} · ${displayName(tab.sourceObject, tab.source)}`,
+    });
+    const targetConnection = h('select', {
+      'aria-label': 'Target connection', 'data-testid': 'data-target-connection',
+    }, (state.meta?.connections || []).map((connection) =>
+      h('option', { value: connection.name, text: connection.name })));
+    const targetDatabase = h('select', {
+      'aria-label': 'Target database', 'data-testid': 'data-target-database',
+    });
+    const targetObject = h('select', {
+      'aria-label': 'Target table', 'data-testid': 'data-target-object',
+    });
+    const keyChoices = h('fieldset', {
+      class: 'data-compare-keys', 'data-testid': 'data-compare-keys',
+    }, h('legend', { text: 'Match rows by' }));
+    const rowCap = h('input', {
+      type: 'number', min: '1', max: String(state.meta.maxQueryResultRows),
+      value: String(Math.min(state.meta.maxQueryResultRows, Math.max(1, tab.maxRows || 2000))),
+      'aria-label': 'Data compare row cap', 'data-testid': 'data-compare-cap',
+    });
+    const compareButton = h('button', {
+      class: 'primary', text: 'Compare rows', 'data-testid': 'data-compare-run',
+    });
+    const status = h('span', {
+      class: 'muted data-compare-status', role: 'status', 'aria-live': 'polite',
+      'data-testid': 'data-compare-status', text: 'Choose a target table and matching key.',
+    });
+    const results = h('div', {
+      class: 'data-compare-results', 'data-testid': 'data-compare-results',
+    });
+    const toolbar = h('div', { class: 'viewbar data-compare-toolbar' },
+      h('span', { class: 'muted', text: 'Source' }), sourceLabel,
+      h('span', { class: 'schema-compare-arrow', text: '→', 'aria-hidden': 'true' }),
+      h('label', {}, h('span', { text: 'Target' }), targetConnection),
+      targetDatabase, targetObject,
+      h('label', { class: 'data-compare-cap' }, 'Row cap ', rowCap),
+      compareButton, status);
+    const setup = h('div', { class: 'data-compare-setup' }, keyChoices);
+    tab.panel.replaceChildren(toolbar, setup, results);
+
+    targetConnection.value = tab.target.connection;
+    let targetObjects = new Map();
+    let targetStructure = null;
+    let selectionRequest = 0;
+    let selectionLoads = 0;
+    let comparing = false;
+    let compareRequest = 0;
+    let compareController = null;
+    tab.onClose = () => compareController?.abort();
+
+    const checkedKeys = () => [...keyChoices.querySelectorAll('input[type=checkbox]:checked')]
+      .map((checkbox) => checkbox.value);
+    const updateControls = () => {
+      const busy = selectionLoads > 0 || comparing;
+      targetConnection.disabled = comparing;
+      targetDatabase.disabled = busy;
+      targetObject.disabled = busy;
+      rowCap.disabled = comparing;
+      keyChoices.disabled = busy;
+      compareButton.disabled = busy || !targetStructure || !checkedKeys().length;
+    };
+    const beginSelection = () => { selectionLoads += 1; updateControls(); };
+    const endSelection = () => { selectionLoads -= 1; updateControls(); };
+
+    let sourceStructure;
+    try {
+      sourceStructure = await api(urlsFor(tab.source).structure(
+        tab.sourceObject.schema, tab.sourceObject.name));
+    } catch (err) {
+      results.replaceChildren(errorBox(`Source structure unavailable: ${err.message}`));
+      status.textContent = 'Comparison unavailable';
+      updateControls();
+      return;
+    }
+
+    const renderKeyChoices = (preferred = []) => {
+      const targetColumnNames = new Set((targetStructure?.columns || [])
+        .filter((column) => !column.isHidden)
+        .map((column) => column.name.toLowerCase()));
+      const targetIdentityNames = new Set((targetStructure?.rowIdentity?.columns || [])
+        .map((name) => name.toLowerCase()));
+      const available = (sourceStructure.columns || [])
+        .filter((column) => !column.isHidden
+          && targetColumnNames.has(column.name.toLowerCase()))
+        .map((column) => column.name);
+      for (const identityColumn of sourceStructure.rowIdentity?.columns || []) {
+        if (!available.some((name) => name.toLowerCase() === identityColumn.toLowerCase())
+          && targetIdentityNames.has(identityColumn.toLowerCase())) available.push(identityColumn);
+      }
+      const preferredAvailable = preferred.filter((name) =>
+        available.some((candidate) => candidate.toLowerCase() === name.toLowerCase()));
+      const identityDefault = (sourceStructure.rowIdentity?.columns || []).filter((name) =>
+        available.some((candidate) => candidate.toLowerCase() === name.toLowerCase()));
+      const selected = preferredAvailable.length ? preferredAvailable
+        : identityDefault.length === (sourceStructure.rowIdentity?.columns || []).length
+          ? identityDefault : [];
+      keyChoices.replaceChildren(h('legend', { text: 'Match rows by' }),
+        ...available.map((name) => {
+          const checkbox = h('input', { type: 'checkbox', value: name });
+          checkbox.checked = selected.some((candidate) =>
+            candidate.toLowerCase() === name.toLowerCase());
+          checkbox.addEventListener('change', () => {
+            tab.keyColumns = checkedKeys();
+            results.replaceChildren();
+            status.textContent = tab.keyColumns.length
+              ? 'Ready to compare.' : 'Choose at least one matching key column.';
+            updateControls();
+            saveSession();
+          });
+          return h('label', { class: 'checkbox-row' }, checkbox, name);
+        }),
+        available.length ? null : h('span', {
+          class: 'muted', text: 'These tables have no columns in common.',
+        }));
+      tab.keyColumns = checkedKeys();
+      status.textContent = tab.keyColumns.length
+        ? 'Ready to compare.' : 'Choose at least one matching key column.';
+      updateControls();
+    };
+
+    const loadTargetStructure = async (request, preferredKeys) => {
+      const selected = targetObjects.get(targetObject.value);
+      targetStructure = null;
+      if (!selected) {
+        renderKeyChoices([]);
+        return;
+      }
+      beginSelection();
+      try {
+        const scope = { connection: targetConnection.value, database: targetDatabase.value };
+        const structure = await api(urlsFor(scope).structure(selected.schema, selected.name));
+        if (request !== selectionRequest) return;
+        targetStructure = structure;
+        renderKeyChoices(preferredKeys);
+      } catch (err) {
+        if (request !== selectionRequest) return;
+        keyChoices.replaceChildren(h('legend', { text: 'Match rows by' }), errorBox(err.message));
+        status.textContent = 'Target structure unavailable';
+      } finally {
+        endSelection();
+      }
+    };
+
+    const loadTargetObjects = async (request, preferredObject, preferredKeys) => {
+      beginSelection();
+      try {
+        const scope = { connection: targetConnection.value, database: targetDatabase.value };
+        const objects = (await api(urlsFor(scope).objects()))
+          .filter((object) => object.type === 'Table' && !object.isInternal && !isVirtualObject(object));
+        if (request !== selectionRequest) return;
+        targetObjects = new Map(objects.map((object) => [dataCompareObjectKey(object), object]));
+        targetObject.replaceChildren(h('option', { value: '', text: 'Choose target table' }),
+          ...objects.sort((left, right) => displayName(left, scope).localeCompare(displayName(right, scope)))
+            .map((object) => h('option', {
+              value: dataCompareObjectKey(object), text: displayName(object, scope),
+            })));
+        const preferredKey = preferredObject?.name
+          ? dataCompareObjectKey(preferredObject) : null;
+        const exact = preferredKey && targetObjects.has(preferredKey) ? preferredKey : null;
+        const sameName = [...targetObjects.entries()].find(([, object]) =>
+          object.name.toLowerCase() === tab.sourceObject.name.toLowerCase())?.[0];
+        targetObject.value = exact || sameName || '';
+      } catch (err) {
+        if (request !== selectionRequest) return;
+        targetObjects = new Map();
+        targetObject.replaceChildren();
+        results.replaceChildren(errorBox(`Target tables unavailable: ${err.message}`));
+        status.textContent = 'Comparison unavailable';
+      } finally {
+        endSelection();
+      }
+      if (request === selectionRequest) await loadTargetStructure(request, preferredKeys);
+    };
+
+    const loadTargetDatabases = async (preferredDatabase, preferredObject, preferredKeys) => {
+      const request = ++selectionRequest;
+      targetStructure = null;
+      beginSelection();
+      try {
+        const databases = await api(urls.databases(targetConnection.value));
+        if (request !== selectionRequest) return;
+        const available = databases.filter((database) => !database.isSystem);
+        targetDatabase.replaceChildren(...available.map((database) =>
+          h('option', { value: database.name, text: database.name })));
+        if (available.some((database) => database.name === preferredDatabase)) {
+          targetDatabase.value = preferredDatabase;
+        }
+      } catch (err) {
+        if (request !== selectionRequest) return;
+        targetDatabase.replaceChildren();
+        targetObject.replaceChildren();
+        status.textContent = `Database list unavailable: ${err.message}`;
+      } finally {
+        endSelection();
+      }
+      if (request === selectionRequest && targetDatabase.value) {
+        await loadTargetObjects(request, preferredObject, preferredKeys);
+      }
+    };
+
+    targetConnection.addEventListener('change', () => {
+      results.replaceChildren();
+      loadTargetDatabases(null, null, []);
+    });
+    targetDatabase.addEventListener('change', () => {
+      const request = ++selectionRequest;
+      results.replaceChildren();
+      loadTargetObjects(request, null, []);
+    });
+    targetObject.addEventListener('change', () => {
+      const request = ++selectionRequest;
+      results.replaceChildren();
+      loadTargetStructure(request, []);
+    });
+    rowCap.addEventListener('change', () => {
+      rowCap.value = String(Math.min(state.meta.maxQueryResultRows,
+        Math.max(1, Number(rowCap.value) || 2000)));
+      tab.maxRows = Number(rowCap.value);
+      results.replaceChildren();
+      saveSession();
+    });
+
+    compareButton.addEventListener('click', async () => {
+      if (selectionLoads || comparing || !targetStructure) return;
+      const keys = checkedKeys();
+      const selectedTarget = targetObjects.get(targetObject.value);
+      if (!keys.length || !selectedTarget) return;
+      comparing = true;
+      updateControls();
+      const request = ++compareRequest;
+      compareController?.abort();
+      const controller = new AbortController();
+      compareController = controller;
+      const targetScope = { connection: targetConnection.value, database: targetDatabase.value };
+      const cap = Math.min(state.meta.maxQueryResultRows, Math.max(1, Number(rowCap.value) || 2000));
+      tab.target = {
+        ...targetScope, schema: selectedTarget.schema, name: selectedTarget.name,
+      };
+      tab.keyColumns = keys;
+      tab.maxRows = cap;
+      status.textContent = `Comparing up to ${cap.toLocaleString()} rows on each side…`;
+      results.replaceChildren(h('div', { class: 'loading', text: 'Streaming source and target rows…' }));
+      try {
+        const firstKey = keys[0].toLowerCase();
+        const sourceSort = (sourceStructure.columns || []).find((column) =>
+          !column.isHidden && column.name.toLowerCase() === firstKey)?.name;
+        const targetSort = (targetStructure.columns || []).find((column) =>
+          !column.isHidden && column.name.toLowerCase() === firstKey)?.name;
+        const canSortBothSides = sourceSort && targetSort;
+        const [sourceSnapshot, targetSnapshot] = await Promise.all([
+          loadDataCompareRows(tab.source, tab.sourceObject,
+            canSortBothSides ? sourceSort : null, cap, controller.signal),
+          loadDataCompareRows(targetScope, selectedTarget,
+            canSortBothSides ? targetSort : null, cap, controller.signal),
+        ]);
+        if (request !== compareRequest) return;
+        const comparison = compareDataRows(sourceSnapshot, targetSnapshot, keys);
+        renderDataCompareResults(results, comparison, sourceSnapshot, targetSnapshot, keys);
+        const columnDifferenceCount = comparison.sourceOnlyColumns.length + comparison.targetOnlyColumns.length;
+        status.textContent = comparison.differences.length
+          ? `${comparison.differences.length} row difference${comparison.differences.length === 1 ? '' : 's'}`
+            + (columnDifferenceCount ? ` · ${columnDifferenceCount} column difference${columnDifferenceCount === 1 ? '' : 's'}` : '')
+          : columnDifferenceCount
+            ? `Rows match · ${columnDifferenceCount} column difference${columnDifferenceCount === 1 ? '' : 's'}`
+            : 'Rows match within the loaded data';
+        if (sourceSnapshot.truncated || targetSnapshot.truncated) status.textContent += ' · partial';
+        saveSession();
+      } catch (err) {
+        controller.abort();
+        if (request !== compareRequest || err.name === 'AbortError') return;
+        status.textContent = 'Comparison unavailable';
+        results.replaceChildren(errorBox(err.message));
+      } finally {
+        if (request === compareRequest) {
+          compareController = null;
+          comparing = false;
+          updateControls();
+        }
+      }
+    });
+
+    await loadTargetDatabases(tab.target.database, tab.target, tab.keyColumns);
+  }
+
   function addTab(tab) {
     const active = state.tabs.find((candidate) => candidate.id === state.activeTabId);
     const activate = () => {
@@ -4469,6 +5035,13 @@
       const cancel = h('button', { text: 'Cancel', onclick: () => controller.abort() });
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
       actionBar.replaceChildren(...[
+        o.type === 'Table' && !o.isInternal && !isVirtualObject(o)
+          ? h('button', {
+            'data-testid': 'data-compare-open',
+            title: 'Compare rows with the same table on another connection',
+            onclick: () => openDataCompareTab(scope, o),
+          }, 'Compare data…')
+          : null,
         structure && currentConn().allowWrites && !o.isInternal
           ? h('button', {
             onclick: () => openRowEditor(table, data.columns, structure, friendly, null, null, columnIndex),
