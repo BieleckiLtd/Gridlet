@@ -178,18 +178,21 @@ public sealed class SqlServerTableDataService : ITableDataService
         string? columnName = null;
         string? dataType = null;
         string? systemType = null;
+        var objectExists = false;
         var filterColumnNames = new List<string>();
         await using (var metadata = connection.CreateCommand())
         {
             metadata.CommandText =
-                "SELECT c.name, TYPE_NAME(c.user_type_id), TYPE_NAME(c.system_type_id), c.is_hidden " +
+                "SELECT c.name, TYPE_NAME(c.user_type_id), TYPE_NAME(c.system_type_id), " +
+                "CONVERT(int, ISNULL(COLUMNPROPERTY(c.object_id, c.name, 'IsHidden'), 0)) " +
                 "FROM sys.columns c WHERE c.object_id = OBJECT_ID(@object) ORDER BY c.column_id;";
             metadata.Parameters.AddWithValue("@object", qualifiedName);
             await using var reader = await metadata.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
+                objectExists = true;
                 var candidateName = reader.GetString(0);
-                var isHidden = reader.GetBoolean(3);
+                var isHidden = reader.GetInt32(3) != 0;
                 if (!isHidden)
                 {
                     filterColumnNames.Add(candidateName);
@@ -209,40 +212,28 @@ public sealed class SqlServerTableDataService : ITableDataService
                 }
             }
 
+            if (!objectExists)
+            {
+                throw new GridletObjectNotFoundException(qualifiedName);
+            }
             if (columnName is null)
             {
                 throw new GridletValidationException(
                     $"Profile column '{request.Column}' does not exist on {qualifiedName}.");
             }
-            if (string.IsNullOrWhiteSpace(dataType) || string.IsNullOrWhiteSpace(systemType))
+            if (string.IsNullOrWhiteSpace(dataType))
             {
                 throw new GridletValidationException(
                     $"The type of profile column '{columnName}' could not be determined.");
             }
         }
 
-        var unsupportedGrouping = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "text", "ntext", "image", "xml", "geography", "geometry", "hierarchyid",
-        };
-        var rangeTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "tinyint", "smallint", "int", "bigint", "decimal", "numeric", "float", "real",
-            "money", "smallmoney", "date", "datetime", "datetime2", "smalldatetime", "time",
-            "datetimeoffset", "char", "nchar", "varchar", "nvarchar", "uniqueidentifier",
-        };
-        var canGroup = !unsupportedGrouping.Contains(systemType);
-        var canRange = rangeTypes.Contains(systemType);
-        var quotedColumn = SqlServerIdentifier.Quote(columnName);
+        var (canGroup, canRange) = SqlServerSqlBuilder.GetProfileCapabilities(systemType);
         var filter = SqlServerSqlBuilder.BuildFilterClause(request.Filters, filterColumnNames);
 
         await using var aggregate = connection.CreateCommand();
-        aggregate.CommandText =
-            $"SELECT COUNT_BIG(*), COUNT_BIG({quotedColumn}), " +
-            (canGroup ? $"COUNT_BIG(DISTINCT {quotedColumn})" : "CAST(NULL AS bigint)") + ", " +
-            (canRange ? $"MIN({quotedColumn}), MAX({quotedColumn})" :
-                "CAST(NULL AS nvarchar(1)), CAST(NULL AS nvarchar(1))") +
-            $" FROM {qualifiedName}{filter.Clause};";
+        aggregate.CommandText = SqlServerSqlBuilder.BuildProfileAggregateSql(
+            schema, name, columnName, filter.Clause, canGroup, canRange);
         AddFilterParameters(aggregate, filter.Parameters);
         long totalCount;
         long nonNullCount;
@@ -263,10 +254,8 @@ public sealed class SqlServerTableDataService : ITableDataService
         if (canGroup)
         {
             await using var top = connection.CreateCommand();
-            top.CommandText =
-                $"SELECT TOP (@topValues) {quotedColumn}, COUNT_BIG(*) AS frequency " +
-                $"FROM {qualifiedName}{filter.Clause} GROUP BY {quotedColumn} " +
-                "ORDER BY frequency DESC;";
+            top.CommandText = SqlServerSqlBuilder.BuildProfileTopValuesSql(
+                schema, name, columnName, filter.Clause);
             top.Parameters.AddWithValue("@topValues", Math.Clamp(request.TopValues, 1, 50));
             AddFilterParameters(top, filter.Parameters);
             await using var reader = await top.ExecuteReaderAsync(cancellationToken);

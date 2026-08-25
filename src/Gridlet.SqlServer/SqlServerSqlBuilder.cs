@@ -5,6 +5,22 @@ namespace Gridlet.SqlServer;
 /// <summary>Builds the dynamic SQL Gridlet needs. Identifiers are always bracket-quoted; values are always parameters.</summary>
 public static class SqlServerSqlBuilder
 {
+    private static readonly HashSet<string> ProfileGroupableTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "bigint", "binary", "bit", "char", "date", "datetime", "datetime2",
+        "datetimeoffset", "decimal", "float", "int", "money", "nchar", "numeric",
+        "nvarchar", "real", "smalldatetime", "smallint", "smallmoney", "sql_variant",
+        "time", "tinyint", "uniqueidentifier", "varbinary", "varchar",
+    };
+
+    private static readonly HashSet<string> ProfileRangeTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "bigint", "bit", "char", "date", "datetime", "datetime2", "datetimeoffset",
+        "decimal", "float", "int", "money", "nchar", "numeric", "nvarchar", "real",
+        "smalldatetime", "smallint", "smallmoney", "sql_variant", "time", "tinyint",
+        "uniqueidentifier", "varchar",
+    };
+
     /// <summary>
     /// Builds a paged <c>SELECT</c> over a table or view. Expects <c>@Offset</c> and
     /// <c>@PageSize</c> parameters. Without a sort column the row order is engine-defined.
@@ -74,6 +90,51 @@ public static class SqlServerSqlBuilder
     /// </summary>
     public static string BuildCountSql(string schema, string name, string whereClause)
         => $"SELECT COUNT_BIG(*) FROM {SqlServerIdentifier.QuoteQualified(schema, name)}{whereClause};";
+
+    /// <summary>
+    /// Returns the exact aggregate operations SQL Server supports for a built-in system type.
+    /// Unknown and CLR types deliberately get count-only profiles instead of being sent to an
+    /// engine operation that can fail at runtime.
+    /// </summary>
+    public static (bool CanGroup, bool CanRange) GetProfileCapabilities(string? systemType)
+        => systemType is not null && ProfileGroupableTypes.Contains(systemType)
+            ? (true, ProfileRangeTypes.Contains(systemType))
+            : (false, false);
+
+    /// <summary>Builds the single-row exact aggregate statement for a column profile.</summary>
+    public static string BuildProfileAggregateSql(
+        string schema,
+        string name,
+        string column,
+        string whereClause,
+        bool canGroup,
+        bool canRange)
+    {
+        var target = SqlServerIdentifier.QuoteQualified(schema, name);
+        var quotedColumn = SqlServerIdentifier.Quote(column);
+        return $"SELECT COUNT_BIG(*), COUNT_BIG({quotedColumn}), " +
+            (canGroup ? $"COUNT_BIG(DISTINCT {quotedColumn})" : "CAST(NULL AS bigint)") + ", " +
+            (canRange ? $"MIN({quotedColumn}), MAX({quotedColumn})" :
+                "CAST(NULL AS nvarchar(1)), CAST(NULL AS nvarchar(1))") +
+            $" FROM {target}{whereClause};";
+    }
+
+    /// <summary>
+    /// Builds the frequency statement for a column profile. The value is a secondary ordering key
+    /// so equal-frequency results are deterministic across executions.
+    /// </summary>
+    public static string BuildProfileTopValuesSql(
+        string schema,
+        string name,
+        string column,
+        string whereClause)
+    {
+        var target = SqlServerIdentifier.QuoteQualified(schema, name);
+        var quotedColumn = SqlServerIdentifier.Quote(column);
+        return $"SELECT TOP (@topValues) {quotedColumn}, COUNT_BIG(*) AS frequency " +
+            $"FROM {target}{whereClause} GROUP BY {quotedColumn} " +
+            $"ORDER BY frequency DESC, {quotedColumn} ASC;";
+    }
 
     /// <summary>
     /// Translates column filters into a WHERE clause and its parameters. Column names are matched

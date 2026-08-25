@@ -5386,8 +5386,9 @@
           }
         }
       };
-      run.addEventListener('click', load);
-      column.addEventListener('change', load);
+      let hasProfiled = false;
+      run.addEventListener('click', () => { hasProfiled = true; load(); });
+      column.addEventListener('change', () => { if (hasProfiled) load(); });
       cancel.addEventListener('click', () => {
         request++;
         activeProfileLoad?.abort();
@@ -5396,7 +5397,6 @@
         status.textContent = 'Profile cancelled.';
         results.replaceChildren();
       });
-      await load();
     };
 
     const renderData = async () => {

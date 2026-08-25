@@ -3551,6 +3551,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var panel = ActivePanel(page);
 
         await panel.GetByRole(AriaRole.Button, new() { Name = "Profile", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Ready.");
+        await Assertions.Expect(panel.GetByTestId("profile-results")).ToBeEmptyAsync();
+        await panel.GetByTestId("profile-run").ClickAsync();
         await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profiled 2 rows");
         await Assertions.Expect(panel.Locator("[data-profile-metric='rows']"))
             .ToContainTextAsync("2");
@@ -3600,7 +3603,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(panel.GetByTestId("filter-chip")).ToBeVisibleAsync();
 
         await panel.GetByRole(AriaRole.Button, new() { Name = "Profile", Exact = true }).ClickAsync();
-        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profiled 2 rows");
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Ready.");
         await panel.GetByTestId("profile-use-filters").CheckAsync();
         await panel.GetByTestId("profile-run").ClickAsync();
         await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profiled 1 row");
@@ -3642,6 +3645,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var panel = ActivePanel(page);
 
         await panel.GetByRole(AriaRole.Button, new() { Name = "Profile", Exact = true }).ClickAsync();
+        await panel.GetByTestId("profile-run").ClickAsync();
         await started.Task;
         await Assertions.Expect(panel.GetByTestId("profile-cancel")).ToBeVisibleAsync();
         await panel.GetByTestId("profile-cancel").ClickAsync();
