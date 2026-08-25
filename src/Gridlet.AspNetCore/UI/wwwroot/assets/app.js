@@ -605,6 +605,10 @@
   const del = (url) => api(url, { method: 'DELETE' });
 
   const isVirtualObject = (o) => !!o?.subKind && /virtual/i.test(o.subKind);
+  const objectBadge = (o) => o?.isInternal ? 'I' : isVirtualObject(o) ? 'VT' : ({
+    Table: 'T', View: 'V', StoredProcedure: 'P', ScalarFunction: 'F',
+    TableValuedFunction: 'F', Trigger: 'R', Sequence: 'Q', UserDefinedType: 'Y',
+  })[o?.type] || 'O';
   const canDropObject = (o) => !o?.isInternal && o?.type !== 'UserDefinedType';
   const canDesignObject = (o) => canDropObject(o) && !isVirtualObject(o);
 
@@ -2468,11 +2472,6 @@
     return terms.every((term) => candidate.includes(term));
   };
 
-  const objectSearchBadge = (object) => ({
-    Table: 'T', View: 'V', StoredProcedure: 'P', ScalarFunction: 'F',
-    TableValuedFunction: 'F', Trigger: 'R', Sequence: 'Q', UserDefinedType: 'Y',
-  })[object.type] || object.type.slice(0, 1).toUpperCase();
-
   function objectSearchDefinitionMatch(definition, terms) {
     if (!objectSearchMatches(definition, terms)) return null;
     const lower = definition.toLowerCase();
@@ -2590,10 +2589,11 @@
       }
       const content = [];
       if (matches.length > resultLimit) content.push(h('div', {
-          class: 'notice warning', text: `Showing the first ${resultLimit.toLocaleString()} matches. Refine the search to see the rest.`,
+          class: 'warning-box object-search-warning',
+          text: `Showing the first ${resultLimit.toLocaleString()} matches. Refine the search to see the rest.`,
         }));
       if (definitionCoverage?.omitted) content.push(h('div', {
-          class: 'notice warning', 'data-testid': 'object-search-definition-warning',
+          class: 'warning-box object-search-warning', 'data-testid': 'object-search-definition-warning',
           text: `Definition text was searched for ${definitionCoverage.searched.toLocaleString()} of `
             + `${definitionCoverage.eligible.toLocaleString()} eligible objects, distributed across databases. `
             + 'Increase the Definition limit and search again to scan more.',
@@ -2605,7 +2605,7 @@
       for (const [scopeName, scopedMatches] of grouped.entries()) {
         const list = h('div', { class: 'object-search-list' });
         for (const match of scopedMatches) {
-          const badge = objectSearchBadge(match.object);
+          const badge = objectBadge(match.object);
           list.append(h('button', {
             type: 'button', class: 'object-search-result',
             'data-testid': 'object-search-result',
@@ -2623,10 +2623,13 @@
           }) : null)));
         }
         content.push(h('section', { class: 'object-search-group' },
-          h('h3', {}, scopeName, ' ', h('span', { class: 'count', text: String(scopedMatches.length) })), list));
+          h('h3', {}, scopeName, ' ', h('span', {
+            class: 'object-search-count', text: String(scopedMatches.length),
+          })), list));
       }
       if (!matches.length && summary) content.push(h('div', {
-          class: 'empty-inline', text: 'No matching objects were found in the searched locations.',
+          class: 'empty-inner object-search-empty',
+          text: 'No matching objects were found in the searched locations.',
         }));
       results.replaceChildren(...content);
     };
@@ -2716,11 +2719,7 @@
               const snippet = objectSearchDefinitionMatch(response.definition || '', terms);
               if (snippet) {
                 const key = resultKey(candidate);
-                const existing = found.get(key);
-                if (existing) {
-                  existing.reasons.push('definition');
-                  existing.snippet = snippet;
-                } else found.set(key, { ...candidate, reasons: ['definition'], snippet });
+                found.set(key, { ...candidate, reasons: ['definition'], snippet });
               }
             } catch (err) {
               if (err.name === 'AbortError') throw err;
@@ -5012,11 +5011,7 @@
       return;
     }
 
-    const badge = o.isInternal ? 'I' : isVirtualObject(o) ? 'VT' : o.type === 'Table' ? 'T'
-      : o.type === 'View' ? 'V'
-      : o.type === 'StoredProcedure' ? 'P'
-      : o.type === 'Trigger' ? 'R'
-      : o.type === 'Sequence' ? 'Q' : 'F';
+    const badge = objectBadge(o);
 
     const tab = {
       id: state.nextTabId++,

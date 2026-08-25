@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -1920,6 +1921,64 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Object_search_combined_mode_avoids_redundant_definition_requests()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        var definitionRequests = new ConcurrentBag<string>();
+        await page.RouteAsync("**/definition?*", route =>
+        {
+            definitionRequests.Add(Uri.UnescapeDataString(route.Request.Url));
+            return route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"definition\":\"SELECT 'Customers'\"}",
+            });
+        });
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("all");
+        await search.GetByTestId("object-search-query").FillAsync("Customers");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("definitions");
+        await Assertions.Expect(search.GetByTestId("object-search-run")).ToBeEnabledAsync();
+        Assert.NotEmpty(definitionRequests);
+        Assert.DoesNotContain(definitionRequests, url => url.Contains(
+            "/objects/dbo/Customers/definition", StringComparison.OrdinalIgnoreCase));
+        var namedCustomer = search.GetByTestId("object-search-result")
+            .Filter(new() { HasText = "dbo.Customers" }).First;
+        await Assertions.Expect(namedCustomer).ToContainTextAsync("Table · name");
+        await Assertions.Expect(search.GetByTestId("object-search-result")
+            .Filter(new() { HasText = "definition" }).First).ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_search_hides_internal_objects_until_requested_and_keeps_their_badge()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-query").FillAsync("Customers_fts_data");
+        await search.GetByTestId("object-search-run").ClickAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(0);
+
+        await search.GetByLabel("Internal objects").CheckAsync();
+        await search.GetByTestId("object-search-run").ClickAsync();
+        var internalResult = search.GetByTestId("object-search-result").First;
+        await Assertions.Expect(internalResult).ToContainTextAsync("Customers_fts_data");
+        await Assertions.Expect(internalResult.Locator(".badge-I")).ToHaveTextAsync("I");
+        await internalResult.ClickAsync();
+        await Assertions.Expect(page.Locator(".tab.active .badge-I")).ToHaveTextAsync("I");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Object_search_isolates_connection_failures_and_restores_its_workspace()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -1969,7 +2028,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     {
         await using var browserPage = await fixture.NewPageAsync();
         var page = browserPage.Page;
-        var definitionRequests = new List<string>();
+        var definitionRequests = new ConcurrentBag<string>();
         var ordinaryObjects = JsonSerializer.Serialize(Enumerable.Range(1, 600).Select(index => new
         {
             schema = "dbo", name = $"Procedure{index:000}", type = "StoredProcedure",
@@ -2012,6 +2071,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
                 : "SQLite").Distinct().Count());
         await Assertions.Expect(search.GetByTestId("object-search-definition-warning"))
             .ToContainTextAsync("Increase the Definition limit");
+        await Assertions.Expect(search.GetByTestId("object-search-definition-warning"))
+            .ToHaveClassAsync(new Regex("warning-box"));
         browserPage.AssertNoUnexpectedErrors();
     }
 

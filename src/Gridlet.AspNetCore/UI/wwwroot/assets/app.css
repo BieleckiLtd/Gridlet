@@ -479,6 +479,7 @@ button.ghost { background: transparent; }
 .badge-S { background: #3b355e; color: #b9a9ff; }
 .badge-Q { background: #263244; color: #9db9e4; }
 .badge-Y { background: #3e354f; color: #c9adf5; }
+.badge-O { background: #3b4148; color: #c1c9d2; }
 .badge-search { background: #243f52; color: #75c8f0; }
 .badge-A { background: #23484c; color: #78d4d1; }
 .badge-H { background: #234a3f; color: #74d4b0; }
@@ -496,6 +497,7 @@ button.ghost { background: transparent; }
 :root[data-theme="light"] .badge-S { background: #e6e0f5; color: #594692; }
 :root[data-theme="light"] .badge-Q { background: #e1e8f1; color: #405a7d; }
 :root[data-theme="light"] .badge-Y { background: #e9e1f4; color: #64428d; }
+:root[data-theme="light"] .badge-O { background: #e4e8ec; color: #4e5964; }
 :root[data-theme="light"] .badge-search { background: #dcecf5; color: #176185; }
 :root[data-theme="light"] .badge-A { background: #d9eeee; color: #286a6d; }
 :root[data-theme="light"] .badge-H { background: #d8efe6; color: #1f6650; }
@@ -835,6 +837,9 @@ button.ghost { background: transparent; }
 }
 .object-search-failures summary { cursor: pointer; }
 .object-search-failures ul { margin: 8px 0 0; padding-left: 22px; }
+.object-search-warning { margin-bottom: 12px; }
+.object-search-empty { padding: 28px 12px; }
+.object-search-count { font-weight: 400; opacity: 0.7; }
 .object-search-group + .object-search-group { margin-top: 18px; }
 .object-search-group h3 {
   display: flex; align-items: center; gap: 6px; margin: 0 0 7px; font-size: 12px;
