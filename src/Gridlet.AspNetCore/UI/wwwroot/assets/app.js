@@ -2672,9 +2672,10 @@
         await objectSearchMap(scopes, 6, async (scope) => {
           try {
             const objects = await api(urlsFor(scope).objects(), { signal });
-            candidates.push(...objects
-              .filter((object) => includeInternal.checked || !object.isInternal)
-              .map((object) => ({ scope, object })));
+            for (const object of objects) {
+              if (!includeInternal.checked && object.isInternal) continue;
+              candidates.push({ scope, object });
+            }
           } catch (err) {
             if (err.name === 'AbortError') throw err;
             failures.push(`${scope.connection} / ${scope.database}: ${err.message}`);

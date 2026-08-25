@@ -1970,14 +1970,23 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await using var browserPage = await fixture.NewPageAsync();
         var page = browserPage.Page;
         var definitionRequests = new List<string>();
-        var objects = JsonSerializer.Serialize(Enumerable.Range(1, 600).Select(index => new
+        var ordinaryObjects = JsonSerializer.Serialize(Enumerable.Range(1, 600).Select(index => new
         {
             schema = "dbo", name = $"Procedure{index:000}", type = "StoredProcedure",
             description = (string?)null, isInternal = false,
         }));
+        var largeCatalog = JsonSerializer.Serialize(Enumerable.Range(1, 130_000).Select(index => new
+        {
+            schema = "dbo", name = $"Procedure{index:000000}", type = "StoredProcedure",
+            description = (string?)null, isInternal = false,
+        }));
+        await page.GotoAsync("/gridlet/");
         await page.RouteAsync("**/objects", route => route.FulfillAsync(new RouteFulfillOptions
         {
-            Status = 200, ContentType = "application/json", Body = objects,
+            Status = 200,
+            ContentType = "application/json",
+            Body = route.Request.Url.Contains("/connections/Main/", StringComparison.Ordinal)
+                ? largeCatalog : ordinaryObjects,
         }));
         await page.RouteAsync("**/definition?*", route =>
         {
@@ -1987,8 +1996,6 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
                 Status = 200, ContentType = "application/json", Body = "{\"definition\":\"SELECT 1\"}",
             });
         });
-        await page.GotoAsync("/gridlet/");
-
         var search = await OpenObjectSearchAsync(page);
         await search.GetByTestId("object-search-mode").SelectOptionAsync("definitions");
         await Assertions.Expect(search.GetByTestId("object-search-definition-limit"))
@@ -1997,7 +2004,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await search.GetByTestId("object-search-run").ClickAsync();
 
         await Assertions.Expect(search.GetByTestId("object-search-status"))
-            .ToContainTextAsync("500 / 1,800 definitions");
+            .ToContainTextAsync("500 / 131,200 definitions", new() { Timeout = 30_000 });
         Assert.Equal(500, definitionRequests.Count);
         Assert.Equal(3, definitionRequests.Select(url =>
             url.Contains("/connections/Main/", StringComparison.Ordinal) ? "Main"
