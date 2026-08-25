@@ -5249,9 +5249,9 @@
             toast(`Cannot follow ${foreignKey.name}; its complete key is not present in this row.`);
             return;
           }
-          filters.push({
-            column: pair.referencedColumn, operator: 'equals', value: String(row[index]),
-          });
+            filters.push({
+              column: pair.referencedColumn, operator: 'equals', value: dataCompareValueText(row[index]),
+            });
         }
         try {
           const objects = await objectsForScope(scope);
@@ -5508,7 +5508,7 @@
                     unavailableReason = 'A NULL key value cannot be referenced by a foreign key';
                     break;
                   }
-                  filters.push({ column: pair.column, operator: 'equals', value: String(value) });
+                  filters.push({ column: pair.column, operator: 'equals', value: dataCompareValueText(value) });
                 }
                 const mapping = (foreignKey.columns || []).map((pair) =>
                   `${source.schema}.${source.name}.${pair.column} → ${o.schema}.${o.name}.${pair.referencedColumn}`).join(', ');
@@ -5534,18 +5534,26 @@
                   inspect.click();
                 },
               }) : null;
-              incomingPanel.replaceChildren(heading(),
-                metadata.failures.length ? h('div', {
+              const warning = metadata.failures.length ? h('div', {
                   class: 'warning-box',
                   title: metadata.failures.join('\n'),
                 }, h('span', {
                   text: `${metadata.failures.length} table${metadata.failures.length === 1 ? '' : 's'} could not be inspected.`,
-                }), retry) : null,
+                }), retry) : null;
+              incomingPanel.replaceChildren(...[
+                heading(),
+                warning,
                 entries.length ? h('div', { class: 'incoming-reference-list' }, ...entries)
-                  : h('p', { class: 'muted', text: 'No visible tables have a foreign key to this row.' }));
+                  : h('p', { class: 'muted', text: 'No visible tables have a foreign key to this row.' }),
+              ].filter(Boolean));
             } catch (err) {
               if (current !== incomingRequest || err.name === 'AbortError') return;
-              incomingPanel.replaceChildren(h('h3', { text: 'Incoming references' }), errorBox(err.message));
+              inspect.disabled = false;
+              incomingPanel.replaceChildren(heading(), errorBox(err.message), h('button', {
+                type: 'button', text: 'Retry incoming-reference inspection',
+                'data-testid': 'retry-incoming-references',
+                onclick: () => inspect.click(),
+              }));
             }
           },
         });

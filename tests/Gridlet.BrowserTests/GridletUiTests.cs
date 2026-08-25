@@ -4296,6 +4296,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await incoming.GetByTestId("retry-incoming-references").ClickAsync();
         await Assertions.Expect(incoming.GetByTestId("retry-incoming-references")).ToHaveCountAsync(0);
         await Assertions.Expect(incoming.GetByTestId("incoming-reference")).ToHaveCountAsync(1);
+        Assert.DoesNotContain("null", await incoming.InnerTextAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(2, customerStructureAttempts);
 
         await pizzas.Locator("tbody tr").Nth(1).Locator("td:not(.row-selector)").Last.ClickAsync();
