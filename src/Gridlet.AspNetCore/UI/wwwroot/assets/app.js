@@ -622,6 +622,7 @@
     schemas: [],
     objectsByScope: new Map(),
     structures: new Map(),
+    incomingRelationships: new Map(),
     routines: new Map(),
     tabs: [],
     activeTabId: null,
@@ -1767,6 +1768,7 @@
     state.database = name;
     refreshAgentAvailability();
     state.structures.clear();
+    state.incomingRelationships.clear();
     $('#database-select').value = name;
     $('#database-select').themedSelectSync();
     renderTabBar();
@@ -5277,7 +5279,6 @@
         const targetText = followable.length === 1
           ? `${followable[0].referencedSchema}.${followable[0].referencedTable}`
           : `${followable.length} referenced tables`;
-        const accessibleValue = cell.textContent || String(value);
         const link = h('button', {
           type: 'button', class: 'fk-follow',
           title: `Follow foreign key to ${targetText}`,
@@ -5291,10 +5292,9 @@
               action: () => followForeignKey(foreignKey, row),
             })));
           },
-        }, ...cell.childNodes);
+        }, '↗');
         cell.classList.add('foreign-key-cell');
-        cell.setAttribute('aria-label', accessibleValue);
-        cell.replaceChildren(link);
+        cell.append(link);
         return cell;
       };
       const resolveFriendlyValues = async (rows) => {
@@ -5405,8 +5405,11 @@
         class: 'incoming-references', hidden: '', 'data-testid': 'incoming-references',
       });
       let incomingRequest = 0;
-      let incomingMetadataPromise = null;
-      const loadIncomingMetadata = () => (incomingMetadataPromise ??= (async () => {
+      const incomingMetadataKey = `${scopeKey(scope)} ${o.schema}.${o.name}`.toLowerCase();
+      let incomingMetadataPromise = state.incomingRelationships.get(incomingMetadataKey) || null;
+      const loadIncomingMetadata = () => {
+        if (incomingMetadataPromise) return incomingMetadataPromise;
+        incomingMetadataPromise = (async () => {
         const objects = (await objectsForScope(scope)).filter((candidate) =>
           candidate.type === 'Table' && !candidate.isInternal && !isVirtualObject(candidate));
         const definitions = new Array(objects.length);
@@ -5448,7 +5451,16 @@
           }
         });
         return { relationships, failures };
-      })());
+        })();
+        state.incomingRelationships.set(incomingMetadataKey, incomingMetadataPromise);
+        incomingMetadataPromise.catch(() => {
+          if (state.incomingRelationships.get(incomingMetadataKey) === incomingMetadataPromise) {
+            state.incomingRelationships.delete(incomingMetadataKey);
+            incomingMetadataPromise = null;
+          }
+        });
+        return incomingMetadataPromise;
+      };
 
       const showIncomingReferences = async (selectedRows) => {
         const current = ++incomingRequest;
@@ -5464,21 +5476,33 @@
           return;
         }
         const row = selectedRows[0];
-        incomingPanel.replaceChildren(h('h3', { text: `Incoming references to ${describeRow(row)}` }),
-          h('div', { class: 'loading', text: 'Loading relationship metadata…' }));
-        try {
+        const heading = () => h('h3', { text: `Incoming references to ${describeRow(row)}` });
+        const inspect = h('button', {
+          type: 'button', text: 'Inspect incoming references',
+          'data-testid': 'inspect-incoming-references',
+          onclick: async () => {
+            if (current !== incomingRequest) return;
+            inspect.disabled = true;
+            incomingPanel.replaceChildren(heading(),
+              h('div', { class: 'loading', text: 'Loading relationship metadata…' }));
+            try {
           const metadata = await loadIncomingMetadata();
           if (current !== incomingRequest || !incomingPanel.isConnected) return;
           const entries = metadata.relationships.map(({ source, foreignKey }) => {
             const filters = [];
-            let available = true;
+            let unavailableReason = null;
             for (const pair of foreignKey.columns || []) {
               const index = columnIndex(pair.referencedColumn);
-              if (index < 0) { available = false; break; }
+              if (index < 0) {
+                unavailableReason = 'The referenced key is not present in the loaded columns';
+                break;
+              }
               const value = row[index];
-              filters.push(value === null || value === undefined
-                ? { column: pair.column, operator: 'isNull', value: null }
-                : { column: pair.column, operator: 'equals', value: String(value) });
+              if (value === null || value === undefined) {
+                unavailableReason = 'A NULL key value cannot be referenced by a foreign key';
+                break;
+              }
+              filters.push({ column: pair.column, operator: 'equals', value: String(value) });
             }
             const mapping = (foreignKey.columns || []).map((pair) =>
               `${source.schema}.${source.name}.${pair.column} → ${o.schema}.${o.name}.${pair.referencedColumn}`).join(', ');
@@ -5489,9 +5513,9 @@
                 h('span', { class: 'muted', text: foreignKey.name }),
                 h('span', { class: 'mono', text: mapping })),
               h('button', {
-                type: 'button', disabled: available ? null : '',
-                title: available ? `Open rows in ${source.schema}.${source.name} that reference this row`
-                  : 'The referenced key is not present in the loaded columns',
+                type: 'button', disabled: unavailableReason ? '' : null,
+                title: unavailableReason
+                  || `Open rows in ${source.schema}.${source.name} that reference this row`,
                 text: 'Open referencing rows',
                 onclick: () => openObjectTab(source, scope, { filters }),
               }));
@@ -5506,7 +5530,11 @@
         } catch (err) {
           if (current !== incomingRequest || err.name === 'AbortError') return;
           incomingPanel.replaceChildren(h('h3', { text: 'Incoming references' }), errorBox(err.message));
-        }
+            }
+          },
+        });
+        incomingPanel.replaceChildren(heading(),
+          h('p', { class: 'muted', text: 'Relationship metadata is loaded only when requested.' }), inspect);
       };
 
       // Filtering happens in SQL, on every row of the object, not on the page already fetched -
@@ -10534,7 +10562,6 @@
             cell.addEventListener('click', async () => {
               selected.clear(); selected.add(globalIndex); selection.anchor = globalIndex;
               rowElements.forEach((element, index) => element.classList.toggle('selected', selected.has(rowOffset + index)));
-              options.onSelectionChange?.([row]);
               await options.rowActions.onEdit(row, tr, columns[columnIndex].name, rowIndex);
             });
           });

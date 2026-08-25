@@ -948,13 +948,11 @@ td.null { color: var(--muted); font-style: italic; }
 .fk-display-invalid { color: var(--danger); }
 .fk-display-invalid .mini-btn,
 .structure td > .mini-btn { margin-left: 6px; }
-.foreign-key-cell { padding: 0 !important; }
+.foreign-key-cell { position: relative; padding-right: 30px !important; }
 .fk-follow {
-  width: 100%; min-height: 26px; padding: 3px 7px; border: 0; border-radius: 0;
-  background: transparent; color: inherit; font: inherit; text-align: left; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  text-underline-offset: 2px;
+  position: absolute; top: 0; right: 0; bottom: 0; width: 27px; padding: 0;
+  border: 0; border-left: 1px solid var(--border); border-radius: 0;
+  background: transparent; color: var(--accent); font: 700 13px/1 var(--sans); text-align: center;
 }
 .fk-follow:hover, .fk-follow:focus-visible {
   background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent);
