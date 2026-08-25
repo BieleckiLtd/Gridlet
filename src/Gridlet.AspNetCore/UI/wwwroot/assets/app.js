@@ -5410,50 +5410,56 @@
       const loadIncomingMetadata = () => {
         if (incomingMetadataPromise) return incomingMetadataPromise;
         incomingMetadataPromise = (async () => {
-        const objects = (await objectsForScope(scope)).filter((candidate) =>
-          candidate.type === 'Table' && !candidate.isInternal && !isVirtualObject(candidate));
-        const definitions = new Array(objects.length);
-        const failures = [];
-        let next = 0;
-        const worker = async () => {
-          while (next < objects.length) {
-            const index = next++;
-            const object = objects[index];
-            if (object.schema.toLowerCase() === o.schema.toLowerCase()
-              && object.name.toLowerCase() === o.name.toLowerCase()) {
-              definitions[index] = structure;
-              continue;
-            }
-            const cacheKey = `${scopeKey(scope)} ${object.schema}.${object.name}`.toLowerCase();
-            try {
-              let definition = state.structures.get(cacheKey);
-              if (!definition) {
-                definition = await api(urlsFor(scope).structure(object.schema, object.name), {
-                  signal: controller.signal,
-                });
-                state.structures.set(cacheKey, definition);
+          const objects = (await objectsForScope(scope)).filter((candidate) =>
+            candidate.type === 'Table' && !candidate.isInternal && !isVirtualObject(candidate));
+          const definitions = new Array(objects.length);
+          const failures = [];
+          let next = 0;
+          const worker = async () => {
+            while (next < objects.length) {
+              const index = next++;
+              const object = objects[index];
+              if (object.schema.toLowerCase() === o.schema.toLowerCase()
+                && object.name.toLowerCase() === o.name.toLowerCase()) {
+                definitions[index] = structure;
+                continue;
               }
-              definitions[index] = definition;
-            } catch (err) {
-              if (err.name === 'AbortError') throw err;
-              failures.push(`${object.schema}.${object.name}: ${err.message}`);
+              const cacheKey = `${scopeKey(scope)} ${object.schema}.${object.name}`.toLowerCase();
+              try {
+                let definition = state.structures.get(cacheKey);
+                if (!definition) {
+                  definition = await api(urlsFor(scope).structure(object.schema, object.name), {
+                    signal: controller.signal,
+                  });
+                  state.structures.set(cacheKey, definition);
+                }
+                definitions[index] = definition;
+              } catch (err) {
+                if (err.name === 'AbortError') throw err;
+                failures.push(`${object.schema}.${object.name}: ${err.message}`);
+              }
             }
-          }
-        };
-        await Promise.all(Array.from({ length: Math.min(6, objects.length) }, worker));
-        const relationships = [];
-        definitions.forEach((definition, index) => {
-          for (const foreignKey of definition?.foreignKeys || []) {
-            if (foreignKey.referencedSchema.toLowerCase() === o.schema.toLowerCase()
-              && foreignKey.referencedTable.toLowerCase() === o.name.toLowerCase()) {
-              relationships.push({ source: objects[index], foreignKey });
+          };
+          await Promise.all(Array.from({ length: Math.min(6, objects.length) }, worker));
+          const relationships = [];
+          definitions.forEach((definition, index) => {
+            for (const foreignKey of definition?.foreignKeys || []) {
+              if (foreignKey.referencedSchema.toLowerCase() === o.schema.toLowerCase()
+                && foreignKey.referencedTable.toLowerCase() === o.name.toLowerCase()) {
+                relationships.push({ source: objects[index], foreignKey });
+              }
             }
-          }
-        });
-        return { relationships, failures };
+          });
+          return { relationships, failures };
         })();
         state.incomingRelationships.set(incomingMetadataKey, incomingMetadataPromise);
-        incomingMetadataPromise.catch(() => {
+        incomingMetadataPromise.then((metadata) => {
+          if (metadata.failures.length
+            && state.incomingRelationships.get(incomingMetadataKey) === incomingMetadataPromise) {
+            state.incomingRelationships.delete(incomingMetadataKey);
+            incomingMetadataPromise = null;
+          }
+        }).catch(() => {
           if (state.incomingRelationships.get(incomingMetadataKey) === incomingMetadataPromise) {
             state.incomingRelationships.delete(incomingMetadataKey);
             incomingMetadataPromise = null;
@@ -5486,50 +5492,60 @@
             incomingPanel.replaceChildren(heading(),
               h('div', { class: 'loading', text: 'Loading relationship metadata…' }));
             try {
-          const metadata = await loadIncomingMetadata();
-          if (current !== incomingRequest || !incomingPanel.isConnected) return;
-          const entries = metadata.relationships.map(({ source, foreignKey }) => {
-            const filters = [];
-            let unavailableReason = null;
-            for (const pair of foreignKey.columns || []) {
-              const index = columnIndex(pair.referencedColumn);
-              if (index < 0) {
-                unavailableReason = 'The referenced key is not present in the loaded columns';
-                break;
-              }
-              const value = row[index];
-              if (value === null || value === undefined) {
-                unavailableReason = 'A NULL key value cannot be referenced by a foreign key';
-                break;
-              }
-              filters.push({ column: pair.column, operator: 'equals', value: String(value) });
-            }
-            const mapping = (foreignKey.columns || []).map((pair) =>
-              `${source.schema}.${source.name}.${pair.column} → ${o.schema}.${o.name}.${pair.referencedColumn}`).join(', ');
-            return h('div', { class: 'incoming-reference', 'data-testid': 'incoming-reference' },
-              h('span', { class: 'badge badge-FK', text: 'FK' }),
-              h('span', { class: 'incoming-reference-body' },
-                h('strong', { text: `${source.schema}.${source.name}` }),
-                h('span', { class: 'muted', text: foreignKey.name }),
-                h('span', { class: 'mono', text: mapping })),
-              h('button', {
-                type: 'button', disabled: unavailableReason ? '' : null,
-                title: unavailableReason
-                  || `Open rows in ${source.schema}.${source.name} that reference this row`,
-                text: 'Open referencing rows',
-                onclick: () => openObjectTab(source, scope, { filters }),
-              }));
-          });
-          incomingPanel.replaceChildren(h('h3', { text: `Incoming references to ${describeRow(row)}` }),
-            metadata.failures.length ? h('div', {
-              class: 'warning-box', text: `${metadata.failures.length} table${metadata.failures.length === 1 ? '' : 's'} could not be inspected.`,
-              title: metadata.failures.join('\n'),
-            }) : null,
-            entries.length ? h('div', { class: 'incoming-reference-list' }, ...entries)
-              : h('p', { class: 'muted', text: 'No visible tables have a foreign key to this row.' }));
-        } catch (err) {
-          if (current !== incomingRequest || err.name === 'AbortError') return;
-          incomingPanel.replaceChildren(h('h3', { text: 'Incoming references' }), errorBox(err.message));
+              const metadata = await loadIncomingMetadata();
+              if (current !== incomingRequest || !incomingPanel.isConnected) return;
+              const entries = metadata.relationships.map(({ source, foreignKey }) => {
+                const filters = [];
+                let unavailableReason = null;
+                for (const pair of foreignKey.columns || []) {
+                  const index = columnIndex(pair.referencedColumn);
+                  if (index < 0) {
+                    unavailableReason = 'The referenced key is not present in the loaded columns';
+                    break;
+                  }
+                  const value = row[index];
+                  if (value === null || value === undefined) {
+                    unavailableReason = 'A NULL key value cannot be referenced by a foreign key';
+                    break;
+                  }
+                  filters.push({ column: pair.column, operator: 'equals', value: String(value) });
+                }
+                const mapping = (foreignKey.columns || []).map((pair) =>
+                  `${source.schema}.${source.name}.${pair.column} → ${o.schema}.${o.name}.${pair.referencedColumn}`).join(', ');
+                return h('div', { class: 'incoming-reference', 'data-testid': 'incoming-reference' },
+                  h('span', { class: 'badge badge-FK', text: 'FK' }),
+                  h('span', { class: 'incoming-reference-body' },
+                    h('strong', { text: `${source.schema}.${source.name}` }),
+                    h('span', { class: 'muted', text: foreignKey.name }),
+                    h('span', { class: 'mono', text: mapping })),
+                  h('button', {
+                    type: 'button', disabled: unavailableReason ? '' : null,
+                    title: unavailableReason
+                      || `Open rows in ${source.schema}.${source.name} that reference this row`,
+                    text: 'Open referencing rows',
+                    onclick: () => openObjectTab(source, scope, { filters }),
+                  }));
+              });
+              const retry = metadata.failures.length ? h('button', {
+                type: 'button', text: 'Retry incomplete inspection',
+                'data-testid': 'retry-incoming-references',
+                onclick: () => {
+                  inspect.disabled = false;
+                  inspect.click();
+                },
+              }) : null;
+              incomingPanel.replaceChildren(heading(),
+                metadata.failures.length ? h('div', {
+                  class: 'warning-box',
+                  title: metadata.failures.join('\n'),
+                }, h('span', {
+                  text: `${metadata.failures.length} table${metadata.failures.length === 1 ? '' : 's'} could not be inspected.`,
+                }), retry) : null,
+                entries.length ? h('div', { class: 'incoming-reference-list' }, ...entries)
+                  : h('p', { class: 'muted', text: 'No visible tables have a foreign key to this row.' }));
+            } catch (err) {
+              if (current !== incomingRequest || err.name === 'AbortError') return;
+              incomingPanel.replaceChildren(h('h3', { text: 'Incoming references' }), errorBox(err.message));
             }
           },
         });
@@ -10562,6 +10578,7 @@
             cell.addEventListener('click', async () => {
               selected.clear(); selected.add(globalIndex); selection.anchor = globalIndex;
               rowElements.forEach((element, index) => element.classList.toggle('selected', selected.has(rowOffset + index)));
+              options.onSelectionChange?.([row]);
               await options.rowActions.onEdit(row, tr, columns[columnIndex].name, rowIndex);
             });
           });

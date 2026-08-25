@@ -4235,7 +4235,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await foreignKeyCell.ClickAsync(new LocatorClickOptions { Position = new() { X = 4, Y = 4 } });
         var editor = orders.Locator("tr.row-editor");
         await Assertions.Expect(editor).ToHaveCountAsync(1);
-        await editor.PressAsync("Escape");
+        await editor.Locator("input").First.PressAsync("Escape");
         await Assertions.Expect(editor).ToHaveCountAsync(0);
         follow = orders.GetByTitle("Follow foreign key to dbo.Pizzas").First;
         await follow.ClickAsync();
@@ -4267,11 +4267,16 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             if (request.Url.Contains("/structure", StringComparison.Ordinal)) structureRequests++;
         };
         // One unrelated metadata failure must not hide relationships found on healthy tables.
+        var customerStructureAttempts = 0;
         await page.RouteAsync("**/objects/dbo/Customers/structure", route =>
-            route.FulfillAsync(new RouteFulfillOptions
+        {
+            if (Interlocked.Increment(ref customerStructureAttempts) > 1)
+                return route.ContinueAsync();
+            return route.FulfillAsync(new RouteFulfillOptions
             {
                 Status = 503, ContentType = "application/json", Body = "{\"error\":\"metadata offline\"}",
-            }));
+            });
+        });
         await page.GotoAsync("/gridlet/");
         await page.GetByTitle("dbo.Pizzas").ClickAsync();
         var pizzas = ActivePanel(page);
@@ -4288,6 +4293,19 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(incoming).ToContainTextAsync("FK_Orders_Pizzas");
         await Assertions.Expect(incoming).ToContainTextAsync("dbo.Orders.PizzaId → dbo.Pizzas.Id");
         await Assertions.Expect(incoming).ToContainTextAsync("1 table could not be inspected");
+        await incoming.GetByTestId("retry-incoming-references").ClickAsync();
+        await Assertions.Expect(incoming.GetByTestId("retry-incoming-references")).ToHaveCountAsync(0);
+        await Assertions.Expect(incoming.GetByTestId("incoming-reference")).ToHaveCountAsync(1);
+        Assert.Equal(2, customerStructureAttempts);
+
+        await pizzas.Locator("tbody tr").Nth(1).Locator("td:not(.row-selector)").Last.ClickAsync();
+        await Assertions.Expect(incoming).ToContainTextAsync("Incoming references to Id = 2");
+        await Assertions.Expect(incoming.GetByTestId("inspect-incoming-references")).ToBeVisibleAsync();
+        await Assertions.Expect(incoming.GetByRole(AriaRole.Button,
+            new() { Name = "Open referencing rows", Exact = true })).ToHaveCountAsync(0);
+        await pizzas.Locator("tr.row-editor input").First.PressAsync("Escape");
+        await pizzas.Locator("tbody tr").First.Locator("td.row-selector").ClickAsync();
+        await incoming.GetByTestId("inspect-incoming-references").ClickAsync();
         await incoming.GetByRole(AriaRole.Button, new() { Name = "Open referencing rows", Exact = true })
             .ClickAsync();
 
