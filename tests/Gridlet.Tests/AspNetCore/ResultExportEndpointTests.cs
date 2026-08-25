@@ -68,6 +68,19 @@ public sealed class ResultExportEndpointTests
         Assert.Contains("r=\"F2\"><v>12.34</v>", worksheet, StringComparison.Ordinal);
         Assert.DoesNotContain("r=\"D2\"", worksheet, StringComparison.Ordinal);
         Assert.Contains("2026-08-24T05:06:07+02:00", worksheet, StringComparison.Ordinal);
+
+        var earlyDateResponse = await client.PostAsJsonAsync("/gridlet/api/exports/xlsx", new
+        {
+            columns = new[] { new { name = "Early", dataTypeName = "date" } },
+            rows = new object?[][] { ["1900-01-01"], ["1900-03-01"] },
+            providerName = "SqlServer",
+        });
+        using var earlyDateArchive = new ZipArchive(
+            new MemoryStream(await earlyDateResponse.Content.ReadAsByteArrayAsync()), ZipArchiveMode.Read);
+        var earlyDateWorksheet = await ReadEntryAsync(earlyDateArchive, "xl/worksheets/sheet1.xml");
+        Assert.Contains("r=\"A2\" t=\"inlineStr\"", earlyDateWorksheet, StringComparison.Ordinal);
+        Assert.Contains("1900-01-01", earlyDateWorksheet, StringComparison.Ordinal);
+        Assert.Contains("r=\"A3\" s=\"2\"><v>61</v>", earlyDateWorksheet, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -105,7 +118,7 @@ public sealed class ResultExportEndpointTests
         Assert.Equal([null, 9], missing);
         var when = new DateTime?[2];
         await rowGroup.ReadAsync<DateTime>(reader.Schema.DataFields[4], when.AsMemory());
-        Assert.Equal(new DateTime(2026, 8, 24, 5, 6, 7, 123).AddTicks(4_567), when[0]);
+        Assert.Equal(new DateTime(2026, 8, 24, 5, 6, 7, 123).AddTicks(4_560), when[0]);
         Assert.Null(when[1]);
         var amounts = new decimal?[2];
         await rowGroup.ReadAsync<decimal>(reader.Schema.DataFields[5], amounts.AsMemory());
@@ -132,6 +145,34 @@ public sealed class ResultExportEndpointTests
             new MemoryStream(await emptyResponse.Content.ReadAsByteArrayAsync()));
         Assert.Equal(0, emptyReader.RowGroupCount);
         Assert.Equal("Id", Assert.Single(emptyReader.Schema.DataFields).Name);
+
+        var inferredResponse = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
+        {
+            columns = new[]
+            {
+                new { name = "Amount", dataTypeName = "decimal" },
+                new { name = "When", dataTypeName = "datetime2" },
+            },
+            rows = new object?[][]
+            {
+                [123.45m, "0001-01-01T00:00:00"],
+                [0.00001m, "9999-12-31T23:59:59.999999"],
+            },
+            providerName = "SqlServer",
+        });
+        Assert.Equal(HttpStatusCode.OK, inferredResponse.StatusCode);
+        await using var inferredReader = await ParquetReader.CreateAsync(
+            new MemoryStream(await inferredResponse.Content.ReadAsByteArrayAsync()));
+        using var inferredRowGroup = inferredReader.OpenRowGroupReader(0);
+        var inferredDecimals = new decimal?[2];
+        await inferredRowGroup.ReadAsync<decimal>(
+            inferredReader.Schema.DataFields[0], inferredDecimals.AsMemory());
+        Assert.Equal(new decimal?[] { 123.45m, 0.00001m }, inferredDecimals);
+        var inferredDates = new DateTime?[2];
+        await inferredRowGroup.ReadAsync<DateTime>(
+            inferredReader.Schema.DataFields[1], inferredDates.AsMemory());
+        Assert.Equal(new DateTime(1, 1, 1), inferredDates[0]);
+        Assert.Equal(new DateTime(9999, 12, 31, 23, 59, 59).AddTicks(9_999_990), inferredDates[1]);
     }
 
     [Fact]
@@ -157,6 +198,11 @@ public sealed class ResultExportEndpointTests
             columns = new[] { new { name = "A", dataTypeName = "int" } },
             rows = new object?[][] { ["not an integer"] },
         });
+        var wrongDecimal = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
+        {
+            columns = new[] { new { name = "A", dataTypeName = "decimal" } },
+            rows = new object?[][] { ["not a decimal"] },
+        });
         var oversizedExcelCell = await client.PostAsJsonAsync("/gridlet/api/exports/xlsx", new
         {
             columns = new[] { new { name = "A", dataTypeName = "nvarchar(max)" } },
@@ -176,6 +222,8 @@ public sealed class ResultExportEndpointTests
         Assert.Contains("1 were expected", await malformed.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, wrongType.StatusCode);
         Assert.Contains("does not match", await wrongType.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.BadRequest, wrongDecimal.StatusCode);
+        Assert.Contains("decimal export value", await wrongDecimal.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, oversizedExcelCell.StatusCode);
         Assert.Contains("32,767", await oversizedExcelCell.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.OK, inferredType.StatusCode);

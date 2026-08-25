@@ -205,7 +205,10 @@ internal static partial class GridletResultExporter
                 name, DateTimeFormat.Date, isAdjustedToUTC: false, isNullable: true),
             ParquetValueKind.DateTime => new DateTimeDataField(
                 name, DateTimeFormat.Timestamp, isAdjustedToUTC: false,
-                unit: DateTimeTimeUnit.Nanos, isNullable: true),
+                // Nanosecond timestamps use an Int64 count whose range is only 1677-2262.
+                // Microseconds cover SQL Server's full datetime/datetime2 range (and DateTime's)
+                // while retaining the greatest interoperable precision available for those values.
+                unit: DateTimeTimeUnit.Micros, isNullable: true),
             ParquetValueKind.Binary => new DataField<byte[]>(name, nullable: true),
             _ => new DataField<string>(name, nullable: true),
         };
@@ -235,10 +238,16 @@ internal static partial class GridletResultExporter
 
         var decimals = values.Where(IsValue).Select(ValueAsDecimal).ToArray();
         var scale = decimals.Length == 0 ? 0 : decimals.Max(DecimalScale);
-        var precision = decimals.Length == 0
-            ? 29
-            : Math.Max(scale + 1, decimals.Max(value => DecimalPrecision(value, scale)));
-        return new DecimalDataField(name, Math.Clamp(precision, 1, 29), scale, isNullable: true);
+        var precision = decimals.Length == 0 ? 29 : Math.Max(
+            1,
+            scale + decimals.Max(DecimalIntegerDigits));
+        if (precision > 29)
+        {
+            throw new GridletValidationException(
+                $"Decimal values in column '{name}' require precision {precision} at scale {scale}, " +
+                "which exceeds the supported inferred precision of 29.");
+        }
+        return new DecimalDataField(name, precision, scale, isNullable: true);
     }
 
     private static ParquetValueKind ParquetKindFor(
@@ -451,7 +460,10 @@ internal static partial class GridletResultExporter
             value = default;
             return false;
         }
-        if (value.Year < 1900 || value.Year > 9999)
+        // Excel and OLE Automation disagree for January and February 1900 because Excel preserves
+        // the historical, fictional 1900-02-29. To avoid silently shifting those dates by a day,
+        // keep them as ISO text. From 1900-03-01 onward their serials agree.
+        if (value < new DateTime(1900, 3, 1) || value.Year > 9999)
         {
             value = default;
             return false;
@@ -675,17 +687,19 @@ internal static partial class GridletResultExporter
         => value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
 
     private static decimal ValueAsDecimal(JsonElement value)
-        => value.TryGetDecimal(out var parsed)
+        => value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out var parsed)
             ? parsed
-            : throw new GridletValidationException("A decimal export value is outside the supported range.");
+            : throw new GridletValidationException(
+                "A decimal export value is not a JSON number or is outside the supported range.");
 
     private static int DecimalScale(decimal value)
         => (decimal.GetBits(value)[3] >> 16) & 0x7F;
 
-    private static int DecimalPrecision(decimal value, int scale)
+    private static int DecimalIntegerDigits(decimal value)
     {
-        var text = Math.Abs(value).ToString(CultureInfo.InvariantCulture).Replace(".", "", StringComparison.Ordinal);
-        return Math.Max(scale + 1, text.TrimStart('0').Length);
+        var integer = decimal.Truncate(Math.Abs(value));
+        if (integer == 0) return 0;
+        return integer.ToString("0", CultureInfo.InvariantCulture).Length;
     }
 
     [GeneratedRegex(@"(?:decimal|numeric)\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", RegexOptions.IgnoreCase)]
