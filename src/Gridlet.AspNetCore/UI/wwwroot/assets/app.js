@@ -2445,12 +2445,15 @@
     const tab = {
       id: state.nextTabId++, key: 'object-search', badge: '⌕', badgeClass: 'badge-search',
       title: 'Find objects', panel, loaded: false,
-      query: initial.query || '', mode: initial.mode || 'all',
+      query: initial.query || '', mode: initial.mode || 'names',
+      definitionLimit: ['500', '2000', 'all'].includes(String(initial.definitionLimit))
+        ? String(initial.definitionLimit) : '500',
       includeSystem: Boolean(initial.includeSystem),
       includeInternal: Boolean(initial.includeInternal),
       load: () => loadObjectSearchTab(tab),
       restore: () => ({
         kind: 'object-search', query: tab.query, mode: tab.mode,
+        definitionLimit: tab.definitionLimit,
         includeSystem: tab.includeSystem, includeInternal: tab.includeInternal,
       }),
     };
@@ -2496,6 +2499,31 @@
     await Promise.all(workers);
   }
 
+  function objectSearchTakeFair(candidates, limit) {
+    if (limit >= candidates.length) return candidates;
+    const byScope = new Map();
+    for (const candidate of candidates) {
+      const key = scopeKey(candidate.scope);
+      if (!byScope.has(key)) byScope.set(key, []);
+      byScope.get(key).push(candidate);
+    }
+    const selected = [];
+    let offset = 0;
+    while (selected.length < limit) {
+      let added = false;
+      for (const scoped of byScope.values()) {
+        if (offset < scoped.length) {
+          selected.push(scoped[offset]);
+          added = true;
+          if (selected.length === limit) break;
+        }
+      }
+      if (!added) break;
+      offset++;
+    }
+    return selected;
+  }
+
   async function loadObjectSearchTab(tab) {
     const controls = h('form', { class: 'viewbar object-search-toolbar' });
     const query = h('input', {
@@ -2504,10 +2532,17 @@
     });
     const mode = h('select', {
       'aria-label': 'Search in', 'data-testid': 'object-search-mode',
-    }, h('option', { value: 'all', text: 'Names + definitions' }),
-    h('option', { value: 'names', text: 'Names and descriptions' }),
+    }, h('option', { value: 'names', text: 'Names and descriptions' }),
+    h('option', { value: 'all', text: 'Names + definitions' }),
     h('option', { value: 'definitions', text: 'Definitions only' }));
     mode.value = tab.mode;
+    const definitionLimit = h('select', {
+      'aria-label': 'Definition scan limit', 'data-testid': 'object-search-definition-limit',
+    }, h('option', { value: '500', text: 'First 500 objects' }),
+    h('option', { value: '2000', text: 'First 2,000 objects' }),
+    h('option', { value: 'all', text: 'All objects (slow)' }));
+    definitionLimit.value = tab.definitionLimit;
+    definitionLimit.disabled = mode.value === 'names';
     const includeSystem = h('input', { type: 'checkbox' });
     includeSystem.checked = tab.includeSystem;
     const includeInternal = h('input', { type: 'checkbox' });
@@ -2519,6 +2554,7 @@
       type: 'button', text: 'Cancel', hidden: '', 'data-testid': 'object-search-cancel',
     });
     controls.append(query, h('label', {}, 'Search in ', mode),
+      h('label', {}, 'Definition limit ', definitionLimit),
       h('label', { class: 'checkbox-row' }, includeSystem, 'System databases'),
       h('label', { class: 'checkbox-row' }, includeInternal, 'Internal objects'), run, cancel);
     const status = h('div', {
@@ -2537,13 +2573,14 @@
     const setRunning = (running) => {
       query.disabled = running;
       mode.disabled = running;
+      definitionLimit.disabled = running || mode.value === 'names';
       includeSystem.disabled = running;
       includeInternal.disabled = running;
       run.disabled = running;
       cancel.hidden = !running;
     };
 
-    const render = (matches, summary, failures) => {
+    const render = (matches, summary, failures, definitionCoverage) => {
       const visible = matches.slice(0, resultLimit);
       const grouped = new Map();
       for (const match of visible) {
@@ -2554,6 +2591,12 @@
       const content = [];
       if (matches.length > resultLimit) content.push(h('div', {
           class: 'notice warning', text: `Showing the first ${resultLimit.toLocaleString()} matches. Refine the search to see the rest.`,
+        }));
+      if (definitionCoverage?.omitted) content.push(h('div', {
+          class: 'notice warning', 'data-testid': 'object-search-definition-warning',
+          text: `Definition text was searched for ${definitionCoverage.searched.toLocaleString()} of `
+            + `${definitionCoverage.eligible.toLocaleString()} eligible objects, distributed across databases. `
+            + 'Increase the Definition limit and search again to scan more.',
         }));
       if (failures.length) content.push(h('details', { class: 'object-search-failures' },
           h('summary', { text: `${failures.length} location${failures.length === 1 ? '' : 's'} could not be searched` }),
@@ -2650,10 +2693,22 @@
           }
         }
 
+        let definitionCoverage = null;
         if (mode.value !== 'names') {
-          let completed = 0;
-          status.textContent = `Searching definitions… 0 / ${candidates.length.toLocaleString()} objects`;
-          await objectSearchMap(candidates, 8, async (candidate) => {
+          const eligible = mode.value === 'all'
+            ? candidates.filter((candidate) => !found.has(resultKey(candidate)))
+            : candidates;
+          const requestedLimit = definitionLimit.value === 'all'
+            ? eligible.length : Number(definitionLimit.value);
+          const definitionCandidates = objectSearchTakeFair(eligible, requestedLimit);
+          definitionCoverage = {
+            searched: definitionCandidates.length,
+            eligible: eligible.length,
+            omitted: eligible.length - definitionCandidates.length,
+          };
+          status.textContent = `Searching definitions for ${definitionCandidates.length.toLocaleString()} object`
+            + `${definitionCandidates.length === 1 ? '' : 's'}…`;
+          await objectSearchMap(definitionCandidates, 8, async (candidate) => {
             try {
               const response = await api(urlsFor(candidate.scope).definition(
                 candidate.object.schema, candidate.object.name, candidate.object.type), { signal });
@@ -2669,11 +2724,6 @@
             } catch (err) {
               if (err.name === 'AbortError') throw err;
               failures.push(`${candidate.scope.connection} / ${candidate.scope.database} / ${candidate.object.schema}.${candidate.object.name}: ${err.message}`);
-            } finally {
-              completed++;
-              if (current === request && (completed % 10 === 0 || completed === candidates.length)) {
-                status.textContent = `Searching definitions… ${completed.toLocaleString()} / ${candidates.length.toLocaleString()} objects`;
-              }
             }
           }, signal);
         }
@@ -2687,8 +2737,9 @@
           + `${candidates.length.toLocaleString()} object${candidates.length === 1 ? '' : 's'} · `
           + `${scopes.length.toLocaleString()} database${scopes.length === 1 ? '' : 's'} · `
           + `${state.meta.connections.length.toLocaleString()} connection${state.meta.connections.length === 1 ? '' : 's'}`
+          + (definitionCoverage ? ` · ${definitionCoverage.searched.toLocaleString()} / ${definitionCoverage.eligible.toLocaleString()} definitions` : '')
           + (failures.length ? ` · ${failures.length.toLocaleString()} failure${failures.length === 1 ? '' : 's'}` : '');
-        render(matches, true, failures);
+        render(matches, true, failures, definitionCoverage);
       } catch (err) {
         if (current !== request || err.name === 'AbortError') return;
         status.textContent = 'Search unavailable';
@@ -2710,12 +2761,14 @@
       status.textContent = 'Search cancelled.';
       results.replaceChildren();
     });
-    for (const control of [query, mode, includeSystem, includeInternal]) {
+    for (const control of [query, mode, definitionLimit, includeSystem, includeInternal]) {
       control.addEventListener('change', () => {
         tab.query = query.value.trim();
         tab.mode = mode.value;
+        tab.definitionLimit = definitionLimit.value;
         tab.includeSystem = includeSystem.checked;
         tab.includeInternal = includeInternal.checked;
+        definitionLimit.disabled = mode.value === 'names';
         saveSession();
       });
     }
@@ -2724,7 +2777,9 @@
       controller?.abort();
     };
     query.focus();
-    if (tab.query.trim().length >= 2) await search();
+    if (tab.query.trim().length >= 2) {
+      status.textContent = 'Search settings restored. Press Search to run.';
+    }
   }
 
   function openDiagramTab(scope = scopeOf()) {

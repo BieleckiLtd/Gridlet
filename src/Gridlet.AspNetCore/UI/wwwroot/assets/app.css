@@ -478,6 +478,8 @@ button.ghost { background: transparent; }
 .badge-R { background: #573034; color: #ff9aa2; }
 .badge-S { background: #3b355e; color: #b9a9ff; }
 .badge-Q { background: #263244; color: #9db9e4; }
+.badge-Y { background: #3e354f; color: #c9adf5; }
+.badge-search { background: #243f52; color: #75c8f0; }
 .badge-A { background: #23484c; color: #78d4d1; }
 .badge-H { background: #234a3f; color: #74d4b0; }
 .badge-I { background: #493b3b; color: #d7b8b8; }
@@ -493,6 +495,8 @@ button.ghost { background: transparent; }
 :root[data-theme="light"] .badge-R { background: #f8dfe1; color: #92363d; }
 :root[data-theme="light"] .badge-S { background: #e6e0f5; color: #594692; }
 :root[data-theme="light"] .badge-Q { background: #e1e8f1; color: #405a7d; }
+:root[data-theme="light"] .badge-Y { background: #e9e1f4; color: #64428d; }
+:root[data-theme="light"] .badge-search { background: #dcecf5; color: #176185; }
 :root[data-theme="light"] .badge-A { background: #d9eeee; color: #286a6d; }
 :root[data-theme="light"] .badge-H { background: #d8efe6; color: #1f6650; }
 :root[data-theme="light"] .badge-I { background: #eee3e3; color: #704848; }

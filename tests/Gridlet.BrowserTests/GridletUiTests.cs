@@ -1881,7 +1881,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GotoAsync("/gridlet/");
 
         var search = await OpenObjectSearchAsync(page);
-        await search.GetByTestId("object-search-mode").SelectOptionAsync("names");
+        await Assertions.Expect(search.GetByTestId("object-search-mode"))
+            .ToHaveValueAsync("names");
         await search.GetByTestId("object-search-query").FillAsync("AccountNumber");
         await search.GetByTestId("object-search-run").ClickAsync();
 
@@ -1923,6 +1924,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     {
         await using var browserPage = await fixture.NewPageAsync();
         var page = browserPage.Page;
+        var sqliteObjectRequests = 0;
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/connections/SQLite/databases/FakeDb/objects", StringComparison.Ordinal))
+                sqliteObjectRequests++;
+        };
         await page.RouteAsync("**/connections/SQLite/databases", route =>
             route.FulfillAsync(new RouteFulfillOptions
             {
@@ -1942,6 +1949,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToContainTextAsync("1 failure");
         await Assertions.Expect(search.GetByTestId("object-search-results"))
             .ToContainTextAsync("SQLite: catalog offline");
+        Assert.Equal(0, sqliteObjectRequests);
 
         await page.ReloadAsync();
         search = page.GetByTestId("object-search");
@@ -1950,8 +1958,54 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(search.GetByTestId("object-search-mode"))
             .ToHaveValueAsync("names");
         await Assertions.Expect(search.GetByTestId("object-search-status"))
-            .ToContainTextAsync("2 matches");
-        browserPage.AssertNoUnexpectedErrors("503", "503");
+            .ToHaveTextAsync("Search settings restored. Press Search to run.");
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(0);
+        Assert.Equal(0, sqliteObjectRequests);
+        browserPage.AssertNoUnexpectedErrors("503");
+    }
+
+    [Fact]
+    public async Task Object_search_caps_definition_requests_and_spreads_them_across_databases()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var definitionRequests = new List<string>();
+        var objects = JsonSerializer.Serialize(Enumerable.Range(1, 600).Select(index => new
+        {
+            schema = "dbo", name = $"Procedure{index:000}", type = "StoredProcedure",
+            description = (string?)null, isInternal = false,
+        }));
+        await page.RouteAsync("**/objects", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 200, ContentType = "application/json", Body = objects,
+        }));
+        await page.RouteAsync("**/definition?*", route =>
+        {
+            definitionRequests.Add(route.Request.Url);
+            return route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "{\"definition\":\"SELECT 1\"}",
+            });
+        });
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("definitions");
+        await Assertions.Expect(search.GetByTestId("object-search-definition-limit"))
+            .ToHaveValueAsync("500");
+        await search.GetByTestId("object-search-query").FillAsync("not present");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("500 / 1,800 definitions");
+        Assert.Equal(500, definitionRequests.Count);
+        Assert.Equal(3, definitionRequests.Select(url =>
+            url.Contains("/connections/Main/", StringComparison.Ordinal) ? "Main"
+                : url.Contains("/connections/DdlOnly/", StringComparison.Ordinal) ? "DdlOnly"
+                : "SQLite").Distinct().Count());
+        await Assertions.Expect(search.GetByTestId("object-search-definition-warning"))
+            .ToContainTextAsync("Increase the Definition limit");
+        browserPage.AssertNoUnexpectedErrors();
     }
 
     [Fact]
@@ -1982,6 +2036,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GotoAsync("/gridlet/");
 
         var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("definitions");
         await search.GetByTestId("object-search-query").FillAsync("CREATE");
         await search.GetByTestId("object-search-run").ClickAsync();
         await Assertions.Expect(search.GetByTestId("object-search-cancel")).ToBeVisibleAsync();
