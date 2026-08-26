@@ -971,7 +971,7 @@ public class GridletEndpointTests
         var wrongDatabase = await client.GetAsync(
             $"/gridlet/api/connections/Main/databases/OtherDb/query/jobs/{created.Id}?waitMs=0");
 
-        Assert.Equal(HttpStatusCode.BadRequest, second.StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, second.StatusCode);
         Assert.Contains("query jobs are in use", await second.Content.ReadAsStringAsync());
         Assert.Equal(HttpStatusCode.NotFound, wrongDatabase.StatusCode);
         await client.DeleteAsync(
@@ -1023,6 +1023,35 @@ public class GridletEndpointTests
 
         Assert.Equal(HttpStatusCode.Accepted, secondResponse.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, firstAfterEviction.StatusCode);
+    }
+
+    [Fact]
+    public async Task Anonymous_query_jobs_can_use_the_global_capacity()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.MaxQueryJobs = 2;
+            options.Limits.MaxQueryJobsPerOwner = 1;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        fake.PrepareLongQuery();
+        try
+        {
+            var first = await client.PostAsJsonAsync(
+                "/gridlet/api/connections/Main/databases/FakeDb/query/jobs", new { sql = "job-wait" });
+            var second = await client.PostAsJsonAsync(
+                "/gridlet/api/connections/Main/databases/FakeDb/query/jobs", new { sql = "job-wait" });
+
+            Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+            Assert.Equal(HttpStatusCode.Accepted, second.StatusCode);
+        }
+        finally
+        {
+            fake.ReleaseLongQuery();
+        }
     }
 
     [Fact]

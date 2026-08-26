@@ -54,12 +54,13 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             var limit = Math.Max(1, options.CurrentValue.Limits.MaxQueryJobs);
             var ownerLimit = Math.Min(
                 limit, Math.Max(1, options.CurrentValue.Limits.MaxQueryJobsPerOwner));
-            while (jobs.Values.Count(candidate => candidate.IsOwnedBy(owner)) >= ownerLimit)
+            while (owner is not null
+                && jobs.Values.Count(candidate => candidate.IsOwnedBy(owner)) >= ownerLimit)
             {
                 var oldestOwnedCompleted = OldestCompleted(owner);
                 if (oldestOwnedCompleted is null)
                 {
-                    throw new GridletValidationException(
+                    throw new GridletQueryJobCapacityException(
                         $"All {ownerLimit} background query jobs are in use for this workspace. " +
                         "Wait for one to finish or cancel it.");
                 }
@@ -74,7 +75,7 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
                     .FirstOrDefault();
                 if (oldestCompleted is null)
                 {
-                    throw new GridletValidationException(
+                    throw new GridletQueryJobCapacityException(
                         $"All {limit} background query jobs are in use. Wait for one to finish or cancel it.");
                 }
 
@@ -174,6 +175,8 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             return null;
         }
 
+        CancellationTokenSource? cancellation = null;
+        QueryJobResponse response;
         lock (job.Gate)
         {
             if (job.Disposed)
@@ -184,10 +187,13 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             {
                 job.Status = "cancelling";
                 job.NotifyLocked();
-                job.Cancellation.Cancel();
+                cancellation = job.Cancellation;
             }
-            return SnapshotLocked(job, after: 0, includeEvents: false);
+            response = SnapshotLocked(job, after: 0, includeEvents: false);
         }
+        try { cancellation?.Cancel(); }
+        catch (ObjectDisposedException) { /* shutdown or terminal eviction won the race */ }
+        return response;
     }
 
     public void Sweep()
@@ -287,6 +293,10 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
         {
             var limit = Math.Max(16, options.CurrentValue.Limits.MaxQueryJobEvents);
             var byteLimit = Math.Max(64 * 1024, options.CurrentValue.Limits.MaxQueryJobRetainedBytes);
+            if (job.EventsTruncated && !IsTerminalEvent(streamEvent))
+            {
+                return;
+            }
             var eventBytes = JsonSerializer.SerializeToUtf8Bytes(
                 streamEvent, JsonSerializerOptions.Web).Length;
             var retained = false;
@@ -319,7 +329,7 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
 
     private static bool RetainTerminalEvent(Job job, QueryStreamEvent streamEvent, int eventBytes)
     {
-        if (streamEvent.Type is not ("completed" or "error" or "cancelled")
+        if (!IsTerminalEvent(streamEvent)
             || !job.RetainedTerminalEventTypes.Add(streamEvent.Type))
         {
             return false;
@@ -328,6 +338,9 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
         job.RetainedBytes += eventBytes;
         return true;
     }
+
+    private static bool IsTerminalEvent(QueryStreamEvent streamEvent)
+        => streamEvent.Type is "completed" or "error" or "cancelled";
 
     private QueryJobResponse Snapshot(Job job, int after, bool includeEvents)
     {
@@ -396,10 +409,13 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
 
         foreach (var job in remaining)
         {
+            CancellationTokenSource? cancellation = null;
             lock (job.Gate)
             {
-                if (!job.Disposed) job.Cancellation.Cancel();
+                if (!job.Disposed) cancellation = job.Cancellation;
             }
+            try { cancellation?.Cancel(); }
+            catch (ObjectDisposedException) { /* terminal cleanup already disposed it */ }
         }
         await Task.WhenAll(remaining.Select(job => job.Execution ?? Task.CompletedTask));
         foreach (var job in remaining)
@@ -487,3 +503,5 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             => new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }
+
+internal sealed class GridletQueryJobCapacityException(string message) : Exception(message);

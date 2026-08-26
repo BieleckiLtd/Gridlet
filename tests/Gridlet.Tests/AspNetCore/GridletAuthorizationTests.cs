@@ -189,7 +189,7 @@ public class GridletAuthorizationTests
                 "/gridlet/api/connections/Main/databases/FakeDb/query/jobs", new { sql = "job-wait" });
 
             Assert.Equal(HttpStatusCode.Accepted, adaFirst.StatusCode);
-            Assert.Equal(HttpStatusCode.BadRequest, adaSecond.StatusCode);
+            Assert.Equal(HttpStatusCode.TooManyRequests, adaSecond.StatusCode);
             Assert.Contains("this workspace", await adaSecond.Content.ReadAsStringAsync());
             Assert.Equal(HttpStatusCode.Accepted, graceFirst.StatusCode);
         }
