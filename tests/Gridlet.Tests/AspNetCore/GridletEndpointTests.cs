@@ -344,7 +344,7 @@ public class GridletEndpointTests
         Assert.StartsWith("Id,Name,SysStart,SysEnd\r\n", csv);
         Assert.Contains("1,Ada,2026-01-01T00:00:00.0000000", csv);
         Assert.Contains("4,Alan,2026-01-04T00:00:00.0000000", csv);
-        Assert.Equal([(1, 2), (2, 2)], fake.DataPageRequests);
+        Assert.Equal([(1, 2), (2, 2), (3, 2)], fake.DataPageRequests);
     }
 
     [Fact]
@@ -454,6 +454,27 @@ public class GridletEndpointTests
         await Assert.ThrowsAnyAsync<Exception>(async () =>
             await response.Content.ReadAsByteArrayAsync());
         Assert.Equal([(1, 2), (2, 2)], fake.DataPageRequests);
+    }
+
+    [Fact]
+    public async Task Export_does_not_trust_an_underreported_total_row_count()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.DefaultPageSize = 2;
+            options.Limits.MaxPageSize = 2;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+
+        var csv = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/UnderreportedLedger/data/export"
+            + "?format=csv");
+
+        Assert.Contains("4,Alan", csv);
+        Assert.Equal([(1, 2), (2, 2), (3, 2)], fake.DataPageRequests);
     }
 
     [Fact]

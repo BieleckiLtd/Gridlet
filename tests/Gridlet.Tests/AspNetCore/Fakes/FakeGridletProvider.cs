@@ -380,9 +380,10 @@ public sealed class FakeGridletProvider :
 
     private static Task<TableDataPage> GetPageCore(string name, TableDataRequest request)
     {
-        if (name is "Ledger" or "LedgerHeap")
+        if (name is "Ledger" or "LedgerHeap" or "UnderreportedLedger")
         {
-            return Task.FromResult(LedgerPage(name, request));
+            var page = LedgerPage(name, request);
+            return Task.FromResult(name == "UnderreportedLedger" ? page with { TotalRows = 1 } : page);
         }
 
         return GetFixedPage(name, request);

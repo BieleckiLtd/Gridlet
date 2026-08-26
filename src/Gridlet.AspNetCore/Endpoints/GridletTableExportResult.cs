@@ -66,6 +66,9 @@ internal sealed class GridletTableExportResult(
                 format, schema, name);
             if (!httpContext.Response.HasStarted)
             {
+                // Do not let the outer API error handler inherit attachment headers from a file
+                // which never started. Otherwise the structured error can be saved as .csv/.json.
+                httpContext.Response.Clear();
                 throw;
             }
 
@@ -143,16 +146,13 @@ internal sealed class GridletTableExportResult(
         CancellationToken cancellationToken)
     {
         var page = firstPage;
-        var exported = 0L;
-        // The first count is the export boundary. Inserts that race a long export cannot make the
-        // response grow forever; provider paging and request cancellation remain in force.
-        var targetRows = firstPage.TotalRows;
         var pageNumber = 1;
         while (true)
         {
             await consume(page);
-            exported += page.Rows.Count;
-            if (page.Rows.Count == 0 || exported >= targetRows)
+            // TotalRows can be estimated or stale. A short page is the only safe proof that this
+            // ordered walk reached its end; cancellation remains the bound on a changing table.
+            if (page.Rows.Count < pageSize)
             {
                 break;
             }

@@ -5918,6 +5918,38 @@
       const status = h('span', { class: 'muted', text: 'Loading…' });
       const cancel = h('button', { text: 'Cancel', onclick: () => controller.abort() });
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
+      let exportControls;
+      let fullExportInProgress = false;
+      const fullExport = async (format) => {
+        if (fullExportInProgress) return;
+        fullExportInProgress = true;
+        exportControls?.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+        const params = new URLSearchParams({ format });
+        if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
+        if (grid.filters.length) params.set('filter', JSON.stringify(grid.filters));
+        try {
+          params.set('probe', 'true');
+          await api(urls.dataExport(o.schema, o.name, params));
+          params.delete('probe');
+          const link = h('a', {
+            href: urls.dataExport(o.schema, o.name, params), download: '', hidden: '',
+          });
+          document.body.append(link);
+          link.click();
+          link.remove();
+        } catch (err) {
+          toast(`Export failed: ${err.message}`);
+        } finally {
+          fullExportInProgress = false;
+          exportControls?.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+        }
+      };
+      const createExportControls = () => exportButtons(
+        data.columns, data.rows, o.name,
+        currentConn().allowSqlExecution
+          ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope }
+          : null,
+        identity ? fullExport : null);
       actionBar.replaceChildren(...[
         o.type === 'Table' && !o.isInternal && !isVirtualObject(o)
           ? h('button', {
@@ -5939,28 +5971,7 @@
         useInQueryButton(o, scope),
         dependenciesButton(o, scope),
         h('span', { class: 'spacer' }),
-        exportButtons(data.columns, data.rows, o.name,
-          currentConn().allowSqlExecution
-            ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope }
-            : null,
-          identity ? async (format) => {
-            const params = new URLSearchParams({ format });
-            if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
-            if (grid.filters.length) params.set('filter', JSON.stringify(grid.filters));
-            try {
-              params.set('probe', 'true');
-              await api(urls.dataExport(o.schema, o.name, params));
-              params.delete('probe');
-              const link = h('a', {
-                href: urls.dataExport(o.schema, o.name, params), download: '', hidden: '',
-              });
-              document.body.append(link);
-              link.click();
-              link.remove();
-            } catch (err) {
-              toast(`Export failed: ${err.message}`);
-            }
-          } : null),
+        (exportControls = createExportControls()),
         h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
         status,
         o.type === 'Table' && currentConn().allowWrites && !o.isInternal && canDropObject(o)
@@ -5997,7 +6008,12 @@
       try {
         await streamNdjson(urls.dataStream(o.schema, o.name, params), { signal: controller.signal }, (event) => {
           if (event.type === 'resultSet') {
-            if (event.rowIdentity) identity = event.rowIdentity;
+            if (event.rowIdentity && !identity) {
+              identity = event.rowIdentity;
+              const replacement = createExportControls();
+              exportControls.replaceWith(replacement);
+              exportControls = replacement;
+            }
             gridView.setColumns(event.columns);
           }
           else if (event.type === 'rows') {

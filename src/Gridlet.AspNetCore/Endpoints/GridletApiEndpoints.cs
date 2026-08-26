@@ -409,7 +409,8 @@ internal static partial class GridletApiEndpoints
                 name,
                 new TableDataRequest(1, pageSize, sortColumn, direction, filters),
                 cancellationToken);
-            if (firstPage.TotalRows > firstPage.Rows.Count && firstPage.RowIdentity is null)
+            if ((firstPage.TotalRows > firstPage.Rows.Count || firstPage.Rows.Count >= pageSize)
+                && firstPage.RowIdentity is null)
             {
                 throw new GridletValidationException(
                     "A full export cannot safely page this object because it has no stable row identity.");
