@@ -390,6 +390,27 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Export_probe_validates_one_memory_bounded_page_without_streaming_the_table()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.MaxPageSize = 900;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Ledger/data/export"
+            + "?format=csv&probe=true");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("\"valid\":true", await response.Content.ReadAsStringAsync());
+        Assert.Equal([(1, 500)], fake.DataPageRequests);
+    }
+
+    [Fact]
     public async Task Full_export_rejects_multi_page_objects_without_a_stable_row_identity()
     {
         var (app, client) = await GridletTestHost.StartAsync(options =>

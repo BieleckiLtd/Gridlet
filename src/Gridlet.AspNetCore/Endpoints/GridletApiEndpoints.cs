@@ -380,6 +380,7 @@ internal static partial class GridletApiEndpoints
         string? sort,
         string? dir,
         string? filter,
+        bool? probe,
         IGridletConnectionResolver resolver,
         IOptionsMonitor<GridletOptions> options,
         ILogger<GridletTableExportResult> logger,
@@ -395,7 +396,7 @@ internal static partial class GridletApiEndpoints
             }
 
             var resolved = resolver.Resolve(connection, database);
-            var pageSize = options.CurrentValue.Limits.MaxPageSize;
+            var pageSize = Math.Min(500, options.CurrentValue.Limits.MaxPageSize);
             var direction = string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase)
                 ? SortDirection.Descending : SortDirection.Ascending;
             var sortColumn = string.IsNullOrWhiteSpace(sort) ? null : sort;
@@ -412,6 +413,12 @@ internal static partial class GridletApiEndpoints
             {
                 throw new GridletValidationException(
                     "A full export cannot safely page this object because it has no stable row identity.");
+            }
+            if (probe == true)
+            {
+                // The browser uses this bounded preflight to surface validation failures before
+                // handing the streaming response to its native download manager.
+                return Results.Ok(new { valid = true });
             }
             return new GridletTableExportResult(
                 resolved.Provider.Data,

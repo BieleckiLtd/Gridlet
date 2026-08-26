@@ -5943,16 +5943,23 @@
           currentConn().allowSqlExecution
             ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope }
             : null,
-          identity ? (format) => {
+          identity ? async (format) => {
             const params = new URLSearchParams({ format });
             if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
             if (grid.filters.length) params.set('filter', JSON.stringify(grid.filters));
-            const link = h('a', {
-              href: urls.dataExport(o.schema, o.name, params), download: '', hidden: '',
-            });
-            document.body.append(link);
-            link.click();
-            link.remove();
+            try {
+              params.set('probe', 'true');
+              await api(urls.dataExport(o.schema, o.name, params));
+              params.delete('probe');
+              const link = h('a', {
+                href: urls.dataExport(o.schema, o.name, params), download: '', hidden: '',
+              });
+              document.body.append(link);
+              link.click();
+              link.remove();
+            } catch (err) {
+              toast(`Export failed: ${err.message}`);
+            }
           } : null),
         h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
         status,

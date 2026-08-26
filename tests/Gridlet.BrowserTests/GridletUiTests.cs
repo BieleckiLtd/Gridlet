@@ -3717,12 +3717,33 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal(4, document.RootElement.GetArrayLength());
         Assert.Equal("Alan", document.RootElement[3].GetProperty("Name").GetString());
 
+        await page.RouteAsync("**/data/export?*", async route =>
+        {
+            if (route.Request.Url.Contains("probe=true", StringComparison.Ordinal))
+            {
+                await route.FulfillAsync(new()
+                {
+                    Status = 400,
+                    ContentType = "application/json",
+                    Body = "{\"error\":\"The export could not be validated.\"}",
+                });
+            }
+            else
+            {
+                await route.ContinueAsync();
+            }
+        });
+        await panel.GetByTestId("export-csv").ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack"))
+            .ToContainTextAsync("Export failed: The export could not be validated.");
+        await page.UnrouteAsync("**/data/export?*");
+
         await page.Locator("[title='dbo.LedgerHeap']").ClickAsync();
         panel = ActivePanel(page);
         await Assertions.Expect(panel.GetByTestId("export-csv")).ToHaveTextAsync("CSV");
         await Assertions.Expect(panel.GetByTestId("export-csv"))
             .ToHaveAttributeAsync("title", "Download as CSV");
-        browserPage.AssertNoUnexpectedErrors();
+        browserPage.AssertNoUnexpectedErrors("400");
     }
 
     [Fact]
