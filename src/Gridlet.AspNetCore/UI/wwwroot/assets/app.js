@@ -5943,7 +5943,7 @@
           currentConn().allowSqlExecution
             ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope }
             : null,
-          (format) => {
+          identity ? (format) => {
             const params = new URLSearchParams({ format });
             if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
             if (grid.filters.length) params.set('filter', JSON.stringify(grid.filters));
@@ -5953,7 +5953,7 @@
             document.body.append(link);
             link.click();
             link.remove();
-          }),
+          } : null),
         h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
         status,
         o.type === 'Table' && currentConn().allowWrites && !o.isInternal && canDropObject(o)

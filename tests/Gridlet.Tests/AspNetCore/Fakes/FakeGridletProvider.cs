@@ -389,7 +389,11 @@ public sealed class FakeGridletProvider :
     }
 
     private static Task<TableDataPage> GetFixedPage(string name, TableDataRequest request)
-        => Task.FromResult(name == "ExportCases"
+        => Task.FromResult(name == "DuplicateColumns"
+            ? new TableDataPage(
+                [new ResultColumn("Value", "int"), new ResultColumn("value", "int")],
+                [[1, 2]], request.Page, request.PageSize, TotalRows: 1)
+            : name == "ExportCases"
             ? new TableDataPage(
                 [new ResultColumn("Text", "nvarchar(max)"), new ResultColumn("Binary", "varbinary(max)"),
                     new ResultColumn("When", "datetime2"), new ResultColumn("Nullable", "int")],

@@ -3716,6 +3716,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
         Assert.Equal(4, document.RootElement.GetArrayLength());
         Assert.Equal("Alan", document.RootElement[3].GetProperty("Name").GetString());
+
+        await page.Locator("[title='dbo.LedgerHeap']").ClickAsync();
+        panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByTestId("export-csv")).ToHaveTextAsync("CSV");
+        await Assertions.Expect(panel.GetByTestId("export-csv"))
+            .ToHaveAttributeAsync("title", "Download as CSV");
         browserPage.AssertNoUnexpectedErrors();
     }
 

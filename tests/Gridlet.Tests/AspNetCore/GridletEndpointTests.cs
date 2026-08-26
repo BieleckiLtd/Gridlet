@@ -455,6 +455,17 @@ public class GridletEndpointTests
         Assert.Equal("AP8=", row.GetProperty("Binary").GetString());
         Assert.Equal(DateTimeKind.Utc, row.GetProperty("When").GetDateTime().Kind);
         Assert.Equal(JsonValueKind.Null, row.GetProperty("Nullable").ValueKind);
+
+        var duplicateResponse = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/DuplicateColumns/data/export?format=");
+        Assert.Equal("text/csv", duplicateResponse.Content.Headers.ContentType!.MediaType);
+        Assert.StartsWith("Value,value_2\r\n", await duplicateResponse.Content.ReadAsStringAsync());
+
+        var duplicateJson = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/DuplicateColumns/data/export?format=json");
+        using var duplicateDocument = JsonDocument.Parse(duplicateJson);
+        Assert.Equal(1, duplicateDocument.RootElement[0].GetProperty("Value").GetInt32());
+        Assert.Equal(2, duplicateDocument.RootElement[0].GetProperty("value_2").GetInt32());
     }
 
     [Fact]

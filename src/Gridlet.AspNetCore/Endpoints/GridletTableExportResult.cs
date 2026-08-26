@@ -29,6 +29,7 @@ internal sealed class GridletTableExportResult(
     private static readonly byte[] JsonArrayStart = [(byte)'['];
     private static readonly byte[] JsonArrayEnd = [(byte)']'];
     private static readonly byte[] JsonRowSeparator = [(byte)','];
+    private readonly string[] columnNames = UniqueColumnNames(firstPage.Columns);
 
     public async Task ExecuteAsync(HttpContext httpContext)
     {
@@ -81,7 +82,7 @@ internal sealed class GridletTableExportResult(
         {
             NewLine = "\r\n",
         };
-        await WriteCsvRowAsync(writer, firstPage.Columns.Select(column => column.Name), cancellationToken);
+        await WriteCsvRowAsync(writer, columnNames, cancellationToken);
 
         await ForEachPageAsync(async page =>
         {
@@ -120,7 +121,7 @@ internal sealed class GridletTableExportResult(
                     writer.WriteStartObject();
                     for (var index = 0; index < firstPage.Columns.Count; index++)
                     {
-                        writer.WritePropertyName(firstPage.Columns[index].Name);
+                        writer.WritePropertyName(columnNames[index]);
                         JsonSerializer.Serialize(
                             writer,
                             index < row.Length ? row[index] : null,
@@ -207,5 +208,25 @@ internal sealed class GridletTableExportResult(
                 ? '_'
                 : character).ToArray()).Trim(' ', '.');
         return string.IsNullOrEmpty(safe) ? "gridlet-export" : safe;
+    }
+
+    private static string[] UniqueColumnNames(IReadOnlyList<ResultColumn> columns)
+    {
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var names = new string[columns.Count];
+        for (var index = 0; index < columns.Count; index++)
+        {
+            var basis = string.IsNullOrWhiteSpace(columns[index].Name)
+                ? $"Column{index + 1}"
+                : columns[index].Name;
+            var name = basis;
+            var suffix = 2;
+            while (!used.Add(name))
+            {
+                name = $"{basis}_{suffix++}";
+            }
+            names[index] = name;
+        }
+        return names;
     }
 }

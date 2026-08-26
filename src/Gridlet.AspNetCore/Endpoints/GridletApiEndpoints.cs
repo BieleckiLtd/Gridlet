@@ -386,7 +386,9 @@ internal static partial class GridletApiEndpoints
         CancellationToken cancellationToken)
         => Execute(async () =>
         {
-            var exportFormat = format?.Trim().ToLowerInvariant() ?? "csv";
+            var exportFormat = string.IsNullOrWhiteSpace(format)
+                ? "csv"
+                : format.Trim().ToLowerInvariant();
             if (exportFormat is not ("csv" or "json"))
             {
                 throw new GridletValidationException("Export format must be csv or json.");
