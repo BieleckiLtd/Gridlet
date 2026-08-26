@@ -68,11 +68,9 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             }
             while (jobs.Count >= limit)
             {
-                var oldestCompleted = jobs.Values
-                    .Where(candidate => candidate.IsTerminalSnapshot())
-                    .OrderBy(candidate => candidate.CompletedAt)
-                    .ThenBy(candidate => candidate.StartedAt)
-                    .FirstOrDefault();
+                // Starting one owner's job must not silently discard another owner's result.
+                // Anonymous jobs share the null-owner workspace and may only evict within it.
+                var oldestCompleted = OldestCompleted(owner);
                 if (oldestCompleted is null)
                 {
                     throw new GridletQueryJobCapacityException(
@@ -340,7 +338,9 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
     }
 
     private static bool IsTerminalEvent(QueryStreamEvent streamEvent)
-        => streamEvent.Type is "completed" or "error" or "cancelled";
+        => string.Equals(streamEvent.Type, "completed", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(streamEvent.Type, "error", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(streamEvent.Type, "cancelled", StringComparison.OrdinalIgnoreCase);
 
     private QueryJobResponse Snapshot(Job job, int after, bool includeEvents)
     {
@@ -417,10 +417,22 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             try { cancellation?.Cancel(); }
             catch (ObjectDisposedException) { /* terminal cleanup already disposed it */ }
         }
-        await Task.WhenAll(remaining.Select(job => job.Execution ?? Task.CompletedTask));
+        try
+        {
+            await Task.WhenAll(remaining.Select(job => job.Execution ?? Task.CompletedTask))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (TimeoutException)
+        {
+            logger.LogWarning(
+                "Timed out waiting for {Count} background query job(s) during shutdown.",
+                remaining.Count(job => job.Execution?.IsCompleted == false));
+        }
         foreach (var job in remaining)
         {
-            job.DisposeCancellation();
+            // A provider which ignored cancellation may still read its token source. Let process
+            // teardown reclaim it instead of disposing it under the running provider.
+            if (job.Execution?.IsCompleted != false) job.DisposeCancellation();
         }
     }
 
@@ -452,7 +464,7 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
         public bool EventsTruncated { get; set; }
         public int RetainedBytes { get; set; }
         public bool Disposed { get; set; }
-        public HashSet<string> RetainedTerminalEventTypes { get; } = new(StringComparer.Ordinal);
+        public HashSet<string> RetainedTerminalEventTypes { get; } = new(StringComparer.OrdinalIgnoreCase);
         public bool IsTerminal => Status is "succeeded" or "failed" or "cancelled";
 
         public bool IsAccessibleBy(

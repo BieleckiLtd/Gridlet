@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Gridlet.Abstractions;
+using Gridlet.AspNetCore.Contracts;
 using Gridlet.Tests.AspNetCore.Fakes;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.DependencyInjection;
@@ -197,5 +198,47 @@ public class GridletAuthorizationTests
         {
             fake.ReleaseLongQuery();
         }
+    }
+
+    [Fact]
+    public async Task One_users_start_cannot_evict_another_users_completed_query_job()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+                options.Limits.MaxQueryJobs = 1;
+                options.Limits.MaxQueryJobsPerOwner = 1;
+            },
+            services =>
+            {
+                services.AddAuthentication(Scheme)
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(Scheme, null);
+                services.AddAuthorization();
+            });
+        await using var _ = app;
+        client.DefaultRequestHeaders.Add("X-Test-User", "ada@example.com");
+        var started = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs", new { sql = "SELECT 42" });
+        var created = (await started.Content.ReadFromJsonAsync<QueryJobResponse>())!;
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            var snapshot = await client.GetFromJsonAsync<QueryJobResponse>(
+                $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{created.Id}");
+            if (snapshot!.Status is "succeeded" or "failed" or "cancelled") break;
+            await Task.Delay(25);
+        }
+
+        client.DefaultRequestHeaders.Remove("X-Test-User");
+        client.DefaultRequestHeaders.Add("X-Test-User", "grace@example.com");
+        var grace = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs", new { sql = "SELECT 42" });
+        client.DefaultRequestHeaders.Remove("X-Test-User");
+        client.DefaultRequestHeaders.Add("X-Test-User", "ada@example.com");
+        var retained = await client.GetAsync(
+            $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{created.Id}");
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, grace.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, retained.StatusCode);
     }
 }

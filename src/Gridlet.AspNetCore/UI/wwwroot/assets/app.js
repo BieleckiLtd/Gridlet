@@ -10041,7 +10041,9 @@
       let historyDuration = null;
       let terminalStatus = null;
       let terminalEvent = false;
+      let reattachAvailable = false;
       let jobId = existingJobId;
+      runButton.textContent = 'Run';
       status.textContent = existingJobId ? 'Reattaching to query job…' : 'Starting query job…';
       const timer = setInterval(() => {
         if (!terminalEvent && !status.textContent.startsWith('Cancelling')) {
@@ -10176,7 +10178,8 @@
           results.append(errorBox(err.message));
           saveSession();
         } else if (jobId) {
-          status.textContent = 'Connection lost — reload to reattach to the query job';
+          reattachAvailable = true;
+          status.textContent = 'Connection lost — choose Reattach to resume this query job';
           results.append(errorBox(err.message));
         } else {
           terminalStatus = 'failed';
@@ -10200,17 +10203,22 @@
         }
         if (activeQuery === controller) {
           activeQuery = null;
-          const stillRunning = Boolean(jobId && !terminalStatus);
+          const unresolvedJob = Boolean(jobId && !terminalStatus);
+          const stillRunning = unresolvedJob && !reattachAvailable;
           tab.isRunning = stillRunning;
-          tab.detachableJob = stillRunning;
+          tab.detachableJob = unresolvedJob;
           runButton.disabled = stillRunning;
-          cancelButton.disabled = !stillRunning;
+          runButton.textContent = reattachAvailable ? 'Reattach' : 'Run';
+          cancelButton.disabled = !unresolvedJob;
         }
       }
     };
 
     const run = (dangerConfirmed = false) => {
       if (tab.isRunning) return;
+      if (!session && tab.detachableJob && activeJobId) {
+        return runDetached(true, activeJobId, tab.activeJobSql);
+      }
       return session ? runAttached(dangerConfirmed) : runDetached(dangerConfirmed);
     };
 
