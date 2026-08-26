@@ -450,7 +450,9 @@
     else previousMenu?.remove();
     const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
     let menu;
+    let dismissed = false;
     const dismiss = (restoreFocus = false) => {
+      dismissed = true;
       menu?.remove();
       if (trigger?.hasAttribute('aria-haspopup')) {
         trigger.setAttribute('aria-expanded', 'false');
@@ -484,6 +486,7 @@
       dismiss(closeEvent.type === 'keydown');
     };
     setTimeout(() => {
+      if (dismissed) return;
       document.addEventListener('pointerdown', close, true);
       document.addEventListener('keydown', close, true);
     });
@@ -11553,14 +11556,21 @@
 
   function resultRowsAsSqlInsert(columns, rows, target, providerName) {
     if (!columns.length || !rows.length) return '-- No loaded rows to insert.';
-    const names = uniqueResultColumnNames(columns).map(quoteSqlIdentifier).join(', ');
+    const uniqueNames = uniqueResultColumnNames(columns);
+    if (uniqueNames.some((name, index) => name !== String(columns[index].name))) {
+      throw new Error('Cannot safely copy SQL INSERT because the result has duplicate column names.');
+    }
+    const names = uniqueNames.map((name) => quoteSqlIdentifier(name, providerName)).join(', ');
     const values = rows.map((row) => '    (' + columns.map((column, index) =>
       resultSqlLiteral(row[index], column, providerName)).join(', ') + ')');
     return `INSERT INTO ${target} (${names}) VALUES\n${values.join(',\n')};`;
   }
 
-  function quoteSqlIdentifier(value) {
-    return `[${String(value).replaceAll(']', ']]')}]`;
+  function quoteSqlIdentifier(value, providerName) {
+    const text = String(value);
+    return String(providerName || '').toLowerCase().includes('sqlite')
+      ? `"${text.replaceAll('"', '""')}"`
+      : `[${text.replaceAll(']', ']]')}]`;
   }
 
   function resultSqlLiteral(value, column, providerName) {

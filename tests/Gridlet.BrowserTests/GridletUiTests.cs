@@ -3856,8 +3856,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await CopyAsync("Copy as SQL INSERT");
         Assert.Equal(
-            "INSERT INTO [TargetTable] ([Odd]]Name], [Note], [Note_2], [Active], [Missing], [Payload]) VALUES\n" +
-            "    (N'Łódź O''Brien', N'line 1\nline | <2>', N'duplicate', 1, NULL, 0x00FF);",
+            "INSERT INTO [TargetTable] ([Odd]]Name], [Note], [Active], [Missing], [Payload]) VALUES\n" +
+            "    (N'Łódź O''Brien', N'line 1\nline | <2>', 1, NULL, 0x00FF);",
             await ReadClipboardAsync());
 
         await CopyAsync("Copy as JSON");
@@ -3867,7 +3867,6 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             var row = Assert.Single(json.RootElement.EnumerateArray());
             Assert.Equal("Łódź O'Brien", row.GetProperty("Odd]Name").GetString());
             Assert.Equal("line 1\nline | <2>", row.GetProperty("Note").GetString());
-            Assert.Equal("duplicate", row.GetProperty("Note_2").GetString());
             Assert.True(row.GetProperty("Active").GetBoolean());
             Assert.Equal(JsonValueKind.Null, row.GetProperty("Missing").ValueKind);
             Assert.Equal("AP8=", row.GetProperty("Payload").GetString());
@@ -3875,9 +3874,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await CopyAsync("Copy as Markdown");
         Assert.Equal(
-            "| Odd]Name | Note | Note | Active | Missing | Payload |\n" +
-            "| --- | --- | --- | --- | --- | --- |\n" +
-            "| Łódź O'Brien | line 1<br>line \\| &lt;2&gt; | duplicate | true | NULL | AP8= |",
+            "| Odd]Name | Note | Active | Missing | Payload |\n" +
+            "| --- | --- | --- | --- | --- |\n" +
+            "| Łódź O'Brien | line 1<br>line \\| &lt;2&gt; | true | NULL | AP8= |",
             await ReadClipboardAsync());
 
         await page.GetByTitle("dbo.Customers").ClickAsync();
@@ -3900,6 +3899,22 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToContainTextAsync("cannot preserve its numeric precision");
         Assert.Equal("unchanged", await ReadClipboardAsync());
 
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-duplicate-columns");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as JSON");
+        using (var duplicateJson = JsonDocument.Parse(await ReadClipboardAsync()))
+        {
+            Assert.Equal(1, duplicateJson.RootElement[0].GetProperty("Value").GetInt32());
+            Assert.Equal(2, duplicateJson.RootElement[0].GetProperty("value_2").GetInt32());
+        }
+        await page.EvaluateAsync("navigator.clipboard.writeText('unchanged')");
+        await CopyAsync("Copy as SQL INSERT");
+        await Assertions.Expect(page.Locator("#toast-stack"))
+            .ToContainTextAsync("duplicate column names");
+        Assert.Equal("unchanged", await ReadClipboardAsync());
+
         await page.Locator("#connection-select").SelectOptionAsync("SQLite");
         await page.Locator("#new-query-btn").ClickAsync();
         await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-formats");
@@ -3907,8 +3922,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
         await CopyAsync("Copy as SQL INSERT");
         Assert.Equal(
-            "INSERT INTO [TargetTable] ([Odd]]Name], [Note], [Note_2], [Active], [Missing], [Payload]) VALUES\n" +
-            "    ('Łódź O''Brien', 'line 1\nline | <2>', 'duplicate', 1, NULL, X'00FF');",
+            "INSERT INTO [TargetTable] (\"Odd]Name\", \"Note\", \"Active\", \"Missing\", \"Payload\") VALUES\n" +
+            "    ('Łódź O''Brien', 'line 1\nline | <2>', 1, NULL, X'00FF');",
             await ReadClipboardAsync());
         browserPage.AssertNoUnexpectedErrors();
     }

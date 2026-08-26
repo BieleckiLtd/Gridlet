@@ -738,13 +738,12 @@ public sealed class FakeGridletProvider :
             [
                 new ResultColumn("Odd]Name", "nvarchar(100)"),
                 new ResultColumn("Note", "nvarchar(max)"),
-                new ResultColumn("Note", "nvarchar(max)"),
                 new ResultColumn("Active", "bit"),
                 new ResultColumn("Missing", "int"),
                 new ResultColumn("Payload", string.Empty, IsBinary: true),
             ]);
             yield return new QueryStreamEvent("rows", 0,
-                Rows: [["Łódź O'Brien", "line 1\nline | <2>", "duplicate", true, null, "AP8="]]);
+                Rows: [["Łódź O'Brien", "line 1\nline | <2>", true, null, "AP8="]]);
             yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
             yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
             yield break;
@@ -756,6 +755,17 @@ public sealed class FakeGridletProvider :
             yield return new QueryStreamEvent("resultSet", 0,
                 [new ResultColumn("UnsafeId", "bigint")]);
             yield return new QueryStreamEvent("rows", 0, Rows: [[9_007_199_254_740_993L]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-duplicate-columns")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("Value", "int"), new ResultColumn("value", "int")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[1, 2]]);
             yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
             yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
             yield break;
