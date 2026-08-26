@@ -10153,6 +10153,7 @@
           tab.activeJobSql = null;
           status.textContent = 'Query job expired';
           results.append(errorBox(err.message));
+          saveSession();
         } else if (jobId) {
           status.textContent = 'Connection lost — reload to reattach to the query job';
           results.append(errorBox(err.message));

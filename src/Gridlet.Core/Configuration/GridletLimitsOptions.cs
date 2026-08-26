@@ -48,8 +48,9 @@ public sealed class GridletLimitsOptions
     public int QuerySessionIdleTimeoutMinutes { get; set; } = 15;
 
     /// <summary>
-    /// Maximum ordinary (non-session) queries that may continue as server-side jobs at once.
-    /// Defaults to <c>8</c> and must be at least <c>1</c>.
+    /// Maximum ordinary (non-session) query jobs retained in memory, including running jobs and
+    /// completed results awaiting reattachment. The oldest completed result is evicted first when
+    /// capacity is needed. Defaults to <c>8</c> and must be at least <c>1</c>.
     /// </summary>
     public int MaxQueryJobs { get; set; } = 8;
 

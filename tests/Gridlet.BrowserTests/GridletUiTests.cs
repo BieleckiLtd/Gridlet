@@ -3942,6 +3942,44 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Clears_an_expired_query_job_from_the_persisted_tab()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var jobReads = 0;
+        await page.RouteAsync("**/query/jobs", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 202,
+            ContentType = "application/json",
+            Body = "{\"id\":\"expired-job\",\"status\":\"running\"," +
+                "\"startedAt\":\"2026-08-26T00:00:00Z\",\"completedAt\":null," +
+                "\"nextEventIndex\":0,\"eventCount\":0,\"events\":[]}",
+        }));
+        await page.RouteAsync("**/query/jobs/expired-job*", route =>
+        {
+            Interlocked.Increment(ref jobReads);
+            return route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 404,
+                ContentType = "application/json",
+                Body = "{\"error\":\"That query job is no longer available.\"}",
+            });
+        });
+        await page.GotoAsync("/gridlet/");
+        await OpenQueryAsync(page, "SELECT expired");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("Query job expired");
+        Assert.Equal(1, jobReads);
+
+        await page.ReloadAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("sql-editor"))
+            .ToHaveValueAsync("SELECT expired");
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToBeEmptyAsync();
+        Assert.Equal(1, jobReads);
+        browserPage.AssertNoUnexpectedErrors("404");
+    }
+
+    [Fact]
     public async Task Warns_before_running_update_or_delete_without_a_where_clause()
     {
         await using var browserPage = await fixture.NewPageAsync();

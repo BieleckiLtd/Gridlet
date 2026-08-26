@@ -51,10 +51,21 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             ObjectDisposedException.ThrowIf(disposed, this);
             SweepCompletedLocked(time.GetUtcNow());
             var limit = Math.Max(1, options.CurrentValue.Limits.MaxQueryJobs);
-            if (jobs.Values.Count(candidate => !candidate.IsTerminalSnapshot()) >= limit)
+            while (jobs.Count >= limit)
             {
-                throw new GridletValidationException(
-                    $"All {limit} background query jobs are in use. Wait for one to finish or cancel it.");
+                var oldestCompleted = jobs.Values
+                    .Where(candidate => candidate.IsTerminalSnapshot())
+                    .OrderBy(candidate => candidate.CompletedAt)
+                    .ThenBy(candidate => candidate.StartedAt)
+                    .FirstOrDefault();
+                if (oldestCompleted is null)
+                {
+                    throw new GridletValidationException(
+                        $"All {limit} background query jobs are in use. Wait for one to finish or cancel it.");
+                }
+
+                jobs.Remove(oldestCompleted.Id);
+                oldestCompleted.Cancellation.Dispose();
             }
 
             string id;
@@ -76,9 +87,11 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
                     resolved.Context, sql, requestOptions, parameters: null, cancellationToken: token),
                 time.GetUtcNow());
             jobs.Add(id, job);
+            // Assignment stays under jobsGate so shutdown cannot snapshot this job before its
+            // execution task is visible and then dispose the cancellation source underneath it.
+            job.Execution = Task.Run(() => RunAsync(job));
         }
 
-        job.Execution = Task.Run(() => RunAsync(job));
         return Snapshot(job, after: 0, includeEvents: false);
     }
 
@@ -233,13 +246,6 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
         }
         finally
         {
-            lock (job.Gate)
-            {
-                job.Status = finalStatus;
-                job.CompletedAt = time.GetUtcNow();
-                job.NotifyLocked();
-            }
-
             try
             {
                 await audit.WriteAsync(new GridletAuditEvent(
@@ -250,6 +256,15 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             catch (Exception ex)
             {
                 logger.LogError(ex, "Audit sink failed for background query job {JobId}.", job.Id);
+            }
+
+            // Terminal means the entire retained job, including its audit, has completed. Sweep
+            // and capacity eviction can then dispose it without abandoning live background work.
+            lock (job.Gate)
+            {
+                job.Status = finalStatus;
+                job.CompletedAt = time.GetUtcNow();
+                job.NotifyLocked();
             }
         }
     }

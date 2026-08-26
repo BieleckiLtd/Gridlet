@@ -1000,6 +1000,32 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Starting_a_job_evicts_the_oldest_completed_result_at_capacity()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.MaxQueryJobs = 1;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var firstResponse = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "SELECT 1" });
+        var first = (await firstResponse.Content.ReadFromJsonAsync<QueryJobResponse>())!;
+        await AwaitQueryJobAsync(client, first.Id);
+
+        var secondResponse = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "SELECT 2" });
+        var firstAfterEviction = await client.GetAsync(
+            $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{first.Id}?waitMs=0");
+
+        Assert.Equal(HttpStatusCode.Accepted, secondResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, firstAfterEviction.StatusCode);
+    }
+
+    [Fact]
     public async Task Completed_query_jobs_expire_after_the_configured_retention_period()
     {
         var clock = new AdvanceableTimeProvider(DateTimeOffset.UnixEpoch);
