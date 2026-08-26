@@ -665,6 +665,14 @@ public sealed class FakeGridletProvider :
             yield break;
         }
 
+        if (sql == "oversized-message")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("message", Message: new string('x', 128 * 1024));
+            yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            yield break;
+        }
+
         await Task.Yield();
 
         if (sql == "job-wait")

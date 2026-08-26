@@ -3887,6 +3887,39 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Retries_a_transient_query_job_poll_failure()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var failedPoll = 0;
+        await page.RouteAsync("**/query/jobs/*", async route =>
+        {
+            if (Interlocked.CompareExchange(ref failedPoll, 1, 0) == 0)
+            {
+                await route.FulfillAsync(new()
+                {
+                    Status = 502,
+                    ContentType = "application/json",
+                    Body = "{\"error\":\"Temporary gateway failure.\"}",
+                });
+            }
+            else
+            {
+                await route.ContinueAsync();
+            }
+        });
+        await OpenQueryAsync(page, "SELECT 42");
+
+        await page.GetByTestId("query-run").ClickAsync();
+
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await Assertions.Expect(page.GetByTestId("query-results").GetByRole(
+            AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+        Assert.Equal(1, failedPoll);
+        browserPage.AssertNoUnexpectedErrors("502");
+    }
+
+    [Fact]
     public async Task Cancels_a_running_query_job_on_the_server()
     {
         fixture.Provider.PrepareLongQuery();

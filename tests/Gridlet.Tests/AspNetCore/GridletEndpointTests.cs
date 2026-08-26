@@ -1050,6 +1050,30 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Query_job_payload_replay_is_byte_bounded_and_retains_terminal_state()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.MaxQueryJobRetainedBytes = 64 * 1024;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var started = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "oversized-message" });
+        var created = (await started.Content.ReadFromJsonAsync<QueryJobResponse>())!;
+
+        var (completed, events) = await AwaitQueryJobAsync(client, created.Id);
+
+        Assert.Equal("succeeded", completed.Status);
+        Assert.DoesNotContain(events, queryEvent => queryEvent.Message?.Length > 64 * 1024);
+        Assert.Contains(events, queryEvent => queryEvent.Type == "message"
+            && queryEvent.Message!.Contains("events were omitted", StringComparison.Ordinal));
+        Assert.Contains(events, queryEvent => queryEvent.Type == "completed");
+    }
+
+    [Fact]
     public async Task Completed_query_jobs_expire_after_the_configured_retention_period()
     {
         var clock = new AdvanceableTimeProvider(DateTimeOffset.UnixEpoch);

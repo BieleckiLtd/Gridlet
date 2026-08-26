@@ -69,6 +69,13 @@ public sealed class GridletLimitsOptions
     public int MaxQueryJobEvents { get; set; } = 2_048;
 
     /// <summary>
+    /// Maximum serialized event payload retained by one query job. This bounds wide rows and
+    /// multi-result scripts independently of the event-count limit. Defaults to <c>16 MiB</c> and
+    /// must be at least <c>64 KiB</c>.
+    /// </summary>
+    public int MaxQueryJobRetainedBytes { get; set; } = 16 * 1024 * 1024;
+
+    /// <summary>
     /// How long a finished query job and its capped results remain available for reattachment.
     /// Defaults to <c>15</c> minutes and must be at least <c>1</c>.
     /// </summary>

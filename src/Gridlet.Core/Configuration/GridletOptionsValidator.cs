@@ -140,6 +140,11 @@ public sealed class GridletOptionsValidator : IValidateOptions<GridletOptions>
             failures.Add("Limits.MaxQueryJobEvents must be at least 16.");
         }
 
+        if (limits.MaxQueryJobRetainedBytes < 64 * 1024)
+        {
+            failures.Add("Limits.MaxQueryJobRetainedBytes must be at least 65536.");
+        }
+
         if (limits.QueryJobRetentionMinutes < 1)
         {
             failures.Add("Limits.QueryJobRetentionMinutes must be at least 1.");

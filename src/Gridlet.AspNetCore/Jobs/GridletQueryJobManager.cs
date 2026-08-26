@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text.Json;
 using Gridlet.Abstractions;
 using Gridlet.AspNetCore.Contracts;
 using Gridlet.Auditing;
@@ -175,6 +176,10 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
 
         lock (job.Gate)
         {
+            if (job.Disposed)
+            {
+                return null;
+            }
             if (!job.IsTerminal && job.Status != "cancelling")
             {
                 job.Status = "cancelling";
@@ -281,30 +286,38 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
         lock (job.Gate)
         {
             var limit = Math.Max(16, options.CurrentValue.Limits.MaxQueryJobEvents);
+            var byteLimit = Math.Max(64 * 1024, options.CurrentValue.Limits.MaxQueryJobRetainedBytes);
+            var eventBytes = JsonSerializer.SerializeToUtf8Bytes(
+                streamEvent, JsonSerializerOptions.Web).Length;
             var retained = false;
-            if (job.Events.Count < limit)
+            if (job.Events.Count < limit && job.RetainedBytes + eventBytes <= byteLimit)
             {
                 job.Events.Add(streamEvent);
+                job.RetainedBytes += eventBytes;
                 retained = true;
             }
             else if (!job.EventsTruncated)
             {
                 job.EventsTruncated = true;
-                job.Events.Add(new QueryStreamEvent(
+                var marker = new QueryStreamEvent(
                     "message",
-                    Message: $"Further query events were omitted after the retained-event limit of {limit}."));
+                    Message: "Further query events were omitted after reaching the retained-event " +
+                        $"limit of {limit} events or {byteLimit} bytes.");
+                job.Events.Add(marker);
+                job.RetainedBytes += JsonSerializer.SerializeToUtf8Bytes(
+                    marker, JsonSerializerOptions.Web).Length;
                 retained = true;
-                retained |= RetainTerminalEvent(job, streamEvent);
+                retained |= RetainTerminalEvent(job, streamEvent, eventBytes);
             }
             else
             {
-                retained = RetainTerminalEvent(job, streamEvent);
+                retained = RetainTerminalEvent(job, streamEvent, eventBytes);
             }
             if (retained) job.NotifyLocked();
         }
     }
 
-    private static bool RetainTerminalEvent(Job job, QueryStreamEvent streamEvent)
+    private static bool RetainTerminalEvent(Job job, QueryStreamEvent streamEvent, int eventBytes)
     {
         if (streamEvent.Type is not ("completed" or "error" or "cancelled")
             || !job.RetainedTerminalEventTypes.Add(streamEvent.Type))
@@ -312,6 +325,7 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             return false;
         }
         job.Events.Add(streamEvent);
+        job.RetainedBytes += eventBytes;
         return true;
     }
 
@@ -384,7 +398,7 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
         {
             lock (job.Gate)
             {
-                job.Cancellation.Cancel();
+                if (!job.Disposed) job.Cancellation.Cancel();
             }
         }
         await Task.WhenAll(remaining.Select(job => job.Execution ?? Task.CompletedTask));
@@ -420,6 +434,8 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
         public DateTimeOffset? CompletedAt { get; set; }
         public TaskCompletionSource Changed { get; private set; } = NewSignal();
         public bool EventsTruncated { get; set; }
+        public int RetainedBytes { get; set; }
+        public bool Disposed { get; set; }
         public HashSet<string> RetainedTerminalEventTypes { get; } = new(StringComparer.Ordinal);
         public bool IsTerminal => Status is "succeeded" or "failed" or "cancelled";
 
@@ -461,6 +477,8 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
         {
             lock (Gate)
             {
+                if (Disposed) return;
+                Disposed = true;
                 Cancellation.Dispose();
             }
         }

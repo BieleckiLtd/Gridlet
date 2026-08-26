@@ -10125,9 +10125,30 @@
           tab.activeJobSql = sql;
         }
 
+        const waitBeforeRetry = (milliseconds) => new Promise((resolve, reject) => {
+          const onAbort = () => {
+            clearTimeout(timerId);
+            reject(new DOMException('Aborted', 'AbortError'));
+          };
+          const timerId = setTimeout(() => {
+            controller.signal.removeEventListener('abort', onAbort);
+            resolve();
+          }, milliseconds);
+          controller.signal.addEventListener('abort', onAbort, { once: true });
+        });
         let cursor = 0;
+        let pollFailures = 0;
         while (!terminalStatus) {
-          const snapshot = await api(urls.queryJob(jobId, cursor), { signal: controller.signal });
+          let snapshot;
+          try {
+            snapshot = await api(urls.queryJob(jobId, cursor), { signal: controller.signal });
+            pollFailures = 0;
+          } catch (err) {
+            if (err.name === 'AbortError' || err.status === 404 || ++pollFailures > 3) throw err;
+            status.textContent = `Connection interrupted — retrying query job (${pollFailures}/3)…`;
+            await waitBeforeRetry(250 * (2 ** (pollFailures - 1)));
+            continue;
+          }
           for (const event of snapshot.events || []) addEvent(event);
           cursor = snapshot.nextEventIndex;
           historyStartedAt = Date.parse(snapshot.startedAt) || historyStartedAt;
