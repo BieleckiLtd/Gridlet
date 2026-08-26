@@ -203,11 +203,15 @@ public class GridletOptionsValidatorTests
         var result = Validate(options =>
         {
             options.Limits.MaxQueryJobs = 0;
+            options.Limits.MaxQueryJobsPerOwner = 0;
+            options.Limits.MaxQueryJobEvents = 15;
             options.Limits.QueryJobRetentionMinutes = 0;
         });
 
         Assert.True(result.Failed);
         Assert.Contains("MaxQueryJobs", result.FailureMessage);
+        Assert.Contains("MaxQueryJobsPerOwner", result.FailureMessage);
+        Assert.Contains("MaxQueryJobEvents", result.FailureMessage);
         Assert.Contains("QueryJobRetentionMinutes", result.FailureMessage);
     }
 }

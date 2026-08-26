@@ -51,6 +51,19 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             ObjectDisposedException.ThrowIf(disposed, this);
             SweepCompletedLocked(time.GetUtcNow());
             var limit = Math.Max(1, options.CurrentValue.Limits.MaxQueryJobs);
+            var ownerLimit = Math.Min(
+                limit, Math.Max(1, options.CurrentValue.Limits.MaxQueryJobsPerOwner));
+            while (jobs.Values.Count(candidate => candidate.IsOwnedBy(owner)) >= ownerLimit)
+            {
+                var oldestOwnedCompleted = OldestCompleted(owner);
+                if (oldestOwnedCompleted is null)
+                {
+                    throw new GridletValidationException(
+                        $"All {ownerLimit} background query jobs are in use for this workspace. " +
+                        "Wait for one to finish or cancel it.");
+                }
+                RemoveLocked(oldestOwnedCompleted);
+            }
             while (jobs.Count >= limit)
             {
                 var oldestCompleted = jobs.Values
@@ -64,8 +77,7 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
                         $"All {limit} background query jobs are in use. Wait for one to finish or cancel it.");
                 }
 
-                jobs.Remove(oldestCompleted.Id);
-                oldestCompleted.Cancellation.Dispose();
+                RemoveLocked(oldestCompleted);
             }
 
             string id;
@@ -161,21 +173,16 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             return null;
         }
 
-        var cancel = false;
         lock (job.Gate)
         {
             if (!job.IsTerminal && job.Status != "cancelling")
             {
                 job.Status = "cancelling";
                 job.NotifyLocked();
-                cancel = true;
+                job.Cancellation.Cancel();
             }
+            return SnapshotLocked(job, after: 0, includeEvents: false);
         }
-        if (cancel)
-        {
-            job.Cancellation.Cancel();
-        }
-        return Snapshot(job, after: 0, includeEvents: false);
     }
 
     public void Sweep()
@@ -269,13 +276,43 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
         }
     }
 
-    private static void Publish(Job job, QueryStreamEvent streamEvent)
+    private void Publish(Job job, QueryStreamEvent streamEvent)
     {
         lock (job.Gate)
         {
-            job.Events.Add(streamEvent);
-            job.NotifyLocked();
+            var limit = Math.Max(16, options.CurrentValue.Limits.MaxQueryJobEvents);
+            var retained = false;
+            if (job.Events.Count < limit)
+            {
+                job.Events.Add(streamEvent);
+                retained = true;
+            }
+            else if (!job.EventsTruncated)
+            {
+                job.EventsTruncated = true;
+                job.Events.Add(new QueryStreamEvent(
+                    "message",
+                    Message: $"Further query events were omitted after the retained-event limit of {limit}."));
+                retained = true;
+                retained |= RetainTerminalEvent(job, streamEvent);
+            }
+            else
+            {
+                retained = RetainTerminalEvent(job, streamEvent);
+            }
+            if (retained) job.NotifyLocked();
         }
+    }
+
+    private static bool RetainTerminalEvent(Job job, QueryStreamEvent streamEvent)
+    {
+        if (streamEvent.Type is not ("completed" or "error" or "cancelled")
+            || !job.RetainedTerminalEventTypes.Add(streamEvent.Type))
+        {
+            return false;
+        }
+        job.Events.Add(streamEvent);
+        return true;
     }
 
     private QueryJobResponse Snapshot(Job job, int after, bool includeEvents)
@@ -315,9 +352,21 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             Math.Max(1, options.CurrentValue.Limits.QueryJobRetentionMinutes));
         foreach (var pair in jobs.Where(pair => pair.Value.ExpiredBy(now, retention)).ToArray())
         {
-            jobs.Remove(pair.Key);
-            pair.Value.Cancellation.Dispose();
+            RemoveLocked(pair.Value);
         }
+    }
+
+    private Job? OldestCompleted(string? owner)
+        => jobs.Values
+            .Where(candidate => candidate.IsOwnedBy(owner) && candidate.IsTerminalSnapshot())
+            .OrderBy(candidate => candidate.CompletedAt)
+            .ThenBy(candidate => candidate.StartedAt)
+            .FirstOrDefault();
+
+    private void RemoveLocked(Job job)
+    {
+        jobs.Remove(job.Id);
+        job.DisposeCancellation();
     }
 
     public async ValueTask DisposeAsync()
@@ -333,12 +382,15 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
 
         foreach (var job in remaining)
         {
-            job.Cancellation.Cancel();
+            lock (job.Gate)
+            {
+                job.Cancellation.Cancel();
+            }
         }
         await Task.WhenAll(remaining.Select(job => job.Execution ?? Task.CompletedTask));
         foreach (var job in remaining)
         {
-            job.Cancellation.Dispose();
+            job.DisposeCancellation();
         }
     }
 
@@ -367,6 +419,8 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
         public string Status { get; set; } = "running";
         public DateTimeOffset? CompletedAt { get; set; }
         public TaskCompletionSource Changed { get; private set; } = NewSignal();
+        public bool EventsTruncated { get; set; }
+        public HashSet<string> RetainedTerminalEventTypes { get; } = new(StringComparer.Ordinal);
         public bool IsTerminal => Status is "succeeded" or "failed" or "cancelled";
 
         public bool IsAccessibleBy(
@@ -376,6 +430,9 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             => string.Equals(Owner, candidateOwner, StringComparison.Ordinal)
                 && string.Equals(ConnectionName, candidateConnection, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(Database, candidateDatabase, StringComparison.OrdinalIgnoreCase);
+
+        public bool IsOwnedBy(string? candidateOwner)
+            => string.Equals(Owner, candidateOwner, StringComparison.Ordinal);
 
         public bool IsTerminalSnapshot()
         {
@@ -398,6 +455,14 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
             var previous = Changed;
             Changed = NewSignal();
             previous.TrySetResult();
+        }
+
+        public void DisposeCancellation()
+        {
+            lock (Gate)
+            {
+                Cancellation.Dispose();
+            }
         }
 
         private static TaskCompletionSource NewSignal()

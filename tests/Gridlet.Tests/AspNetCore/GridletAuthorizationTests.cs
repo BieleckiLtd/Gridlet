@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using Gridlet.Abstractions;
 using Gridlet.Tests.AspNetCore.Fakes;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.DependencyInjection;
@@ -153,5 +154,48 @@ public class GridletAuthorizationTests
         Assert.Equal(HttpStatusCode.OK, owner.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, stranger.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, strangerCancel.StatusCode);
+    }
+
+    [Fact]
+    public async Task One_user_cannot_consume_another_users_query_job_allowance()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+                options.Limits.MaxQueryJobs = 2;
+                options.Limits.MaxQueryJobsPerOwner = 1;
+            },
+            services =>
+            {
+                services.AddAuthentication(Scheme)
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(Scheme, null);
+                services.AddAuthorization();
+            });
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        fake.PrepareLongQuery();
+        try
+        {
+            client.DefaultRequestHeaders.Add("X-Test-User", "ada@example.com");
+            var adaFirst = await client.PostAsJsonAsync(
+                "/gridlet/api/connections/Main/databases/FakeDb/query/jobs", new { sql = "job-wait" });
+            var adaSecond = await client.PostAsJsonAsync(
+                "/gridlet/api/connections/Main/databases/FakeDb/query/jobs", new { sql = "job-wait" });
+
+            client.DefaultRequestHeaders.Remove("X-Test-User");
+            client.DefaultRequestHeaders.Add("X-Test-User", "grace@example.com");
+            var graceFirst = await client.PostAsJsonAsync(
+                "/gridlet/api/connections/Main/databases/FakeDb/query/jobs", new { sql = "job-wait" });
+
+            Assert.Equal(HttpStatusCode.Accepted, adaFirst.StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, adaSecond.StatusCode);
+            Assert.Contains("this workspace", await adaSecond.Content.ReadAsStringAsync());
+            Assert.Equal(HttpStatusCode.Accepted, graceFirst.StatusCode);
+        }
+        finally
+        {
+            fake.ReleaseLongQuery();
+        }
     }
 }

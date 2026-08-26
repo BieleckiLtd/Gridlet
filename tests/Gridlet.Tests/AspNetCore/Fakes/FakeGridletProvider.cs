@@ -654,6 +654,17 @@ public sealed class FakeGridletProvider :
             throw new InvalidOperationException("SECRET_PUBLISHED_SENTINEL");
         }
 
+        if (sql == "many-messages")
+        {
+            yield return new QueryStreamEvent("started");
+            for (var index = 0; index < 50; index++)
+            {
+                yield return new QueryStreamEvent("message", Message: $"message {index}");
+            }
+            yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            yield break;
+        }
+
         await Task.Yield();
 
         if (sql == "job-wait")

@@ -130,6 +130,16 @@ public sealed class GridletOptionsValidator : IValidateOptions<GridletOptions>
             failures.Add("Limits.MaxQueryJobs must be at least 1.");
         }
 
+        if (limits.MaxQueryJobsPerOwner < 1)
+        {
+            failures.Add("Limits.MaxQueryJobsPerOwner must be at least 1.");
+        }
+
+        if (limits.MaxQueryJobEvents < 16)
+        {
+            failures.Add("Limits.MaxQueryJobEvents must be at least 16.");
+        }
+
         if (limits.QueryJobRetentionMinutes < 1)
         {
             failures.Add("Limits.QueryJobRetentionMinutes must be at least 1.");
