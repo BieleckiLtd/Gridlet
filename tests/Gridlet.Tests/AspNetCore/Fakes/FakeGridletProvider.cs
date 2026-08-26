@@ -380,9 +380,10 @@ public sealed class FakeGridletProvider :
 
     private static Task<TableDataPage> GetPageCore(string name, TableDataRequest request)
     {
-        if (name is "Ledger" or "LedgerHeap" or "UnderreportedLedger")
+        if (name is "Ledger" or "LedgerHeap" or "UnderreportedLedger" or "ClampedLedger")
         {
-            var page = LedgerPage(name, request);
+            var effectiveRequest = name == "ClampedLedger" ? request with { PageSize = 2 } : request;
+            var page = LedgerPage(name, effectiveRequest);
             return Task.FromResult(name == "UnderreportedLedger" ? page with { TotalRows = 1 } : page);
         }
 
@@ -390,7 +391,11 @@ public sealed class FakeGridletProvider :
     }
 
     private static Task<TableDataPage> GetFixedPage(string name, TableDataRequest request)
-        => Task.FromResult(name == "DuplicateColumns"
+        => Task.FromResult(name == "UnserializableExport"
+            ? new TableDataPage(
+                [new ResultColumn("Value", "object")],
+                [[new CircularValue()]], request.Page, request.PageSize, TotalRows: 1)
+            : name == "DuplicateColumns"
             ? new TableDataPage(
                 [new ResultColumn("Value", "int"), new ResultColumn("value", "int")],
                 [[1, 2]], request.Page, request.PageSize, TotalRows: 1)
@@ -436,6 +441,11 @@ public sealed class FakeGridletProvider :
                 TotalRows: 2,
                 RowIdentity: name == "NoKeys" ? null : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
                 RowKeys: name == "NoKeys" ? null : [[1], [2]]));
+
+    private sealed class CircularValue
+    {
+        public CircularValue Self => this;
+    }
 
     // ---- execution plans ----
 

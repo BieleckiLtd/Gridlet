@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Gridlet.Abstractions;
+using Gridlet.AspNetCore.Contracts;
 using Gridlet.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
@@ -61,17 +62,33 @@ internal sealed class GridletTableExportResult(
         }
         catch (Exception ex)
         {
+            if (!httpContext.Response.HasStarted)
+            {
+                httpContext.Response.Clear();
+                var statusCode = ex switch
+                {
+                    GridletObjectNotFoundException => StatusCodes.Status404NotFound,
+                    GridletValidationException or GridletQueryException => StatusCodes.Status400BadRequest,
+                    _ => StatusCodes.Status500InternalServerError,
+                };
+                var clientMessage = statusCode == StatusCodes.Status500InternalServerError
+                    ? "An unexpected server error occurred."
+                    : ex.Message;
+                if (statusCode == StatusCodes.Status500InternalServerError)
+                {
+                    logger.LogError(ex,
+                        "Full {Format} export of {Schema}.{Name} failed before the response started.",
+                        format, schema, name);
+                }
+                httpContext.Response.StatusCode = statusCode;
+                await httpContext.Response.WriteAsJsonAsync(
+                    new GridletErrorResponse(clientMessage), cancellationToken);
+                return;
+            }
+
             logger.LogError(ex,
                 "Full {Format} export of {Schema}.{Name} failed after the response started.",
                 format, schema, name);
-            if (!httpContext.Response.HasStarted)
-            {
-                // Do not let the outer API error handler inherit attachment headers from a file
-                // which never started. Otherwise the structured error can be saved as .csv/.json.
-                httpContext.Response.Clear();
-                throw;
-            }
-
             // CSV and JSON have no standards-compliant in-band error record. Terminate the
             // response abruptly so a browser cannot mistake a well-formed partial file for a
             // completed export.
@@ -81,26 +98,36 @@ internal sealed class GridletTableExportResult(
 
     private async Task WriteCsvAsync(Stream stream, CancellationToken cancellationToken)
     {
-        await using var writer = new StreamWriter(
+        var writer = new StreamWriter(
             stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), 16 * 1024, leaveOpen: true)
         {
             NewLine = "\r\n",
         };
-        await WriteCsvRowAsync(writer, columnNames, cancellationToken);
-
-        await ForEachPageAsync(async page =>
+        var completed = false;
+        try
         {
-            foreach (var row in page.Rows)
+            await WriteCsvRowAsync(writer, columnNames, cancellationToken);
+            await ForEachPageAsync(async page =>
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                await WriteCsvRowAsync(
-                    writer,
-                    Enumerable.Range(0, firstPage.Columns.Count)
-                        .Select(index => ExportText(index < row.Length ? row[index] : null)),
-                    cancellationToken);
-            }
-            await writer.FlushAsync(cancellationToken);
-        }, cancellationToken);
+                foreach (var row in page.Rows)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await WriteCsvRowAsync(
+                        writer,
+                        Enumerable.Range(0, firstPage.Columns.Count)
+                            .Select(index => ExportText(index < row.Length ? row[index] : null)),
+                        cancellationToken);
+                }
+                await writer.FlushAsync(cancellationToken);
+            }, cancellationToken);
+            completed = true;
+        }
+        finally
+        {
+            // Disposing flushes. Only do that after success, otherwise it can commit attachment
+            // headers while an early failure is unwinding and prevent a structured error response.
+            if (completed) await writer.DisposeAsync();
+        }
     }
 
     private async Task WriteJsonAsync(Stream stream, CancellationToken cancellationToken)
@@ -147,12 +174,16 @@ internal sealed class GridletTableExportResult(
     {
         var page = firstPage;
         var pageNumber = 1;
+        var exported = 0L;
         while (true)
         {
             await consume(page);
-            // TotalRows can be estimated or stale. A short page is the only safe proof that this
-            // ordered walk reached its end; cancellation remains the bound on a changing table.
-            if (page.Rows.Count < pageSize)
+            exported += page.Rows.Count;
+            // Providers may clamp the requested page size. Use the size they report, and consult
+            // TotalRows only to distinguish an actual final short page from a clamped/partial page.
+            // An empty page is always terminal, including when an overestimated count is stale.
+            if (page.Rows.Count == 0
+                || (page.Rows.Count < Math.Max(1, page.PageSize) && exported >= page.TotalRows))
             {
                 break;
             }

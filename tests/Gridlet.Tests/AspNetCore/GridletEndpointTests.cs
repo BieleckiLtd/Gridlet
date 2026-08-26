@@ -478,6 +478,38 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Export_continues_when_a_provider_clamps_its_page_size()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+
+        var csv = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/ClampedLedger/data/export"
+            + "?format=csv");
+
+        Assert.Contains("4,Alan", csv);
+        Assert.Equal([(1, 500), (2, 500), (3, 500)], fake.DataPageRequests);
+    }
+
+    [Fact]
+    public async Task Export_returns_a_redacted_structured_error_before_streaming_starts()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/UnserializableExport/data/export"
+            + "?format=csv");
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Null(response.Content.Headers.ContentDisposition);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("unexpected server error", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("cycle", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Streaming_exports_preserve_csv_escaping_and_json_value_types()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();
