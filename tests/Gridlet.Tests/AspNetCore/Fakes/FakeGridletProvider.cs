@@ -760,6 +760,17 @@ public sealed class FakeGridletProvider :
             yield break;
         }
 
+        if (sql == "copy-exact-decimal")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("ExactAmount", "decimal(18, 1)")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[123_456_789_012_345.6m]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
         if (sql == "copy-duplicate-columns")
         {
             yield return new QueryStreamEvent("started");

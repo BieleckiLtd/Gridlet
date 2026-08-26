@@ -467,7 +467,7 @@
         role: 'menuitem',
         text: item.label,
         disabled: item.disabled ? '' : null,
-        onclick: () => { dismiss(); item.action(); },
+        onclick: () => { dismiss(true); item.action(); },
       })));
     menu._dismiss = dismiss;
     document.body.append(menu);

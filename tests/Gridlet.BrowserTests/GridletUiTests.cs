@@ -3855,6 +3855,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "false");
 
         await CopyAsync("Copy as SQL INSERT");
+        await Assertions.Expect(copyButton).ToBeFocusedAsync();
         Assert.Equal(
             "INSERT INTO [TargetTable] ([Odd]]Name], [Note], [Active], [Missing], [Payload]) VALUES\n" +
             "    (N'Łódź O''Brien', N'line 1\nline | <2>', 1, NULL, 0x00FF);",
@@ -3891,6 +3892,16 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await page.Locator("#new-query-btn").ClickAsync();
         await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-unsafe-number");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await page.EvaluateAsync("navigator.clipboard.writeText('unchanged')");
+        await CopyAsync("Copy as SQL INSERT");
+        await Assertions.Expect(page.Locator("#toast-stack"))
+            .ToContainTextAsync("cannot preserve its numeric precision");
+        Assert.Equal("unchanged", await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-exact-decimal");
         await ActivePanel(page).GetByTestId("query-run").ClickAsync();
         await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
         await page.EvaluateAsync("navigator.clipboard.writeText('unchanged')");
