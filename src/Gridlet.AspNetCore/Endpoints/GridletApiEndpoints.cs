@@ -382,6 +382,7 @@ internal static partial class GridletApiEndpoints
         string? filter,
         IGridletConnectionResolver resolver,
         IOptionsMonitor<GridletOptions> options,
+        ILogger<GridletTableExportResult> logger,
         CancellationToken cancellationToken)
         => Execute(async () =>
         {
@@ -395,6 +396,7 @@ internal static partial class GridletApiEndpoints
             var pageSize = options.CurrentValue.Limits.MaxPageSize;
             var direction = string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase)
                 ? SortDirection.Descending : SortDirection.Ascending;
+            var sortColumn = string.IsNullOrWhiteSpace(sort) ? null : sort;
             var filters = ParseFilters(filter);
             // Fetch the first page before response headers are committed. Object, sort, and filter
             // validation errors can therefore retain the API's normal structured status/body.
@@ -402,19 +404,25 @@ internal static partial class GridletApiEndpoints
                 resolved.Context,
                 schema,
                 name,
-                new TableDataRequest(1, pageSize, sort, direction, filters),
+                new TableDataRequest(1, pageSize, sortColumn, direction, filters),
                 cancellationToken);
+            if (firstPage.TotalRows > firstPage.Rows.Count && firstPage.RowIdentity is null)
+            {
+                throw new GridletValidationException(
+                    "A full export cannot safely page this object because it has no stable row identity.");
+            }
             return new GridletTableExportResult(
                 resolved.Provider.Data,
                 resolved.Context,
                 schema,
                 name,
                 exportFormat,
-                sort,
+                sortColumn,
                 direction,
                 filters,
                 pageSize,
-                firstPage);
+                firstPage,
+                logger);
         });
 
     /// <summary>

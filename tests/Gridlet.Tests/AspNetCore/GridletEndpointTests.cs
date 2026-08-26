@@ -390,6 +390,52 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Full_export_rejects_multi_page_objects_without_a_stable_row_identity()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.DefaultPageSize = 2;
+            options.Limits.MaxPageSize = 2;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/LedgerHeap/data/export?format=csv");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("stable row identity", await response.Content.ReadAsStringAsync());
+        Assert.Equal([(1, 2)], fake.DataPageRequests);
+    }
+
+    [Fact]
+    public async Task Full_export_normalizes_a_blank_sort_and_aborts_on_a_later_page_failure()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.DefaultPageSize = 2;
+            options.Limits.MaxPageSize = 2;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        fake.FailDataPage = 2;
+
+        using var response = await client.SendAsync(new HttpRequestMessage(
+            HttpMethod.Get,
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Ledger/data/export?format=csv&sort="),
+            HttpCompletionOption.ResponseHeadersRead);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Null(fake.LastDataRequest!.SortColumn);
+        await Assert.ThrowsAnyAsync<Exception>(async () =>
+            await response.Content.ReadAsByteArrayAsync());
+        Assert.Equal([(1, 2), (2, 2)], fake.DataPageRequests);
+    }
+
+    [Fact]
     public async Task Streaming_exports_preserve_csv_escaping_and_json_value_types()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();

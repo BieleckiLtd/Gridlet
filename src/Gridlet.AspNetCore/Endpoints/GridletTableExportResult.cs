@@ -5,6 +5,7 @@ using System.Text.Json;
 using Gridlet.Abstractions;
 using Gridlet.Models;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 
 namespace Gridlet.AspNetCore;
 
@@ -22,7 +23,8 @@ internal sealed class GridletTableExportResult(
     SortDirection direction,
     IReadOnlyList<TableDataFilter>? filters,
     int pageSize,
-    TableDataPage firstPage) : IResult
+    TableDataPage firstPage,
+    ILogger<GridletTableExportResult> logger) : IResult
 {
     private static readonly byte[] JsonArrayStart = [(byte)'['];
     private static readonly byte[] JsonArrayEnd = [(byte)']'];
@@ -40,13 +42,35 @@ internal sealed class GridletTableExportResult(
             $"attachment; filename=\"{asciiFileName}\"; filename*=UTF-8''{Uri.EscapeDataString(fileName)}";
         httpContext.Response.Headers.XContentTypeOptions = "nosniff";
 
-        if (format == "json")
+        try
         {
-            await WriteJsonAsync(httpContext.Response.Body, cancellationToken);
+            if (format == "json")
+            {
+                await WriteJsonAsync(httpContext.Response.Body, cancellationToken);
+            }
+            else
+            {
+                await WriteCsvAsync(httpContext.Response.Body, cancellationToken);
+            }
         }
-        else
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await WriteCsvAsync(httpContext.Response.Body, cancellationToken);
+            // The client went away. RequestAborted has already closed the only consumer.
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex,
+                "Full {Format} export of {Schema}.{Name} failed after the response started.",
+                format, schema, name);
+            if (!httpContext.Response.HasStarted)
+            {
+                throw;
+            }
+
+            // CSV and JSON have no standards-compliant in-band error record. Terminate the
+            // response abruptly so a browser cannot mistake a well-formed partial file for a
+            // completed export.
+            httpContext.Abort();
         }
     }
 

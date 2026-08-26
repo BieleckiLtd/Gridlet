@@ -300,6 +300,9 @@ public sealed class FakeGridletProvider :
     /// <summary>Every page asked for, in order, so a caller's paging can be asserted.</summary>
     public List<(int Page, int PageSize)> DataPageRequests { get; } = [];
 
+    /// <summary>When set, simulates a provider failure after an export has begun streaming.</summary>
+    public int? FailDataPage { get; set; }
+
     public Task<TableDataPage> GetPageAsync(
         GridletConnectionContext context, string schema, string name, TableDataRequest request,
         CancellationToken cancellationToken = default)
@@ -307,6 +310,11 @@ public sealed class FakeGridletProvider :
         LastDataRequest = request;
         LastDataFilters = request.Filters;
         DataPageRequests.Add((request.Page, request.PageSize));
+        if (request.Page == FailDataPage)
+        {
+            return Task.FromException<TableDataPage>(
+                new InvalidOperationException("SECRET_EXPORT_PAGE_FAILURE"));
+        }
         return GetPageCore(name, request);
     }
 
