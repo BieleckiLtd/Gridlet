@@ -303,7 +303,8 @@ public sealed class SqliteQueryRunner : IQueryRunner, IQuerySessionRunner, IQuer
 
     private static ResultColumn[] ReadColumns(System.Data.Common.DbDataReader reader)
         => Enumerable.Range(0, reader.FieldCount)
-            .Select(i => new ResultColumn(reader.GetName(i), reader.GetDataTypeName(i)))
+            .Select(i => new ResultColumn(
+                reader.GetName(i), reader.GetDataTypeName(i), reader.GetFieldType(i) == typeof(byte[])))
             .ToArray();
 
     private static object?[] ReadRow(System.Data.Common.DbDataReader reader)

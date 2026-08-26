@@ -99,7 +99,7 @@ public sealed record TableDataRequest(
 }
 
 /// <summary>A column of a result set, with the provider's type name for display.</summary>
-public sealed record ResultColumn(string Name, string DataTypeName);
+public sealed record ResultColumn(string Name, string DataTypeName, bool IsBinary = false);
 
 /// <summary>One page of table/view data.</summary>
 /// <param name="RowIdentity">

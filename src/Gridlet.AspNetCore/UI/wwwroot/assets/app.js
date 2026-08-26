@@ -445,26 +445,43 @@
   function showContextMenu(event, items) {
     event.preventDefault();
     event.stopPropagation();
-    document.querySelector('.context-menu')?.remove();
-    const menu = h('div', { class: 'context-menu', role: 'menu' }, items.map((item) =>
+    const previousMenu = document.querySelector('.context-menu');
+    if (previousMenu?._dismiss) previousMenu._dismiss();
+    else previousMenu?.remove();
+    const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    let menu;
+    const dismiss = (restoreFocus = false) => {
+      menu?.remove();
+      if (trigger?.hasAttribute('aria-haspopup')) {
+        trigger.setAttribute('aria-expanded', 'false');
+        if (restoreFocus) trigger.focus();
+      }
+      document.removeEventListener('pointerdown', close, true);
+      document.removeEventListener('keydown', close, true);
+    };
+    menu = h('div', { class: 'context-menu', role: 'menu' }, items.map((item) =>
       item.separator ? h('div', { class: 'context-menu-separator', role: 'separator' }) : h('button', {
         class: item.danger ? 'danger' : '',
         role: 'menuitem',
         text: item.label,
         disabled: item.disabled ? '' : null,
-        onclick: () => { menu.remove(); item.action(); },
+        onclick: () => { dismiss(); item.action(); },
       })));
+    menu._dismiss = dismiss;
     document.body.append(menu);
     const bounds = menu.getBoundingClientRect();
-    menu.style.left = Math.max(4, Math.min(event.clientX, window.innerWidth - bounds.width - 4)) + 'px';
-    menu.style.top = Math.max(4, Math.min(event.clientY, window.innerHeight - bounds.height - 4)) + 'px';
+    const triggerBounds = trigger?.getBoundingClientRect();
+    const keyboardActivation = event.clientX === 0 && event.clientY === 0 && triggerBounds;
+    const requestedX = keyboardActivation ? triggerBounds.left : event.clientX;
+    const requestedY = keyboardActivation ? triggerBounds.bottom : event.clientY;
+    menu.style.left = Math.max(4, Math.min(requestedX, window.innerWidth - bounds.width - 4)) + 'px';
+    menu.style.top = Math.max(4, Math.min(requestedY, window.innerHeight - bounds.height - 4)) + 'px';
+    if (trigger?.hasAttribute('aria-haspopup')) trigger.setAttribute('aria-expanded', 'true');
     menu.querySelector('button:not(:disabled)')?.focus();
     const close = (closeEvent) => {
       if (closeEvent.type === 'keydown' && closeEvent.key !== 'Escape') return;
       if (closeEvent.type === 'pointerdown' && menu.contains(closeEvent.target)) return;
-      menu.remove();
-      document.removeEventListener('pointerdown', close, true);
-      document.removeEventListener('keydown', close, true);
+      dismiss(closeEvent.type === 'keydown');
     };
     setTimeout(() => {
       document.addEventListener('pointerdown', close, true);
@@ -4603,7 +4620,7 @@
       difference.targetValue === null ? null : JSON.stringify(difference.targetValue),
     ]);
     const exports = exportButtons(exportColumns, exportRows,
-      `${source.object.name}-data-diff`);
+      `${source.object.name}-data-diff`, { scope: source.scope });
 
     const render = () => {
       const query = filter.value.trim().toLowerCase();
@@ -11457,6 +11474,7 @@
   function exportButtons(columns, rows, baseName, apiDefinition = null, serverExport = null) {
     const copy = h('button', {
       class: 'ghost', title: 'Copy all loaded rows', 'data-testid': 'copy-results',
+      'aria-haspopup': 'menu', 'aria-expanded': 'false',
       onclick: (event) => showContextMenu(event, [
         {
           label: 'Copy as SQL INSERT',
@@ -11493,46 +11511,49 @@
   }
 
   async function copyResultData(columns, rows, format, definition = null) {
-    let content;
-    if (format === 'sql') {
-      const providerName = definition?.scope
-        ? connectionFor(definition.scope).providerName
-        : '';
-      content = resultRowsAsSqlInsert(
-        columns, rows, definition?.insertTarget || '[TargetTable]', providerName);
-    } else if (format === 'markdown') {
-      content = resultRowsAsMarkdown(columns, rows);
-    } else {
-      content = JSON.stringify(resultRowsAsObjects(columns, rows), null, 2);
-    }
-
     try {
+      let content;
+      if (format === 'sql') {
+        const providerName = definition?.scope
+          ? connectionFor(definition.scope).providerName
+          : '';
+        content = resultRowsAsSqlInsert(columns, rows, '[TargetTable]', providerName);
+      } else if (format === 'markdown') {
+        content = resultRowsAsMarkdown(columns, rows);
+      } else {
+        content = JSON.stringify(resultRowsAsObjects(columns, rows), null, 2);
+      }
       await navigator.clipboard.writeText(content);
       toast(`${rows.length} loaded row${rows.length === 1 ? '' : 's'} copied as ${
         format === 'sql' ? 'SQL INSERT' : format === 'json' ? 'JSON' : 'Markdown'}.`, false);
-    } catch {
-      toast('Copy failed - clipboard unavailable.');
+    } catch (err) {
+      toast(err?.message || 'Copy failed - clipboard unavailable.');
     }
   }
 
-  function resultRowsAsObjects(columns, rows) {
+  function uniqueResultColumnNames(columns) {
     const names = [];
     const used = new Set();
     for (const column of columns) {
       const base = String(column.name);
       let name = base;
       let suffix = 2;
-      while (used.has(name)) name = `${base}_${suffix++}`;
-      used.add(name);
+      while (used.has(name.toLowerCase())) name = `${base}_${suffix++}`;
+      used.add(name.toLowerCase());
       names.push(name);
     }
+    return names;
+  }
+
+  function resultRowsAsObjects(columns, rows) {
+    const names = uniqueResultColumnNames(columns);
     return rows.map((row) => Object.fromEntries(
       names.map((name, index) => [name, row[index]])));
   }
 
   function resultRowsAsSqlInsert(columns, rows, target, providerName) {
     if (!columns.length || !rows.length) return '-- No loaded rows to insert.';
-    const names = columns.map((column) => quoteSqlIdentifier(column.name)).join(', ');
+    const names = uniqueResultColumnNames(columns).map(quoteSqlIdentifier).join(', ');
     const values = rows.map((row) => '    (' + columns.map((column, index) =>
       resultSqlLiteral(row[index], column, providerName)).join(', ') + ')');
     return `INSERT INTO ${target} (${names}) VALUES\n${values.join(',\n')};`;
@@ -11545,13 +11566,23 @@
   function resultSqlLiteral(value, column, providerName) {
     if (value === null || value === undefined) return 'NULL';
     if (typeof value === 'boolean') return value ? '1' : '0';
-    if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
-
     const provider = String(providerName || '').toLowerCase();
     const dataType = String(column.dataTypeName || '').toLowerCase();
-    const isBinary = provider.includes('sqlite')
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) return 'NULL';
+      const significantDigits = String(value).split(/[eE]/)[0]
+        .replace(/[-+.]/g, '').replace(/^0+/, '').length;
+      const exactDecimalRequired = /\b(?:decimal|numeric|money|smallmoney)\b/.test(dataType);
+      if ((Number.isInteger(value) && !Number.isSafeInteger(value))
+        || (exactDecimalRequired && significantDigits > 15)) {
+        throw new Error(`Cannot safely copy ${column.name} as SQL because the browser cannot preserve its numeric precision.`);
+      }
+      return String(value);
+    }
+
+    const isBinary = column.isBinary || (provider.includes('sqlite')
       ? /\bblob\b/.test(dataType)
-      : /\b(?:binary|varbinary|image|rowversion|timestamp)\b/.test(dataType);
+      : /\b(?:binary|varbinary|image|rowversion|timestamp)\b/.test(dataType));
     if (isBinary && typeof value === 'string') {
       try {
         const bytes = Uint8Array.from(atob(value), (character) => character.charCodeAt(0));

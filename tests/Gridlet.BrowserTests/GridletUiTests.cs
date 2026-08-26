@@ -3841,10 +3841,23 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             (await page.EvaluateAsync<string>("navigator.clipboard.readText()"))
             .Replace("\r\n", "\n", StringComparison.Ordinal);
 
+        var copyButton = ActivePanel(page).GetByTestId("copy-results");
+        await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-haspopup", "menu");
+        await copyButton.FocusAsync();
+        await copyButton.PressAsync("Enter");
+        await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "true");
+        var keyboardMenu = page.Locator(".context-menu");
+        await Assertions.Expect(keyboardMenu).ToBeVisibleAsync();
+        var copyBounds = await copyButton.BoundingBoxAsync();
+        var menuBounds = await keyboardMenu.BoundingBoxAsync();
+        Assert.InRange(Math.Abs(menuBounds!.X - copyBounds!.X), 0, 2);
+        await keyboardMenu.PressAsync("Escape");
+        await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "false");
+
         await CopyAsync("Copy as SQL INSERT");
         Assert.Equal(
-            "INSERT INTO [TargetTable] ([Odd]]Name], [Note], [Active], [Missing], [Payload]) VALUES\n" +
-            "    (N'Łódź O''Brien', N'line 1\nline | <2>', 1, NULL, 0x00FF);",
+            "INSERT INTO [TargetTable] ([Odd]]Name], [Note], [Note_2], [Active], [Missing], [Payload]) VALUES\n" +
+            "    (N'Łódź O''Brien', N'line 1\nline | <2>', N'duplicate', 1, NULL, 0x00FF);",
             await ReadClipboardAsync());
 
         await CopyAsync("Copy as JSON");
@@ -3854,6 +3867,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             var row = Assert.Single(json.RootElement.EnumerateArray());
             Assert.Equal("Łódź O'Brien", row.GetProperty("Odd]Name").GetString());
             Assert.Equal("line 1\nline | <2>", row.GetProperty("Note").GetString());
+            Assert.Equal("duplicate", row.GetProperty("Note_2").GetString());
             Assert.True(row.GetProperty("Active").GetBoolean());
             Assert.Equal(JsonValueKind.Null, row.GetProperty("Missing").ValueKind);
             Assert.Equal("AP8=", row.GetProperty("Payload").GetString());
@@ -3861,9 +3875,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await CopyAsync("Copy as Markdown");
         Assert.Equal(
-            "| Odd]Name | Note | Active | Missing | Payload |\n" +
-            "| --- | --- | --- | --- | --- |\n" +
-            "| Łódź O'Brien | line 1<br>line \\| &lt;2&gt; | true | NULL | AP8= |",
+            "| Odd]Name | Note | Note | Active | Missing | Payload |\n" +
+            "| --- | --- | --- | --- | --- | --- |\n" +
+            "| Łódź O'Brien | line 1<br>line \\| &lt;2&gt; | duplicate | true | NULL | AP8= |",
             await ReadClipboardAsync());
 
         await page.GetByTitle("dbo.Customers").ClickAsync();
@@ -3871,10 +3885,20 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             AriaRole.Cell, new() { Name = "Grace" })).ToBeVisibleAsync();
         await CopyAsync("Copy as SQL INSERT");
         Assert.Equal(
-            "INSERT INTO [dbo].[Customers] ([Id], [Name]) VALUES\n" +
+            "INSERT INTO [TargetTable] ([Id], [Name]) VALUES\n" +
             "    (1, N'Ada'),\n" +
             "    (2, N'Grace');",
             await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-unsafe-number");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await page.EvaluateAsync("navigator.clipboard.writeText('unchanged')");
+        await CopyAsync("Copy as SQL INSERT");
+        await Assertions.Expect(page.Locator("#toast-stack"))
+            .ToContainTextAsync("cannot preserve its numeric precision");
+        Assert.Equal("unchanged", await ReadClipboardAsync());
 
         await page.Locator("#connection-select").SelectOptionAsync("SQLite");
         await page.Locator("#new-query-btn").ClickAsync();
@@ -3883,8 +3907,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
         await CopyAsync("Copy as SQL INSERT");
         Assert.Equal(
-            "INSERT INTO [TargetTable] ([Odd]]Name], [Note], [Active], [Missing], [Payload]) VALUES\n" +
-            "    ('Łódź O''Brien', 'line 1\nline | <2>', 1, NULL, X'00FF');",
+            "INSERT INTO [TargetTable] ([Odd]]Name], [Note], [Note_2], [Active], [Missing], [Payload]) VALUES\n" +
+            "    ('Łódź O''Brien', 'line 1\nline | <2>', 'duplicate', 1, NULL, X'00FF');",
             await ReadClipboardAsync());
         browserPage.AssertNoUnexpectedErrors();
     }
