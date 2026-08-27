@@ -10169,6 +10169,7 @@
         }
       } catch (err) {
         if (err.name === 'AbortError') {
+          reattachAvailable = Boolean(jobId);
           status.textContent = 'Detached — query continues on the server';
         } else if (jobId && err.status === 404) {
           terminalStatus = 'expired';

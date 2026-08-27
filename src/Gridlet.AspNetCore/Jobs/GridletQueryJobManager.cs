@@ -219,33 +219,46 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
                 sawError |= string.Equals(streamEvent.Type, "error", StringComparison.OrdinalIgnoreCase);
             }
 
-            if (job.Cancellation.IsCancellationRequested)
+            // A terminal event emitted by the provider wins over a cancellation that races with
+            // the iterator winding down. One job must never retain both completed and cancelled.
+            if (sawError)
+            {
+                auditError = "The provider reported a query error.";
+            }
+            else if (sawCompleted)
+            {
+                finalStatus = "succeeded";
+            }
+            else if (job.Cancellation.IsCancellationRequested)
             {
                 finalStatus = "cancelled";
                 auditError = "Cancelled.";
                 Publish(job, new QueryStreamEvent("cancelled", DurationMs: stopwatch.ElapsedMilliseconds));
             }
-            else if (sawCompleted && !sawError)
+            else
+            {
+                auditError = "The query stream ended before completion.";
+                Publish(job, new QueryStreamEvent(
+                    "error", Message: auditError, DurationMs: stopwatch.ElapsedMilliseconds));
+            }
+        }
+        catch (OperationCanceledException) when (job.Cancellation.IsCancellationRequested)
+        {
+            if (sawError)
+            {
+                auditError = "The provider reported a query error.";
+            }
+            else if (sawCompleted)
             {
                 finalStatus = "succeeded";
             }
             else
             {
-                auditError = sawError
-                    ? "The provider reported a query error."
-                    : "The query stream ended before completion.";
-                if (!sawError)
-                {
-                    Publish(job, new QueryStreamEvent(
-                        "error", Message: auditError, DurationMs: stopwatch.ElapsedMilliseconds));
-                }
+                finalStatus = "cancelled";
+                auditError = "Cancelled.";
+                Publish(job, new QueryStreamEvent(
+                    "cancelled", DurationMs: stopwatch.ElapsedMilliseconds));
             }
-        }
-        catch (OperationCanceledException) when (job.Cancellation.IsCancellationRequested)
-        {
-            finalStatus = "cancelled";
-            auditError = "Cancelled.";
-            Publish(job, new QueryStreamEvent("cancelled", DurationMs: stopwatch.ElapsedMilliseconds));
         }
         catch (Exception ex)
         {

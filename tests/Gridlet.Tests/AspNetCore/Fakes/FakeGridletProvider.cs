@@ -23,6 +23,7 @@ public sealed class FakeGridletProvider :
     public string? LastQuerySql { get; private set; }
 
     private TaskCompletionSource longQueryRelease = NewLongQuerySignal();
+    private TaskCompletionSource completedQueryRelease = NewLongQuerySignal();
     private int longQueryCancellations;
 
     public int LongQueryCancellations => Volatile.Read(ref longQueryCancellations);
@@ -35,6 +36,14 @@ public sealed class FakeGridletProvider :
     }
 
     public void ReleaseLongQuery() => longQueryRelease.TrySetResult();
+
+    public void PrepareCompletedQueryRace()
+    {
+        completedQueryRelease.TrySetResult();
+        completedQueryRelease = NewLongQuerySignal();
+    }
+
+    public void ReleaseCompletedQueryRace() => completedQueryRelease.TrySetResult();
 
     private static TaskCompletionSource NewLongQuerySignal()
         => new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -692,6 +701,15 @@ public sealed class FakeGridletProvider :
             yield return new QueryStreamEvent("rows", 0, Rows: [[42]]);
             yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
             yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "job-completed-wait")
+        {
+            var release = completedQueryRelease;
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            await release.Task.WaitAsync(cancellationToken);
             yield break;
         }
 

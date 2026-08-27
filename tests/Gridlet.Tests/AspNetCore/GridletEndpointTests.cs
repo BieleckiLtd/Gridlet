@@ -5,11 +5,13 @@ using Gridlet.Tests.AspNetCore.Fakes;
 using Gridlet.Abstractions;
 using Gridlet.AspNetCore;
 using Gridlet.AspNetCore.Contracts;
+using Gridlet.Auditing;
 using Gridlet.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Gridlet.Tests.AspNetCore;
@@ -949,6 +951,36 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Query_job_completion_wins_a_racing_cancel_without_a_second_terminal_event()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        fake.PrepareCompletedQueryRace();
+        try
+        {
+            var started = await client.PostAsJsonAsync(
+                "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+                new { sql = "job-completed-wait" });
+            var created = (await started.Content.ReadFromJsonAsync<QueryJobResponse>())!;
+            var path = $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{created.Id}";
+            var receiving = await client.GetFromJsonAsync<QueryJobResponse>(path + "?after=0&waitMs=1000");
+            Assert.Contains(receiving!.Events, queryEvent => queryEvent.Type == "completed");
+
+            Assert.Equal(HttpStatusCode.OK, (await client.DeleteAsync(path)).StatusCode);
+            var (completed, events) = await AwaitQueryJobAsync(client, created.Id);
+
+            Assert.Equal("succeeded", completed.Status);
+            Assert.Single(events, queryEvent => queryEvent.Type == "completed");
+            Assert.DoesNotContain(events, queryEvent => queryEvent.Type == "cancelled");
+        }
+        finally
+        {
+            fake.ReleaseCompletedQueryRace();
+        }
+    }
+
+    [Fact]
     public async Task Query_jobs_are_bounded_and_scoped_to_their_database_route()
     {
         var (app, client) = await GridletTestHost.StartAsync(options =>
@@ -1127,6 +1159,26 @@ public class GridletEndpointTests
             $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{created.Id}?waitMs=0");
 
         Assert.Equal(HttpStatusCode.NotFound, expired.StatusCode);
+    }
+
+    [Fact]
+    public async Task Query_job_sweeper_retries_after_a_transient_cleanup_failure()
+    {
+        var monitor = new ThrowOnceOptionsMonitor();
+        await using var jobs = new GridletQueryJobManager(
+            monitor,
+            new NullAuditSink(),
+            NullLogger<GridletQueryJobManager>.Instance);
+        using var sweeper = new GridletQueryJobSweeper(
+            jobs,
+            NullLogger<GridletQueryJobSweeper>.Instance,
+            TimeSpan.FromMilliseconds(10));
+
+        await sweeper.StartAsync(CancellationToken.None);
+        await monitor.Recovered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await sweeper.StopAsync(CancellationToken.None);
+
+        Assert.True(monitor.ReadCount >= 2);
     }
 
     [Fact]
@@ -1331,5 +1383,37 @@ public class GridletEndpointTests
         public override DateTimeOffset GetUtcNow() => current;
 
         public void Advance(TimeSpan by) => current = current.Add(by);
+    }
+
+    private sealed class NullAuditSink : IGridletAuditSink
+    {
+        public ValueTask WriteAsync(
+            GridletAuditEvent auditEvent, CancellationToken cancellationToken = default)
+            => ValueTask.CompletedTask;
+    }
+
+    private sealed class ThrowOnceOptionsMonitor : IOptionsMonitor<GridletOptions>
+    {
+        private readonly GridletOptions value = new();
+        private int readCount;
+
+        public int ReadCount => Volatile.Read(ref readCount);
+        public TaskCompletionSource Recovered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public GridletOptions CurrentValue
+        {
+            get
+            {
+                var count = Interlocked.Increment(ref readCount);
+                if (count == 1) throw new InvalidOperationException("Transient options reload failure.");
+                Recovered.TrySetResult();
+                return value;
+            }
+        }
+
+        public GridletOptions Get(string? name) => CurrentValue;
+
+        public IDisposable? OnChange(Action<GridletOptions, string?> listener) => null;
     }
 }

@@ -3957,6 +3957,50 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Offers_reattach_when_a_query_job_poll_is_aborted()
+    {
+        fixture.Provider.PrepareLongQuery();
+        try
+        {
+            await using var browserPage = await fixture.NewPageAsync();
+            var page = browserPage.Page;
+            await OpenQueryAsync(page, "job-wait");
+            await page.EvaluateAsync("""
+                () => {
+                  const originalFetch = window.fetch;
+                  let abortNextJobPoll = true;
+                  window.fetch = (...args) => {
+                    const url = String(args[0]);
+                    if (abortNextJobPoll && /\/query\/jobs\/[^?]+/.test(url)) {
+                      abortNextJobPoll = false;
+                      return Promise.reject(new DOMException('Detached for test', 'AbortError'));
+                    }
+                    return originalFetch(...args);
+                  };
+                }
+                """);
+            await page.GetByTestId("query-run").ClickAsync();
+
+            var run = page.GetByTestId("query-run");
+            await Assertions.Expect(run).ToHaveTextAsync("Reattach");
+            await Assertions.Expect(run).ToBeEnabledAsync();
+            await Assertions.Expect(page.GetByTestId("query-status"))
+                .ToContainTextAsync("Detached");
+            await run.ClickAsync();
+
+            fixture.Provider.ReleaseLongQuery();
+            await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+            await Assertions.Expect(page.GetByTestId("query-results").GetByRole(
+                AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+            browserPage.AssertNoUnexpectedErrors();
+        }
+        finally
+        {
+            fixture.Provider.ReleaseLongQuery();
+        }
+    }
+
+    [Fact]
     public async Task Cancels_a_running_query_job_on_the_server()
     {
         fixture.Provider.PrepareLongQuery();
