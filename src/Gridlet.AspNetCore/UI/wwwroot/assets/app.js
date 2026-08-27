@@ -2438,7 +2438,15 @@
 
   const objectSearchQueryLimit = 4096;
 
-  const boundedObjectSearchQuery = (value) => String(value || '').slice(0, objectSearchQueryLimit);
+  const boundedObjectSearchQuery = (value) => {
+    const bounded = String(value || '').slice(0, objectSearchQueryLimit);
+    return /[\uD800-\uDBFF]$/.test(bounded) ? bounded.slice(0, -1) : bounded;
+  };
+
+  const objectSearchCompareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
+
+  const normalizedObjectSearchText = (value) => String(value || '')
+    .replace(/\s+/g, ' ').trim().toLowerCase();
 
   function openObjectSearchTab(initial = {}) {
     const existing = state.tabs.find((candidate) => candidate.key === 'object-search');
@@ -2469,10 +2477,10 @@
   }
 
   const objectSearchTerms = (query) => (query.match(/"[^"]+"|\S+/g) || [])
-    .map((term) => term.replace(/^"|"$/g, '').trim().toLowerCase()).filter(Boolean);
+    .map((term) => normalizedObjectSearchText(term.replace(/^"|"$/g, ''))).filter(Boolean);
 
   const objectSearchMatches = (text, terms) => {
-    const candidate = String(text || '').toLowerCase();
+    const candidate = normalizedObjectSearchText(text);
     return terms.every((term) => candidate.includes(term));
   };
 
@@ -2504,10 +2512,10 @@
 
   function objectSearchTakeFair(candidates, limit) {
     const ordered = [...candidates].sort((left, right) =>
-      scopeKey(left.scope).localeCompare(scopeKey(right.scope))
-      || left.object.schema.localeCompare(right.object.schema)
-      || left.object.name.localeCompare(right.object.name)
-      || left.object.type.localeCompare(right.object.type));
+      objectSearchCompareText(scopeKey(left.scope), scopeKey(right.scope))
+      || objectSearchCompareText(left.object.schema, right.object.schema)
+      || objectSearchCompareText(left.object.name, right.object.name)
+      || objectSearchCompareText(left.object.type, right.object.type));
     if (limit >= ordered.length) return ordered;
     const byScope = new Map();
     for (const candidate of ordered) {
@@ -2742,10 +2750,10 @@
         }
         if (current !== request) return;
         const matches = [...found.values()].sort((left, right) =>
-          left.scope.connection.localeCompare(right.scope.connection)
-          || left.scope.database.localeCompare(right.scope.database)
-          || left.object.schema.localeCompare(right.object.schema)
-          || left.object.name.localeCompare(right.object.name));
+          objectSearchCompareText(left.scope.connection, right.scope.connection)
+          || objectSearchCompareText(left.scope.database, right.scope.database)
+          || objectSearchCompareText(left.object.schema, right.object.schema)
+          || objectSearchCompareText(left.object.name, right.object.name));
         status.textContent = `${matches.length.toLocaleString()} match${matches.length === 1 ? '' : 'es'} · `
           + `${candidates.length.toLocaleString()} object${candidates.length === 1 ? '' : 's'} · `
           + `${scopes.length.toLocaleString()} database${scopes.length === 1 ? '' : 's'} · `
@@ -2788,6 +2796,7 @@
     tab.onClose = () => {
       request++;
       controller?.abort();
+      controller = null;
     };
     query.focus();
     if (tab.query.trim().length >= 2) {

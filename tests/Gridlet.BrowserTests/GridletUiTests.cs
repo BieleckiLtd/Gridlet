@@ -2025,13 +2025,14 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(query).ToHaveAttributeAsync("maxlength", "4096");
         await query.EvaluateAsync("""
             element => {
-              element.value = 'x'.repeat(5_000);
+              element.value = 'x'.repeat(4_095) + '😀' + 'not persisted';
               element.dispatchEvent(new Event('change', { bubbles: true }));
             }
             """);
         await page.ReloadAsync();
         search = page.GetByTestId("object-search");
-        Assert.Equal(4096, (await search.GetByTestId("object-search-query").InputValueAsync()).Length);
+        Assert.Equal(new string('x', 4095),
+            await search.GetByTestId("object-search-query").InputValueAsync());
         Assert.Equal(0, sqliteObjectRequests);
         browserPage.AssertNoUnexpectedErrors("503");
     }
@@ -2154,7 +2155,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         }));
 
         var search = await OpenObjectSearchAsync(page);
-        await search.GetByTestId("object-search-query").FillAsync("\"alpha beta\" gamma");
+        await search.GetByTestId("object-search-query").FillAsync("\"alpha   beta\" gamma");
         await search.GetByTestId("object-search-run").ClickAsync();
 
         await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(1);
