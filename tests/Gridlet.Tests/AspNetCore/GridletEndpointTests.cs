@@ -3,9 +3,12 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Gridlet.Tests.AspNetCore.Fakes;
 using Gridlet.Abstractions;
+using Gridlet.AspNetCore;
 using Gridlet.AspNetCore.Contracts;
 using Gridlet.Models;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Gridlet.Tests.AspNetCore;
@@ -408,7 +411,28 @@ public class GridletEndpointTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("\"valid\":true", await response.Content.ReadAsStringAsync());
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Equal("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
         Assert.Equal([(1, 500)], fake.DataPageRequests);
+    }
+
+    [Fact]
+    public async Task Export_redacts_an_unexpected_first_page_provider_failure()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        fake.FailDataPage = 1;
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Ledger/data/export?format=json");
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Null(response.Content.Headers.ContentDisposition);
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Contains("unexpected server error", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SECRET_EXPORT_PAGE_FAILURE", body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -543,17 +567,56 @@ public class GridletEndpointTests
         Assert.Equal([(1, 2), (2, 2)], fake.DataPageRequests);
     }
 
+    [Fact]
+    public async Task Export_rejects_a_negative_provider_total_before_streaming()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/NegativeTotalExport/data/export"
+            + "?format=csv");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Null(response.Content.Headers.ContentDisposition);
+        Assert.Contains("paging metadata", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Export_stops_before_requesting_more_than_its_hard_page_limit()
+    {
+        var data = new EndlessTableDataService();
+        var connection = new GridletConnectionContext(
+            new GridletConnectionOptions { Name = "Main" }, "FakeDb");
+        var firstPage = await data.GetPageAsync(
+            connection, "dbo", "Endless", new TableDataRequest(1, 1));
+        var result = new GridletTableExportResult(
+            data, connection, "dbo", "Endless", "json", null, SortDirection.Ascending,
+            null, 1, firstPage, NullLogger<GridletTableExportResult>.Instance,
+            maximumPageCount: 3);
+        var httpContext = new DefaultHttpContext();
+        httpContext.Response.Body = new MemoryStream();
+
+        await result.ExecuteAsync(httpContext);
+
+        Assert.Equal([1, 2, 3], data.RequestedPages);
+        Assert.Equal(StatusCodes.Status400BadRequest, httpContext.Response.StatusCode);
+    }
+
     [Theory]
-    [InlineData("csv")]
-    [InlineData("json")]
-    public async Task Export_returns_a_redacted_structured_error_before_streaming_starts(string format)
+    [InlineData("csv", false)]
+    [InlineData("json", false)]
+    [InlineData("csv", true)]
+    [InlineData("json", true)]
+    public async Task Export_returns_a_redacted_structured_error_before_streaming_starts(
+        string format, bool probe)
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();
         await using var _ = app;
 
         var response = await client.GetAsync(
             "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/UnserializableExport/data/export"
-            + $"?format={format}");
+            + $"?format={format}&probe={probe.ToString().ToLowerInvariant()}");
 
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
         Assert.Null(response.Content.Headers.ContentDisposition);
@@ -577,14 +640,15 @@ public class GridletEndpointTests
         var row = document.RootElement[0];
 
         Assert.Equal(
-            "Text,Binary,When,Nullable,Formula\r\n"
-            + "\"a,\"\"b\r\nc\",AP8=,2026-01-02T03:04:05.0000000Z,,'=2+3\r\n",
+            "Text,Binary,When,Nullable,Formula,TabFormula\r\n"
+            + "\"a,\"\"b\r\nc\",AP8=,2026-01-02T03:04:05.0000000Z,,'=2+3,'\t2+3\r\n",
             csv);
         Assert.Equal("a,\"b\r\nc", row.GetProperty("Text").GetString());
         Assert.Equal("AP8=", row.GetProperty("Binary").GetString());
         Assert.Equal(DateTimeKind.Utc, row.GetProperty("When").GetDateTime().Kind);
         Assert.Equal(JsonValueKind.Null, row.GetProperty("Nullable").ValueKind);
         Assert.Equal("=2+3", row.GetProperty("Formula").GetString());
+        Assert.Equal("\t2+3", row.GetProperty("TabFormula").GetString());
 
         var duplicateResponse = await client.GetAsync(
             "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/DuplicateColumns/data/export?format=");
@@ -860,6 +924,29 @@ public class GridletEndpointTests
 
         public ResolvedConnection Resolve(string connectionName, string? database = null)
             => throw new InvalidOperationException(Secret);
+    }
+
+    private sealed class EndlessTableDataService : ITableDataService
+    {
+        public List<int> RequestedPages { get; } = [];
+
+        public Task<TableDataPage> GetPageAsync(
+            GridletConnectionContext context,
+            string schema,
+            string name,
+            TableDataRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            RequestedPages.Add(request.Page);
+            return Task.FromResult(new TableDataPage(
+                [new ResultColumn("Id", "int")],
+                [[request.Page]],
+                request.Page,
+                1,
+                long.MaxValue,
+                new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+                [[request.Page]]));
+        }
     }
 
     private sealed class MetadataFreeProvider : IGridletProvider

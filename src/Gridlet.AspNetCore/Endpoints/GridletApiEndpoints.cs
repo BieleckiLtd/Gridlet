@@ -381,6 +381,7 @@ internal static partial class GridletApiEndpoints
         string? dir,
         string? filter,
         bool? probe,
+        HttpContext httpContext,
         IGridletConnectionResolver resolver,
         IOptionsMonitor<GridletOptions> options,
         ILogger<GridletTableExportResult> logger,
@@ -401,26 +402,57 @@ internal static partial class GridletApiEndpoints
                 ? SortDirection.Descending : SortDirection.Ascending;
             var sortColumn = string.IsNullOrWhiteSpace(sort) ? null : sort;
             var filters = ParseFilters(filter);
+            httpContext.Response.Headers.CacheControl = "no-store";
+            httpContext.Response.Headers.XContentTypeOptions = "nosniff";
             // Fetch the first page before response headers are committed. Object, sort, and filter
             // validation errors can therefore retain the API's normal structured status/body.
-            var firstPage = await resolved.Provider.Data.GetPageAsync(
-                resolved.Context,
-                schema,
-                name,
-                new TableDataRequest(1, pageSize, sortColumn, direction, filters),
-                cancellationToken);
-            if (firstPage.Page != 1 || firstPage.PageSize <= 0
-                || firstPage.Rows.Count > firstPage.PageSize)
+            GridletTableExportResult result;
+            try
             {
-                throw new GridletValidationException(
-                    "The data provider returned invalid paging metadata for this export.");
+                var firstPage = await resolved.Provider.Data.GetPageAsync(
+                    resolved.Context,
+                    schema,
+                    name,
+                    new TableDataRequest(1, pageSize, sortColumn, direction, filters),
+                    cancellationToken);
+                if (firstPage.Page != 1 || firstPage.PageSize <= 0 || firstPage.TotalRows < 0
+                    || firstPage.Rows.Count > firstPage.PageSize)
+                {
+                    throw new GridletValidationException(
+                        "The data provider returned invalid paging metadata for this export.");
+                }
+                if ((firstPage.TotalRows > firstPage.Rows.Count
+                        || firstPage.Rows.Count >= firstPage.PageSize)
+                    && firstPage.RowIdentity is null)
+                {
+                    throw new GridletValidationException(
+                        "A full export cannot safely page this object because it has no stable row identity.");
+                }
+                result = new GridletTableExportResult(
+                    resolved.Provider.Data,
+                    resolved.Context,
+                    schema,
+                    name,
+                    exportFormat,
+                    sortColumn,
+                    direction,
+                    filters,
+                    pageSize,
+                    firstPage,
+                    logger);
+                result.ValidateFirstPage(cancellationToken);
             }
-            if ((firstPage.TotalRows > firstPage.Rows.Count
-                    || firstPage.Rows.Count >= firstPage.PageSize)
-                && firstPage.RowIdentity is null)
+            catch (Exception ex) when (ex is not OperationCanceledException
+                and not GridletObjectNotFoundException
+                and not GridletValidationException
+                and not GridletQueryException)
             {
-                throw new GridletValidationException(
-                    "A full export cannot safely page this object because it has no stable row identity.");
+                logger.LogError(ex,
+                    "Full {Format} export of {Schema}.{Name} failed before the response started.",
+                    exportFormat, schema, name);
+                return Results.Json(
+                    new GridletErrorResponse("An unexpected server error occurred."),
+                    statusCode: StatusCodes.Status500InternalServerError);
             }
             if (probe == true)
             {
@@ -428,18 +460,7 @@ internal static partial class GridletApiEndpoints
                 // handing the streaming response to its native download manager.
                 return Results.Ok(new { valid = true });
             }
-            return new GridletTableExportResult(
-                resolved.Provider.Data,
-                resolved.Context,
-                schema,
-                name,
-                exportFormat,
-                sortColumn,
-                direction,
-                filters,
-                pageSize,
-                firstPage,
-                logger);
+            return result;
         });
 
     /// <summary>

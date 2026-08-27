@@ -399,7 +399,11 @@ public sealed class FakeGridletProvider :
     }
 
     private static Task<TableDataPage> GetFixedPage(string name, TableDataRequest request)
-        => Task.FromResult(name == "UnserializableExport"
+        => Task.FromResult(name == "NegativeTotalExport"
+            ? new TableDataPage(
+                [new ResultColumn("Value", "int")],
+                [[1]], request.Page, request.PageSize, TotalRows: -1)
+            : name == "UnserializableExport"
             ? new TableDataPage(
                 [new ResultColumn("Value", "object")],
                 [[new CircularValue()]], request.Page, request.PageSize, TotalRows: 1)
@@ -411,9 +415,10 @@ public sealed class FakeGridletProvider :
             ? new TableDataPage(
                 [new ResultColumn("Text", "nvarchar(max)"), new ResultColumn("Binary", "varbinary(max)"),
                     new ResultColumn("When", "datetime2"), new ResultColumn("Nullable", "int"),
-                    new ResultColumn("Formula", "nvarchar(max)")],
+                    new ResultColumn("Formula", "nvarchar(max)"),
+                    new ResultColumn("TabFormula", "nvarchar(max)")],
                 [["a,\"b\r\nc", new byte[] { 0, 255 },
-                    new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc), null, "=2+3"]],
+                    new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc), null, "=2+3", "\t2+3"]],
                 request.Page, request.PageSize, TotalRows: 1)
             : name == "Orders"
             ? new TableDataPage(
@@ -585,8 +590,9 @@ public sealed class FakeGridletProvider :
 
     /// <summary>
     /// Streams a single-row result set. Recognised sentinels: <c>boom</c> fails before any event is
-    /// emitted (clean status code), and <c>stream-boom</c> fails after a row has streamed (in-body
-    /// error marker). Records the query options so cap behaviour can be asserted.
+    /// emitted, <c>stream-boom</c> fails after a row has streamed, and <c>formula-export</c>
+    /// supplies a spreadsheet-sensitive string. Records the query options so cap behaviour can be
+    /// asserted.
     /// </summary>
     public async IAsyncEnumerable<QueryStreamEvent> StreamAsync(
         GridletConnectionContext context, string sql, QueryRequestOptions options,
@@ -612,6 +618,17 @@ public sealed class FakeGridletProvider :
         {
             yield return new QueryStreamEvent("started");
             yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "formula-export")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent(
+                "resultSet", 0, [new ResultColumn("Text", "nvarchar(max)")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [["\t2+3"]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
             yield break;
         }
 

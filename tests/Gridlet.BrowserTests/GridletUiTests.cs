@@ -3807,6 +3807,22 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Csv_export_neutralizes_a_tab_prefixed_spreadsheet_value()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "formula-export");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+
+        var download = await page.RunAndWaitForDownloadAsync(
+            () => page.GetByTestId("export-csv").ClickAsync());
+
+        Assert.Equal("Text\r\n'\t2+3", await ReadDownloadAsync(download));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Warns_before_running_update_or_delete_without_a_where_clause()
     {
         await using var browserPage = await fixture.NewPageAsync();

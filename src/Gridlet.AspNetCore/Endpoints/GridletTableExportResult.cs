@@ -25,12 +25,46 @@ internal sealed class GridletTableExportResult(
     IReadOnlyList<TableDataFilter>? filters,
     int pageSize,
     TableDataPage firstPage,
-    ILogger<GridletTableExportResult> logger) : IResult
+    ILogger<GridletTableExportResult> logger,
+    int maximumPageCount = 100_000) : IResult
 {
     private static readonly byte[] JsonArrayStart = [(byte)'['];
     private static readonly byte[] JsonArrayEnd = [(byte)']'];
     private static readonly byte[] JsonRowSeparator = [(byte)','];
     private readonly string[] columnNames = UniqueColumnNames(firstPage.Columns);
+
+    /// <summary>
+    /// Exercises the format-specific conversion of the bounded page that the endpoint already
+    /// fetched. This happens before either a probe response or attachment headers are committed,
+    /// so an unsupported provider value is reported as a normal, redacted API error.
+    /// </summary>
+    internal void ValidateFirstPage(CancellationToken cancellationToken)
+    {
+        if (format == "json")
+        {
+            var buffer = new ArrayBufferWriter<byte>();
+            foreach (var row in firstPage.Rows)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                SerializeJsonRow(buffer, row);
+            }
+            return;
+        }
+
+        foreach (var columnName in columnNames)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _ = CsvEscape(SpreadsheetSafeText(columnName));
+        }
+        foreach (var row in firstPage.Rows)
+        {
+            for (var index = 0; index < firstPage.Columns.Count; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                _ = CsvEscape(ExportCsvText(index < row.Length ? row[index] : null));
+            }
+        }
+    }
 
     public async Task ExecuteAsync(HttpContext httpContext)
     {
@@ -138,16 +172,6 @@ internal sealed class GridletTableExportResult(
     private async Task WriteJsonAsync(Stream stream, CancellationToken cancellationToken)
     {
         var buffer = new ArrayBufferWriter<byte>();
-        // Validate every value already held in the bounded first page before committing attachment
-        // headers. A provider-specific value that cannot be encoded still receives the normal,
-        // redacted structured error instead of leaving a truncated JSON download.
-        foreach (var row in firstPage.Rows)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            SerializeJsonRow(buffer, row);
-        }
-
-        buffer.Clear();
         await stream.WriteAsync(JsonArrayStart, cancellationToken);
         var firstRow = true;
         await ForEachPageAsync(async page =>
@@ -180,7 +204,8 @@ internal sealed class GridletTableExportResult(
         string? previousBoundary = null;
         while (true)
         {
-            if (page.Page != pageNumber || page.PageSize <= 0 || page.Rows.Count > page.PageSize)
+            if (page.Page != pageNumber || page.PageSize <= 0 || page.TotalRows < 0
+                || page.Rows.Count > page.PageSize)
             {
                 throw new GridletValidationException(
                     "The data provider returned invalid paging metadata during this export.");
@@ -210,6 +235,12 @@ internal sealed class GridletTableExportResult(
                 || (page.Rows.Count < Math.Max(1, page.PageSize) && exported >= page.TotalRows))
             {
                 break;
+            }
+
+            if (pageNumber >= maximumPageCount)
+            {
+                throw new GridletValidationException(
+                    $"The export exceeded its safety limit of {maximumPageCount:N0} provider pages.");
             }
 
             pageNumber++;
@@ -246,10 +277,18 @@ internal sealed class GridletTableExportResult(
 
     private static string SpreadsheetSafeText(string value)
     {
-        var trimmed = value.AsSpan().TrimStart();
-        return !trimmed.IsEmpty && trimmed[0] is '=' or '+' or '-' or '@' or '\t' or '\r'
-            ? "'" + value
-            : value;
+        foreach (var character in value)
+        {
+            if (character is '=' or '+' or '-' or '@' or '\t' or '\r')
+            {
+                return "'" + value;
+            }
+            if (!char.IsWhiteSpace(character))
+            {
+                break;
+            }
+        }
+        return value;
     }
 
     private void SerializeJsonRow(ArrayBufferWriter<byte> buffer, object?[] row)
