@@ -2153,14 +2153,31 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             Body = route.Request.Url.Contains("/connections/Main/", StringComparison.Ordinal)
                 ? objects : "[]",
         }));
+        await page.RouteAsync("**/definition?*", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 200,
+            ContentType = "application/json",
+            Body = route.Request.Url.Contains("/Partial/", StringComparison.Ordinal)
+                ? "{\"definition\":\"alpha beta only\"}"
+                : "{\"definition\":\"SELECT 1;\\nalpha   beta gamma <img src=x onerror=window.__objectSearchXss=true>\"}",
+        }));
 
         var search = await OpenObjectSearchAsync(page);
+        var query = search.GetByTestId("object-search-query");
+        await query.EvaluateAsync("element => element.value = 'x'.repeat(100_000)");
+        await search.GetByTestId("object-search-run").ClickAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-run")).ToBeEnabledAsync();
+        Assert.Equal(4096, (await query.InputValueAsync()).Length);
+
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("definitions");
         await search.GetByTestId("object-search-query").FillAsync("\"alpha   beta\" gamma");
         await search.GetByTestId("object-search-run").ClickAsync();
 
         await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(1);
         await Assertions.Expect(search.GetByTestId("object-search-result").First)
             .ToContainTextAsync("Unsafe<img src=x onerror=window.__objectSearchXss=true>");
+        await Assertions.Expect(search.GetByTestId("object-search-result").First)
+            .ToContainTextAsync("Line 2:");
         await Assertions.Expect(search.GetByTestId("object-search-results").Locator("img"))
             .ToHaveCountAsync(0);
         Assert.False(await page.EvaluateAsync<bool>("window.__objectSearchXss"));

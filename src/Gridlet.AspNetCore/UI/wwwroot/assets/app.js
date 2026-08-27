@@ -2448,6 +2448,8 @@
   const normalizedObjectSearchText = (value) => String(value || '')
     .replace(/\s+/g, ' ').trim().toLowerCase();
 
+  const objectSearchModes = new Set(['names', 'all', 'definitions']);
+
   function openObjectSearchTab(initial = {}) {
     const existing = state.tabs.find((candidate) => candidate.key === 'object-search');
     if (existing) {
@@ -2461,7 +2463,8 @@
     const tab = {
       id: state.nextTabId++, key: 'object-search', badge: '⌕', badgeClass: 'badge-search',
       title: 'Find objects', panel, loaded: false,
-      query: boundedObjectSearchQuery(initial.query), mode: initial.mode || 'names',
+      query: boundedObjectSearchQuery(initial.query),
+      mode: objectSearchModes.has(initial.mode) ? initial.mode : 'names',
       definitionLimit: ['500', '2000', 'all'].includes(String(initial.definitionLimit))
         ? String(initial.definitionLimit) : '500',
       includeSystem: Boolean(initial.includeSystem),
@@ -2485,13 +2488,16 @@
   };
 
   function objectSearchDefinitionMatch(definition, terms) {
-    if (!objectSearchMatches(definition, terms)) return null;
-    const lower = definition.toLowerCase();
-    const positions = terms.map((term) => lower.indexOf(term)).filter((index) => index >= 0);
-    const index = positions.length ? Math.min(...positions) : 0;
+    const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const occurrences = terms.map((term) => new RegExp(
+      term.split(' ').map(escape).join('\\s+'), 'iu').exec(definition));
+    if (occurrences.some((match) => !match)) return null;
+    const first = occurrences.reduce((earliest, match) =>
+      !earliest || match.index < earliest.index ? match : earliest, null);
+    const index = first.index;
     const line = definition.slice(0, index).split(/\r?\n/).length;
     const start = Math.max(0, index - 90);
-    const end = Math.min(definition.length, index + Math.max(...terms.map((term) => term.length), 1) + 150);
+    const end = Math.min(definition.length, index + Math.max(first[0].length, 1) + 150);
     let text = definition.slice(start, end).replace(/\s+/g, ' ').trim();
     if (start) text = `…${text}`;
     if (end < definition.length) text += '…';
@@ -2602,6 +2608,7 @@
 
     const render = (matches, summary, failures, definitionCoverage) => {
       const visible = matches.slice(0, resultLimit);
+      const orderedFailures = [...failures].sort(objectSearchCompareText);
       const grouped = new Map();
       for (const match of visible) {
         const key = `${match.scope.connection} / ${match.scope.database}`;
@@ -2619,10 +2626,10 @@
             + `${definitionCoverage.eligible.toLocaleString()} eligible objects, distributed across databases. `
             + 'Increase the Definition limit and search again to scan more.',
         }));
-      if (failures.length) content.push(h('details', { class: 'object-search-failures' },
-          h('summary', { text: `${failures.length} location${failures.length === 1 ? '' : 's'} could not be searched` }),
-          h('ul', {}, ...failures.slice(0, 20).map((failure) => h('li', { text: failure }))),
-          failures.length > 20 ? h('p', { class: 'muted', text: `${failures.length - 20} more failures omitted.` }) : null));
+      if (orderedFailures.length) content.push(h('details', { class: 'object-search-failures' },
+          h('summary', { text: `${orderedFailures.length} location${orderedFailures.length === 1 ? '' : 's'} could not be searched` }),
+          h('ul', {}, ...orderedFailures.slice(0, 20).map((failure) => h('li', { text: failure }))),
+          orderedFailures.length > 20 ? h('p', { class: 'muted', text: `${orderedFailures.length - 20} more failures omitted.` }) : null));
       for (const [scopeName, scopedMatches] of grouped.entries()) {
         const list = h('div', { class: 'object-search-list' });
         for (const match of scopedMatches) {
@@ -2656,8 +2663,10 @@
     };
 
     const search = async () => {
-      const terms = objectSearchTerms(query.value.trim());
-      if (query.value.trim().length < 2 || !terms.length) {
+      const boundedQuery = boundedObjectSearchQuery(query.value.trim());
+      query.value = boundedQuery;
+      const terms = objectSearchTerms(boundedQuery);
+      if (boundedQuery.length < 2 || !terms.length) {
         status.textContent = 'Enter at least two characters to search.';
         results.replaceChildren();
         query.focus();
@@ -2667,7 +2676,7 @@
       controller?.abort();
       controller = new AbortController();
       const signal = controller.signal;
-      tab.query = boundedObjectSearchQuery(query.value.trim());
+      tab.query = boundedQuery;
       tab.mode = mode.value;
       tab.includeSystem = includeSystem.checked;
       tab.includeInternal = includeInternal.checked;
@@ -2692,6 +2701,7 @@
           }
         }, signal);
         if (current !== request) return;
+        scopes.sort((left, right) => objectSearchCompareText(scopeKey(left), scopeKey(right)));
         status.textContent = `Listing objects in ${scopes.length} database${scopes.length === 1 ? '' : 's'}…`;
         await objectSearchMap(scopes, 6, async (scope) => {
           try {
