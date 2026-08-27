@@ -2020,6 +2020,19 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToHaveTextAsync("Search settings restored. Press Search to run.");
         await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(0);
         Assert.Equal(0, sqliteObjectRequests);
+
+        var query = search.GetByTestId("object-search-query");
+        await Assertions.Expect(query).ToHaveAttributeAsync("maxlength", "4096");
+        await query.EvaluateAsync("""
+            element => {
+              element.value = 'x'.repeat(5_000);
+              element.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            """);
+        await page.ReloadAsync();
+        search = page.GetByTestId("object-search");
+        Assert.Equal(4096, (await search.GetByTestId("object-search-query").InputValueAsync()).Length);
+        Assert.Equal(0, sqliteObjectRequests);
         browserPage.AssertNoUnexpectedErrors("503");
     }
 
@@ -2065,14 +2078,91 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(search.GetByTestId("object-search-status"))
             .ToContainTextAsync("500 / 131,200 definitions", new() { Timeout = 30_000 });
         Assert.Equal(500, definitionRequests.Count);
-        Assert.Equal(3, definitionRequests.Select(url =>
-            url.Contains("/connections/Main/", StringComparison.Ordinal) ? "Main"
-                : url.Contains("/connections/DdlOnly/", StringComparison.Ordinal) ? "DdlOnly"
-                : "SQLite").Distinct().Count());
+        var requestsByConnection = definitionRequests.GroupBy(url =>
+                url.Contains("/connections/Main/", StringComparison.Ordinal) ? "Main"
+                    : url.Contains("/connections/DdlOnly/", StringComparison.Ordinal) ? "DdlOnly"
+                    : "SQLite")
+            .ToDictionary(group => group.Key, group => group.Count());
+        Assert.Equal(167, requestsByConnection["DdlOnly"]);
+        Assert.Equal(167, requestsByConnection["Main"]);
+        Assert.Equal(166, requestsByConnection["SQLite"]);
         await Assertions.Expect(search.GetByTestId("object-search-definition-warning"))
             .ToContainTextAsync("Increase the Definition limit");
         await Assertions.Expect(search.GetByTestId("object-search-definition-warning"))
             .ToHaveClassAsync(new Regex("warning-box"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_search_caps_rendered_results_and_explains_the_truncation()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var manyObjects = JsonSerializer.Serialize(Enumerable.Range(1, 1001).Select(index => new
+        {
+            schema = "dbo", name = $"ProfiledObject{index:0000}", type = "Table",
+            description = (string?)null, isInternal = false,
+        }));
+        await page.GotoAsync("/gridlet/");
+        await page.RouteAsync("**/objects", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 200,
+            ContentType = "application/json",
+            Body = route.Request.Url.Contains("/connections/Main/", StringComparison.Ordinal)
+                ? manyObjects : "[]",
+        }));
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-query").FillAsync("ProfiledObject");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("1,001 matches");
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(1000);
+        await Assertions.Expect(search.GetByTestId("object-search-result-warning"))
+            .ToContainTextAsync("Showing the first 1,000 matches");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_search_applies_quoted_terms_as_an_and_and_renders_metadata_as_text()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("window.__objectSearchXss = false;");
+        var objects = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                schema = "dbo", name = "Unsafe<img src=x onerror=window.__objectSearchXss=true>",
+                type = "View", description = "alpha beta gamma <img src=x onerror=window.__objectSearchXss=true>",
+                isInternal = false,
+            },
+            new
+            {
+                schema = "dbo", name = "Partial", type = "View", description = "alpha beta only",
+                isInternal = false,
+            },
+        });
+        await page.GotoAsync("/gridlet/");
+        await page.RouteAsync("**/objects", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 200,
+            ContentType = "application/json",
+            Body = route.Request.Url.Contains("/connections/Main/", StringComparison.Ordinal)
+                ? objects : "[]",
+        }));
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-query").FillAsync("\"alpha beta\" gamma");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(1);
+        await Assertions.Expect(search.GetByTestId("object-search-result").First)
+            .ToContainTextAsync("Unsafe<img src=x onerror=window.__objectSearchXss=true>");
+        await Assertions.Expect(search.GetByTestId("object-search-results").Locator("img"))
+            .ToHaveCountAsync(0);
+        Assert.False(await page.EvaluateAsync<bool>("window.__objectSearchXss"));
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -2108,12 +2198,16 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await search.GetByTestId("object-search-query").FillAsync("CREATE");
         await search.GetByTestId("object-search-run").ClickAsync();
         await Assertions.Expect(search.GetByTestId("object-search-cancel")).ToBeVisibleAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-results"))
+            .ToHaveAttributeAsync("aria-busy", "true");
         await search.GetByTestId("object-search-cancel").ClickAsync();
 
         await Assertions.Expect(search.GetByTestId("object-search-status"))
             .ToHaveTextAsync("Search cancelled.");
         await page.WaitForFunctionAsync("() => window.__objectSearchAborts > 0");
         await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(0);
+        await Assertions.Expect(search.GetByTestId("object-search-results"))
+            .ToHaveAttributeAsync("aria-busy", "false");
         browserPage.AssertNoUnexpectedErrors();
     }
 

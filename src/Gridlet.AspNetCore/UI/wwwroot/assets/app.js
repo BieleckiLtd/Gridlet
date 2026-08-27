@@ -2436,6 +2436,10 @@
 
   // ---- tabs -------------------------------------------------------------------
 
+  const objectSearchQueryLimit = 4096;
+
+  const boundedObjectSearchQuery = (value) => String(value || '').slice(0, objectSearchQueryLimit);
+
   function openObjectSearchTab(initial = {}) {
     const existing = state.tabs.find((candidate) => candidate.key === 'object-search');
     if (existing) {
@@ -2449,14 +2453,14 @@
     const tab = {
       id: state.nextTabId++, key: 'object-search', badge: '⌕', badgeClass: 'badge-search',
       title: 'Find objects', panel, loaded: false,
-      query: initial.query || '', mode: initial.mode || 'names',
+      query: boundedObjectSearchQuery(initial.query), mode: initial.mode || 'names',
       definitionLimit: ['500', '2000', 'all'].includes(String(initial.definitionLimit))
         ? String(initial.definitionLimit) : '500',
       includeSystem: Boolean(initial.includeSystem),
       includeInternal: Boolean(initial.includeInternal),
       load: () => loadObjectSearchTab(tab),
       restore: () => ({
-        kind: 'object-search', query: tab.query, mode: tab.mode,
+        kind: 'object-search', query: boundedObjectSearchQuery(tab.query), mode: tab.mode,
         definitionLimit: tab.definitionLimit,
         includeSystem: tab.includeSystem, includeInternal: tab.includeInternal,
       }),
@@ -2499,9 +2503,14 @@
   }
 
   function objectSearchTakeFair(candidates, limit) {
-    if (limit >= candidates.length) return candidates;
+    const ordered = [...candidates].sort((left, right) =>
+      scopeKey(left.scope).localeCompare(scopeKey(right.scope))
+      || left.object.schema.localeCompare(right.object.schema)
+      || left.object.name.localeCompare(right.object.name)
+      || left.object.type.localeCompare(right.object.type));
+    if (limit >= ordered.length) return ordered;
     const byScope = new Map();
-    for (const candidate of candidates) {
+    for (const candidate of ordered) {
       const key = scopeKey(candidate.scope);
       if (!byScope.has(key)) byScope.set(key, []);
       byScope.get(key).push(candidate);
@@ -2528,6 +2537,7 @@
     const query = h('input', {
       type: 'search', value: tab.query, placeholder: 'Object name or definition text…',
       'aria-label': 'Object search text', 'data-testid': 'object-search-query', autocomplete: 'off',
+      maxlength: objectSearchQueryLimit,
     });
     const mode = h('select', {
       'aria-label': 'Search in', 'data-testid': 'object-search-mode',
@@ -2557,11 +2567,13 @@
       h('label', { class: 'checkbox-row' }, includeSystem, 'System databases'),
       h('label', { class: 'checkbox-row' }, includeInternal, 'Internal objects'), run, cancel);
     const status = h('div', {
-      class: 'object-search-status muted', role: 'status', 'aria-live': 'polite',
+      id: 'object-search-status', class: 'object-search-status muted', role: 'status',
+      'aria-live': 'polite', 'aria-atomic': 'true',
       'data-testid': 'object-search-status', text: 'Enter at least two characters to search.',
     });
     const results = h('div', {
       class: 'object-search-results', 'data-testid': 'object-search-results',
+      'aria-describedby': 'object-search-status', 'aria-busy': 'false',
     });
     tab.panel.replaceChildren(controls, status, results);
     tab.searchInput = query;
@@ -2577,6 +2589,7 @@
       includeInternal.disabled = running;
       run.disabled = running;
       cancel.hidden = !running;
+      results.setAttribute('aria-busy', String(running));
     };
 
     const render = (matches, summary, failures, definitionCoverage) => {
@@ -2589,7 +2602,7 @@
       }
       const content = [];
       if (matches.length > resultLimit) content.push(h('div', {
-          class: 'warning-box object-search-warning',
+          class: 'warning-box object-search-warning', 'data-testid': 'object-search-result-warning',
           text: `Showing the first ${resultLimit.toLocaleString()} matches. Refine the search to see the rest.`,
         }));
       if (definitionCoverage?.omitted) content.push(h('div', {
@@ -2646,7 +2659,7 @@
       controller?.abort();
       controller = new AbortController();
       const signal = controller.signal;
-      tab.query = query.value.trim();
+      tab.query = boundedObjectSearchQuery(query.value.trim());
       tab.mode = mode.value;
       tab.includeSystem = includeSystem.checked;
       tab.includeInternal = includeInternal.checked;
@@ -2763,7 +2776,7 @@
     });
     for (const control of [query, mode, definitionLimit, includeSystem, includeInternal]) {
       control.addEventListener('change', () => {
-        tab.query = query.value.trim();
+        tab.query = boundedObjectSearchQuery(query.value.trim());
         tab.mode = mode.value;
         tab.definitionLimit = definitionLimit.value;
         tab.includeSystem = includeSystem.checked;
