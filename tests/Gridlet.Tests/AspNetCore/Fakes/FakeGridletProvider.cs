@@ -373,18 +373,26 @@ public sealed class FakeGridletProvider :
             request.Page,
             request.PageSize,
             TotalRows: all.Length,
-            RowIdentity: name == "LedgerHeap"
+            RowIdentity: name is "LedgerHeap" or "ClampedUnderreportedLedgerHeap"
                 ? null
-                : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]));
+                : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+            RowKeys: name is "LedgerHeap" or "ClampedUnderreportedLedgerHeap"
+                ? null
+                : taken.Select(row => new object?[] { row[0] }).ToArray());
     }
 
     private static Task<TableDataPage> GetPageCore(string name, TableDataRequest request)
     {
-        if (name is "Ledger" or "LedgerHeap" or "UnderreportedLedger" or "ClampedLedger")
+        if (name is "Ledger" or "LedgerHeap" or "UnderreportedLedger" or "ClampedLedger"
+            or "ClampedUnderreportedLedgerHeap" or "RepeatingLedger")
         {
-            var effectiveRequest = name == "ClampedLedger" ? request with { PageSize = 2 } : request;
+            var effectiveRequest = name is "ClampedLedger" or "ClampedUnderreportedLedgerHeap"
+                ? request with { PageSize = 2 }
+                : name == "RepeatingLedger" ? request with { Page = 1 } : request;
             var page = LedgerPage(name, effectiveRequest);
-            return Task.FromResult(name == "UnderreportedLedger" ? page with { TotalRows = 1 } : page);
+            return Task.FromResult(name is "UnderreportedLedger" or "ClampedUnderreportedLedgerHeap"
+                ? page with { TotalRows = 1 }
+                : page);
         }
 
         return GetFixedPage(name, request);
@@ -402,9 +410,10 @@ public sealed class FakeGridletProvider :
             : name == "ExportCases"
             ? new TableDataPage(
                 [new ResultColumn("Text", "nvarchar(max)"), new ResultColumn("Binary", "varbinary(max)"),
-                    new ResultColumn("When", "datetime2"), new ResultColumn("Nullable", "int")],
+                    new ResultColumn("When", "datetime2"), new ResultColumn("Nullable", "int"),
+                    new ResultColumn("Formula", "nvarchar(max)")],
                 [["a,\"b\r\nc", new byte[] { 0, 255 },
-                    new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc), null]],
+                    new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc), null, "=2+3"]],
                 request.Page, request.PageSize, TotalRows: 1)
             : name == "Orders"
             ? new TableDataPage(

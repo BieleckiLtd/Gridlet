@@ -409,7 +409,14 @@ internal static partial class GridletApiEndpoints
                 name,
                 new TableDataRequest(1, pageSize, sortColumn, direction, filters),
                 cancellationToken);
-            if ((firstPage.TotalRows > firstPage.Rows.Count || firstPage.Rows.Count >= pageSize)
+            if (firstPage.Page != 1 || firstPage.PageSize <= 0
+                || firstPage.Rows.Count > firstPage.PageSize)
+            {
+                throw new GridletValidationException(
+                    "The data provider returned invalid paging metadata for this export.");
+            }
+            if ((firstPage.TotalRows > firstPage.Rows.Count
+                    || firstPage.Rows.Count >= firstPage.PageSize)
                 && firstPage.RowIdentity is null)
             {
                 throw new GridletValidationException(

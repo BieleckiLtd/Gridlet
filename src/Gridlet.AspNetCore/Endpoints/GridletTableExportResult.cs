@@ -43,6 +43,7 @@ internal sealed class GridletTableExportResult(
         httpContext.Response.Headers.ContentDisposition =
             $"attachment; filename=\"{asciiFileName}\"; filename*=UTF-8''{Uri.EscapeDataString(fileName)}";
         httpContext.Response.Headers.XContentTypeOptions = "nosniff";
+        httpContext.Response.Headers.CacheControl = "no-store";
 
         try
         {
@@ -55,7 +56,8 @@ internal sealed class GridletTableExportResult(
                 await WriteCsvAsync(httpContext.Response.Body, cancellationToken);
             }
         }
-        catch (Exception) when (cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (cancellationToken.IsCancellationRequested
+            && ex is OperationCanceledException or IOException or ObjectDisposedException)
         {
             // The client went away. RequestAborted has already closed the only consumer. Include
             // StreamWriter flush/dispose faults which can replace the original cancellation.
@@ -65,6 +67,8 @@ internal sealed class GridletTableExportResult(
             if (!httpContext.Response.HasStarted)
             {
                 httpContext.Response.Clear();
+                httpContext.Response.Headers.CacheControl = "no-store";
+                httpContext.Response.Headers.XContentTypeOptions = "nosniff";
                 var statusCode = ex switch
                 {
                     GridletObjectNotFoundException => StatusCodes.Status404NotFound,
@@ -106,7 +110,8 @@ internal sealed class GridletTableExportResult(
         var completed = false;
         try
         {
-            await WriteCsvRowAsync(writer, columnNames, cancellationToken);
+            await WriteCsvRowAsync(
+                writer, columnNames.Select(SpreadsheetSafeText), cancellationToken);
             await ForEachPageAsync(async page =>
             {
                 foreach (var row in page.Rows)
@@ -115,7 +120,7 @@ internal sealed class GridletTableExportResult(
                     await WriteCsvRowAsync(
                         writer,
                         Enumerable.Range(0, firstPage.Columns.Count)
-                            .Select(index => ExportText(index < row.Length ? row[index] : null)),
+                            .Select(index => ExportCsvText(index < row.Length ? row[index] : null)),
                         cancellationToken);
                 }
                 await writer.FlushAsync(cancellationToken);
@@ -132,9 +137,19 @@ internal sealed class GridletTableExportResult(
 
     private async Task WriteJsonAsync(Stream stream, CancellationToken cancellationToken)
     {
+        var buffer = new ArrayBufferWriter<byte>();
+        // Validate every value already held in the bounded first page before committing attachment
+        // headers. A provider-specific value that cannot be encoded still receives the normal,
+        // redacted structured error instead of leaving a truncated JSON download.
+        foreach (var row in firstPage.Rows)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            SerializeJsonRow(buffer, row);
+        }
+
+        buffer.Clear();
         await stream.WriteAsync(JsonArrayStart, cancellationToken);
         var firstRow = true;
-        var buffer = new ArrayBufferWriter<byte>();
         await ForEachPageAsync(async page =>
         {
             foreach (var row in page.Rows)
@@ -146,20 +161,7 @@ internal sealed class GridletTableExportResult(
                 }
                 firstRow = false;
 
-                buffer.Clear();
-                using (var writer = new Utf8JsonWriter(buffer))
-                {
-                    writer.WriteStartObject();
-                    for (var index = 0; index < firstPage.Columns.Count; index++)
-                    {
-                        writer.WritePropertyName(columnNames[index]);
-                        JsonSerializer.Serialize(
-                            writer,
-                            index < row.Length ? row[index] : null,
-                            JsonSerializerOptions.Web);
-                    }
-                    writer.WriteEndObject();
-                }
+                SerializeJsonRow(buffer, row);
                 await stream.WriteAsync(buffer.WrittenMemory, cancellationToken);
             }
             await stream.FlushAsync(cancellationToken);
@@ -175,8 +177,30 @@ internal sealed class GridletTableExportResult(
         var page = firstPage;
         var pageNumber = 1;
         var exported = 0L;
+        string? previousBoundary = null;
         while (true)
         {
+            if (page.Page != pageNumber || page.PageSize <= 0 || page.Rows.Count > page.PageSize)
+            {
+                throw new GridletValidationException(
+                    "The data provider returned invalid paging metadata during this export.");
+            }
+            if (page.RowKeys is { Count: > 0 } rowKeys)
+            {
+                if (rowKeys.Count != page.Rows.Count)
+                {
+                    throw new GridletValidationException(
+                        "The data provider returned incomplete row identities during this export.");
+                }
+                var boundary = JsonSerializer.Serialize(
+                    new[] { rowKeys[0], rowKeys[^1] }, JsonSerializerOptions.Web);
+                if (string.Equals(boundary, previousBoundary, StringComparison.Ordinal))
+                {
+                    throw new GridletValidationException(
+                        "The data provider repeated a page without making export progress.");
+                }
+                previousBoundary = boundary;
+            }
             await consume(page);
             exported += page.Rows.Count;
             // Providers may clamp the requested page size. Use the size they report, and consult
@@ -211,6 +235,38 @@ internal sealed class GridletTableExportResult(
         => value.IndexOfAny([',', '"', '\r', '\n']) >= 0
             ? $"\"{value.Replace("\"", "\"\"")}\""
             : value;
+
+    private static string ExportCsvText(object? value)
+    {
+        var text = ExportText(value);
+        return value is string or JsonElement { ValueKind: JsonValueKind.String }
+            ? SpreadsheetSafeText(text)
+            : text;
+    }
+
+    private static string SpreadsheetSafeText(string value)
+    {
+        var trimmed = value.AsSpan().TrimStart();
+        return !trimmed.IsEmpty && trimmed[0] is '=' or '+' or '-' or '@' or '\t' or '\r'
+            ? "'" + value
+            : value;
+    }
+
+    private void SerializeJsonRow(ArrayBufferWriter<byte> buffer, object?[] row)
+    {
+        buffer.Clear();
+        using var writer = new Utf8JsonWriter(buffer);
+        writer.WriteStartObject();
+        for (var index = 0; index < firstPage.Columns.Count; index++)
+        {
+            writer.WritePropertyName(columnNames[index]);
+            JsonSerializer.Serialize(
+                writer,
+                index < row.Length ? row[index] : null,
+                JsonSerializerOptions.Web);
+        }
+        writer.WriteEndObject();
+    }
 
     private static string ExportText(object? value)
         => value switch

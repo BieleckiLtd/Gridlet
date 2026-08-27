@@ -11213,7 +11213,9 @@
     } else {
       const escape = (v) => {
         if (v === null || v === undefined) return '';
-        const s = String(v);
+        let s = String(v);
+        const leading = typeof v === 'string' ? v.trimStart()[0] : '';
+        if (leading && '=+-@\t\r'.includes(leading)) s = `'${s}`;
         return /[",\n\r]/.test(s) ? '"' + s.replaceAll('"', '""') + '"' : s;
       };
       content = [
