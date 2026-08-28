@@ -17,9 +17,12 @@ namespace Gridlet.AspNetCore;
 /// </summary>
 internal static partial class GridletResultExporter
 {
+    internal const long MaxRequestBytes = (10 * 1024 * 1024) + (64 * 1024);
+    internal const int ExcelMaxDataRows = 1_048_575;
     private const int ExcelMaxColumns = 16_384;
     private const int ExcelMaxCellCharacters = 32_767;
     private const int MaxCells = 2_000_000;
+    private const long MaxBrowserSafeInteger = 9_007_199_254_740_991;
     private const string SpreadsheetNamespace =
         "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
     private const string OfficeRelationshipsNamespace =
@@ -29,7 +32,7 @@ internal static partial class GridletResultExporter
     private const string PackageRelationshipsNamespace =
         "http://schemas.openxmlformats.org/package/2006/relationships";
 
-    public static void Validate(ResultExportRequest request, int maxRows)
+    public static void Validate(ResultExportRequest request, int maxRows, string format)
     {
         if (request.Columns is not { Length: > 0 })
         {
@@ -48,6 +51,11 @@ internal static partial class GridletResultExporter
         {
             throw new GridletValidationException(
                 $"Result exports cannot exceed the configured {maxRows:N0}-row limit.");
+        }
+        if (format == "xlsx" && request.Rows.Length > ExcelMaxDataRows)
+        {
+            throw new GridletValidationException(
+                $"Excel exports cannot exceed {ExcelMaxDataRows:N0} data rows.");
         }
         if ((long)request.Columns.Length * request.Rows.Length > MaxCells)
         {
@@ -80,11 +88,20 @@ internal static partial class GridletResultExporter
                     $"Export row {rowIndex + 1} has {request.Rows[rowIndex].Length} values; " +
                     $"{request.Columns.Length} were expected.");
             }
+            for (var columnIndex = 0; columnIndex < request.Columns.Length; columnIndex++)
+            {
+                ValidateBrowserNumber(
+                    request.Columns[columnIndex], request.Rows[rowIndex][columnIndex],
+                    columnIndex, rowIndex);
+            }
         }
     }
 
-    public static byte[] WriteExcel(ResultExportRequest request)
+    public static byte[] WriteExcel(
+        ResultExportRequest request,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var columns = request.Columns!;
         var rows = request.Rows!;
         using var output = new MemoryStream();
@@ -141,7 +158,7 @@ internal static partial class GridletResultExporter
             });
             WriteXmlEntry(archive, "xl/styles.xml", WriteExcelStyles);
             WriteXmlEntry(archive, "xl/worksheets/sheet1.xml", writer =>
-                WriteExcelWorksheet(writer, columns, rows));
+                WriteExcelWorksheet(writer, columns, rows, cancellationToken));
         }
         return output.ToArray();
     }
@@ -327,7 +344,8 @@ internal static partial class GridletResultExporter
     private static void WriteExcelWorksheet(
         XmlWriter writer,
         IReadOnlyList<ResultColumn> columns,
-        IReadOnlyList<JsonElement[]> rows)
+        IReadOnlyList<JsonElement[]> rows,
+        CancellationToken cancellationToken)
     {
         writer.WriteStartElement("worksheet", SpreadsheetNamespace);
         writer.WriteStartElement("sheetViews", SpreadsheetNamespace);
@@ -345,6 +363,7 @@ internal static partial class GridletResultExporter
         writer.WriteStartElement("cols", SpreadsheetNamespace);
         for (var index = 0; index < columns.Count; index++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var width = Math.Clamp(columns[index].Name.Length + 2, 10, 60);
             foreach (var row in rows.Take(200))
             {
@@ -370,6 +389,7 @@ internal static partial class GridletResultExporter
 
         for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var excelRow = rowIndex + 2;
             writer.WriteStartElement("row", SpreadsheetNamespace);
             writer.WriteAttributeString("r", excelRow.ToString(CultureInfo.InvariantCulture));
@@ -686,6 +706,47 @@ internal static partial class GridletResultExporter
     private static bool IsValue(JsonElement value)
         => value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
 
+    private static void ValidateBrowserNumber(
+        ResultColumn column,
+        JsonElement value,
+        int zeroBasedColumn,
+        int zeroBasedRow)
+    {
+        if (value.ValueKind != JsonValueKind.Number) return;
+        var type = (column.DataTypeName ?? string.Empty).Trim().ToLowerInvariant();
+        var exactInteger = type.StartsWith("bigint", StringComparison.Ordinal)
+            || type == "integer";
+        if (exactInteger && value.TryGetDecimal(out var integer)
+            && decimal.Truncate(integer) == integer
+            && Math.Abs(integer) > MaxBrowserSafeInteger)
+        {
+            throw BrowserPrecisionLoss(zeroBasedColumn, zeroBasedRow);
+        }
+
+        var exactDecimal = type.StartsWith("decimal", StringComparison.Ordinal)
+            || type.StartsWith("numeric", StringComparison.Ordinal)
+            || type.Contains("money", StringComparison.Ordinal);
+        if (exactDecimal && SignificantDigitCount(value.GetRawText()) > 15)
+        {
+            throw BrowserPrecisionLoss(zeroBasedColumn, zeroBasedRow);
+        }
+    }
+
+    private static int SignificantDigitCount(string raw)
+    {
+        var mantissa = raw.Split('e', 'E')[0].TrimStart('-', '+')
+            .Replace(".", string.Empty, StringComparison.Ordinal)
+            .TrimStart('0');
+        return mantissa.Length;
+    }
+
+    private static GridletValidationException BrowserPrecisionLoss(
+        int zeroBasedColumn,
+        int zeroBasedRow)
+        => new(
+            $"Export value in column {zeroBasedColumn + 1}, row {zeroBasedRow + 1} cannot be " +
+            "exported safely because browser number precision may already have been lost.");
+
     private static decimal ValueAsDecimal(JsonElement value)
         => value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out var parsed)
             ? parsed
@@ -727,37 +788,43 @@ internal static partial class GridletResultExporter
         public Task WriteAsync(
             ParquetRowGroupWriter writer,
             CancellationToken cancellationToken)
-            => Kind switch
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Kind switch
             {
                 ParquetValueKind.Boolean => writer.WriteAsync<bool>(
-                    Field, ConvertNullable<bool>(value => value.GetBoolean()).AsMemory(),
+                    Field, ConvertNullable<bool>(value => value.GetBoolean(), cancellationToken).AsMemory(),
                     cancellationToken: cancellationToken),
                 ParquetValueKind.Int32 => writer.WriteAsync<int>(
-                    Field, ConvertNullable<int>(value => value.GetInt32()).AsMemory(),
+                    Field, ConvertNullable<int>(value => value.GetInt32(), cancellationToken).AsMemory(),
                     cancellationToken: cancellationToken),
                 ParquetValueKind.Int64 => writer.WriteAsync<long>(
-                    Field, ConvertNullable<long>(value => value.GetInt64()).AsMemory(),
+                    Field, ConvertNullable<long>(value => value.GetInt64(), cancellationToken).AsMemory(),
                     cancellationToken: cancellationToken),
                 ParquetValueKind.Double => writer.WriteAsync<double>(
-                    Field, ConvertNullable<double>(value => value.GetDouble()).AsMemory(),
+                    Field, ConvertNullable<double>(value => value.GetDouble(), cancellationToken).AsMemory(),
                     cancellationToken: cancellationToken),
                 ParquetValueKind.Decimal => writer.WriteAsync<decimal>(
-                    Field, ConvertNullable<decimal>(ValueAsDecimal).AsMemory(),
+                    Field, ConvertNullable<decimal>(ValueAsDecimal, cancellationToken).AsMemory(),
                     cancellationToken: cancellationToken),
                 ParquetValueKind.Date or ParquetValueKind.DateTime => writer.WriteAsync<DateTime>(
-                    Field, ConvertNullable<DateTime>(ParseDateTime).AsMemory(),
+                    Field, ConvertNullable<DateTime>(ParseDateTime, cancellationToken).AsMemory(),
                     cancellationToken: cancellationToken),
-                ParquetValueKind.Binary => writer.WriteAsync(Field, ConvertBinary()),
-                _ => writer.WriteAsync(Field,
-                    Values.Select(value => IsValue(value) ? DisplayValue(value) : null).ToArray()),
+                ParquetValueKind.Binary => writer.WriteAsync(
+                    Field, ConvertBinary(cancellationToken)),
+                _ => writer.WriteAsync(Field, ConvertStrings(cancellationToken)),
             };
+        }
 
-        private T?[] ConvertNullable<T>(Func<JsonElement, T> convert)
+        private T?[] ConvertNullable<T>(
+            Func<JsonElement, T> convert,
+            CancellationToken cancellationToken)
             where T : struct
         {
             var converted = new T?[Values.Length];
             for (var index = 0; index < Values.Length; index++)
             {
+                if ((index & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
                 if (!IsValue(Values[index])) continue;
                 try
                 {
@@ -772,11 +839,12 @@ internal static partial class GridletResultExporter
             return converted;
         }
 
-        private byte[]?[] ConvertBinary()
+        private byte[]?[] ConvertBinary(CancellationToken cancellationToken)
         {
             var converted = new byte[]?[Values.Length];
             for (var index = 0; index < Values.Length; index++)
             {
+                if ((index & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
                 if (!IsValue(Values[index])) continue;
                 try
                 {
@@ -788,6 +856,17 @@ internal static partial class GridletResultExporter
                 {
                     throw InvalidValue(index);
                 }
+            }
+            return converted;
+        }
+
+        private string?[] ConvertStrings(CancellationToken cancellationToken)
+        {
+            var converted = new string?[Values.Length];
+            for (var index = 0; index < Values.Length; index++)
+            {
+                if ((index & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
+                converted[index] = IsValue(Values[index]) ? DisplayValue(Values[index]) : null;
             }
             return converted;
         }

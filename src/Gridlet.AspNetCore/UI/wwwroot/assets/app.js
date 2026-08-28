@@ -11743,8 +11743,10 @@
       href,
       download: (baseName || 'gridlet-export').replace(/[^\w.-]+/g, '_') + '.' + format,
     });
+    document.body.append(link);
     link.click();
-    setTimeout(() => URL.revokeObjectURL(href));
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
   }
 
   function exportData(columns, rows, format, baseName) {

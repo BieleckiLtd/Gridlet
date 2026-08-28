@@ -1,6 +1,13 @@
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
+using Gridlet.AspNetCore;
+using Gridlet.AspNetCore.Contracts;
+using Gridlet.Models;
+using Microsoft.AspNetCore.Http.Metadata;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Parquet;
 using Xunit;
 
@@ -44,6 +51,8 @@ public sealed class ResultExportEndpointTests
         Assert.Equal(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal("gridlet-results.xlsx",
+            response.Content.Headers.ContentDisposition!.FileNameStar);
         Assert.Equal("PK", System.Text.Encoding.ASCII.GetString(content, 0, 2));
         using var archive = new ZipArchive(new MemoryStream(content), ZipArchiveMode.Read);
         Assert.NotNull(archive.GetEntry("[Content_Types].xml"));
@@ -94,6 +103,8 @@ public sealed class ResultExportEndpointTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("application/vnd.apache.parquet", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal("gridlet-results.parquet",
+            response.Content.Headers.ContentDisposition!.FileNameStar);
         Assert.Equal("PAR1", System.Text.Encoding.ASCII.GetString(content, 0, 4));
         Assert.Equal("PAR1", System.Text.Encoding.ASCII.GetString(content, content.Length - 4, 4));
         await using var reader = await ParquetReader.CreateAsync(new MemoryStream(content));
@@ -176,6 +187,40 @@ public sealed class ResultExportEndpointTests
     }
 
     [Fact]
+    public async Task Result_export_endpoint_has_an_explicit_request_size_limit()
+    {
+        var (app, _) = await GridletTestHost.StartDefaultAsync();
+        await using var cleanup = app;
+        var endpoint = app.Services.GetRequiredService<EndpointDataSource>().Endpoints
+            .OfType<RouteEndpoint>()
+            .Single(candidate => candidate.RoutePattern.RawText?.EndsWith("/exports/{format}") == true);
+
+        Assert.Equal(GridletResultExporter.MaxRequestBytes,
+            endpoint.Metadata.GetMetadata<IRequestSizeLimitMetadata>()?.MaxRequestBodySize);
+    }
+
+    [Fact]
+    public void Excel_export_enforces_the_native_row_limit_and_honours_cancellation()
+    {
+        var row = new[] { JsonSerializer.SerializeToElement(1) };
+        var oversized = new ResultExportRequest(
+            [new ResultColumn("A", "int")],
+            Enumerable.Repeat(row, GridletResultExporter.ExcelMaxDataRows + 1).ToArray(),
+            "SqlServer");
+
+        var rowLimit = Assert.Throws<GridletValidationException>(() =>
+            GridletResultExporter.Validate(oversized, int.MaxValue, "xlsx"));
+        Assert.Contains("1,048,575", rowLimit.Message, StringComparison.Ordinal);
+
+        var bounded = new ResultExportRequest(
+            [new ResultColumn("A", "int")], [row], "SqlServer");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        Assert.Throws<OperationCanceledException>(() =>
+            GridletResultExporter.WriteExcel(bounded, cancellation.Token));
+    }
+
+    [Fact]
     public async Task Result_exports_reject_unknown_formats_and_unbounded_or_malformed_data()
     {
         var (app, client) = await GridletTestHost.StartAsync(options =>
@@ -203,6 +248,21 @@ public sealed class ResultExportEndpointTests
             columns = new[] { new { name = "A", dataTypeName = "decimal" } },
             rows = new object?[][] { ["not a decimal"] },
         });
+        var unsafeInteger = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
+        {
+            columns = new[] { new { name = "A", dataTypeName = "bigint" } },
+            rows = new object?[][] { [9_007_199_254_740_992L] },
+        });
+        var unsafeDecimal = await client.PostAsJsonAsync("/gridlet/api/exports/xlsx", new
+        {
+            columns = new[] { new { name = "A", dataTypeName = "decimal(18, 1)" } },
+            rows = new object?[][] { [123_456_789_012_345.6m] },
+        });
+        var malformedBinary = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
+        {
+            columns = new[] { new { name = "A", dataTypeName = "varbinary(max)" } },
+            rows = new object?[][] { ["not-base64!!"] },
+        });
         var oversizedExcelCell = await client.PostAsJsonAsync("/gridlet/api/exports/xlsx", new
         {
             columns = new[] { new { name = "A", dataTypeName = "nvarchar(max)" } },
@@ -224,6 +284,12 @@ public sealed class ResultExportEndpointTests
         Assert.Contains("does not match", await wrongType.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, wrongDecimal.StatusCode);
         Assert.Contains("decimal export value", await wrongDecimal.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.BadRequest, unsafeInteger.StatusCode);
+        Assert.Contains("browser number precision", await unsafeInteger.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.BadRequest, unsafeDecimal.StatusCode);
+        Assert.Contains("browser number precision", await unsafeDecimal.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.BadRequest, malformedBinary.StatusCode);
+        Assert.Contains("does not match", await malformedBinary.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, oversizedExcelCell.StatusCode);
         Assert.Contains("32,767", await oversizedExcelCell.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.OK, inferredType.StatusCode);
