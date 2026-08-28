@@ -623,6 +623,7 @@
     objectsByScope: new Map(),
     structures: new Map(),
     incomingRelationships: new Map(),
+    metadataGeneration: 0,
     routines: new Map(),
     tabs: [],
     activeTabId: null,
@@ -657,6 +658,7 @@
     }
   };
   const invalidateScopeMetadata = (scope) => {
+    state.metadataGeneration++;
     invalidateScopeEntries(state.structures, scope);
     invalidateScopeEntries(state.incomingRelationships, scope);
   };
@@ -672,6 +674,21 @@
     : state.objectsByScope.get(scopeKey(scope)) || []);
   // Only the sidebar's own scope can refresh the tree.
   const refreshObjects = (scope) => (isCurrentScope(scope) ? loadObjects() : Promise.resolve());
+
+  async function loadStructureMetadata(scope, schema, name, options) {
+    const key = `${scopeKey(scope)} ${schema}.${name}`.toLowerCase();
+    const cached = state.structures.get(key);
+    if (cached) return cached;
+    const generation = state.metadataGeneration;
+    const structure = await api(urlsFor(scope).structure(schema, name), options);
+    // A refresh or DDL operation may finish while the request is in flight. Never put its
+    // pre-refresh response back into the cache; fetch against the new metadata generation.
+    if (generation !== state.metadataGeneration) {
+      return loadStructureMetadata(scope, schema, name, options);
+    }
+    state.structures.set(key, structure);
+    return structure;
+  }
 
   const connectionFor = (scope) =>
     (state.meta && state.meta.connections.find((c) => c.name === scope.connection)) || {};
@@ -809,12 +826,8 @@
   }
 
   async function loadCompletionStructure(source, scope) {
-    const key = `${scopeKey(scope)} ${source.object.schema}.${source.object.name}`.toLowerCase();
-    let structure = state.structures.get(key);
-    if (!structure) {
-      structure = await api(urlsFor(scope).structure(source.object.schema, source.object.name));
-      state.structures.set(key, structure);
-    }
+    const structure = await loadStructureMetadata(
+      scope, source.object.schema, source.object.name);
     return { ...source, structure };
   }
 
@@ -1779,6 +1792,7 @@
     refreshAgentAvailability();
     state.structures.clear();
     state.incomingRelationships.clear();
+    state.metadataGeneration++;
     $('#database-select').value = name;
     $('#database-select').themedSelectSync();
     renderTabBar();
@@ -1812,6 +1826,8 @@
     refreshTypeSuggestions();
     restoreFilter();
     renderTree();
+    const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId);
+    if (activeTab?.scope && sameScope(activeTab.scope, scope)) activeTab.refreshData?.();
   }
 
   // The filter is part of how the tree was left, alongside which sections were expanded, and it is
@@ -5115,11 +5131,23 @@
     tab.panel.append(viewBar, body, actionBar);
     let currentView = 'Data';
     let structurePromise = null;
+    let structureGeneration = -1;
     let activeDataLoad = null;
 
-    const ensureStructure = () => (structurePromise ??= api(urls.structure(o.schema, o.name)));
+    const ensureStructure = () => {
+      if (!structurePromise || structureGeneration !== state.metadataGeneration) {
+        structureGeneration = state.metadataGeneration;
+        const request = loadStructureMetadata(scope, o.schema, o.name);
+        structurePromise = request;
+        request.catch(() => {
+          if (structurePromise === request) structurePromise = null;
+        });
+      }
+      return structurePromise;
+    };
     const invalidateStructure = () => {
       structurePromise = null;
+      structureGeneration = -1;
       invalidateScopeMetadata(scope);
     };
 
@@ -5208,8 +5236,10 @@
           structure = await ensureStructure();
         }
       } catch (err) {
+        if (activeDataLoad !== controller) return;
         toast(`Table structure is unavailable; showing raw values. ${err.message}`);
       }
+      if (activeDataLoad !== controller) return;
 
       const displays = new Map();
       for (const setting of structure?.foreignKeyDisplays || []) {
@@ -5311,7 +5341,12 @@
             event.stopPropagation();
             if (followable.length === 1) followForeignKey(followable[0], row);
             else showContextMenu(event, followable.map((foreignKey) => ({
-              label: `${foreignKey.name} → ${foreignKey.referencedSchema}.${foreignKey.referencedTable}`,
+              label: `${foreignKey.name} → ${foreignKey.referencedSchema}.${foreignKey.referencedTable} (`
+                + foreignKey.columns.map((pair) => {
+                  const index = data.columns.findIndex((candidate) =>
+                    candidate.name.toLowerCase() === pair.column.toLowerCase());
+                  return `${pair.column}=${dataCompareValueText(row[index])}`;
+                }).join(', ') + ')',
               action: () => followForeignKey(foreignKey, row),
             })));
           },
@@ -5447,21 +5482,9 @@
             while (next < objects.length) {
               const index = next++;
               const object = objects[index];
-              if (object.schema.toLowerCase() === o.schema.toLowerCase()
-                && object.name.toLowerCase() === o.name.toLowerCase()) {
-                definitions[index] = structure;
-                continue;
-              }
-              const cacheKey = `${scopeKey(scope)} ${object.schema}.${object.name}`.toLowerCase();
               try {
-                let definition = state.structures.get(cacheKey);
-                if (!definition) {
-                  definition = await api(urlsFor(scope).structure(object.schema, object.name), {
-                    signal: controller.signal,
-                  });
-                  state.structures.set(cacheKey, definition);
-                }
-                definitions[index] = definition;
+                definitions[index] = await loadStructureMetadata(
+                  scope, object.schema, object.name, { signal: controller.signal });
               } catch (err) {
                 if (err.name === 'AbortError') throw err;
                 failures.push(`${object.schema}.${object.name}: ${err.message}`);
@@ -5527,11 +5550,12 @@
                 let unavailableReason = null;
                 for (const pair of foreignKey.columns || []) {
                   const index = columnIndex(pair.referencedColumn);
-                  if (index < 0) {
+                  const key = index < 0 ? rowKey(row) : null;
+                  const value = index >= 0 ? row[index] : key?.[pair.referencedColumn];
+                  if (index < 0 && value === undefined) {
                     unavailableReason = 'The referenced key is not present in the loaded columns';
                     break;
                   }
-                  const value = row[index];
                   if (value === null || value === undefined) {
                     unavailableReason = 'A NULL key value cannot be referenced by a foreign key';
                     break;
@@ -5764,6 +5788,7 @@
           else if (event.type === 'error') throw new Error(event.message);
         });
       } catch (err) {
+        if (activeDataLoad !== controller) return;
         if (err.name === 'AbortError') status.textContent = 'Cancelled';
         else { body.append(errorBox(err.message)); status.textContent = 'Failed'; }
       } finally {

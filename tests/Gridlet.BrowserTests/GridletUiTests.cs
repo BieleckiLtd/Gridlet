@@ -4359,6 +4359,58 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Refreshing_objects_discards_an_inflight_outgoing_foreign_key_definition()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var attempts = 0;
+        var firstStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await page.RouteAsync("**/objects/dbo/Orders/structure", async route =>
+        {
+            var attempt = Interlocked.Increment(ref attempts);
+            if (attempt == 1)
+            {
+                firstStarted.TrySetResult(true);
+                await Task.WhenAny(releaseFirst.Task, Task.Delay(TimeSpan.FromSeconds(10)));
+            }
+            else
+            {
+                secondStarted.TrySetResult(true);
+            }
+
+            var foreignKeys = attempt == 1
+                ? "[]"
+                : "[{\"name\":\"FK_Orders_Pizzas\",\"referencedSchema\":\"dbo\","
+                    + "\"referencedTable\":\"Pizzas\",\"columns\":[{\"column\":\"PizzaId\",\"referencedColumn\":\"Id\"}]}]";
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Orders\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\"},{\"name\":\"PizzaId\"},{\"name\":\"Promotion\",\"isNullable\":true}],"
+                    + "\"indexes\":[],\"foreignKeys\":" + foreignKeys
+                    + ",\"checkConstraints\":[],\"uniqueConstraints\":[],"
+                    + "\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]}}",
+            });
+        });
+
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await page.GetByTitle("Reload objects").ClickAsync();
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        releaseFirst.TrySetResult(true);
+
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByTitle("Follow PizzaId=1 to dbo.Pizzas").First)
+            .ToBeVisibleAsync();
+        Assert.True(attempts >= 2);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Incoming_foreign_key_navigation_is_disabled_for_a_null_parent_key()
     {
         await using var browserPage = await fixture.NewPageAsync();
