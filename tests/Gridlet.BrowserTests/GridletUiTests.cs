@@ -4423,6 +4423,33 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Refreshing_objects_preserves_the_active_table_view_and_row_editor()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await orders.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await Assertions.Expect(orders.Locator(".structure")).ToBeVisibleAsync();
+        await page.GetByTitle("Reload objects").ClickAsync();
+        await Assertions.Expect(orders.Locator(".structure")).ToBeVisibleAsync();
+        await Assertions.Expect(orders.GetByRole(AriaRole.Button,
+            new() { Name = "Structure", Exact = true })).ToHaveAttributeAsync("aria-pressed", "true");
+        await Assertions.Expect(orders.Locator(".data-grid-scroll")).ToHaveCountAsync(0);
+
+        await orders.GetByRole(AriaRole.Button, new() { Name = "Data", Exact = true }).ClickAsync();
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await orders.Locator("tbody tr").First.Locator("td:not(.row-selector)").Last.ClickAsync();
+        await Assertions.Expect(orders.Locator("tr.row-editor")).ToHaveCountAsync(1);
+        await page.GetByTitle("Reload objects").ClickAsync();
+        await Assertions.Expect(orders.Locator("tr.row-editor")).ToHaveCountAsync(1);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Refreshing_objects_discards_an_inflight_outgoing_foreign_key_definition()
     {
         await using var browserPage = await fixture.NewPageAsync();

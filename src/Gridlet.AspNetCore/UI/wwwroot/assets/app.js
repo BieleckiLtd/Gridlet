@@ -1827,7 +1827,10 @@
     restoreFilter();
     renderTree();
     const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId);
-    if (activeTab?.scope && sameScope(activeTab.scope, scope)) activeTab.refreshData?.();
+    if (activeTab?.scope && sameScope(activeTab.scope, scope)
+      && !activeTab.panel.querySelector('tr.row-editor')) {
+      activeTab.refreshData?.();
+    }
   }
 
   // The filter is part of how the tree was left, alongside which sections were expanded, and it is
@@ -5191,7 +5194,11 @@
       // own business rather than the workspace's: leaving the tab for another one keeps the edit,
       // and only closing the tab or changing the view here throws it away.
       if (view !== currentView && !await (tab.beforeViewChange?.() ?? true)) return;
-      if (view !== 'Data') { activeDataLoad?.abort(); activeDataLoad = null; }
+      if (view !== 'Data') {
+        activeDataLoad?.abort();
+        activeDataLoad = null;
+        tab.refreshData = null;
+      }
       tab.beforeViewChange = null;
       tab.beforeClose = null;
       if (tab.hasUnsavedDefinition) {
