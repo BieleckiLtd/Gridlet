@@ -4254,6 +4254,70 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Offers_each_foreign_key_when_one_column_has_multiple_relationships()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string structure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Orders\",\"type\":\"Table\"},"
+            + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\"},{\"name\":\"PizzaId\",\"dataType\":\"int\"}],"
+            + "\"indexes\":[],\"foreignKeys\":["
+            + "{\"name\":\"FK_Orders_Pizzas\",\"referencedSchema\":\"dbo\",\"referencedTable\":\"Pizzas\","
+            + "\"columns\":[{\"column\":\"PizzaId\",\"referencedColumn\":\"Id\"}]},"
+            + "{\"name\":\"FK_Orders_Customers\",\"referencedSchema\":\"dbo\",\"referencedTable\":\"Customers\","
+            + "\"columns\":[{\"column\":\"PizzaId\",\"referencedColumn\":\"Id\"}]}],"
+            + "\"checkConstraints\":[],\"uniqueConstraints\":[],"
+            + "\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]}}";
+        await page.RouteAsync("**/objects/dbo/Orders/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await orders.GetByTitle("Follow PizzaId=1 to 2 referenced tables").First.ClickAsync();
+        var menu = page.Locator(".context-menu");
+        await Assertions.Expect(menu.GetByRole(AriaRole.Menuitem)).ToHaveCountAsync(2);
+        await Assertions.Expect(menu).ToContainTextAsync("FK_Orders_Pizzas → dbo.Pizzas (PizzaId=1)");
+        var customers = menu.GetByRole(AriaRole.Menuitem,
+            new() { Name = "FK_Orders_Customers → dbo.Customers (PizzaId=1)", Exact = true });
+        await customers.ClickAsync();
+
+        var target = ActivePanel(page);
+        await Assertions.Expect(page.Locator(".tab.active")).ToContainTextAsync("dbo.Customers");
+        await Assertions.Expect(target.GetByTestId("filter-chip")).ToContainTextAsync("Id = 1");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Does_not_offer_foreign_key_navigation_for_binary_values()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string stream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataTypeName":"int"},{"name":"PizzaId","dataTypeName":"varbinary"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Orders"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[1,"AQID"]],"rowKeys":[[1]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":1}
+            """;
+        await page.RouteAsync("**/objects/dbo/Orders/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = stream,
+            }));
+
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("1 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(orders.Locator("button.fk-follow")).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Shows_incoming_foreign_keys_for_the_selected_row_and_opens_referencing_rows()
     {
         await using var browserPage = await fixture.NewPageAsync();

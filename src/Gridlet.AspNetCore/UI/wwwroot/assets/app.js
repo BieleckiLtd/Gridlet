@@ -5286,13 +5286,34 @@
           outgoingByColumn.get(key).push(foreignKey);
         }
       }
+      const foreignKeyFilterReason = (columnName, value) => {
+        if (value === null || value === undefined) {
+          return 'The complete key is not present in this row';
+        }
+        if (typeof value === 'object') {
+          return 'This key value cannot be represented by a table filter';
+        }
+        const resultColumn = data.columns.find((column) =>
+          column.name.toLowerCase() === columnName.toLowerCase());
+        const metadataColumn = structure?.columns?.find((column) =>
+          column.name.toLowerCase() === columnName.toLowerCase());
+        const dataType = (resultColumn?.dataTypeName || resultColumn?.dataType
+          || metadataColumn?.dataType || '').toLowerCase().split('(')[0].trim();
+        if (['binary', 'varbinary', 'image', 'rowversion', 'timestamp', 'blob'].includes(dataType)) {
+          return 'Binary key values cannot be represented by a table filter';
+        }
+        return null;
+      };
       const followForeignKey = async (foreignKey, row) => {
         const filters = [];
         for (const pair of foreignKey.columns || []) {
           const index = data.columns.findIndex((column) =>
             column.name.toLowerCase() === pair.column.toLowerCase());
-          if (index < 0 || row[index] === null || row[index] === undefined) {
-            toast(`Cannot follow ${foreignKey.name}; its complete key is not present in this row.`);
+          const reason = index < 0
+            ? 'The complete key is not present in this row'
+            : foreignKeyFilterReason(pair.column, row[index]);
+          if (reason) {
+            toast(`Cannot follow ${foreignKey.name}. ${reason}.`);
             return;
           }
             filters.push({
@@ -5319,7 +5340,7 @@
         const followable = foreignKeys.filter((foreignKey) => (foreignKey.columns || []).every((pair) => {
           const index = data.columns.findIndex((candidate) =>
             candidate.name.toLowerCase() === pair.column.toLowerCase());
-          return index >= 0 && row?.[index] !== null && row?.[index] !== undefined;
+          return index >= 0 && !foreignKeyFilterReason(pair.column, row?.[index]);
         }));
         if (!followable.length) return cell;
         const targetText = followable.length === 1
@@ -5483,8 +5504,7 @@
               const index = next++;
               const object = objects[index];
               try {
-                definitions[index] = await loadStructureMetadata(
-                  scope, object.schema, object.name, { signal: controller.signal });
+                definitions[index] = await loadStructureMetadata(scope, object.schema, object.name);
               } catch (err) {
                 if (err.name === 'AbortError') throw err;
                 failures.push(`${object.schema}.${object.name}: ${err.message}`);
@@ -5551,13 +5571,20 @@
                 for (const pair of foreignKey.columns || []) {
                   const index = columnIndex(pair.referencedColumn);
                   const key = index < 0 ? rowKey(row) : null;
-                  const value = index >= 0 ? row[index] : key?.[pair.referencedColumn];
+                  const keyEntry = key && Object.entries(key).find(([column]) =>
+                    column.toLowerCase() === pair.referencedColumn.toLowerCase());
+                  const value = index >= 0 ? row[index] : keyEntry?.[1];
                   if (index < 0 && value === undefined) {
                     unavailableReason = 'The referenced key is not present in the loaded columns';
                     break;
                   }
                   if (value === null || value === undefined) {
                     unavailableReason = 'A NULL key value cannot be referenced by a foreign key';
+                    break;
+                  }
+                  const filterReason = foreignKeyFilterReason(pair.referencedColumn, value);
+                  if (filterReason) {
+                    unavailableReason = filterReason;
                     break;
                   }
                   filters.push({ column: pair.column, operator: 'equals', value: dataCompareValueText(value) });
