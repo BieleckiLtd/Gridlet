@@ -782,6 +782,17 @@ public sealed class FakeGridletProvider :
             yield break;
         }
 
+        if (sql == "copy-large-float")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("ApproximateValue", "float")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[1e21]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
         if (sql == "copy-unnamed-column")
         {
             yield return new QueryStreamEvent("started");

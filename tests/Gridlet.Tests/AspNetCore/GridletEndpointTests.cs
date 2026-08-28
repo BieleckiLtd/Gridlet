@@ -1187,6 +1187,29 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Query_stream_carries_lossless_exact_number_text()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var decimalResponse = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query",
+            new { sql = "copy-exact-decimal" });
+        var decimalBody = await decimalResponse.Content.ReadAsStringAsync();
+        var integerResponse = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query",
+            new { sql = "copy-unsafe-number" });
+        var integerBody = await integerResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, decimalResponse.StatusCode);
+        Assert.Contains("\"exactValues\":[[\"123456789012345.6\"]]", decimalBody,
+            StringComparison.Ordinal);
+        Assert.Equal(HttpStatusCode.OK, integerResponse.StatusCode);
+        Assert.Contains("\"exactValues\":[[\"9007199254740993\"]]", integerBody,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Failing_query_returns_400_with_database_error()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();

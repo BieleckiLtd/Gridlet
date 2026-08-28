@@ -539,10 +539,28 @@
       pending += value || '';
       const lines = pending.split('\n');
       pending = lines.pop();
-      for (const line of lines) if (line.trim()) onEvent(JSON.parse(line));
+      for (const line of lines) if (line.trim()) onEvent(parseNdjsonEvent(line));
       if (done) break;
     }
-    if (pending.trim()) onEvent(JSON.parse(pending));
+    if (pending.trim()) onEvent(parseNdjsonEvent(pending));
+  }
+
+  function parseNdjsonEvent(line) {
+    const event = JSON.parse(line);
+    restoreExactNumbers(event.rows, event.exactValues);
+    restoreExactNumbers(event.rowKeys, event.exactRowKeys);
+    return event;
+  }
+
+  function restoreExactNumbers(rows, exactRows) {
+    if (!Array.isArray(rows) || !Array.isArray(exactRows)) return;
+    rows.forEach((row, rowIndex) => {
+      const exactValues = exactRows[rowIndex];
+      if (!Array.isArray(row) || !Array.isArray(exactValues)) return;
+      exactValues.forEach((value, columnIndex) => {
+        if (value !== null && value !== undefined) row[columnIndex] = value;
+      });
+    });
   }
 
   async function executeSql(sql, scope = state) {
@@ -11605,12 +11623,15 @@
     if (typeof value === 'boolean') return value ? '1' : '0';
     const provider = String(providerName || '').toLowerCase();
     const dataType = String(column.dataTypeName || '').toLowerCase();
+    const exactDecimalRequired = /\b(?:decimal|numeric|money|smallmoney)\b/.test(dataType);
+    const exactIntegerRequired = /\b(?:tinyint|smallint|mediumint|bigint|integer|int[248]?)\b/.test(dataType);
+    if (typeof value === 'string' && (exactDecimalRequired || exactIntegerRequired)
+      && /^[+-]?\d+(?:\.\d+)?$/.test(value)) return value;
     if (typeof value === 'number') {
       if (!Number.isFinite(value)) return 'NULL';
       const significantDigits = String(value).split(/[eE]/)[0]
         .replace(/[-+.]/g, '').replace(/^0+/, '').length;
-      const exactDecimalRequired = /\b(?:decimal|numeric|money|smallmoney)\b/.test(dataType);
-      if ((Number.isInteger(value) && !Number.isSafeInteger(value))
+      if ((exactIntegerRequired && Number.isInteger(value) && !Number.isSafeInteger(value))
         || (exactDecimalRequired && (significantDigits > 15 || /e/i.test(String(value))))) {
         throw new Error(`Cannot safely copy ${column.name} as SQL because the browser cannot preserve its numeric precision.`);
       }

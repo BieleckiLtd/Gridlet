@@ -3922,31 +3922,37 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-unsafe-number");
         await ActivePanel(page).GetByTestId("query-run").ClickAsync();
         await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
-        await page.EvaluateAsync("navigator.clipboard.writeText('unchanged')");
         await CopyAsync("Copy as SQL INSERT");
-        await Assertions.Expect(page.Locator("#toast-stack"))
-            .ToContainTextAsync("cannot preserve its numeric precision");
-        Assert.Equal("unchanged", await ReadClipboardAsync());
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([UnsafeId]) VALUES\n    (9007199254740993);",
+            await ReadClipboardAsync());
 
         await page.Locator("#new-query-btn").ClickAsync();
         await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-exponential-decimal");
         await ActivePanel(page).GetByTestId("query-run").ClickAsync();
         await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
-        await page.EvaluateAsync("navigator.clipboard.writeText('unchanged')");
         await CopyAsync("Copy as SQL INSERT");
-        await Assertions.Expect(page.Locator("#toast-stack"))
-            .ToContainTextAsync("cannot preserve its numeric precision");
-        Assert.Equal("unchanged", await ReadClipboardAsync());
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([TinyAmount]) VALUES\n    (0.00000000000000000001);",
+            await ReadClipboardAsync());
 
         await page.Locator("#new-query-btn").ClickAsync();
         await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-exact-decimal");
         await ActivePanel(page).GetByTestId("query-run").ClickAsync();
         await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
-        await page.EvaluateAsync("navigator.clipboard.writeText('unchanged')");
         await CopyAsync("Copy as SQL INSERT");
-        await Assertions.Expect(page.Locator("#toast-stack"))
-            .ToContainTextAsync("cannot preserve its numeric precision");
-        Assert.Equal("unchanged", await ReadClipboardAsync());
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([ExactAmount]) VALUES\n    (123456789012345.6);",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-large-float");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([ApproximateValue]) VALUES\n    (1e+21);",
+            await ReadClipboardAsync());
 
         await page.Locator("#new-query-btn").ClickAsync();
         await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-duplicate-columns");

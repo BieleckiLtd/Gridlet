@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Text.Json.Serialization;
+
 namespace Gridlet.Models;
 
 /// <summary>Limits applied to a single ad-hoc query execution.</summary>
@@ -40,4 +43,44 @@ public sealed record QueryStreamEvent(
     int? RecordsAffected = null,
     long? DurationMs = null,
     RowIdentityInfo? RowIdentity = null,
-    IReadOnlyList<object?[]>? RowKeys = null);
+    IReadOnlyList<object?[]>? RowKeys = null)
+{
+    /// <summary>
+    /// Exact invariant text for decimal and browser-unsafe integer cells in <see cref="Rows"/>.
+    /// Browsers can use it without changing the ordinary JSON-number representation for other API
+    /// consumers.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string?[]>? ExactValues => ExactNumbers(Rows);
+
+    /// <summary>Exact invariant text for precision-sensitive values in <see cref="RowKeys"/>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string?[]>? ExactRowKeys => ExactNumbers(RowKeys);
+
+    private static IReadOnlyList<string?[]>? ExactNumbers(IReadOnlyList<object?[]>? rows)
+    {
+        if (rows is null) return null;
+        var result = new string?[rows.Count][];
+        var containsExactValue = false;
+        for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
+        {
+            var row = rows[rowIndex];
+            var values = new string?[row.Length];
+            result[rowIndex] = values;
+            for (var columnIndex = 0; columnIndex < row.Length; columnIndex++)
+            {
+                values[columnIndex] = row[columnIndex] switch
+                {
+                    decimal value => value.ToString(CultureInfo.InvariantCulture),
+                    long value when value is > 9_007_199_254_740_991 or < -9_007_199_254_740_991
+                        => value.ToString(CultureInfo.InvariantCulture),
+                    ulong value when value > 9_007_199_254_740_991
+                        => value.ToString(CultureInfo.InvariantCulture),
+                    _ => null,
+                };
+                containsExactValue |= values[columnIndex] is not null;
+            }
+        }
+        return containsExactValue ? result : null;
+    }
+}
