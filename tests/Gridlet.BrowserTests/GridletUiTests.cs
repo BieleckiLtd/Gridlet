@@ -3911,8 +3911,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await OpenQueryAsync(page, "SELECT 42");
 
         await page.GetByTestId("query-run").ClickAsync();
+        var status = page.GetByTestId("query-status");
+        await Assertions.Expect(status).ToContainTextAsync("Connection interrupted");
+        await page.WaitForTimeoutAsync(150);
+        await Assertions.Expect(status).ToContainTextAsync("Connection interrupted");
 
-        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await Assertions.Expect(status).ToHaveTextAsync("1 ms");
         await Assertions.Expect(page.GetByTestId("query-results").GetByRole(
             AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
         Assert.Equal(1, failedPoll);
@@ -3992,6 +3996,56 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
             await Assertions.Expect(page.GetByTestId("query-results").GetByRole(
                 AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+            browserPage.AssertNoUnexpectedErrors();
+        }
+        finally
+        {
+            fixture.Provider.ReleaseLongQuery();
+        }
+    }
+
+    [Fact]
+    public async Task Closing_an_aborted_query_job_tab_still_offers_server_cancellation()
+    {
+        fixture.Provider.PrepareLongQuery();
+        try
+        {
+            await using var browserPage = await fixture.NewPageAsync();
+            var page = browserPage.Page;
+            var cancellationsBefore = fixture.Provider.LongQueryCancellations;
+            await OpenQueryAsync(page, "job-wait");
+            await page.EvaluateAsync("""
+                () => {
+                  const originalFetch = window.fetch;
+                  let abortNextJobPoll = true;
+                  window.fetch = (...args) => {
+                    const url = String(args[0]);
+                    if (abortNextJobPoll && /\/query\/jobs\/[^?]+/.test(url)) {
+                      abortNextJobPoll = false;
+                      return Promise.reject(new DOMException('Detached for test', 'AbortError'));
+                    }
+                    return originalFetch(...args);
+                  };
+                }
+                """);
+            await page.GetByTestId("query-run").ClickAsync();
+            await Assertions.Expect(page.GetByTestId("query-run")).ToHaveTextAsync("Reattach");
+
+            await page.Locator("#tabbar .tab.active .tab-close").ClickAsync();
+            var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Query still running" });
+            await Assertions.Expect(dialog).ToBeVisibleAsync();
+            await dialog.GetByRole(AriaRole.Button, new() { Name = "Cancel and close", Exact = true })
+                .ClickAsync();
+
+            await Assertions.Expect(page.Locator("#tabbar .tab")).ToHaveCountAsync(0);
+            for (var attempt = 0;
+                 attempt < 50 && fixture.Provider.LongQueryCancellations == cancellationsBefore;
+                 attempt++)
+            {
+                await Task.Delay(20);
+            }
+
+            Assert.Equal(cancellationsBefore + 1, fixture.Provider.LongQueryCancellations);
             browserPage.AssertNoUnexpectedErrors();
         }
         finally

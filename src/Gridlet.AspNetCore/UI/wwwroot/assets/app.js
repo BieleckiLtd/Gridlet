@@ -10042,11 +10042,12 @@
       let terminalStatus = null;
       let terminalEvent = false;
       let reattachAvailable = false;
+      let retryingPoll = false;
       let jobId = existingJobId;
       runButton.textContent = 'Run';
       status.textContent = existingJobId ? 'Reattaching to query job…' : 'Starting query job…';
       const timer = setInterval(() => {
-        if (!terminalEvent && !status.textContent.startsWith('Cancelling')) {
+        if (!terminalEvent && !retryingPoll && !status.textContent.startsWith('Cancelling')) {
           status.textContent = `Running in background… ${((performance.now() - startedAt) / 1000).toFixed(1)} s`;
         }
       }, 100);
@@ -10147,8 +10148,10 @@
             pollFailures = 0;
           } catch (err) {
             if (err.name === 'AbortError' || err.status === 404 || ++pollFailures > 3) throw err;
+            retryingPoll = true;
             status.textContent = `Connection interrupted — retrying query job (${pollFailures}/3)…`;
             await waitBeforeRetry(250 * (2 ** (pollFailures - 1)));
+            retryingPoll = false;
             continue;
           }
           for (const event of snapshot.events || []) addEvent(event);
@@ -10249,7 +10252,7 @@
     };
 
     tab.beforeClose = async () => {
-      if (tab.isRunning && tab.detachableJob) {
+      if (tab.detachableJob && activeJobId) {
         const cancel = await new Promise((resolve) => {
           let decision = false;
           modal('Query still running',
