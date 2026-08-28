@@ -3851,6 +3851,11 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var copyBounds = await copyButton.BoundingBoxAsync();
         var menuBounds = await keyboardMenu.BoundingBoxAsync();
         Assert.InRange(Math.Abs(menuBounds!.X - copyBounds!.X), 0, 2);
+        await keyboardMenu.GetByRole(AriaRole.Menuitem).Last.PressAsync("Tab");
+        await Assertions.Expect(keyboardMenu).ToBeHiddenAsync();
+        await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "false");
+        await copyButton.PressAsync("Enter");
+        keyboardMenu = page.Locator(".context-menu");
         await keyboardMenu.PressAsync("Escape");
         await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "false");
 
@@ -3946,6 +3951,14 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             "INSERT INTO \"TargetTable\" (\"Odd]Name\", \"Note\", \"Active\", \"Missing\", \"Payload\") VALUES\n" +
             "    ('Łódź O''Brien', 'line 1\nline | <2>', 1, NULL, X'00FF');",
             await ReadClipboardAsync());
+
+        await page.EvaluateAsync(
+            "Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })");
+        await CopyAsync("Copy as JSON");
+        await Assertions.Expect(page.Locator("#toast-stack"))
+            .ToContainTextAsync("Copy failed - clipboard unavailable.");
+        Assert.DoesNotContain("Cannot read properties", await page.Locator("#toast-stack").InnerTextAsync(),
+            StringComparison.OrdinalIgnoreCase);
         browserPage.AssertNoUnexpectedErrors();
     }
 

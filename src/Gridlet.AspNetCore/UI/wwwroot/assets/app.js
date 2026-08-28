@@ -450,6 +450,7 @@
     else previousMenu?.remove();
     const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
     let menu;
+    let closeOnFocusOut;
     let dismissed = false;
     const dismiss = (restoreFocus = false) => {
       dismissed = true;
@@ -460,6 +461,8 @@
       }
       document.removeEventListener('pointerdown', close, true);
       document.removeEventListener('keydown', close, true);
+      document.removeEventListener('focusin', close, true);
+      if (closeOnFocusOut) menu?.removeEventListener('focusout', closeOnFocusOut);
     };
     menu = h('div', { class: 'context-menu', role: 'menu' }, items.map((item) =>
       item.separator ? h('div', { class: 'context-menu-separator', role: 'separator' }) : h('button', {
@@ -470,6 +473,10 @@
         onclick: () => { dismiss(true); item.action(); },
       })));
     menu._dismiss = dismiss;
+    closeOnFocusOut = () => setTimeout(() => {
+      if (!dismissed && !menu.contains(document.activeElement)) dismiss();
+    });
+    menu.addEventListener('focusout', closeOnFocusOut);
     document.body.append(menu);
     const bounds = menu.getBoundingClientRect();
     const triggerBounds = trigger?.getBoundingClientRect();
@@ -483,13 +490,12 @@
     const close = (closeEvent) => {
       if (closeEvent.type === 'keydown' && closeEvent.key !== 'Escape') return;
       if (closeEvent.type === 'pointerdown' && menu.contains(closeEvent.target)) return;
+      if (closeEvent.type === 'focusin' && menu.contains(closeEvent.target)) return;
       dismiss(closeEvent.type === 'keydown');
     };
-    setTimeout(() => {
-      if (dismissed) return;
-      document.addEventListener('pointerdown', close, true);
-      document.addEventListener('keydown', close, true);
-    });
+    document.addEventListener('pointerdown', close, true);
+    document.addEventListener('keydown', close, true);
+    document.addEventListener('focusin', close, true);
   }
 
   // ---- API client -----------------------------------------------------------
@@ -11514,8 +11520,8 @@
   }
 
   async function copyResultData(columns, rows, format, definition = null) {
+    let content;
     try {
-      let content;
       if (format === 'sql') {
         const providerName = definition?.scope
           ? connectionFor(definition.scope).providerName
@@ -11526,11 +11532,20 @@
       } else {
         content = JSON.stringify(resultRowsAsObjects(columns, rows), null, 2);
       }
+    } catch (err) {
+      toast(err?.message || 'Copy failed.');
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      toast('Copy failed - clipboard unavailable.');
+      return;
+    }
+    try {
       await navigator.clipboard.writeText(content);
       toast(`${rows.length} loaded row${rows.length === 1 ? '' : 's'} copied as ${
         format === 'sql' ? 'SQL INSERT' : format === 'json' ? 'JSON' : 'Markdown'}.`, false);
-    } catch (err) {
-      toast(err?.message || 'Copy failed - clipboard unavailable.');
+    } catch {
+      toast('Copy failed - clipboard unavailable.');
     }
   }
 
