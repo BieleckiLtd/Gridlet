@@ -40,6 +40,12 @@ internal sealed class GridletTableExportResult(
     /// </summary>
     internal void ValidateFirstPage(CancellationToken cancellationToken)
     {
+        if (firstPage.RowKeys is { } rowKeys && rowKeys.Count != firstPage.Rows.Count)
+        {
+            throw new GridletValidationException(
+                "The data provider returned incomplete row identities during this export.");
+        }
+
         if (format == "json")
         {
             var buffer = new ArrayBufferWriter<byte>();
@@ -210,21 +216,24 @@ internal sealed class GridletTableExportResult(
                 throw new GridletValidationException(
                     "The data provider returned invalid paging metadata during this export.");
             }
-            if (page.RowKeys is { Count: > 0 } rowKeys)
+            if (page.RowKeys is { } rowKeys)
             {
                 if (rowKeys.Count != page.Rows.Count)
                 {
                     throw new GridletValidationException(
                         "The data provider returned incomplete row identities during this export.");
                 }
-                var boundary = JsonSerializer.Serialize(
-                    new[] { rowKeys[0], rowKeys[^1] }, JsonSerializerOptions.Web);
-                if (string.Equals(boundary, previousBoundary, StringComparison.Ordinal))
+                if (rowKeys.Count > 0)
                 {
-                    throw new GridletValidationException(
-                        "The data provider repeated a page without making export progress.");
+                    var boundary = JsonSerializer.Serialize(
+                        new[] { rowKeys[0], rowKeys[^1] }, JsonSerializerOptions.Web);
+                    if (string.Equals(boundary, previousBoundary, StringComparison.Ordinal))
+                    {
+                        throw new GridletValidationException(
+                            "The data provider repeated a page without making export progress.");
+                    }
+                    previousBoundary = boundary;
                 }
-                previousBoundary = boundary;
             }
             await consume(page);
             exported += page.Rows.Count;

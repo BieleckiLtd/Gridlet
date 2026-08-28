@@ -403,6 +403,12 @@ public sealed class FakeGridletProvider :
             ? new TableDataPage(
                 [new ResultColumn("Value", "int")],
                 [[1]], request.Page, request.PageSize, TotalRows: -1)
+            : name == "IncompleteRowKeysExport"
+            ? new TableDataPage(
+                [new ResultColumn("Id", "int")],
+                [[1], [2]], request.Page, request.PageSize, TotalRows: 2,
+                RowIdentity: new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+                RowKeys: [[1]])
             : name == "UnserializableExport"
             ? new TableDataPage(
                 [new ResultColumn("Value", "object")],

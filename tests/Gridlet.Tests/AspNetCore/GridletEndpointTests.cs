@@ -416,6 +416,23 @@ public class GridletEndpointTests
         Assert.Equal([(1, 500)], fake.DataPageRequests);
     }
 
+    [Theory]
+    [InlineData("csv")]
+    [InlineData("json")]
+    public async Task Export_probe_rejects_incomplete_first_page_row_identities(string format)
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/"
+            + $"IncompleteRowKeysExport/data/export?format={format}&probe=true");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Null(response.Content.Headers.ContentDisposition);
+        Assert.Contains("incomplete row identities", await response.Content.ReadAsStringAsync());
+    }
+
     [Fact]
     public async Task Export_redacts_an_unexpected_first_page_provider_failure()
     {
