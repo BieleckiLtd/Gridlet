@@ -942,9 +942,14 @@ public class GridletEndpointTests
         Assert.Contains(receiving!.Events, queryEvent => queryEvent.Type == "resultSet");
 
         var cancelled = await client.DeleteAsync(path);
+        var acknowledgement = await cancelled.Content.ReadFromJsonAsync<QueryJobCancelResponse>();
         var (completed, events) = await AwaitQueryJobAsync(client, created.Id);
 
         Assert.Equal(HttpStatusCode.OK, cancelled.StatusCode);
+        Assert.NotNull(acknowledgement);
+        Assert.Equal(created.Id, acknowledgement.Id);
+        Assert.Equal("cancelling", acknowledgement.Status);
+        Assert.True(acknowledgement.EventCount >= receiving.NextEventIndex);
         Assert.Equal("cancelled", completed.Status);
         Assert.Contains(events, queryEvent => queryEvent.Type == "cancelled");
         Assert.Equal(1, fake.LongQueryCancellations);

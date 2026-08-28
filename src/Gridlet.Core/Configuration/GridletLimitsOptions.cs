@@ -55,9 +55,10 @@ public sealed class GridletLimitsOptions
     public int MaxQueryJobs { get; set; } = 8;
 
     /// <summary>
-    /// Maximum query jobs one authenticated owner (or the shared anonymous workspace) may retain.
-    /// The effective value never exceeds <see cref="MaxQueryJobs"/>. Defaults to <c>4</c> and must
-    /// be at least <c>1</c>.
+    /// Maximum query jobs one authenticated owner may retain. Anonymous callers share the global
+    /// <see cref="MaxQueryJobs"/> capacity because there is no owner boundary between them. The
+    /// effective value never exceeds <see cref="MaxQueryJobs"/>. Defaults to <c>4</c> and must be
+    /// at least <c>1</c>.
     /// </summary>
     public int MaxQueryJobsPerOwner { get; set; } = 4;
 

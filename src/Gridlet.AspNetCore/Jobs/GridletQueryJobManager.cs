@@ -157,7 +157,7 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
         }
     }
 
-    public QueryJobResponse? Cancel(
+    public QueryJobCancelResponse? Cancel(
         string id,
         string? owner,
         string connection,
@@ -174,7 +174,7 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
         }
 
         CancellationTokenSource? cancellation = null;
-        QueryJobResponse response;
+        QueryJobCancelResponse response;
         lock (job.Gate)
         {
             if (job.Disposed)
@@ -187,7 +187,8 @@ internal sealed class GridletQueryJobManager : IAsyncDisposable
                 job.NotifyLocked();
                 cancellation = job.Cancellation;
             }
-            response = SnapshotLocked(job, after: 0, includeEvents: false);
+            response = new QueryJobCancelResponse(
+                job.Id, job.Status, job.StartedAt, job.CompletedAt, job.Events.Count);
         }
         try { cancellation?.Cancel(); }
         catch (ObjectDisposedException) { /* shutdown or terminal eviction won the race */ }
