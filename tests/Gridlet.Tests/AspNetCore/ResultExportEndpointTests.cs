@@ -184,6 +184,22 @@ public sealed class ResultExportEndpointTests
             inferredReader.Schema.DataFields[1], inferredDates.AsMemory());
         Assert.Equal(new DateTime(1, 1, 1), inferredDates[0]);
         Assert.Equal(new DateTime(9999, 12, 31, 23, 59, 59).AddTicks(9_999_990), inferredDates[1]);
+
+        var dateResponse = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
+        {
+            columns = new[] { new { name = "BusinessDate", dataTypeName = "date" } },
+            rows = new object?[][] { ["2026-08-24"], [null] },
+            providerName = "SqlServer",
+        });
+        Assert.Equal(HttpStatusCode.OK, dateResponse.StatusCode);
+        await using var dateReader = await ParquetReader.CreateAsync(
+            new MemoryStream(await dateResponse.Content.ReadAsByteArrayAsync()));
+        using var dateRowGroup = dateReader.OpenRowGroupReader(0);
+        var dates = new DateTime?[2];
+        await dateRowGroup.ReadAsync<DateTime>(
+            Assert.Single(dateReader.Schema.DataFields), dates.AsMemory());
+        Assert.Equal(new DateTime(2026, 8, 24), dates[0]);
+        Assert.Null(dates[1]);
     }
 
     [Fact]
@@ -232,7 +248,12 @@ public sealed class ResultExportEndpointTests
         await using var _ = app;
 
         var unknown = await client.PostAsJsonAsync("/gridlet/api/exports/csv", Request);
-        var tooMany = await client.PostAsJsonAsync("/gridlet/api/exports/xlsx", Request);
+        var comparisonSized = await client.PostAsJsonAsync("/gridlet/api/exports/xlsx", Request);
+        var tooMany = await client.PostAsJsonAsync("/gridlet/api/exports/xlsx", new
+        {
+            columns = new[] { new { name = "A", dataTypeName = "int" } },
+            rows = new object?[][] { [1], [2], [3] },
+        });
         var malformed = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
         {
             columns = new[] { new { name = "A", dataTypeName = "int" } },
@@ -276,8 +297,9 @@ public sealed class ResultExportEndpointTests
 
         Assert.Equal(HttpStatusCode.BadRequest, unknown.StatusCode);
         Assert.Contains("xlsx", await unknown.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.OK, comparisonSized.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, tooMany.StatusCode);
-        Assert.Contains("1-row limit", await tooMany.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("2-row limit", await tooMany.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
         Assert.Contains("1 were expected", await malformed.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, wrongType.StatusCode);

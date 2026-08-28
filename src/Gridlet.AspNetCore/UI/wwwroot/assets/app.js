@@ -11730,6 +11730,10 @@
       }),
     });
     if (!response.ok) {
+      if (response.status === 413) {
+        throw new Error(
+          'This result set is too large for Excel or Parquet export. Lower the row cap and try again.');
+      }
       let message = `${response.status} ${response.statusText}`;
       try {
         const body = await response.json();

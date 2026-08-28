@@ -32,6 +32,9 @@ internal static partial class GridletResultExporter
     private const string PackageRelationshipsNamespace =
         "http://schemas.openxmlformats.org/package/2006/relationships";
 
+    internal static int MaxRowsForQueryLimit(int maxQueryResultRows)
+        => (int)Math.Min((long)maxQueryResultRows * 2, int.MaxValue);
+
     public static void Validate(ResultExportRequest request, int maxRows, string format)
     {
         if (request.Columns is not { Length: > 0 })

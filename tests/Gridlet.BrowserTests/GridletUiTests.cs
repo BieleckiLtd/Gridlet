@@ -3818,7 +3818,17 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var parquet = await ReadDownloadBytesAsync(parquetDownload);
         Assert.Equal("PAR1", System.Text.Encoding.ASCII.GetString(parquet, 0, 4));
         Assert.Equal("PAR1", System.Text.Encoding.ASCII.GetString(parquet, parquet.Length - 4, 4));
-        browserPage.AssertNoUnexpectedErrors();
+
+        await page.RouteAsync("**/exports/xlsx", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 413,
+            ContentType = "text/plain",
+            Body = "",
+        }));
+        await page.GetByTestId("export-xlsx").ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack")).ToContainTextAsync(
+            "This result set is too large for Excel or Parquet export. Lower the row cap and try again.");
+        browserPage.AssertNoUnexpectedErrors("413 (Payload Too Large)");
     }
 
     [Fact]

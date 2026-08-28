@@ -27,8 +27,11 @@ internal static partial class GridletApiEndpoints
                 throw new GridletValidationException(
                     "The result export format must be 'xlsx' or 'parquet'.");
             }
-            GridletResultExporter.Validate(
-                body, options.CurrentValue.Limits.MaxQueryResultRows, normalizedFormat);
+            // A comparison reads at most one capped result from each side. Its source-only and
+            // target-only rows can therefore produce a legitimate diff up to twice the query cap.
+            var maxRows = GridletResultExporter.MaxRowsForQueryLimit(
+                options.CurrentValue.Limits.MaxQueryResultRows);
+            GridletResultExporter.Validate(body, maxRows, normalizedFormat);
             var content = normalizedFormat == "xlsx"
                 ? GridletResultExporter.WriteExcel(body, cancellationToken)
                 : await GridletResultExporter.WriteParquetAsync(body, cancellationToken);

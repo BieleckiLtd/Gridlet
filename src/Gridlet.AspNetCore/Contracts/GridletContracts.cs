@@ -220,7 +220,10 @@ public sealed record QueryJobCancelResponse(
     DateTimeOffset? CompletedAt,
     int EventCount);
 
-/// <summary>A bounded result set submitted for conversion to a richer download format.</summary>
+/// <summary>
+/// A bounded result set or two-sided comparison diff submitted for conversion to a richer
+/// download format.
+/// </summary>
 public sealed record ResultExportRequest(
     ResultColumn[]? Columns,
     JsonElement[][]? Rows,
