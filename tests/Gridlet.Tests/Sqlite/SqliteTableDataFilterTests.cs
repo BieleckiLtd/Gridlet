@@ -43,6 +43,8 @@ public sealed class SqliteTableDataFilterTests : IAsyncLifetime
                 ('Wide widget', 50, NULL, 0, '7', 8),
                 ('Gadget', 12.5, '50% off', 1, '008', 7),
                 ('Gizmo', 100, 'discontinued', 0, '009', 9);
+            CREATE VIRTUAL TABLE SearchProducts USING fts5(Value);
+            INSERT INTO SearchProducts (Value) VALUES ('Widget');
             """;
         await command.ExecuteNonQueryAsync();
     }
@@ -187,6 +189,15 @@ public sealed class SqliteTableDataFilterTests : IAsyncLifetime
     public async Task A_column_profile_rejects_an_unknown_column()
         => await Assert.ThrowsAsync<GridletValidationException>(() => data.GetColumnProfileAsync(
             context, "main", "Products", new ColumnProfileRequest("Notes; DROP TABLE Products")));
+
+    [Fact]
+    public async Task A_column_profile_rejects_filters_on_hidden_virtual_table_columns()
+        => await Assert.ThrowsAsync<GridletValidationException>(() => data.GetColumnProfileAsync(
+            context,
+            "main",
+            "SearchProducts",
+            new ColumnProfileRequest(
+                "Value", Filters: [new TableDataFilter("SearchProducts", FilterOperator.Equals, "1")])));
 
     [Fact]
     public async Task An_unknown_filter_column_is_rejected()

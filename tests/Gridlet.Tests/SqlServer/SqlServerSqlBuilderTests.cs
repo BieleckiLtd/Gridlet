@@ -79,6 +79,7 @@ public class SqlServerSqlBuilderTests
     [Theory]
     [InlineData("int", true, true)]
     [InlineData("bit", true, false)]
+    [InlineData("timestamp", true, false)]
     [InlineData("sql_variant", true, true)]
     [InlineData("varbinary", true, false)]
     [InlineData("xml", false, false)]

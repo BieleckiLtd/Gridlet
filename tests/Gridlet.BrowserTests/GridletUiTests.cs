@@ -3580,6 +3580,39 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Preserves_exact_profile_counts_beyond_javascript_safe_integers()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/objects/dbo/Customers/profile?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = "{\"column\":\"Id\",\"dataType\":\"bigint\","
+                    + "\"totalCount\":\"9007199254740993\",\"nullCount\":\"1\","
+                    + "\"distinctCount\":\"9007199254740992\",\"minimum\":1,\"maximum\":2,"
+                    + "\"topValues\":[{\"value\":1,\"count\":\"9007199254740992\"}]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Profile", Exact = true }).ClickAsync();
+        await panel.GetByTestId("profile-run").ClickAsync();
+
+        await Assertions.Expect(panel.GetByTestId("profile-status"))
+            .ToHaveTextAsync("Profiled 9,007,199,254,740,993 rows");
+        await Assertions.Expect(panel.Locator("[data-profile-metric='non-null']"))
+            .ToContainTextAsync("9,007,199,254,740,992");
+        await Assertions.Expect(panel.Locator("[data-profile-metric='distinct']"))
+            .ToContainTextAsync("9,007,199,254,740,992");
+        await Assertions.Expect(panel.Locator(".profile-top tbody"))
+            .ToContainTextAsync("9,007,199,254,740,992");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Profiles_the_same_filtered_row_scope_as_the_data_grid()
     {
         await using var browserPage = await fixture.NewPageAsync();

@@ -154,7 +154,8 @@ public sealed class SqliteTableDataService : ITableDataService
         }
 
         var quotedColumn = SqliteIdentifier.Quote(column.Name);
-        var filter = SqliteFilterBuilder.Build(request.Filters, definition.Columns);
+        var filter = SqliteFilterBuilder.Build(
+            request.Filters, definition.Columns.Where(candidate => !candidate.IsHidden).ToArray());
         await using var aggregate = connection.CreateCommand();
         aggregate.CommandText =
             $"SELECT COUNT(*), COUNT({quotedColumn}), COUNT(DISTINCT {quotedColumn}), " +

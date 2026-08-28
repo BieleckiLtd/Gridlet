@@ -356,11 +356,19 @@ public class GridletEndpointTests
         var filter = Uri.EscapeDataString(
             """[{"column":"Name","operator":"contains","value":"ada"}]""");
 
-        var profile = await client.GetFromJsonAsync<ColumnProfile>(
+        var response = await client.GetAsync(
             "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/profile"
             + $"?column=Status&topValues=999&filter={filter}");
+        var payload = await response.Content.ReadAsStringAsync();
+        var profile = JsonSerializer.Deserialize<ColumnProfile>(
+            payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
+        response.EnsureSuccessStatusCode();
         Assert.NotNull(profile);
+        using var document = JsonDocument.Parse(payload);
+        Assert.Equal(JsonValueKind.String, document.RootElement.GetProperty("totalCount").ValueKind);
+        Assert.Equal(JsonValueKind.String,
+            document.RootElement.GetProperty("topValues")[0].GetProperty("count").ValueKind);
         Assert.Equal("Status", profile.Column);
         Assert.Equal(1, profile.TotalCount);
         Assert.Equal(0, profile.NullCount);
@@ -386,7 +394,7 @@ public class GridletEndpointTests
             "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/profile");
         var oversized = await client.GetAsync(
             "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/profile?column="
-            + new string('a', 257));
+            + new string('a', 129));
 
         Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, oversized.StatusCode);

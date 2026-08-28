@@ -5300,9 +5300,18 @@
         run.disabled = running;
         cancel.hidden = !running;
       };
-      const format = (value) => value == null ? 'Unavailable' : Number(value).toLocaleString();
-      const percent = (count, total) => total
-        ? `${((Number(count) / Number(total)) * 100).toFixed(1)}%` : '0.0%';
+      const exactCount = (value) => BigInt(String(value));
+      const format = (value) => value == null ? 'Unavailable' : exactCount(value).toLocaleString();
+      const percent = (count, total) => {
+        const denominator = exactCount(total);
+        if (!denominator) return '0.0%';
+        const tenths = (exactCount(count) * 1000n + denominator / 2n) / denominator;
+        return `${tenths / 10n}.${tenths % 10n}%`;
+      };
+      const exportCount = (value) => {
+        const count = exactCount(value);
+        return count <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(count) : count.toString();
+      };
       let request = 0;
       const load = async () => {
         const current = ++request;
@@ -5325,7 +5334,7 @@
             signal: controller.signal,
           });
           if (current !== request) return;
-          const nonNull = Number(profile.totalCount) - Number(profile.nullCount);
+          const nonNull = exactCount(profile.totalCount) - exactCount(profile.nullCount);
           const cards = h('div', { class: 'profile-cards' },
             h('div', { class: 'profile-card', 'data-profile-metric': 'rows' }, h('span', { text: 'Rows' }),
               h('strong', { text: format(profile.totalCount) })),
@@ -5343,7 +5352,7 @@
             h('div', {}, h('span', { class: 'muted', text: 'Maximum' }),
               h('code', { text: dataCompareValueText(profile.maximum) })));
           const topRows = (profile.topValues || []).map((entry) => [
-            entry.value, Number(entry.count),
+            entry.value, exportCount(entry.count),
             percent(entry.count, profile.totalCount),
           ]);
           const topHeader = h('div', { class: 'profile-section-title' },
@@ -5358,7 +5367,7 @@
           for (const row of topRows) {
             topBody.append(h('tr', {},
               h('td', { class: 'mono', text: dataCompareValueText(row[0]) }),
-              h('td', { text: row[1].toLocaleString() }),
+              h('td', { text: format(row[1]) }),
               h('td', { text: row[2] })));
           }
           const topContent = topRows.length
@@ -5374,7 +5383,7 @@
               h('span', { class: 'muted', text: useFilters.checked ? 'Current filtered rows' : 'All rows' })),
             profile.limitation ? h('div', { class: 'warning-box', text: profile.limitation }) : null,
             cards, range, topSection);
-          status.textContent = `Profiled ${Number(profile.totalCount).toLocaleString()} row${Number(profile.totalCount) === 1 ? '' : 's'}`;
+          status.textContent = `Profiled ${format(profile.totalCount)} row${exactCount(profile.totalCount) === 1n ? '' : 's'}`;
         } catch (err) {
           if (current !== request || err.name === 'AbortError') return;
           status.textContent = 'Profile unavailable';

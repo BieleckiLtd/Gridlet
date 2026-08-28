@@ -268,12 +268,18 @@ internal static partial class GridletApiEndpoints
             {
                 throw new GridletValidationException("A profile column is required.");
             }
-            if (column.Length > 256)
+            var resolved = resolver.Resolve(connection, database);
+            var maximumColumnLength = resolved.Provider.ProviderName switch
+            {
+                GridletProviderNames.SqlServer => 128,
+                GridletProviderNames.Sqlite => 255,
+                _ => 256,
+            };
+            if (column.Length > maximumColumnLength)
             {
                 throw new GridletValidationException("The profile column name is too long.");
             }
 
-            var resolved = resolver.Resolve(connection, database);
             var profile = await resolved.Provider.Data.GetColumnProfileAsync(
                 resolved.Context,
                 schema,

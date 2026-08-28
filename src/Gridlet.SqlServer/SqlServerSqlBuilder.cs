@@ -10,7 +10,7 @@ public static class SqlServerSqlBuilder
         "bigint", "binary", "bit", "char", "date", "datetime", "datetime2",
         "datetimeoffset", "decimal", "float", "int", "money", "nchar", "numeric",
         "nvarchar", "real", "smalldatetime", "smallint", "smallmoney", "sql_variant",
-        "time", "tinyint", "uniqueidentifier", "varbinary", "varchar",
+        "time", "timestamp", "tinyint", "uniqueidentifier", "varbinary", "varchar",
     };
 
     private static readonly HashSet<string> ProfileRangeTypes = new(StringComparer.OrdinalIgnoreCase)

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Gridlet.Models;
 
 /// <summary>One key and its configured human-readable label.</summary>
@@ -39,7 +41,10 @@ public enum FilterOperator
 public sealed record TableDataFilter(string Column, FilterOperator Operator, string? Value = null);
 
 /// <summary>One value and its exact frequency within a column profile.</summary>
-public sealed record ColumnProfileValue(object? Value, long Count);
+public sealed record ColumnProfileValue(
+    object? Value,
+    [property: JsonNumberHandling(JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.WriteAsString)]
+    long Count);
 
 /// <summary>Requests exact aggregate statistics for one table or view column.</summary>
 public sealed record ColumnProfileRequest(
@@ -59,8 +64,11 @@ public sealed record ColumnProfileRequest(
 public sealed record ColumnProfile(
     string Column,
     string DataType,
+    [property: JsonNumberHandling(JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.WriteAsString)]
     long TotalCount,
+    [property: JsonNumberHandling(JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.WriteAsString)]
     long NullCount,
+    [property: JsonNumberHandling(JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.WriteAsString)]
     long? DistinctCount,
     object? Minimum,
     object? Maximum,
