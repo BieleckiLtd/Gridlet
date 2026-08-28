@@ -782,6 +782,17 @@ public sealed class FakeGridletProvider :
             yield break;
         }
 
+        if (sql == "copy-invalid-binary")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("Payload", "varbinary(max)", IsBinary: true)]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [["not-base64!!"]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
         // "many:N" streams N rows in batches, to prove uncapped streaming past the global default.
         if (sql.StartsWith("many:", StringComparison.Ordinal) &&
             int.TryParse(sql["many:".Length..], out var total))

@@ -11520,7 +11520,7 @@
         const providerName = definition?.scope
           ? connectionFor(definition.scope).providerName
           : '';
-        content = resultRowsAsSqlInsert(columns, rows, '[TargetTable]', providerName);
+        content = resultRowsAsSqlInsert(columns, rows, 'TargetTable', providerName);
       } else if (format === 'markdown') {
         content = resultRowsAsMarkdown(columns, rows);
       } else {
@@ -11563,7 +11563,7 @@
     const names = uniqueNames.map((name) => quoteSqlIdentifier(name, providerName)).join(', ');
     const values = rows.map((row) => '    (' + columns.map((column, index) =>
       resultSqlLiteral(row[index], column, providerName)).join(', ') + ')');
-    return `INSERT INTO ${target} (${names}) VALUES\n${values.join(',\n')};`;
+    return `INSERT INTO ${quoteSqlIdentifier(target, providerName)} (${names}) VALUES\n${values.join(',\n')};`;
   }
 
   function quoteSqlIdentifier(value, providerName) {
@@ -11598,7 +11598,9 @@
         const bytes = Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
         const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('').toUpperCase();
         return provider.includes('sqlite') ? `X'${hex}'` : `0x${hex}`;
-      } catch { /* malformed binary values fall back to an escaped string literal */ }
+      } catch {
+        throw new Error(`Cannot safely copy ${column.name} as SQL because its binary value is malformed.`);
+      }
     }
 
     const text = typeof value === 'object' ? JSON.stringify(value) : String(value);

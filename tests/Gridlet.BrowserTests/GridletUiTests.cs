@@ -3926,6 +3926,16 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToContainTextAsync("duplicate column names");
         Assert.Equal("unchanged", await ReadClipboardAsync());
 
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-invalid-binary");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await page.EvaluateAsync("navigator.clipboard.writeText('unchanged')");
+        await CopyAsync("Copy as SQL INSERT");
+        await Assertions.Expect(page.Locator("#toast-stack"))
+            .ToContainTextAsync("binary value is malformed");
+        Assert.Equal("unchanged", await ReadClipboardAsync());
+
         await page.Locator("#connection-select").SelectOptionAsync("SQLite");
         await page.Locator("#new-query-btn").ClickAsync();
         await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-formats");
@@ -3933,7 +3943,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
         await CopyAsync("Copy as SQL INSERT");
         Assert.Equal(
-            "INSERT INTO [TargetTable] (\"Odd]Name\", \"Note\", \"Active\", \"Missing\", \"Payload\") VALUES\n" +
+            "INSERT INTO \"TargetTable\" (\"Odd]Name\", \"Note\", \"Active\", \"Missing\", \"Payload\") VALUES\n" +
             "    ('Łódź O''Brien', 'line 1\nline | <2>', 1, NULL, X'00FF');",
             await ReadClipboardAsync());
         browserPage.AssertNoUnexpectedErrors();
