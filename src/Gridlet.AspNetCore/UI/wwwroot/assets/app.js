@@ -650,6 +650,16 @@
 
   const scopeOf = () => ({ connection: state.connection, database: state.database });
   const scopeKey = (scope) => `${scope.connection} ${scope.database}`;
+  const invalidateScopeEntries = (cache, scope) => {
+    const prefix = `${scopeKey(scope)} `.toLowerCase();
+    for (const key of cache.keys()) {
+      if (key.startsWith(prefix)) cache.delete(key);
+    }
+  };
+  const invalidateScopeMetadata = (scope) => {
+    invalidateScopeEntries(state.structures, scope);
+    invalidateScopeEntries(state.incomingRelationships, scope);
+  };
   const sameScope = (a, b) => a.connection === b.connection && a.database === b.database;
   // Tabs without a scope (published APIs, API requests) are never out of context.
   const isCurrentScope = (scope) => !scope || sameScope(scope, state);
@@ -1793,6 +1803,9 @@
     }
     // Tabs on other scopes complete their suggestions from this cache.
     state.objectsByScope.set(scopeKey(scope), objects);
+    // Incoming relationships are assembled from every table definition in the scope. A tree
+    // refresh commonly follows DDL, so even an unchanged object list can conceal new/dropped FKs.
+    invalidateScopeMetadata(scope);
     if (!sameScope(scope, state)) return;
     state.objects = objects;
     state.schemas = schemas;
@@ -5105,7 +5118,10 @@
     let activeDataLoad = null;
 
     const ensureStructure = () => (structurePromise ??= api(urls.structure(o.schema, o.name)));
-    const invalidateStructure = () => { structurePromise = null; };
+    const invalidateStructure = () => {
+      structurePromise = null;
+      invalidateScopeMetadata(scope);
+    };
 
     const openImportDialog = () => {
       const file = h('input', {
@@ -5279,10 +5295,17 @@
         const targetText = followable.length === 1
           ? `${followable[0].referencedSchema}.${followable[0].referencedTable}`
           : `${followable.length} referenced tables`;
+        const keyText = followable.length === 1
+          ? followable[0].columns.map((pair) => {
+            const index = data.columns.findIndex((candidate) =>
+              candidate.name.toLowerCase() === pair.column.toLowerCase());
+            return `${pair.column}=${dataCompareValueText(row[index])}`;
+          }).join(', ')
+          : `${column.name}=${dataCompareValueText(value)}`;
         const link = h('button', {
           type: 'button', class: 'fk-follow',
-          title: `Follow foreign key to ${targetText}`,
-          'aria-label': `Follow ${column.name} value ${String(value)} to ${targetText}`,
+          title: `Follow ${keyText} to ${targetText}`,
+          'aria-label': `Follow ${keyText} to ${targetText}`,
           onclick: (event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -5294,7 +5317,9 @@
           },
         }, '↗');
         cell.classList.add('foreign-key-cell');
-        cell.append(link);
+        const content = h('span', { class: 'foreign-key-content' });
+        content.append(...cell.childNodes, link);
+        cell.append(content);
         return cell;
       };
       const resolveFriendlyValues = async (rows) => {
@@ -5408,7 +5433,10 @@
       const incomingMetadataKey = `${scopeKey(scope)} ${o.schema}.${o.name}`.toLowerCase();
       let incomingMetadataPromise = state.incomingRelationships.get(incomingMetadataKey) || null;
       const loadIncomingMetadata = () => {
-        if (incomingMetadataPromise) return incomingMetadataPromise;
+        if (incomingMetadataPromise
+          && state.incomingRelationships.get(incomingMetadataKey) === incomingMetadataPromise) {
+          return incomingMetadataPromise;
+        }
         incomingMetadataPromise = (async () => {
           const objects = (await objectsForScope(scope)).filter((candidate) =>
             candidate.type === 'Table' && !candidate.isInternal && !isVirtualObject(candidate));

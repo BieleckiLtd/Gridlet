@@ -948,7 +948,11 @@ td.null { color: var(--muted); font-style: italic; }
 .fk-display-invalid { color: var(--danger); }
 .fk-display-invalid .mini-btn,
 .structure td > .mini-btn { margin-left: 6px; }
-.foreign-key-cell { position: relative; padding-right: 30px !important; }
+.foreign-key-cell { padding: 0 !important; }
+.foreign-key-content {
+  position: relative; display: block; box-sizing: border-box; min-height: 27px;
+  padding: 3px 30px 3px 7px;
+}
 .fk-follow {
   position: absolute; top: 0; right: 0; bottom: 0; width: 27px; padding: 0;
   border: 0; border-left: 1px solid var(--border); border-radius: 0;
