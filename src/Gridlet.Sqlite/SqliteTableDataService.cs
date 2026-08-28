@@ -179,7 +179,7 @@ public sealed class SqliteTableDataService : ITableDataService
         await using var top = connection.CreateCommand();
         top.CommandText =
             $"SELECT {quotedColumn}, COUNT(*) AS frequency FROM {qualifiedName}{filter.Clause} " +
-            $"GROUP BY {quotedColumn} ORDER BY frequency DESC, {quotedColumn} LIMIT @topValues;";
+            $"GROUP BY {quotedColumn} ORDER BY 2 DESC, 1 ASC LIMIT @topValues;";
         AddFilterParameters(top, filter.Parameters);
         top.Parameters.AddWithValue("@topValues", Math.Clamp(request.TopValues, 1, 50));
         var topValues = new List<ColumnProfileValue>();

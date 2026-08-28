@@ -133,7 +133,7 @@ public static class SqlServerSqlBuilder
         var quotedColumn = SqlServerIdentifier.Quote(column);
         return $"SELECT TOP (@topValues) {quotedColumn}, COUNT_BIG(*) AS frequency " +
             $"FROM {target}{whereClause} GROUP BY {quotedColumn} " +
-            $"ORDER BY frequency DESC, {quotedColumn} ASC;";
+            "ORDER BY 2 DESC, 1 ASC;";
     }
 
     /// <summary>

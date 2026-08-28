@@ -43,6 +43,8 @@ public sealed class SqliteTableDataFilterTests : IAsyncLifetime
                 ('Wide widget', 50, NULL, 0, '7', 8),
                 ('Gadget', 12.5, '50% off', 1, '008', 7),
                 ('Gizmo', 100, 'discontinued', 0, '009', 9);
+            CREATE TABLE FrequencyValues (frequency TEXT);
+            INSERT INTO FrequencyValues (frequency) VALUES ('b'), ('a');
             CREATE VIRTUAL TABLE SearchProducts USING fts5(Value);
             INSERT INTO SearchProducts (Value) VALUES ('Widget');
             """;
@@ -183,6 +185,16 @@ public sealed class SqliteTableDataFilterTests : IAsyncLifetime
         Assert.Equal(12.5d, Convert.ToDouble(profile.Maximum));
         var top = Assert.Single(profile.TopValues);
         Assert.Equal(1, top.Count);
+    }
+
+    [Fact]
+    public async Task A_column_named_frequency_uses_its_value_as_the_profile_tie_breaker()
+    {
+        var profile = await data.GetColumnProfileAsync(
+            context, "main", "FrequencyValues", new ColumnProfileRequest("frequency", 10));
+
+        Assert.Equal(["a", "b"], profile.TopValues.Select(value => value.Value).ToArray());
+        Assert.All(profile.TopValues, value => Assert.Equal(1, value.Count));
     }
 
     [Fact]

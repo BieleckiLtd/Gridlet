@@ -111,15 +111,15 @@ public class SqlServerSqlBuilderTests
     }
 
     [Fact]
-    public void Profile_top_values_sql_uses_value_as_a_deterministic_tie_breaker()
+    public void Profile_top_values_sql_uses_ordinals_when_the_column_matches_the_frequency_alias()
     {
         var sql = SqlServerSqlBuilder.BuildProfileTopValuesSql(
-            "dbo", "Customers", "Status", " WHERE [Active] = @f0");
+            "dbo", "Customers", "frequency", " WHERE [Active] = @f0");
 
         Assert.Equal(
-            "SELECT TOP (@topValues) [Status], COUNT_BIG(*) AS frequency " +
-            "FROM [dbo].[Customers] WHERE [Active] = @f0 GROUP BY [Status] " +
-            "ORDER BY frequency DESC, [Status] ASC;",
+            "SELECT TOP (@topValues) [frequency], COUNT_BIG(*) AS frequency " +
+            "FROM [dbo].[Customers] WHERE [Active] = @f0 GROUP BY [frequency] " +
+            "ORDER BY 2 DESC, 1 ASC;",
             sql);
     }
 }
