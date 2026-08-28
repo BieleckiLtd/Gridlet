@@ -11576,9 +11576,16 @@
       throw new Error('Cannot safely copy SQL INSERT because the result has duplicate column names.');
     }
     const names = uniqueNames.map((name) => quoteSqlIdentifier(name, providerName)).join(', ');
-    const values = rows.map((row) => '    (' + columns.map((column, index) =>
-      resultSqlLiteral(row[index], column, providerName)).join(', ') + ')');
-    return `INSERT INTO ${quoteSqlIdentifier(target, providerName)} (${names}) VALUES\n${values.join(',\n')};`;
+    const prefix = `INSERT INTO ${quoteSqlIdentifier(target, providerName)} (${names}) VALUES\n`;
+    const statements = [];
+    // SQL Server rejects a table-value constructor above 1,000 rows. The same conservative
+    // chunking also keeps copied SQLite statements from growing needlessly large.
+    for (let offset = 0; offset < rows.length; offset += 1000) {
+      const values = rows.slice(offset, offset + 1000).map((row) => '    (' + columns.map(
+        (column, index) => resultSqlLiteral(row[index], column, providerName)).join(', ') + ')');
+      statements.push(prefix + values.join(',\n') + ';');
+    }
+    return statements.join('\n\n');
   }
 
   function quoteSqlIdentifier(value, providerName) {

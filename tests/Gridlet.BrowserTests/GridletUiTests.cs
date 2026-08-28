@@ -3896,6 +3896,20 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             await ReadClipboardAsync());
 
         await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("many:1001");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        var bulkInsert = await ReadClipboardAsync();
+        var statements = bulkInsert.Split("\n\n", StringSplitOptions.None);
+        Assert.Equal(2, statements.Length);
+        Assert.Equal(1_001, statements[0].Split('\n').Length);
+        Assert.EndsWith("    (999);", statements[0], StringComparison.Ordinal);
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([N]) VALUES\n    (1000);",
+            statements[1]);
+
+        await page.Locator("#new-query-btn").ClickAsync();
         await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-unsafe-number");
         await ActivePanel(page).GetByTestId("query-run").ClickAsync();
         await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");

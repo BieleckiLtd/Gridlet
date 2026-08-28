@@ -815,6 +815,7 @@ public sealed class FakeGridletProvider :
                 yield return new QueryStreamEvent("rows", 0, Rows: batch.ToArray());
             }
 
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
             yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
             yield break;
         }
