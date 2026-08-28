@@ -11552,8 +11552,8 @@
   function uniqueResultColumnNames(columns) {
     const names = [];
     const used = new Set();
-    for (const column of columns) {
-      const base = String(column.name);
+    for (let index = 0; index < columns.length; index++) {
+      const base = resultColumnBaseName(columns[index], index);
       let name = base;
       let suffix = 2;
       while (used.has(name.toLowerCase())) name = `${base}_${suffix++}`;
@@ -11561,6 +11561,11 @@
       names.push(name);
     }
     return names;
+  }
+
+  function resultColumnBaseName(column, index) {
+    const name = String(column?.name ?? '');
+    return name.trim() ? name : `Column${index + 1}`;
   }
 
   function resultRowsAsObjects(columns, rows) {
@@ -11572,7 +11577,7 @@
   function resultRowsAsSqlInsert(columns, rows, target, providerName) {
     if (!columns.length || !rows.length) return '-- No loaded rows to insert.';
     const uniqueNames = uniqueResultColumnNames(columns);
-    if (uniqueNames.some((name, index) => name !== String(columns[index].name))) {
+    if (uniqueNames.some((name, index) => name !== resultColumnBaseName(columns[index], index))) {
       throw new Error('Cannot safely copy SQL INSERT because the result has duplicate column names.');
     }
     const names = uniqueNames.map((name) => quoteSqlIdentifier(name, providerName)).join(', ');
@@ -11606,7 +11611,7 @@
         .replace(/[-+.]/g, '').replace(/^0+/, '').length;
       const exactDecimalRequired = /\b(?:decimal|numeric|money|smallmoney)\b/.test(dataType);
       if ((Number.isInteger(value) && !Number.isSafeInteger(value))
-        || (exactDecimalRequired && significantDigits > 15)) {
+        || (exactDecimalRequired && (significantDigits > 15 || /e/i.test(String(value))))) {
         throw new Error(`Cannot safely copy ${column.name} as SQL because the browser cannot preserve its numeric precision.`);
       }
       return String(value);
