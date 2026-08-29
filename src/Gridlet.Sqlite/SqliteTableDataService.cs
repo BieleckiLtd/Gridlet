@@ -101,8 +101,12 @@ public sealed class SqliteTableDataService : ITableDataService
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var visibleFieldCount = reader.FieldCount - (rowIdKey is null ? 0 : 1);
         var columns = Enumerable.Range(0, visibleFieldCount)
-            .Select(i => new ResultColumn(
-                reader.GetName(i), reader.GetDataTypeName(i), reader.GetFieldType(i) == typeof(byte[])))
+            .Select(i =>
+            {
+                var dataTypeName = reader.GetDataTypeName(i);
+                return new ResultColumn(
+                    reader.GetName(i), dataTypeName, SqliteValues.IsBinaryTypeName(dataTypeName));
+            })
             .ToArray();
         int[]? keyOrdinals = rowIdKey is not null
             ? [visibleFieldCount]

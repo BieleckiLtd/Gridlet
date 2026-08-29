@@ -83,6 +83,19 @@ public sealed class SqliteProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Query_expression_columns_do_not_infer_binary_before_the_first_row()
+    {
+        var result = await provider.Query.ExecuteAsync(
+            context,
+            "SELECT 'hello' AS PlainText, x'00FF' AS Payload",
+            new QueryRequestOptions(100, 30));
+
+        var columns = Assert.Single(result.ResultSets).Columns;
+        Assert.False(columns[0].IsBinary);
+        Assert.True(columns[1].IsBinary);
+    }
+
+    [Fact]
     public async Task Reports_sqlite_technology_and_engine_version()
     {
         var infoProvider = Assert.IsAssignableFrom<IGridletDatabaseSystemInfoProvider>(provider);

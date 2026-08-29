@@ -2,6 +2,9 @@ namespace Gridlet.Sqlite;
 
 internal static class SqliteValues
 {
+    public static bool IsBinaryTypeName(string? dataTypeName)
+        => dataTypeName?.Contains("blob", StringComparison.OrdinalIgnoreCase) == true;
+
     public static object? Materialize(object value)
         => value switch
         {
