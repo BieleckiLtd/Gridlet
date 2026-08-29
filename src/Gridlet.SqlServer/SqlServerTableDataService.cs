@@ -145,8 +145,7 @@ public sealed class SqlServerTableDataService : ITableDataService
         var columns = new ResultColumn[reader.FieldCount];
         for (var i = 0; i < reader.FieldCount; i++)
         {
-            columns[i] = new ResultColumn(
-                reader.GetName(i), reader.GetDataTypeName(i), reader.GetFieldType(i) == typeof(byte[]));
+            columns[i] = new ResultColumn(reader.GetName(i), reader.GetDataTypeName(i));
         }
 
         var keyOrdinals = KeyOrdinals(rowIdentity, columns);

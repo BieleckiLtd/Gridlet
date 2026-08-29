@@ -426,8 +426,7 @@ public sealed class SqlServerQueryRunner : IQueryRunner, IQuerySessionRunner, IQ
         try
         {
             return Enumerable.Range(0, reader.FieldCount)
-                .Select(i => new ResultColumn(
-                    reader.GetName(i), reader.GetDataTypeName(i), reader.GetFieldType(i) == typeof(byte[])))
+                .Select(i => new ResultColumn(reader.GetName(i), reader.GetDataTypeName(i)))
                 .ToArray();
         }
         catch (SqlException ex)

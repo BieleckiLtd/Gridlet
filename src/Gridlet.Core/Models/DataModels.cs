@@ -99,14 +99,7 @@ public sealed record TableDataRequest(
 }
 
 /// <summary>A column of a result set, with the provider's type name for display.</summary>
-public sealed record ResultColumn(string Name, string DataTypeName, bool IsBinary = false)
-{
-    /// <summary>Creates the legacy two-field shape without relying on optional-parameter ABI.</summary>
-    public ResultColumn(string name, string dataTypeName)
-        : this(name, dataTypeName, false)
-    {
-    }
-}
+public sealed record ResultColumn(string Name, string DataTypeName);
 
 /// <summary>One page of table/view data.</summary>
 /// <param name="RowIdentity">

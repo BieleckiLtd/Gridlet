@@ -11652,21 +11652,9 @@
     if (value === null || value === undefined) return 'NULL';
     if (typeof value === 'boolean') return value ? '1' : '0';
     const provider = String(providerName || '').toLowerCase();
-    const dataType = String(column.dataTypeName || '').toLowerCase();
-    const exactDecimalRequired = /\b(?:decimal|numeric|money|smallmoney)\b/.test(dataType);
-    const exactIntegerRequired = /\b(?:tinyint|smallint|mediumint|bigint|integer|int[248]?)\b/.test(dataType);
-    if (typeof exactValue === 'string' && (exactDecimalRequired || exactIntegerRequired)
-      && /^[+-]?\d+(?:\.\d+)?$/.test(exactValue)) return exactValue;
-    if (typeof value === 'string' && (exactDecimalRequired || exactIntegerRequired)
-      && /^[+-]?\d+(?:\.\d+)?$/.test(value)) return value;
+    if (typeof exactValue === 'string' && /^[+-]?\d+(?:\.\d+)?$/.test(exactValue)) return exactValue;
     if (typeof value === 'number') {
       if (!Number.isFinite(value)) return 'NULL';
-      const significantDigits = String(value).split(/[eE]/)[0]
-        .replace(/[-+.]/g, '').replace(/^0+/, '').length;
-      if ((exactIntegerRequired && Number.isInteger(value) && !Number.isSafeInteger(value))
-        || (exactDecimalRequired && (significantDigits > 15 || /e/i.test(String(value))))) {
-        throw new Error(`Cannot safely copy ${column.name} as SQL because the browser cannot preserve its numeric precision.`);
-      }
       return String(value);
     }
 

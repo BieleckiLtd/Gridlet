@@ -745,7 +745,7 @@ public sealed class FakeGridletProvider :
                 new ResultColumn("Note", "nvarchar(max)"),
                 new ResultColumn("Active", "bit"),
                 new ResultColumn("Missing", "int"),
-                new ResultColumn("Payload", string.Empty, IsBinary: true),
+                new ResultColumn("Payload", string.Empty),
             ]);
             yield return new QueryStreamEvent("rows", 0,
                 Rows: [["Łódź O'Brien", "line 1\nline | <2>", true, null, new byte[] { 0, 255 }]]);
@@ -771,6 +771,28 @@ public sealed class FakeGridletProvider :
             yield return new QueryStreamEvent("resultSet", 0,
                 [new ResultColumn("ExactAmount", "decimal(18, 1)")]);
             yield return new QueryStreamEvent("rows", 0, Rows: [[123_456_789_012_345.6m]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-exact-variant")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("VariantAmount", "sql_variant")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[1.00000000000000000001m]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-dynamic-numeric")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("Value", "NUMERIC")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [["007"], [0.30000000000000004d]]);
             yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
             yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
             yield break;
@@ -823,7 +845,7 @@ public sealed class FakeGridletProvider :
         {
             yield return new QueryStreamEvent("started");
             yield return new QueryStreamEvent("resultSet", 0,
-                [new ResultColumn("Payload", "varbinary(max)", IsBinary: true)]);
+                [new ResultColumn("Payload", "varbinary(max)")]);
             yield return new QueryStreamEvent("rows", 0, Rows: [["not-base64!!"]]);
             yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
             yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);

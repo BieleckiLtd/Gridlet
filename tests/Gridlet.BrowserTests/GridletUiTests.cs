@@ -3960,6 +3960,15 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         }
 
         await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-exact-variant");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([VariantAmount]) VALUES\n    (1.00000000000000000001);",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
         await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-large-float");
         await ActivePanel(page).GetByTestId("query-run").ClickAsync();
         await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
@@ -4003,6 +4012,17 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal(
             "INSERT INTO \"TargetTable\" (\"Odd]Name\", \"Note\", \"Active\", \"Missing\", \"Payload\") VALUES\n" +
             "    ('Łódź O''Brien', 'line 1\nline | <2>', 1, NULL, X'00FF');",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-dynamic-numeric");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO \"TargetTable\" (\"Value\") VALUES\n" +
+            "    ('007'),\n" +
+            "    (0.30000000000000004);",
             await ReadClipboardAsync());
 
         await page.EvaluateAsync(
