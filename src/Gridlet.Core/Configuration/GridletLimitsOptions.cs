@@ -46,4 +46,40 @@ public sealed class GridletLimitsOptions
     /// closes it. Defaults to <c>15</c> minutes and must be at least <c>1</c>.
     /// </summary>
     public int QuerySessionIdleTimeoutMinutes { get; set; } = 15;
+
+    /// <summary>
+    /// Maximum ordinary (non-session) query jobs retained in memory, including running jobs and
+    /// completed results awaiting reattachment. The oldest completed result is evicted first when
+    /// capacity is needed. Defaults to <c>8</c> and must be at least <c>1</c>.
+    /// </summary>
+    public int MaxQueryJobs { get; set; } = 8;
+
+    /// <summary>
+    /// Maximum query jobs one authenticated owner may retain. Anonymous callers share the global
+    /// <see cref="MaxQueryJobs"/> capacity because there is no owner boundary between them. The
+    /// effective value never exceeds <see cref="MaxQueryJobs"/>. Defaults to <c>4</c> and must be
+    /// at least <c>1</c>.
+    /// </summary>
+    public int MaxQueryJobsPerOwner { get; set; } = 4;
+
+    /// <summary>
+    /// Maximum ordinary stream events retained per job before further events are omitted with a
+    /// marker. Terminal state is always retained. Defaults to <c>2048</c> and must be at least
+    /// <c>16</c>.
+    /// </summary>
+    public int MaxQueryJobEvents { get; set; } = 2_048;
+
+    /// <summary>
+    /// Maximum serialized event payload retained by one query job. This bounds wide rows and
+    /// multi-result scripts independently of the event-count limit. The live managed object graph
+    /// can occupy more memory than its serialized UTF-8 measurement. Defaults to <c>4 MiB</c> and
+    /// must be at least <c>64 KiB</c>.
+    /// </summary>
+    public int MaxQueryJobRetainedBytes { get; set; } = 4 * 1024 * 1024;
+
+    /// <summary>
+    /// How long a finished query job and its capped results remain available for reattachment.
+    /// Defaults to <c>15</c> minutes and must be at least <c>1</c>.
+    /// </summary>
+    public int QueryJobRetentionMinutes { get; set; } = 15;
 }

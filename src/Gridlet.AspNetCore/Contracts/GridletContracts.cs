@@ -202,6 +202,24 @@ public sealed record RoutineScriptResponse(string Sql);
 
 public sealed record QueryRequestBody(string? Sql, int? MaxRows = null);
 
+/// <summary>A replayable page of events from one server-side query job.</summary>
+public sealed record QueryJobResponse(
+    string Id,
+    string Status,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? CompletedAt,
+    int NextEventIndex,
+    int EventCount,
+    IReadOnlyList<QueryStreamEvent> Events);
+
+/// <summary>The state acknowledged by a query-job cancellation request.</summary>
+public sealed record QueryJobCancelResponse(
+    string Id,
+    string Status,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? CompletedAt,
+    int EventCount);
+
 /// <summary>One condition in the <c>filter</c> query parameter of the table-data routes.</summary>
 /// <param name="Column">The column to compare.</param>
 /// <param name="Operator">

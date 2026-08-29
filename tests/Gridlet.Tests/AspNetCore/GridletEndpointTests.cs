@@ -5,11 +5,13 @@ using Gridlet.Tests.AspNetCore.Fakes;
 using Gridlet.Abstractions;
 using Gridlet.AspNetCore;
 using Gridlet.AspNetCore.Contracts;
+using Gridlet.Auditing;
 using Gridlet.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Gridlet.Tests.AspNetCore;
@@ -900,6 +902,291 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Query_job_replays_a_completed_result_from_a_cursor()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var started = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "SELECT 42", maxRows = 50 });
+
+        Assert.Equal(HttpStatusCode.Accepted, started.StatusCode);
+        var created = await started.Content.ReadFromJsonAsync<QueryJobResponse>();
+        Assert.NotNull(created);
+        Assert.Matches("^[0-9a-f]{32}$", created.Id);
+
+        var (completed, events) = await AwaitQueryJobAsync(client, created.Id);
+
+        Assert.Equal("succeeded", completed.Status);
+        Assert.NotNull(completed.CompletedAt);
+        Assert.Contains(events, queryEvent => queryEvent.Type == "resultSet");
+        Assert.Contains(events, queryEvent => queryEvent.Type == "rows"
+            && queryEvent.Rows![0][0] is JsonElement value && value.GetInt32() == 42);
+        Assert.Contains(events, queryEvent => queryEvent.Type == "completed");
+        Assert.Equal(events.Count, completed.EventCount);
+    }
+
+    [Fact]
+    public async Task Query_job_cancel_reaches_the_running_provider_command()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        fake.PrepareLongQuery();
+        var started = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "job-wait" });
+        var created = (await started.Content.ReadFromJsonAsync<QueryJobResponse>())!;
+        var path = $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{created.Id}";
+        var receiving = await client.GetFromJsonAsync<QueryJobResponse>(path + "?after=0&waitMs=1000");
+        Assert.Contains(receiving!.Events, queryEvent => queryEvent.Type == "resultSet");
+
+        var cancelled = await client.DeleteAsync(path);
+        var acknowledgement = await cancelled.Content.ReadFromJsonAsync<QueryJobCancelResponse>();
+        var (completed, events) = await AwaitQueryJobAsync(client, created.Id);
+
+        Assert.Equal(HttpStatusCode.OK, cancelled.StatusCode);
+        Assert.NotNull(acknowledgement);
+        Assert.Equal(created.Id, acknowledgement.Id);
+        Assert.Equal("cancelling", acknowledgement.Status);
+        Assert.True(acknowledgement.EventCount >= receiving.NextEventIndex);
+        Assert.Equal("cancelled", completed.Status);
+        Assert.Contains(events, queryEvent => queryEvent.Type == "cancelled");
+        Assert.Equal(1, fake.LongQueryCancellations);
+    }
+
+    [Fact]
+    public async Task Query_job_completion_wins_a_racing_cancel_without_a_second_terminal_event()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        fake.PrepareCompletedQueryRace();
+        try
+        {
+            var started = await client.PostAsJsonAsync(
+                "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+                new { sql = "job-completed-wait" });
+            var created = (await started.Content.ReadFromJsonAsync<QueryJobResponse>())!;
+            var path = $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{created.Id}";
+            var receiving = await client.GetFromJsonAsync<QueryJobResponse>(path + "?after=0&waitMs=1000");
+            Assert.Contains(receiving!.Events, queryEvent => queryEvent.Type == "completed");
+
+            Assert.Equal(HttpStatusCode.OK, (await client.DeleteAsync(path)).StatusCode);
+            var (completed, events) = await AwaitQueryJobAsync(client, created.Id);
+
+            Assert.Equal("succeeded", completed.Status);
+            Assert.Single(events, queryEvent => queryEvent.Type == "completed");
+            Assert.DoesNotContain(events, queryEvent => queryEvent.Type == "cancelled");
+        }
+        finally
+        {
+            fake.ReleaseCompletedQueryRace();
+        }
+    }
+
+    [Fact]
+    public async Task Query_jobs_are_bounded_and_scoped_to_their_database_route()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.MaxQueryJobs = 1;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        fake.PrepareLongQuery();
+        var first = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "job-wait" });
+        var created = (await first.Content.ReadFromJsonAsync<QueryJobResponse>())!;
+
+        var second = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "SELECT 42" });
+        var wrongDatabase = await client.GetAsync(
+            $"/gridlet/api/connections/Main/databases/OtherDb/query/jobs/{created.Id}?waitMs=0");
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, second.StatusCode);
+        Assert.Contains("query jobs are in use", await second.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.NotFound, wrongDatabase.StatusCode);
+        await client.DeleteAsync(
+            $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{created.Id}");
+        await AwaitQueryJobAsync(client, created.Id);
+    }
+
+    [Fact]
+    public async Task Query_job_hides_unexpected_provider_errors_and_rejects_bad_cursors()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var started = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "unexpected-boom" });
+        var created = (await started.Content.ReadFromJsonAsync<QueryJobResponse>())!;
+        var (completed, events) = await AwaitQueryJobAsync(client, created.Id);
+
+        var error = Assert.Single(events, queryEvent => queryEvent.Type == "error");
+        Assert.Equal("failed", completed.Status);
+        Assert.Contains("unexpected server error", error.Message!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SECRET_PUBLISHED_SENTINEL", error.Message!, StringComparison.Ordinal);
+        var badCursor = await client.GetAsync(
+            $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{created.Id}?after=99999&waitMs=0");
+        Assert.Equal(HttpStatusCode.BadRequest, badCursor.StatusCode);
+    }
+
+    [Fact]
+    public async Task Starting_a_job_evicts_the_oldest_completed_result_at_capacity()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.MaxQueryJobs = 1;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var firstResponse = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "SELECT 1" });
+        var first = (await firstResponse.Content.ReadFromJsonAsync<QueryJobResponse>())!;
+        await AwaitQueryJobAsync(client, first.Id);
+
+        var secondResponse = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "SELECT 2" });
+        var firstAfterEviction = await client.GetAsync(
+            $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{first.Id}?waitMs=0");
+
+        Assert.Equal(HttpStatusCode.Accepted, secondResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, firstAfterEviction.StatusCode);
+    }
+
+    [Fact]
+    public async Task Anonymous_query_jobs_can_use_the_global_capacity()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.MaxQueryJobs = 2;
+            options.Limits.MaxQueryJobsPerOwner = 1;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        fake.PrepareLongQuery();
+        try
+        {
+            var first = await client.PostAsJsonAsync(
+                "/gridlet/api/connections/Main/databases/FakeDb/query/jobs", new { sql = "job-wait" });
+            var second = await client.PostAsJsonAsync(
+                "/gridlet/api/connections/Main/databases/FakeDb/query/jobs", new { sql = "job-wait" });
+
+            Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+            Assert.Equal(HttpStatusCode.Accepted, second.StatusCode);
+        }
+        finally
+        {
+            fake.ReleaseLongQuery();
+        }
+    }
+
+    [Fact]
+    public async Task Query_job_event_replay_is_bounded_and_retains_terminal_state()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.MaxQueryJobEvents = 16;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var started = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "many-messages" });
+        var created = (await started.Content.ReadFromJsonAsync<QueryJobResponse>())!;
+
+        var (completed, events) = await AwaitQueryJobAsync(client, created.Id);
+
+        Assert.Equal("succeeded", completed.Status);
+        Assert.InRange(completed.EventCount, 17, 19);
+        Assert.Contains(events, queryEvent => queryEvent.Type == "message"
+            && queryEvent.Message!.Contains("events were omitted", StringComparison.Ordinal));
+        Assert.Contains(events, queryEvent => queryEvent.Type == "completed");
+    }
+
+    [Fact]
+    public async Task Query_job_payload_replay_is_byte_bounded_and_retains_terminal_state()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.MaxQueryJobRetainedBytes = 64 * 1024;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var started = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "oversized-message" });
+        var created = (await started.Content.ReadFromJsonAsync<QueryJobResponse>())!;
+
+        var (completed, events) = await AwaitQueryJobAsync(client, created.Id);
+
+        Assert.Equal("succeeded", completed.Status);
+        Assert.DoesNotContain(events, queryEvent => queryEvent.Message?.Length > 64 * 1024);
+        Assert.Contains(events, queryEvent => queryEvent.Type == "message"
+            && queryEvent.Message!.Contains("events were omitted", StringComparison.Ordinal));
+        Assert.Contains(events, queryEvent => queryEvent.Type == "completed");
+    }
+
+    [Fact]
+    public async Task Completed_query_jobs_expire_after_the_configured_retention_period()
+    {
+        var clock = new AdvanceableTimeProvider(DateTimeOffset.UnixEpoch);
+        var (app, client) = await GridletTestHost.StartAsync(
+            options =>
+            {
+                options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+                options.Limits.QueryJobRetentionMinutes = 1;
+                options.Security.AllowAnonymous = true;
+            },
+            services => services.AddSingleton<TimeProvider>(clock));
+        await using var _ = app;
+        var started = await client.PostAsJsonAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/query/jobs",
+            new { sql = "SELECT 42" });
+        var created = (await started.Content.ReadFromJsonAsync<QueryJobResponse>())!;
+        await AwaitQueryJobAsync(client, created.Id);
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+        app.Services.GetRequiredService<GridletQueryJobManager>().Sweep();
+        var expired = await client.GetAsync(
+            $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{created.Id}?waitMs=0");
+
+        Assert.Equal(HttpStatusCode.NotFound, expired.StatusCode);
+    }
+
+    [Fact]
+    public async Task Query_job_sweeper_retries_after_a_transient_cleanup_failure()
+    {
+        var monitor = new ThrowOnceOptionsMonitor();
+        await using var jobs = new GridletQueryJobManager(
+            monitor,
+            new NullAuditSink(),
+            NullLogger<GridletQueryJobManager>.Instance);
+        using var sweeper = new GridletQueryJobSweeper(
+            jobs,
+            NullLogger<GridletQueryJobSweeper>.Instance,
+            TimeSpan.FromMilliseconds(10));
+
+        await sweeper.StartAsync(CancellationToken.None);
+        await monitor.Recovered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await sweeper.StopAsync(CancellationToken.None);
+
+        Assert.True(monitor.ReadCount >= 2);
+    }
+
+    [Fact]
     public async Task Failing_query_returns_400_with_database_error()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();
@@ -986,6 +1273,32 @@ public class GridletEndpointTests
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    private static async Task<(QueryJobResponse Snapshot, List<QueryStreamEvent> Events)>
+        AwaitQueryJobAsync(HttpClient client, string jobId)
+    {
+        var events = new List<QueryStreamEvent>();
+        var cursor = 0;
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            var snapshot = await client.GetFromJsonAsync<QueryJobResponse>(
+                $"/gridlet/api/connections/Main/databases/FakeDb/query/jobs/{jobId}"
+                + $"?after={cursor}&waitMs=100");
+            Assert.NotNull(snapshot);
+            events.AddRange(snapshot.Events);
+            cursor = snapshot.NextEventIndex;
+            if (cursor < snapshot.EventCount)
+            {
+                continue;
+            }
+            if (snapshot.Status is "succeeded" or "failed" or "cancelled")
+            {
+                return (snapshot, events);
+            }
+        }
+
+        throw new Xunit.Sdk.XunitException("The query job did not finish within the test timeout.");
+    }
+
     private sealed class SecretThrowingResolver : IGridletConnectionResolver
     {
         public const string Secret = "SECRET_RESOLVER_SENTINEL";
@@ -1066,5 +1379,46 @@ public class GridletEndpointTests
         public IQueryRunner Query => inner.Query;
         public ITableWriteService Writes => inner.Writes;
         public ITableDdlService Ddl => inner.Ddl;
+    }
+
+    private sealed class AdvanceableTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset current = now;
+
+        public override DateTimeOffset GetUtcNow() => current;
+
+        public void Advance(TimeSpan by) => current = current.Add(by);
+    }
+
+    private sealed class NullAuditSink : IGridletAuditSink
+    {
+        public ValueTask WriteAsync(
+            GridletAuditEvent auditEvent, CancellationToken cancellationToken = default)
+            => ValueTask.CompletedTask;
+    }
+
+    private sealed class ThrowOnceOptionsMonitor : IOptionsMonitor<GridletOptions>
+    {
+        private readonly GridletOptions value = new();
+        private int readCount;
+
+        public int ReadCount => Volatile.Read(ref readCount);
+        public TaskCompletionSource Recovered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public GridletOptions CurrentValue
+        {
+            get
+            {
+                var count = Interlocked.Increment(ref readCount);
+                if (count == 1) throw new InvalidOperationException("Transient options reload failure.");
+                Recovered.TrySetResult();
+                return value;
+            }
+        }
+
+        public GridletOptions Get(string? name) => CurrentValue;
+
+        public IDisposable? OnChange(Action<GridletOptions, string?> listener) => null;
     }
 }

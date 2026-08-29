@@ -58,6 +58,11 @@ internal static class GridletEndpointHelpers
             return Results.Json(
                 new GridletErrorResponse(ex.Message), statusCode: StatusCodes.Status409Conflict);
         }
+        catch (GridletQueryJobCapacityException ex)
+        {
+            return Results.Json(
+                new GridletErrorResponse(ex.Message), statusCode: StatusCodes.Status429TooManyRequests);
+        }
         catch (GridletValidationException ex)
         {
             return Results.BadRequest(new GridletErrorResponse(ex.Message));

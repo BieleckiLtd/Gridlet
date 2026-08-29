@@ -486,7 +486,9 @@
         const body = await res.json();
         message = body.error || body.detail || body.title || message;
       } catch { /* body was not JSON */ }
-      throw new Error(message);
+      const error = new Error(message);
+      error.status = res.status;
+      throw error;
     }
     return res.json();
   }
@@ -555,6 +557,9 @@
       routine: (s, n) => `${objBase(s, n)}/routine`,
       routineScript: (s, n) => `${objBase(s, n)}/routine/script`,
       query: () => `${dbBase()}/query`,
+      queryJobs: () => `${dbBase()}/query/jobs`,
+      queryJob: (id, after = null) => `${dbBase()}/query/jobs/${enc(id)}`
+        + (after == null ? '' : `?after=${after}&waitMs=1000`),
       queryPlan: () => `${dbBase()}/query/plan`,
       sessions: () => `${dbBase()}/sessions`,
       session: (id) => `api/sessions/${enc(id)}`,
@@ -1495,7 +1500,11 @@
   });
 
   registerTabRestorer('query', (descriptor) => {
-    openQueryTab(descriptor.sql || '', descriptor.title || null, descriptor.scope);
+    openQueryTab(descriptor.sql || '', descriptor.title || null, descriptor.scope, {
+      jobId: descriptor.jobId || null,
+      jobSql: descriptor.jobSql || null,
+      jobHistoryRecorded: Boolean(descriptor.jobHistoryRecorded),
+    });
   });
 
   registerTabRestorer('diagram', (descriptor) => openDiagramTab(descriptor.scope));
@@ -1701,7 +1710,8 @@
     navigationOverflow.refresh();
 
     window.addEventListener('beforeunload', (event) => {
-      if (!state.tabs.some((tab) => tab.hasUnsavedDefinition || tab.isRunning)) return;
+      if (!state.tabs.some((tab) => tab.hasUnsavedDefinition
+        || (tab.isRunning && !tab.detachableJob))) return;
       event.preventDefault();
       event.returnValue = '';
     });
@@ -9551,7 +9561,10 @@
       entry.connection !== scope.connection || entry.database !== scope.database));
   };
 
-  function openQueryTab(initialSql = '', initialTitle = null, scope = scopeOf(), { autoRun = false } = {}) {
+  function openQueryTab(initialSql = '', initialTitle = null, scope = scopeOf(), {
+    autoRun = false, jobId: restoredJobId = null, jobSql: restoredJobSql = null,
+    jobHistoryRecorded = false,
+  } = {}) {
     if (!scope.database) {
       toast('Select a database first.');
       return;
@@ -9597,6 +9610,7 @@
     let savedQueries = [];
     let selectedSavedId = null;
     let activeQuery = null;
+    let activeJobId = restoredJobId;
 
     const showQueryHistory = () => {
       const content = h('div', { class: 'query-history-dialog' });
@@ -9829,7 +9843,13 @@
       panel: null,
       // Read at save time rather than captured here, so the SQL that comes back is the SQL that
       // was on screen, not whatever the tab happened to open with.
-      restore: () => ({ kind: 'query', scope, sql: editor.value, title: tab.title }),
+      activeJobSql: restoredJobSql,
+      jobHistoryRecorded,
+      restore: () => ({
+        kind: 'query', scope, sql: editor.value, title: tab.title,
+        jobId: activeJobId, jobSql: tab.activeJobSql,
+        jobHistoryRecorded: tab.jobHistoryRecorded,
+      }),
     };
 
     // ---- execution plans ----------------------------------------------------------------
@@ -9883,15 +9903,18 @@
       }
     };
 
-    const run = async (dangerConfirmed = false) => {
+    const runAttached = async (dangerConfirmed = false) => {
       editor.hideCompletion();
       const sql = editor.executableSql();
       if (!sql) return;
-      if (!dangerConfirmed && confirmUnqualifiedMutation(sql, () => { run(true); })) return;
+      if (!dangerConfirmed && confirmUnqualifiedMutation(sql, () => { runAttached(true); })) return;
       if (activeQuery) activeQuery.abort();
       const controller = new AbortController();
       activeQuery = controller;
       tab.isRunning = true;
+      tab.detachableJob = false;
+      activeJobId = null;
+      tab.activeJobSql = null;
       runButton.disabled = true;
       cancelButton.disabled = false;
       results.replaceChildren();
@@ -9963,7 +9986,7 @@
       };
 
       try {
-        await streamNdjson(session ? urls.sessionQuery(session.id) : urls.query(), {
+        await streamNdjson(urls.sessionQuery(session.id), {
           method: 'POST', body: JSON.stringify({ sql, maxRows: Number(maxRowsInput.value) }), signal: controller.signal,
         }, addEvent);
         if (completedSuccessfully && /\b(?:CREATE(?:\s+OR\s+ALTER)?|ALTER|DROP)\s+(?:VIEW|TABLE|PROCEDURE|PROC|FUNCTION|SCHEMA)\b/i.test(sql)) {
@@ -9996,15 +10019,257 @@
       }
     };
 
+    const runDetached = async (
+      dangerConfirmed = false, existingJobId = null, restoredSql = null,
+    ) => {
+      editor.hideCompletion();
+      const sql = restoredSql || editor.executableSql();
+      if (!sql || tab.isRunning) return;
+      if (!existingJobId && !dangerConfirmed
+        && confirmUnqualifiedMutation(sql, () => { runDetached(true); })) return;
+
+      const controller = new AbortController();
+      activeQuery = controller;
+      tab.isRunning = true;
+      tab.detachableJob = true;
+      runButton.disabled = true;
+      cancelButton.disabled = false;
+      results.replaceChildren();
+      results.classList.remove('single-result');
+      const startedAt = performance.now();
+      let historyStartedAt = Date.now();
+      let historyDuration = null;
+      let terminalStatus = null;
+      let terminalEvent = false;
+      let reattachAvailable = false;
+      let retryingPoll = false;
+      let jobId = existingJobId;
+      runButton.textContent = 'Run';
+      status.textContent = existingJobId ? 'Reattaching to query job…' : 'Starting query job…';
+      const timer = setInterval(() => {
+        if (!terminalEvent && !retryingPoll && !status.textContent.startsWith('Cancelling')) {
+          status.textContent = `Running in background… ${((performance.now() - startedAt) / 1000).toFixed(1)} s`;
+        }
+      }, 100);
+
+      const sets = new Map();
+      const messages = h('div', { class: 'query-messages' });
+      const addEvent = (event) => {
+        if (event.type === 'resultSet') {
+          const metaText = h('span', { text: '0 row(s) - receiving…' });
+          const exports = h('span', { class: 'export-buttons' });
+          const meta = h('div', { class: 'result-meta muted' },
+            metaText, h('span', { class: 'spacer' }), exports);
+          const scroll = h('div', { class: 'grid-scroll' });
+          const gridView = progressiveDataGrid(scroll, { selectable: true });
+          gridView.setColumns(event.columns);
+          results.append(meta, scroll);
+          sets.set(event.resultSetIndex, {
+            columns: gridView.columns, rows: gridView.rows, metaText, meta, exports, scroll, gridView,
+          });
+          results.classList.toggle('single-result', sets.size === 1);
+        } else if (event.type === 'rows') {
+          const set = sets.get(event.resultSetIndex);
+          if (!set) return;
+          set.gridView.appendRows(event.rows);
+          set.metaText.textContent = `${set.rows.length} row(s) - receiving…`;
+        } else if (event.type === 'resultSetCompleted') {
+          const set = sets.get(event.resultSetIndex);
+          if (!set) return;
+          if (!set.gridView.table) set.gridView.render();
+          set.metaText.textContent = set.rows.length + ' row(s)'
+            + (event.truncated ? ' - truncated at the configured limit' : '');
+          const controls = exportButtons(set.columns, set.rows,
+            `${tab.title}-result${event.resultSetIndex + 1}`,
+            { sql, name: tab.title.startsWith('Query ') ? '' : tab.title, scope });
+          set.exports.replaceWith(controls);
+          set.exports = controls;
+          setupOverflowToolbar(set.meta, [controls], 'More result actions');
+        } else if (event.type === 'message') {
+          messages.append(h('div', { class: 'message mono', text: event.message }));
+          if (!messages.isConnected) results.append(messages);
+        } else if (event.type === 'completed') {
+          terminalEvent = true;
+          historyDuration = event.durationMs;
+          if (!sets.size && event.recordsAffected >= 0) {
+            const count = event.recordsAffected;
+            results.append(h('div', {
+              class: 'result-meta',
+              text: `Query executed successfully — ${count} ${count === 1 ? 'record' : 'records'} affected`,
+            }));
+          }
+          status.textContent = event.durationMs + ' ms';
+        } else if (event.type === 'error') {
+          terminalEvent = true;
+          historyDuration = event.durationMs;
+          results.append(errorBox(event.message));
+          status.textContent = 'Failed';
+        } else if (event.type === 'cancelled') {
+          terminalEvent = true;
+          historyDuration = event.durationMs;
+          status.textContent = 'Cancelled';
+        }
+      };
+
+      try {
+        if (!jobId) {
+          activeJobId = null;
+          tab.jobHistoryRecorded = false;
+          const started = await post(urls.queryJobs(), {
+            sql, maxRows: Number(maxRowsInput.value),
+          });
+          jobId = started.id;
+          activeJobId = jobId;
+          tab.activeJobSql = sql;
+          historyStartedAt = Date.parse(started.startedAt) || historyStartedAt;
+          saveSession();
+        } else {
+          activeJobId = jobId;
+          tab.activeJobSql = sql;
+        }
+
+        const waitBeforeRetry = (milliseconds) => new Promise((resolve, reject) => {
+          const onAbort = () => {
+            clearTimeout(timerId);
+            reject(new DOMException('Aborted', 'AbortError'));
+          };
+          const timerId = setTimeout(() => {
+            controller.signal.removeEventListener('abort', onAbort);
+            resolve();
+          }, milliseconds);
+          controller.signal.addEventListener('abort', onAbort, { once: true });
+        });
+        let cursor = 0;
+        let pollFailures = 0;
+        while (!terminalStatus) {
+          let snapshot;
+          try {
+            snapshot = await api(urls.queryJob(jobId, cursor), { signal: controller.signal });
+            pollFailures = 0;
+          } catch (err) {
+            if (err.name === 'AbortError' || err.status === 404 || ++pollFailures > 3) throw err;
+            retryingPoll = true;
+            status.textContent = `Connection interrupted — retrying query job (${pollFailures}/3)…`;
+            await waitBeforeRetry(250 * (2 ** (pollFailures - 1)));
+            retryingPoll = false;
+            continue;
+          }
+          for (const event of snapshot.events || []) addEvent(event);
+          cursor = snapshot.nextEventIndex;
+          historyStartedAt = Date.parse(snapshot.startedAt) || historyStartedAt;
+          if (cursor < snapshot.eventCount) continue;
+          if (['succeeded', 'failed', 'cancelled'].includes(snapshot.status)) {
+            terminalStatus = snapshot.status;
+          }
+        }
+        if (terminalStatus === 'cancelled' && !terminalEvent) addEvent({ type: 'cancelled' });
+        if (terminalStatus === 'failed' && !terminalEvent) {
+          addEvent({ type: 'error', message: 'The query job failed.' });
+        }
+        if (terminalStatus === 'succeeded'
+          && /\b(?:CREATE(?:\s+OR\s+ALTER)?|ALTER|DROP)\s+(?:VIEW|TABLE|PROCEDURE|PROC|FUNCTION|SCHEMA)\b/i.test(sql)) {
+          await refreshObjects(scope);
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          reattachAvailable = Boolean(jobId);
+          status.textContent = 'Detached — query continues on the server';
+        } else if (jobId && err.status === 404) {
+          terminalStatus = 'expired';
+          activeJobId = null;
+          tab.activeJobSql = null;
+          status.textContent = 'Query job expired';
+          results.append(errorBox(err.message));
+          saveSession();
+        } else if (jobId) {
+          reattachAvailable = true;
+          status.textContent = 'Connection lost — choose Reattach to resume this query job';
+          results.append(errorBox(err.message));
+        } else {
+          terminalStatus = 'failed';
+          status.textContent = 'Failed';
+          results.append(errorBox(err.message));
+        }
+      } finally {
+        clearInterval(timer);
+        if (terminalStatus && !tab.jobHistoryRecorded) {
+          addQueryHistory(scope, {
+            sql,
+            startedAt: historyStartedAt,
+            durationMs: Number.isFinite(historyDuration)
+              ? historyDuration
+              : Math.max(0, Math.round(performance.now() - startedAt)),
+            outcome: terminalStatus === 'succeeded' ? 'succeeded'
+              : terminalStatus === 'cancelled' ? 'cancelled' : 'failed',
+          });
+          tab.jobHistoryRecorded = true;
+          saveSession();
+        }
+        if (activeQuery === controller) {
+          activeQuery = null;
+          const unresolvedJob = Boolean(jobId && !terminalStatus);
+          const stillRunning = unresolvedJob && !reattachAvailable;
+          tab.isRunning = stillRunning;
+          tab.detachableJob = unresolvedJob;
+          runButton.disabled = stillRunning;
+          runButton.textContent = reattachAvailable ? 'Reattach' : 'Run';
+          cancelButton.disabled = !unresolvedJob;
+        }
+      }
+    };
+
+    const run = (dangerConfirmed = false) => {
+      if (tab.isRunning) return;
+      if (!session && tab.detachableJob && activeJobId) {
+        return runDetached(true, activeJobId, tab.activeJobSql);
+      }
+      return session ? runAttached(dangerConfirmed) : runDetached(dangerConfirmed);
+    };
+
     runButton.addEventListener('click', () => run());
-    cancelButton.addEventListener('click', () => activeQuery?.abort());
+    cancelButton.addEventListener('click', async () => {
+      if (tab.detachableJob && activeJobId) {
+        cancelButton.disabled = true;
+        status.textContent = 'Cancelling on the server…';
+        try {
+          await del(urls.queryJob(activeJobId));
+        } catch (err) {
+          toast(err.message);
+          cancelButton.disabled = false;
+        }
+      } else {
+        activeQuery?.abort();
+      }
+    });
 
-    // Closing the tab ends the session, so an unfinished transaction is rolled back now rather
-    // than left holding locks until it times out.
-    tab.onClose = () => closeSession({ silent: true });
+    let cancelJobOnClose = false;
+    tab.onClose = async () => {
+      activeQuery?.abort();
+      if (cancelJobOnClose && activeJobId) {
+        try { await del(urls.queryJob(activeJobId)); } catch { /* already finished/expired */ }
+      }
+      await closeSession({ silent: true });
+    };
 
-    tab.beforeClose = () => {
-      if (!session?.transaction?.isOpen) return Promise.resolve(true);
+    tab.beforeClose = async () => {
+      if (tab.detachableJob && activeJobId) {
+        const cancel = await new Promise((resolve) => {
+          let decision = false;
+          modal('Query still running',
+            h('p', {
+              text: `Close ${tab.title} and cancel its server-side query job? Switching to another tab does not cancel it.`,
+            }), [
+              { label: 'Keep tab open', onClick: (close) => close() },
+              {
+                label: 'Cancel and close', danger: true,
+                onClick: (close) => { decision = true; close(); },
+              },
+            ], () => resolve(decision));
+        });
+        if (!cancel) return false;
+        cancelJobOnClose = true;
+      }
+      if (!session?.transaction?.isOpen) return true;
       return new Promise((resolve) => {
         let decision = false;
         modal('Transaction still open',
@@ -10016,11 +10281,13 @@
     };
 
     tab.beforeLeave = () => {
-      if (!tab.isRunning) return Promise.resolve(true);
+      if (!tab.isRunning || tab.detachableJob) return Promise.resolve(true);
       return new Promise((resolve) => {
         let decision = false;
         modal('Query still running',
-          h('p', { text: `The query on ${tab.title} is still running. Stop it before leaving; otherwise it keeps running on the server and you lose the ability to cancel it or return to its results.` }), [
+          h('p', {
+            text: `The pinned-session query on ${tab.title} must stay attached to keep transaction ownership clear.`,
+          }), [
           { label: 'Stay', onClick: (close) => close() },
           { label: 'Stop query', danger: true, onClick: (close) => {
             activeQuery?.abort();
@@ -10087,7 +10354,8 @@
     addTab(tab);
     refreshSaved();
     editor.focus();
-    if (autoRun) run();
+    if (restoredJobId) runDetached(true, restoredJobId, restoredJobSql || initialSql);
+    else if (autoRun) run();
   }
 
   // ---- publishing -----------------------------------------------------------------

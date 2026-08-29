@@ -22,6 +22,32 @@ public sealed class FakeGridletProvider :
 
     public string? LastQuerySql { get; private set; }
 
+    private TaskCompletionSource longQueryRelease = NewLongQuerySignal();
+    private TaskCompletionSource completedQueryRelease = NewLongQuerySignal();
+    private int longQueryCancellations;
+
+    public int LongQueryCancellations => Volatile.Read(ref longQueryCancellations);
+
+    public void PrepareLongQuery()
+    {
+        longQueryRelease.TrySetResult();
+        longQueryRelease = NewLongQuerySignal();
+        Volatile.Write(ref longQueryCancellations, 0);
+    }
+
+    public void ReleaseLongQuery() => longQueryRelease.TrySetResult();
+
+    public void PrepareCompletedQueryRace()
+    {
+        completedQueryRelease.TrySetResult();
+        completedQueryRelease = NewLongQuerySignal();
+    }
+
+    public void ReleaseCompletedQueryRace() => completedQueryRelease.TrySetResult();
+
+    private static TaskCompletionSource NewLongQuerySignal()
+        => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public IReadOnlyDictionary<string, object?>? LastWriteValues { get; private set; }
 
     public TableImport? LastImport { get; private set; }
@@ -637,7 +663,55 @@ public sealed class FakeGridletProvider :
             throw new InvalidOperationException("SECRET_PUBLISHED_SENTINEL");
         }
 
+        if (sql == "many-messages")
+        {
+            yield return new QueryStreamEvent("started");
+            for (var index = 0; index < 50; index++)
+            {
+                yield return new QueryStreamEvent("message", Message: $"message {index}");
+            }
+            yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "oversized-message")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("message", Message: new string('x', 128 * 1024));
+            yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            yield break;
+        }
+
         await Task.Yield();
+
+        if (sql == "job-wait")
+        {
+            var release = longQueryRelease;
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0, [new ResultColumn("Answer", "int")]);
+            try
+            {
+                await release.Task.WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Interlocked.Increment(ref longQueryCancellations);
+                throw;
+            }
+            yield return new QueryStreamEvent("rows", 0, Rows: [[42]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "job-completed-wait")
+        {
+            var release = completedQueryRelease;
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            await release.Task.WaitAsync(cancellationToken);
+            yield break;
+        }
 
         if (sql == "no-results")
         {
