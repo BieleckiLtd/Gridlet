@@ -9998,6 +9998,10 @@
       let completedSuccessfully = false;
       const messages = h('div', { class: 'query-messages' });
       const addEvent = (event) => {
+        // Attached events already pass through parseNdjsonEvent; keeping this here also makes
+        // the handler safe when events are supplied by another transport.
+        rememberExactNumbers(event.rows, event.exactValues);
+        rememberBinaryValues(event.rows, event.binaryValues);
         if (event.type === 'resultSet') {
           const metaText = h('span', { text: '0 row(s) - receiving…' });
           const exports = h('span', { class: 'export-buttons' });
@@ -10121,6 +10125,10 @@
       const sets = new Map();
       const messages = h('div', { class: 'query-messages' });
       const addEvent = (event) => {
+        // Detached job polls return parsed JSON rather than NDJSON, so retain the precision and
+        // runtime-type sidecars before the rows are handed to the grid.
+        rememberExactNumbers(event.rows, event.exactValues);
+        rememberBinaryValues(event.rows, event.binaryValues);
         if (event.type === 'resultSet') {
           const metaText = h('span', { text: '0 row(s) - receiving…' });
           const exports = h('span', { class: 'export-buttons' });
