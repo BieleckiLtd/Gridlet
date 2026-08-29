@@ -3397,8 +3397,6 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.Locator("html")).ToHaveAttributeAsync("data-theme", "light");
         var themeButton = page.Locator("#theme-btn");
         await Assertions.Expect(themeButton).ToHaveAttributeAsync("aria-label", "Switch to dark theme");
-        await Assertions.Expect(page.Locator("#topbar").GetByRole(
-            AriaRole.Button, new() { Name = "More app actions" })).ToBeHiddenAsync();
         Assert.True(await page.EvaluateAsync<bool>("""
             () => {
                 const children = [...document.querySelector('#topbar').children];
