@@ -7,6 +7,7 @@ using Gridlet.AspNetCore;
 using Gridlet.AspNetCore.Contracts;
 using Gridlet.Models;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -599,6 +600,24 @@ public class GridletEndpointTests
         Assert.Contains("paging metadata", await response.Content.ReadAsStringAsync());
     }
 
+    [Theory]
+    [InlineData("cross-site")]
+    [InlineData("same-site")]
+    public async Task Full_export_rejects_cross_origin_browser_navigation(string fetchSite)
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Ledger/data/export?format=csv");
+        request.Headers.Add("Sec-Fetch-Site", fetchSite);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("application origin", await response.Content.ReadAsStringAsync());
+    }
+
     [Fact]
     public async Task Export_stops_before_requesting_more_than_its_hard_page_limit()
     {
@@ -611,13 +630,20 @@ public class GridletEndpointTests
             data, connection, "dbo", "Endless", "json", null, SortDirection.Ascending,
             null, 1, firstPage, NullLogger<GridletTableExportResult>.Instance,
             maximumPageCount: 3);
-        var httpContext = new DefaultHttpContext();
-        httpContext.Response.Body = new MemoryStream();
+        var responseFeature = new StartedResponseFeature();
+        var lifetimeFeature = new TrackingRequestLifetimeFeature();
+        var features = new FeatureCollection();
+        features.Set<IHttpResponseFeature>(responseFeature);
+        features.Set<IHttpResponseBodyFeature>(new StreamResponseBodyFeature(responseFeature.Body));
+        features.Set<IHttpRequestLifetimeFeature>(lifetimeFeature);
+        var httpContext = new DefaultHttpContext(features);
 
         await result.ExecuteAsync(httpContext);
 
         Assert.Equal([1, 2, 3], data.RequestedPages);
-        Assert.Equal(StatusCodes.Status400BadRequest, httpContext.Response.StatusCode);
+        Assert.True(responseFeature.HasStarted);
+        Assert.True(lifetimeFeature.Aborted);
+        Assert.Equal(StatusCodes.Status200OK, httpContext.Response.StatusCode);
     }
 
     [Theory]
@@ -964,6 +990,45 @@ public class GridletEndpointTests
                 new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
                 [[request.Page]]));
         }
+    }
+
+    private sealed class StartedResponseFeature : IHttpResponseFeature
+    {
+        private readonly StartTrackingStream body = new();
+
+        public int StatusCode { get; set; } = StatusCodes.Status200OK;
+        public string? ReasonPhrase { get; set; }
+        public IHeaderDictionary Headers { get; set; } = new HeaderDictionary();
+        public Stream Body { get => body; set => throw new NotSupportedException(); }
+        public bool HasStarted => body.HasWritten;
+        public void OnStarting(Func<object, Task> callback, object state) { }
+        public void OnCompleted(Func<object, Task> callback, object state) { }
+    }
+
+    private sealed class StartTrackingStream : MemoryStream
+    {
+        public bool HasWritten { get; private set; }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            HasWritten = true;
+            base.Write(buffer, offset, count);
+        }
+
+        public override async ValueTask WriteAsync(
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            HasWritten = true;
+            await base.WriteAsync(buffer, cancellationToken);
+        }
+    }
+
+    private sealed class TrackingRequestLifetimeFeature : IHttpRequestLifetimeFeature
+    {
+        public CancellationToken RequestAborted { get; set; }
+        public bool Aborted { get; private set; }
+        public void Abort() => Aborted = true;
     }
 
     private sealed class MetadataFreeProvider : IGridletProvider

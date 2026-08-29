@@ -388,6 +388,14 @@ internal static partial class GridletApiEndpoints
         CancellationToken cancellationToken)
         => Execute(async () =>
         {
+            var fetchSite = Convert.ToString(httpContext.Request.Headers["Sec-Fetch-Site"]);
+            if (fetchSite is not null
+                && (fetchSite.Equals("cross-site", StringComparison.OrdinalIgnoreCase)
+                    || fetchSite.Equals("same-site", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new GridletValidationException(
+                    "Full exports must be started from the Gridlet application origin.");
+            }
             var exportFormat = string.IsNullOrWhiteSpace(format)
                 ? "csv"
                 : format.Trim().ToLowerInvariant();

@@ -96,8 +96,10 @@ internal sealed class GridletTableExportResult(
                 await WriteCsvAsync(httpContext.Response.Body, cancellationToken);
             }
         }
-        catch (Exception ex) when (cancellationToken.IsCancellationRequested
-            && ex is OperationCanceledException or IOException or ObjectDisposedException)
+        catch (Exception ex) when (
+            (httpContext.Response.HasStarted && ex is IOException or ObjectDisposedException)
+            || (cancellationToken.IsCancellationRequested
+                && ex is OperationCanceledException or IOException or ObjectDisposedException))
         {
             // The client went away. RequestAborted has already closed the only consumer. Include
             // StreamWriter flush/dispose faults which can replace the original cancellation.
