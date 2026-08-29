@@ -6396,7 +6396,7 @@
           } else {
             // Every editable field is posted and may be normalized by the provider. Exact text
             // captured before the write is no longer authoritative for any cell in this row.
-            const hadExactNumbers = exactNumbersByRow.delete(existingRow);
+            exactNumbersByRow.delete(existingRow);
             for (const [name, value] of Object.entries(values)) {
               const index = columnIndex(name);
               existingRow[index] = value;
@@ -6410,7 +6410,6 @@
               else cell.removeAttribute('title');
             });
             editorRow.replaceWith(existingRowElement);
-            if (hadExactNumbers) await renderData();
           }
           return true;
         } catch (err) {
@@ -11556,7 +11555,7 @@
       } else if (format === 'markdown') {
         content = resultRowsAsMarkdown(columns, rows);
       } else {
-        content = JSON.stringify(resultRowsAsObjects(columns, rows), null, 2);
+        content = JSON.stringify(resultRowsAsObjects(columns, rows, true), null, 2);
       }
     } catch (err) {
       toast(err?.message || 'Copy failed.');
@@ -11594,10 +11593,11 @@
     return name.trim() ? name : `Column${index + 1}`;
   }
 
-  function resultRowsAsObjects(columns, rows) {
+  function resultRowsAsObjects(columns, rows, preserveExact = false) {
     const names = uniqueResultColumnNames(columns);
     return rows.map((row) => Object.fromEntries(
-      names.map((name, index) => [name, resultCopyValue(row, index)])));
+      names.map((name, index) => [name,
+        preserveExact ? resultCopyValue(row, index) : row[index]])));
   }
 
   function resultCopyValue(row, index) {
@@ -11643,6 +11643,8 @@
     const exactIntegerRequired = /\b(?:tinyint|smallint|mediumint|bigint|integer|int[248]?)\b/.test(dataType);
     if (typeof exactValue === 'string' && (exactDecimalRequired || exactIntegerRequired)
       && /^[+-]?\d+(?:\.\d+)?$/.test(exactValue)) return exactValue;
+    if (typeof value === 'string' && (exactDecimalRequired || exactIntegerRequired)
+      && /^[+-]?\d+(?:\.\d+)?$/.test(value)) return value;
     if (typeof value === 'number') {
       if (!Number.isFinite(value)) return 'NULL';
       const significantDigits = String(value).split(/[eE]/)[0]
