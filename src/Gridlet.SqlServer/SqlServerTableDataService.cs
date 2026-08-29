@@ -1,3 +1,4 @@
+using System.Globalization;
 using Gridlet.Abstractions;
 using Gridlet.Models;
 using Microsoft.Data.SqlClient;
@@ -195,10 +196,7 @@ public sealed class SqlServerTableDataService : ITableDataService
                 objectExists = true;
                 var candidateName = reader.GetString(0);
                 var isHidden = reader.GetInt32(3) != 0;
-                if (!isHidden)
-                {
-                    filterColumnNames.Add(candidateName);
-                }
+                filterColumnNames.Add(candidateName);
                 if (!string.Equals(candidateName, request.Column, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
@@ -232,8 +230,7 @@ public sealed class SqlServerTableDataService : ITableDataService
 
         var (canGroup, canRange) = SqlServerSqlBuilder.GetProfileCapabilities(systemType);
         var filter = SqlServerSqlBuilder.BuildFilterClause(request.Filters, filterColumnNames);
-        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken);
+        await using var transaction = await BeginProfileTransactionAsync(connection, cancellationToken);
 
         await using var aggregate = connection.CreateCommand();
         aggregate.Transaction = transaction;
@@ -290,6 +287,22 @@ public sealed class SqlServerTableDataService : ITableDataService
             maximum,
             topValues,
             limitation);
+    }
+
+    private static async Task<SqlTransaction> BeginProfileTransactionAsync(
+        SqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var snapshotStatus = connection.CreateCommand();
+        snapshotStatus.CommandText =
+            "SELECT snapshot_isolation_state FROM sys.databases WHERE database_id = DB_ID();";
+        var state = Convert.ToInt32(
+            await snapshotStatus.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
+        // Snapshot gives both profile statements one non-blocking database view when enabled.
+        // Read committed is the safe fallback for databases that have not opted into snapshot
+        // isolation; unlike serializable, it cannot hold range locks across two full scans.
+        var isolation = state == 1 ? IsolationLevel.Snapshot : IsolationLevel.ReadCommitted;
+        return (SqlTransaction)await connection.BeginTransactionAsync(isolation, cancellationToken);
     }
 
     private static void AddFilterParameters(
