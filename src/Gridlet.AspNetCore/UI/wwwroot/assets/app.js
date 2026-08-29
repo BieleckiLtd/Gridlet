@@ -564,15 +564,6 @@
     });
   }
 
-  function forgetExactNumber(row, columnIndex) {
-    const exactValues = exactNumbersByRow.get(row);
-    if (!Array.isArray(exactValues)) return;
-    exactValues[columnIndex] = null;
-    if (!exactValues.some((value) => value !== null && value !== undefined)) {
-      exactNumbersByRow.delete(row);
-    }
-  }
-
   async function executeSql(sql, scope = state) {
     let errorMessage = null;
     let completed = false;
@@ -6403,13 +6394,11 @@
           if (isNew) {
             renderData();
           } else {
+            // Every editable field is posted and may be normalized by the provider. Exact text
+            // captured before the write is no longer authoritative for any cell in this row.
+            exactNumbersByRow.delete(existingRow);
             for (const [name, value] of Object.entries(values)) {
               const index = columnIndex(name);
-              const originalValue = existingRow[index];
-              const changed = originalValue === null
-                ? value !== null
-                : value === null || String(value) !== String(originalValue);
-              if (changed) forgetExactNumber(existingRow, index);
               existingRow[index] = value;
             }
             rowKey?.refresh?.(existingRow);

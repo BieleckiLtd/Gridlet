@@ -56,16 +56,13 @@ public sealed record QueryStreamEvent(
     private static IReadOnlyList<string?[]>? ExactNumbers(IReadOnlyList<object?[]>? rows)
     {
         if (rows is null) return null;
-        var result = new string?[rows.Count][];
-        var containsExactValue = false;
+        string?[][]? result = null;
         for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
         {
             var row = rows[rowIndex];
-            var values = new string?[row.Length];
-            result[rowIndex] = values;
             for (var columnIndex = 0; columnIndex < row.Length; columnIndex++)
             {
-                values[columnIndex] = row[columnIndex] switch
+                var exactValue = row[columnIndex] switch
                 {
                     decimal value => value.ToString(CultureInfo.InvariantCulture),
                     long value when value is > 9_007_199_254_740_991 or < -9_007_199_254_740_991
@@ -74,9 +71,11 @@ public sealed record QueryStreamEvent(
                         => value.ToString(CultureInfo.InvariantCulture),
                     _ => null,
                 };
-                containsExactValue |= values[columnIndex] is not null;
+                if (exactValue is null) continue;
+                result ??= rows.Select(candidate => new string?[candidate.Length]).ToArray();
+                result[rowIndex][columnIndex] = exactValue;
             }
         }
-        return containsExactValue ? result : null;
+        return result;
     }
 }
