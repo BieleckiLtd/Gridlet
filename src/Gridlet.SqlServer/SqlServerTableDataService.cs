@@ -1,5 +1,7 @@
 using Gridlet.Abstractions;
 using Gridlet.Models;
+using Microsoft.Data.SqlClient;
+using System.Data;
 
 namespace Gridlet.SqlServer;
 
@@ -230,8 +232,11 @@ public sealed class SqlServerTableDataService : ITableDataService
 
         var (canGroup, canRange) = SqlServerSqlBuilder.GetProfileCapabilities(systemType);
         var filter = SqlServerSqlBuilder.BuildFilterClause(request.Filters, filterColumnNames);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken);
 
         await using var aggregate = connection.CreateCommand();
+        aggregate.Transaction = transaction;
         aggregate.CommandText = SqlServerSqlBuilder.BuildProfileAggregateSql(
             schema, name, columnName, filter.Clause, canGroup, canRange);
         AddFilterParameters(aggregate, filter.Parameters);
@@ -254,17 +259,21 @@ public sealed class SqlServerTableDataService : ITableDataService
         if (canGroup)
         {
             await using var top = connection.CreateCommand();
+            top.Transaction = transaction;
             top.CommandText = SqlServerSqlBuilder.BuildProfileTopValuesSql(
                 schema, name, columnName, filter.Clause);
             top.Parameters.AddWithValue("@topValues", Math.Clamp(request.TopValues, 1, 50));
             AddFilterParameters(top, filter.Parameters);
-            await using var reader = await top.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await using (var reader = await top.ExecuteReaderAsync(cancellationToken))
             {
-                topValues.Add(new ColumnProfileValue(
-                    SqlServerValues.Materialize(reader.GetValue(0)), reader.GetInt64(1)));
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    topValues.Add(new ColumnProfileValue(
+                        SqlServerValues.Materialize(reader.GetValue(0)), reader.GetInt64(1)));
+                }
             }
         }
+        await transaction.CommitAsync(cancellationToken);
 
         var limitation = !canGroup
             ? $"The {dataType} type cannot be grouped; distinct count, range, and top values are unavailable."

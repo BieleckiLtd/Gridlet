@@ -156,7 +156,10 @@ public sealed class SqliteTableDataService : ITableDataService
         var quotedColumn = SqliteIdentifier.Quote(column.Name);
         var filter = SqliteFilterBuilder.Build(
             request.Filters, definition.Columns.Where(candidate => !candidate.IsHidden).ToArray());
+        await using var transaction = (Microsoft.Data.Sqlite.SqliteTransaction)
+            await connection.BeginTransactionAsync(cancellationToken);
         await using var aggregate = connection.CreateCommand();
+        aggregate.Transaction = transaction;
         aggregate.CommandText =
             $"SELECT COUNT(*), COUNT({quotedColumn}), COUNT(DISTINCT {quotedColumn}), " +
             $"MIN({quotedColumn}), MAX({quotedColumn}) FROM {qualifiedName}{filter.Clause};";
@@ -177,18 +180,22 @@ public sealed class SqliteTableDataService : ITableDataService
         }
 
         await using var top = connection.CreateCommand();
+        top.Transaction = transaction;
         top.CommandText =
             $"SELECT {quotedColumn}, COUNT(*) AS frequency FROM {qualifiedName}{filter.Clause} " +
             $"GROUP BY {quotedColumn} ORDER BY 2 DESC, 1 ASC LIMIT @topValues;";
         AddFilterParameters(top, filter.Parameters);
         top.Parameters.AddWithValue("@topValues", Math.Clamp(request.TopValues, 1, 50));
         var topValues = new List<ColumnProfileValue>();
-        await using var topReader = await top.ExecuteReaderAsync(cancellationToken);
-        while (await topReader.ReadAsync(cancellationToken))
+        await using (var topReader = await top.ExecuteReaderAsync(cancellationToken))
         {
-            topValues.Add(new ColumnProfileValue(
-                SqliteValues.Materialize(topReader.GetValue(0)), topReader.GetInt64(1)));
+            while (await topReader.ReadAsync(cancellationToken))
+            {
+                topValues.Add(new ColumnProfileValue(
+                    SqliteValues.Materialize(topReader.GetValue(0)), topReader.GetInt64(1)));
+            }
         }
+        await transaction.CommitAsync(cancellationToken);
 
         return new ColumnProfile(
             column.Name,
