@@ -203,13 +203,18 @@ public sealed class SqliteTableDataFilterTests : IAsyncLifetime
             context, "main", "Products", new ColumnProfileRequest("Notes; DROP TABLE Products")));
 
     [Fact]
-    public async Task A_column_profile_rejects_filters_on_hidden_virtual_table_columns()
-        => await Assert.ThrowsAsync<GridletValidationException>(() => data.GetColumnProfileAsync(
+    public async Task A_column_profile_accepts_the_hidden_filters_used_by_data_paging()
+    {
+        var profile = await data.GetColumnProfileAsync(
             context,
             "main",
             "SearchProducts",
             new ColumnProfileRequest(
-                "Value", Filters: [new TableDataFilter("SearchProducts", FilterOperator.Equals, "1")])));
+                "Value", Filters: [new TableDataFilter("SearchProducts", FilterOperator.Equals, "1")]));
+
+        Assert.Equal(0, profile.TotalCount);
+        Assert.Empty(profile.TopValues);
+    }
 
     [Fact]
     public async Task An_unknown_filter_column_is_rejected()

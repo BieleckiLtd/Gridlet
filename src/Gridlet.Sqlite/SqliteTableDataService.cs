@@ -155,7 +155,7 @@ public sealed class SqliteTableDataService : ITableDataService
 
         var quotedColumn = SqliteIdentifier.Quote(column.Name);
         var filter = SqliteFilterBuilder.Build(
-            request.Filters, definition.Columns.Where(candidate => !candidate.IsHidden).ToArray());
+            request.Filters, definition.Columns);
         await using var transaction = (Microsoft.Data.Sqlite.SqliteTransaction)
             await connection.BeginTransactionAsync(cancellationToken);
         await using var aggregate = connection.CreateCommand();

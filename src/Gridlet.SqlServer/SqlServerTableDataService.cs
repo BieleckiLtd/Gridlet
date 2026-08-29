@@ -230,7 +230,8 @@ public sealed class SqlServerTableDataService : ITableDataService
 
         var (canGroup, canRange) = SqlServerSqlBuilder.GetProfileCapabilities(systemType);
         var filter = SqlServerSqlBuilder.BuildFilterClause(request.Filters, filterColumnNames);
-        await using var transaction = await BeginProfileTransactionAsync(connection, cancellationToken);
+        var profileTransaction = await BeginProfileTransactionAsync(connection, cancellationToken);
+        await using var transaction = profileTransaction.Transaction;
 
         await using var aggregate = connection.CreateCommand();
         aggregate.Transaction = transaction;
@@ -253,7 +254,7 @@ public sealed class SqlServerTableDataService : ITableDataService
         }
 
         var topValues = new List<ColumnProfileValue>();
-        if (canGroup)
+        if (canGroup && profileTransaction.HasConsistentSnapshot)
         {
             await using var top = connection.CreateCommand();
             top.Transaction = transaction;
@@ -272,11 +273,26 @@ public sealed class SqlServerTableDataService : ITableDataService
         }
         await transaction.CommitAsync(cancellationToken);
 
-        var limitation = !canGroup
-            ? $"The {dataType} type cannot be grouped; distinct count, range, and top values are unavailable."
-            : !canRange
-                ? $"The {dataType} type does not support MIN/MAX; range is unavailable."
-                : null;
+        var limitations = new List<string>();
+        if (!canGroup)
+        {
+            limitations.Add(
+                $"The {dataType} type cannot be grouped; distinct count, range, and top values are unavailable.");
+        }
+        else
+        {
+            if (!canRange)
+            {
+                limitations.Add($"The {dataType} type does not support MIN/MAX; range is unavailable.");
+            }
+            if (!profileTransaction.HasConsistentSnapshot)
+            {
+                limitations.Add(
+                    "Top values require snapshot isolation to remain consistent with the aggregate profile; " +
+                    "enable ALLOW_SNAPSHOT_ISOLATION for this database to include them.");
+            }
+        }
+        var limitation = limitations.Count == 0 ? null : string.Join(" ", limitations);
         return new ColumnProfile(
             columnName,
             dataType,
@@ -289,7 +305,8 @@ public sealed class SqlServerTableDataService : ITableDataService
             limitation);
     }
 
-    private static async Task<SqlTransaction> BeginProfileTransactionAsync(
+    private static async Task<(SqlTransaction Transaction, bool HasConsistentSnapshot)>
+        BeginProfileTransactionAsync(
         SqlConnection connection,
         CancellationToken cancellationToken)
     {
@@ -302,7 +319,9 @@ public sealed class SqlServerTableDataService : ITableDataService
         // Read committed is the safe fallback for databases that have not opted into snapshot
         // isolation; unlike serializable, it cannot hold range locks across two full scans.
         var isolation = state == 1 ? IsolationLevel.Snapshot : IsolationLevel.ReadCommitted;
-        return (SqlTransaction)await connection.BeginTransactionAsync(isolation, cancellationToken);
+        var transaction = (SqlTransaction)await connection.BeginTransactionAsync(
+            isolation, cancellationToken);
+        return (transaction, state == 1);
     }
 
     private static void AddFilterParameters(
