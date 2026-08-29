@@ -545,21 +545,22 @@
     if (pending.trim()) onEvent(parseNdjsonEvent(pending));
   }
 
+  const exactNumbersByRow = new WeakMap();
+
   function parseNdjsonEvent(line) {
     const event = JSON.parse(line);
-    restoreExactNumbers(event.rows, event.exactValues);
-    restoreExactNumbers(event.rowKeys, event.exactRowKeys);
+    rememberExactNumbers(event.rows, event.exactValues);
     return event;
   }
 
-  function restoreExactNumbers(rows, exactRows) {
+  function rememberExactNumbers(rows, exactRows) {
     if (!Array.isArray(rows) || !Array.isArray(exactRows)) return;
     rows.forEach((row, rowIndex) => {
       const exactValues = exactRows[rowIndex];
       if (!Array.isArray(row) || !Array.isArray(exactValues)) return;
-      exactValues.forEach((value, columnIndex) => {
-        if (value !== null && value !== undefined) row[columnIndex] = value;
-      });
+      if (exactValues.some((value) => value !== null && value !== undefined)) {
+        exactNumbersByRow.set(row, exactValues);
+      }
     });
   }
 
@@ -11604,8 +11605,11 @@
     // SQL Server rejects a table-value constructor above 1,000 rows. The same conservative
     // chunking also keeps copied SQLite statements from growing needlessly large.
     for (let offset = 0; offset < rows.length; offset += 1000) {
-      const values = rows.slice(offset, offset + 1000).map((row) => '    (' + columns.map(
-        (column, index) => resultSqlLiteral(row[index], column, providerName)).join(', ') + ')');
+      const values = rows.slice(offset, offset + 1000).map((row) => {
+        const exactValues = exactNumbersByRow.get(row);
+        return '    (' + columns.map((column, index) =>
+          resultSqlLiteral(row[index], column, providerName, exactValues?.[index])).join(', ') + ')';
+      });
       statements.push(prefix + values.join(',\n') + ';');
     }
     return statements.join('\n\n');
@@ -11618,15 +11622,15 @@
       : `[${text.replaceAll(']', ']]')}]`;
   }
 
-  function resultSqlLiteral(value, column, providerName) {
+  function resultSqlLiteral(value, column, providerName, exactValue = null) {
     if (value === null || value === undefined) return 'NULL';
     if (typeof value === 'boolean') return value ? '1' : '0';
     const provider = String(providerName || '').toLowerCase();
     const dataType = String(column.dataTypeName || '').toLowerCase();
     const exactDecimalRequired = /\b(?:decimal|numeric|money|smallmoney)\b/.test(dataType);
     const exactIntegerRequired = /\b(?:tinyint|smallint|mediumint|bigint|integer|int[248]?)\b/.test(dataType);
-    if (typeof value === 'string' && (exactDecimalRequired || exactIntegerRequired)
-      && /^[+-]?\d+(?:\.\d+)?$/.test(value)) return value;
+    if (typeof exactValue === 'string' && (exactDecimalRequired || exactIntegerRequired)
+      && /^[+-]?\d+(?:\.\d+)?$/.test(exactValue)) return exactValue;
     if (typeof value === 'number') {
       if (!Number.isFinite(value)) return 'NULL';
       const significantDigits = String(value).split(/[eE]/)[0]

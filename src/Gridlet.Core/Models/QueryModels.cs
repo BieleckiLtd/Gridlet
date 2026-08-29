@@ -53,10 +53,6 @@ public sealed record QueryStreamEvent(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string?[]>? ExactValues => ExactNumbers(Rows);
 
-    /// <summary>Exact invariant text for precision-sensitive values in <see cref="RowKeys"/>.</summary>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public IReadOnlyList<string?[]>? ExactRowKeys => ExactNumbers(RowKeys);
-
     private static IReadOnlyList<string?[]>? ExactNumbers(IReadOnlyList<object?[]>? rows)
     {
         if (rows is null) return null;

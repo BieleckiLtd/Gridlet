@@ -1562,14 +1562,14 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await using var browserPage = await fixture.NewPageAsync();
         var page = browserPage.Page;
         const string sourceStream = """
-            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"int"},{"name":"Name","dataType":"nvarchar(100)"},{"name":"SourceOnly","dataType":"int"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Customers"}}
-            {"type":"rows","resultSetIndex":0,"rows":[[1,"Ada",10],[2,"Grace",20]],"rowKeys":[[1],[2]]}
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"int"},{"name":"Name","dataType":"nvarchar(100)"},{"name":"Price","dataType":"decimal(18,2)"},{"name":"SourceOnly","dataType":"int"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Customers"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[1,"Ada",1.50,10],[2,"Grace",2.50,20]],"rowKeys":[[1],[2]],"exactValues":[[null,null,"1.50",null],[null,null,"2.50",null]]}
             {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
             {"type":"completed","recordsAffected":2}
             """;
         const string targetStream = """
-            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"INTEGER"},{"name":"Name","dataType":"TEXT"},{"name":"TargetOnly","dataType":"TEXT"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Customers"}}
-            {"type":"rows","resultSetIndex":0,"rows":[[1,"Ada changed","x"],[3,"Linus","y"]],"rowKeys":[[1],[3]]}
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"INTEGER"},{"name":"Name","dataType":"TEXT"},{"name":"Price","dataType":"REAL"},{"name":"TargetOnly","dataType":"TEXT"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Customers"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[1,"Ada changed",1.5,"x"],[3,"Linus",3.5,"y"]],"rowKeys":[[1],[3]]}
             {"type":"resultSetCompleted","resultSetIndex":0,"truncated":true}
             {"type":"completed","recordsAffected":2}
             """;
@@ -3944,6 +3944,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal(
             "INSERT INTO [TargetTable] ([ExactAmount]) VALUES\n    (123456789012345.6);",
             await ReadClipboardAsync());
+        await CopyAsync("Copy as JSON");
+        using (var exactJson = JsonDocument.Parse(await ReadClipboardAsync()))
+        {
+            Assert.Equal(JsonValueKind.Number,
+                exactJson.RootElement[0].GetProperty("ExactAmount").ValueKind);
+        }
 
         await page.Locator("#new-query-btn").ClickAsync();
         await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-large-float");
