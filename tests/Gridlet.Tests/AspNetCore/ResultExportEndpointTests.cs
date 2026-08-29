@@ -297,11 +297,19 @@ public sealed class ResultExportEndpointTests
         await using var cleanup = app;
         using var disposeClient = client;
         using var content = new StringContent(
-            new string('x', checked((int)GridletResultExporter.MaxRequestBytes + 1)),
+            "x",
             System.Text.Encoding.UTF8,
             "application/json");
+        // Advertise an oversized body without sending megabytes that Kestrel may reject while
+        // the client is still writing (which otherwise surfaces as a platform-dependent reset).
+        content.Headers.ContentLength = GridletResultExporter.MaxRequestBytes + 1;
 
-        var response = await client.PostAsync("/gridlet/api/exports/xlsx", content);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/gridlet/api/exports/xlsx")
+        {
+            Content = content,
+        };
+        request.Headers.ExpectContinue = true;
+        var response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
     }
