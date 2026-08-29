@@ -605,6 +605,10 @@
   const del = (url) => api(url, { method: 'DELETE' });
 
   const isVirtualObject = (o) => !!o?.subKind && /virtual/i.test(o.subKind);
+  const objectBadge = (o) => o?.isInternal ? 'I' : isVirtualObject(o) ? 'VT' : ({
+    Table: 'T', View: 'V', StoredProcedure: 'P', ScalarFunction: 'F',
+    TableValuedFunction: 'F', Trigger: 'R', Sequence: 'Q', UserDefinedType: 'Y',
+  })[o?.type] || 'O';
   const canDropObject = (o) => !o?.isInternal && o?.type !== 'UserDefinedType';
   const canDesignObject = (o) => canDropObject(o) && !isVirtualObject(o);
 
@@ -1482,6 +1486,8 @@
     }
   });
 
+  registerTabRestorer('object-search', (descriptor) => openObjectSearchTab(descriptor));
+
   registerTabRestorer('apis', () => openApisTab());
 
   // ---- modules ----------------------------------------------------------------
@@ -1651,7 +1657,7 @@
     await loadModules();
 
     navigationOverflow = setupOverflowToolbar($('#topbar'), [
-      $('#version'), $('#about-btn'), $('#apis-btn'), $('#schema-compare-btn'), $('#ask-btn'),
+      $('#version'), $('#about-btn'), $('#apis-btn'), $('#schema-compare-btn'), $('#object-search-btn'), $('#ask-btn'),
       $('#theme-btn'), $('#refresh-btn'), $('.connection-pickers'), $('#new-query-btn'), $('#diagram-btn'),
       ...moduleActions,
     ], 'More app actions');
@@ -1687,6 +1693,7 @@
     $('#ask-btn').addEventListener('click', () => openAgentTab());
     $('#diagram-btn').addEventListener('click', () => openDiagramTab());
     $('#schema-compare-btn').addEventListener('click', () => openSchemaCompareTab());
+    $('#object-search-btn').addEventListener('click', () => openObjectSearchTab());
     $('#new-query-btn').addEventListener('click', () => openQueryTab());
     $('#apis-btn').addEventListener('click', () => openApisTab());
     $('#about-btn').addEventListener('click', showAbout);
@@ -1698,6 +1705,7 @@
       { label: 'Query', action: () => openQueryTab() },
       { label: 'ER diagram', action: () => openDiagramTab() },
       { label: 'Compare schemas', action: () => openSchemaCompareTab() },
+      { label: 'Find objects everywhere', action: () => openObjectSearchTab() },
       { label: 'Refresh objects', action: () => loadObjects() },
       ...(currentConn().allowDdl ? [
         { separator: true },
@@ -2427,6 +2435,384 @@
   }
 
   // ---- tabs -------------------------------------------------------------------
+
+  const objectSearchQueryLimit = 4096;
+
+  const boundedObjectSearchQuery = (value) => {
+    const bounded = String(value || '').slice(0, objectSearchQueryLimit);
+    return /[\uD800-\uDBFF]$/.test(bounded) ? bounded.slice(0, -1) : bounded;
+  };
+
+  const objectSearchCompareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
+
+  const normalizedObjectSearchText = (value) => String(value || '')
+    .replace(/\s+/g, ' ').trim().toLowerCase();
+
+  const objectSearchModes = new Set(['names', 'all', 'definitions']);
+
+  function openObjectSearchTab(initial = {}) {
+    const existing = state.tabs.find((candidate) => candidate.key === 'object-search');
+    if (existing) {
+      setActiveTab(existing.id);
+      existing.searchInput?.focus();
+      return;
+    }
+    const panel = h('div', {
+      class: 'panel object-search-panel', 'data-testid': 'object-search',
+    });
+    const tab = {
+      id: state.nextTabId++, key: 'object-search', badge: '⌕', badgeClass: 'badge-search',
+      title: 'Find objects', panel, loaded: false,
+      query: boundedObjectSearchQuery(initial.query),
+      mode: objectSearchModes.has(initial.mode) ? initial.mode : 'names',
+      definitionLimit: ['500', '2000', 'all'].includes(String(initial.definitionLimit))
+        ? String(initial.definitionLimit) : '500',
+      includeSystem: Boolean(initial.includeSystem),
+      includeInternal: Boolean(initial.includeInternal),
+      load: () => loadObjectSearchTab(tab),
+      restore: () => ({
+        kind: 'object-search', query: boundedObjectSearchQuery(tab.query), mode: tab.mode,
+        definitionLimit: tab.definitionLimit,
+        includeSystem: tab.includeSystem, includeInternal: tab.includeInternal,
+      }),
+    };
+    addTab(tab);
+  }
+
+  const objectSearchTerms = (query) => (query.match(/"[^"]+"|\S+/g) || [])
+    .map((term) => normalizedObjectSearchText(term.replace(/^"|"$/g, ''))).filter(Boolean);
+
+  const objectSearchMatches = (text, terms) => {
+    const candidate = normalizedObjectSearchText(text);
+    return terms.every((term) => candidate.includes(term));
+  };
+
+  function objectSearchDefinitionMatch(definition, terms) {
+    const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const occurrences = terms.map((term) => new RegExp(
+      term.split(' ').map(escape).join('\\s+'), 'iu').exec(definition));
+    if (occurrences.some((match) => !match)) return null;
+    const first = occurrences.reduce((earliest, match) =>
+      !earliest || match.index < earliest.index ? match : earliest, null);
+    const index = first.index;
+    const line = definition.slice(0, index).split(/\r?\n/).length;
+    const start = Math.max(0, index - 90);
+    const end = Math.min(definition.length, index + Math.max(first[0].length, 1) + 150);
+    let text = definition.slice(start, end).replace(/\s+/g, ' ').trim();
+    if (start) text = `…${text}`;
+    if (end < definition.length) text += '…';
+    return { line, text };
+  }
+
+  async function objectSearchMap(items, concurrency, operation, signal) {
+    let next = 0;
+    const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+      while (next < items.length) {
+        if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        const index = next++;
+        await operation(items[index], index);
+      }
+    });
+    await Promise.all(workers);
+  }
+
+  function objectSearchTakeFair(candidates, limit) {
+    const ordered = [...candidates].sort((left, right) =>
+      objectSearchCompareText(scopeKey(left.scope), scopeKey(right.scope))
+      || objectSearchCompareText(left.object.schema, right.object.schema)
+      || objectSearchCompareText(left.object.name, right.object.name)
+      || objectSearchCompareText(left.object.type, right.object.type));
+    if (limit >= ordered.length) return ordered;
+    const byScope = new Map();
+    for (const candidate of ordered) {
+      const key = scopeKey(candidate.scope);
+      if (!byScope.has(key)) byScope.set(key, []);
+      byScope.get(key).push(candidate);
+    }
+    const selected = [];
+    let offset = 0;
+    while (selected.length < limit) {
+      let added = false;
+      for (const scoped of byScope.values()) {
+        if (offset < scoped.length) {
+          selected.push(scoped[offset]);
+          added = true;
+          if (selected.length === limit) break;
+        }
+      }
+      if (!added) break;
+      offset++;
+    }
+    return selected;
+  }
+
+  async function loadObjectSearchTab(tab) {
+    const controls = h('form', { class: 'viewbar object-search-toolbar' });
+    const query = h('input', {
+      type: 'search', value: tab.query, placeholder: 'Object name or definition text…',
+      'aria-label': 'Object search text', 'data-testid': 'object-search-query', autocomplete: 'off',
+      maxlength: objectSearchQueryLimit,
+    });
+    const mode = h('select', {
+      'aria-label': 'Search in', 'data-testid': 'object-search-mode',
+    }, h('option', { value: 'names', text: 'Names and descriptions' }),
+    h('option', { value: 'all', text: 'Names + definitions' }),
+    h('option', { value: 'definitions', text: 'Definitions only' }));
+    mode.value = tab.mode;
+    const definitionLimit = h('select', {
+      'aria-label': 'Definition scan limit', 'data-testid': 'object-search-definition-limit',
+    }, h('option', { value: '500', text: 'First 500 objects' }),
+    h('option', { value: '2000', text: 'First 2,000 objects' }),
+    h('option', { value: 'all', text: 'All objects (slow)' }));
+    definitionLimit.value = tab.definitionLimit;
+    definitionLimit.disabled = mode.value === 'names';
+    const includeSystem = h('input', { type: 'checkbox' });
+    includeSystem.checked = tab.includeSystem;
+    const includeInternal = h('input', { type: 'checkbox' });
+    includeInternal.checked = tab.includeInternal;
+    const run = h('button', {
+      type: 'submit', class: 'primary', text: 'Search', 'data-testid': 'object-search-run',
+    });
+    const cancel = h('button', {
+      type: 'button', text: 'Cancel', hidden: '', 'data-testid': 'object-search-cancel',
+    });
+    controls.append(query, h('label', {}, 'Search in ', mode),
+      h('label', {}, 'Definition limit ', definitionLimit),
+      h('label', { class: 'checkbox-row' }, includeSystem, 'System databases'),
+      h('label', { class: 'checkbox-row' }, includeInternal, 'Internal objects'), run, cancel);
+    const status = h('div', {
+      id: 'object-search-status', class: 'object-search-status muted', role: 'status',
+      'aria-live': 'polite', 'aria-atomic': 'true',
+      'data-testid': 'object-search-status', text: 'Enter at least two characters to search.',
+    });
+    const results = h('div', {
+      class: 'object-search-results', 'data-testid': 'object-search-results',
+      'aria-describedby': 'object-search-status', 'aria-busy': 'false',
+    });
+    tab.panel.replaceChildren(controls, status, results);
+    tab.searchInput = query;
+    let request = 0;
+    let controller = null;
+    const resultLimit = 1000;
+
+    const setRunning = (running) => {
+      query.disabled = running;
+      mode.disabled = running;
+      definitionLimit.disabled = running || mode.value === 'names';
+      includeSystem.disabled = running;
+      includeInternal.disabled = running;
+      run.disabled = running;
+      cancel.hidden = !running;
+      results.setAttribute('aria-busy', String(running));
+    };
+
+    const render = (matches, summary, failures, definitionCoverage) => {
+      const visible = matches.slice(0, resultLimit);
+      const orderedFailures = [...failures].sort(objectSearchCompareText);
+      const grouped = new Map();
+      for (const match of visible) {
+        const key = `${match.scope.connection} / ${match.scope.database}`;
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(match);
+      }
+      const content = [];
+      if (matches.length > resultLimit) content.push(h('div', {
+          class: 'warning-box object-search-warning', 'data-testid': 'object-search-result-warning',
+          text: `Showing the first ${resultLimit.toLocaleString()} matches. Refine the search to see the rest.`,
+        }));
+      if (definitionCoverage?.omitted) content.push(h('div', {
+          class: 'warning-box object-search-warning', 'data-testid': 'object-search-definition-warning',
+          text: `Definition text was searched for ${definitionCoverage.searched.toLocaleString()} of `
+            + `${definitionCoverage.eligible.toLocaleString()} eligible objects, distributed across databases. `
+            + 'Increase the Definition limit and search again to scan more.',
+        }));
+      if (orderedFailures.length) content.push(h('details', { class: 'object-search-failures' },
+          h('summary', { text: `${orderedFailures.length} location${orderedFailures.length === 1 ? '' : 's'} could not be searched` }),
+          h('ul', {}, ...orderedFailures.slice(0, 20).map((failure) => h('li', { text: failure }))),
+          orderedFailures.length > 20 ? h('p', { class: 'muted', text: `${orderedFailures.length - 20} more failures omitted.` }) : null));
+      for (const [scopeName, scopedMatches] of grouped.entries()) {
+        const list = h('div', { class: 'object-search-list' });
+        for (const match of scopedMatches) {
+          const badge = objectBadge(match.object);
+          list.append(h('button', {
+            type: 'button', class: 'object-search-result',
+            'data-testid': 'object-search-result',
+            title: `Open ${match.object.schema}.${match.object.name} in ${scopeName}`,
+            onclick: () => openObjectTab(match.object, match.scope),
+          }, h('span', {
+            class: `badge badge-${badge}`, text: badge, title: match.object.type,
+          }), h('span', { class: 'object-search-result-body' },
+          h('strong', { text: `${match.object.schema}.${match.object.name}` }),
+          h('span', { class: 'muted', text: `${match.object.type} · ${match.reasons.join(' + ')}` }),
+          match.snippet ? h('span', {
+            class: 'mono object-search-snippet', text: `Line ${match.snippet.line}: ${match.snippet.text}`,
+          }) : match.object.description ? h('span', {
+            class: 'object-search-snippet', text: match.object.description,
+          }) : null)));
+        }
+        content.push(h('section', { class: 'object-search-group' },
+          h('h3', {}, scopeName, ' ', h('span', {
+            class: 'object-search-count', text: String(scopedMatches.length),
+          })), list));
+      }
+      if (!matches.length && summary) content.push(h('div', {
+          class: 'empty-inner object-search-empty',
+          text: 'No matching objects were found in the searched locations.',
+        }));
+      results.replaceChildren(...content);
+    };
+
+    const search = async () => {
+      const boundedQuery = boundedObjectSearchQuery(query.value.trim());
+      query.value = boundedQuery;
+      const terms = objectSearchTerms(boundedQuery);
+      if (boundedQuery.length < 2 || !terms.length) {
+        status.textContent = 'Enter at least two characters to search.';
+        results.replaceChildren();
+        query.focus();
+        return;
+      }
+      const current = ++request;
+      controller?.abort();
+      controller = new AbortController();
+      const signal = controller.signal;
+      tab.query = boundedQuery;
+      tab.mode = mode.value;
+      tab.includeSystem = includeSystem.checked;
+      tab.includeInternal = includeInternal.checked;
+      saveSession();
+      setRunning(true);
+      results.replaceChildren(h('div', { class: 'loading', text: 'Discovering databases…' }));
+      status.textContent = `Searching ${state.meta.connections.length} connection${state.meta.connections.length === 1 ? '' : 's'}…`;
+      const failures = [];
+      const scopes = [];
+      let candidates = [];
+      try {
+        await objectSearchMap(state.meta.connections, 4, async (connection) => {
+          try {
+            const databases = await api(urlsFor({ connection: connection.name }).databases(connection.name), { signal });
+            for (const database of databases) {
+              if (!includeSystem.checked && database.isSystem) continue;
+              scopes.push({ connection: connection.name, database: database.name });
+            }
+          } catch (err) {
+            if (err.name === 'AbortError') throw err;
+            failures.push(`${connection.name}: ${err.message}`);
+          }
+        }, signal);
+        if (current !== request) return;
+        scopes.sort((left, right) => objectSearchCompareText(scopeKey(left), scopeKey(right)));
+        status.textContent = `Listing objects in ${scopes.length} database${scopes.length === 1 ? '' : 's'}…`;
+        await objectSearchMap(scopes, 6, async (scope) => {
+          try {
+            const objects = await api(urlsFor(scope).objects(), { signal });
+            for (const object of objects) {
+              if (!includeInternal.checked && object.isInternal) continue;
+              candidates.push({ scope, object });
+            }
+          } catch (err) {
+            if (err.name === 'AbortError') throw err;
+            failures.push(`${scope.connection} / ${scope.database}: ${err.message}`);
+          }
+        }, signal);
+        if (current !== request) return;
+
+        const found = new Map();
+        const resultKey = (candidate) => `${scopeKey(candidate.scope)}\0${candidate.object.schema}\0${candidate.object.name}\0${candidate.object.type}`.toLowerCase();
+        if (mode.value !== 'definitions') {
+          for (const candidate of candidates) {
+            const reasons = [];
+            if (objectSearchMatches(`${candidate.object.schema}.${candidate.object.name}`, terms)) reasons.push('name');
+            if (objectSearchMatches(candidate.object.description, terms)) reasons.push('description');
+            if (reasons.length) found.set(resultKey(candidate), { ...candidate, reasons, snippet: null });
+          }
+        }
+
+        let definitionCoverage = null;
+        if (mode.value !== 'names') {
+          const eligible = mode.value === 'all'
+            ? candidates.filter((candidate) => !found.has(resultKey(candidate)))
+            : candidates;
+          const requestedLimit = definitionLimit.value === 'all'
+            ? eligible.length : Number(definitionLimit.value);
+          const definitionCandidates = objectSearchTakeFair(eligible, requestedLimit);
+          definitionCoverage = {
+            searched: definitionCandidates.length,
+            eligible: eligible.length,
+            omitted: eligible.length - definitionCandidates.length,
+          };
+          status.textContent = `Searching definitions for ${definitionCandidates.length.toLocaleString()} object`
+            + `${definitionCandidates.length === 1 ? '' : 's'}…`;
+          await objectSearchMap(definitionCandidates, 8, async (candidate) => {
+            try {
+              const response = await api(urlsFor(candidate.scope).definition(
+                candidate.object.schema, candidate.object.name, candidate.object.type), { signal });
+              const snippet = objectSearchDefinitionMatch(response.definition || '', terms);
+              if (snippet) {
+                const key = resultKey(candidate);
+                found.set(key, { ...candidate, reasons: ['definition'], snippet });
+              }
+            } catch (err) {
+              if (err.name === 'AbortError') throw err;
+              failures.push(`${candidate.scope.connection} / ${candidate.scope.database} / ${candidate.object.schema}.${candidate.object.name}: ${err.message}`);
+            }
+          }, signal);
+        }
+        if (current !== request) return;
+        const matches = [...found.values()].sort((left, right) =>
+          objectSearchCompareText(left.scope.connection, right.scope.connection)
+          || objectSearchCompareText(left.scope.database, right.scope.database)
+          || objectSearchCompareText(left.object.schema, right.object.schema)
+          || objectSearchCompareText(left.object.name, right.object.name));
+        status.textContent = `${matches.length.toLocaleString()} match${matches.length === 1 ? '' : 'es'} · `
+          + `${candidates.length.toLocaleString()} object${candidates.length === 1 ? '' : 's'} · `
+          + `${scopes.length.toLocaleString()} database${scopes.length === 1 ? '' : 's'} · `
+          + `${state.meta.connections.length.toLocaleString()} connection${state.meta.connections.length === 1 ? '' : 's'}`
+          + (definitionCoverage ? ` · ${definitionCoverage.searched.toLocaleString()} / ${definitionCoverage.eligible.toLocaleString()} definitions` : '')
+          + (failures.length ? ` · ${failures.length.toLocaleString()} failure${failures.length === 1 ? '' : 's'}` : '');
+        render(matches, true, failures, definitionCoverage);
+      } catch (err) {
+        if (current !== request || err.name === 'AbortError') return;
+        status.textContent = 'Search unavailable';
+        results.replaceChildren(errorBox(err.message));
+      } finally {
+        if (current === request) {
+          setRunning(false);
+          controller = null;
+        }
+      }
+    };
+
+    controls.addEventListener('submit', (event) => { event.preventDefault(); search(); });
+    cancel.addEventListener('click', () => {
+      request++;
+      controller?.abort();
+      controller = null;
+      setRunning(false);
+      status.textContent = 'Search cancelled.';
+      results.replaceChildren();
+    });
+    for (const control of [query, mode, definitionLimit, includeSystem, includeInternal]) {
+      control.addEventListener('change', () => {
+        tab.query = boundedObjectSearchQuery(query.value.trim());
+        tab.mode = mode.value;
+        tab.definitionLimit = definitionLimit.value;
+        tab.includeSystem = includeSystem.checked;
+        tab.includeInternal = includeInternal.checked;
+        definitionLimit.disabled = mode.value === 'names';
+        saveSession();
+      });
+    }
+    tab.onClose = () => {
+      request++;
+      controller?.abort();
+      controller = null;
+    };
+    query.focus();
+    if (tab.query.trim().length >= 2) {
+      status.textContent = 'Search settings restored. Press Search to run.';
+    }
+  }
 
   function openDiagramTab(scope = scopeOf()) {
     const key = `diagram:${scopeKey(scope)}`;
@@ -4657,11 +5043,7 @@
       return;
     }
 
-    const badge = o.isInternal ? 'I' : isVirtualObject(o) ? 'VT' : o.type === 'Table' ? 'T'
-      : o.type === 'View' ? 'V'
-      : o.type === 'StoredProcedure' ? 'P'
-      : o.type === 'Trigger' ? 'R'
-      : o.type === 'Sequence' ? 'Q' : 'F';
+    const badge = objectBadge(o);
 
     const tab = {
       id: state.nextTabId++,
