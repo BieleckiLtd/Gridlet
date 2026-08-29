@@ -82,6 +82,9 @@ public class SqlServerSqlBuilderTests
     [InlineData("timestamp", true, false)]
     [InlineData("sql_variant", true, true)]
     [InlineData("varbinary", true, false)]
+    [InlineData("text", false, false)]
+    [InlineData("ntext", false, false)]
+    [InlineData("image", false, false)]
     [InlineData("xml", false, false)]
     [InlineData("geography", false, false)]
     [InlineData("custom_clr_type", false, false)]
@@ -104,7 +107,8 @@ public class SqlServerSqlBuilderTests
             canGroup: false, canRange: false);
 
         Assert.Equal(
-            "SELECT COUNT_BIG(*), COUNT_BIG([Value]]Column]), CAST(NULL AS bigint), " +
+            "SELECT COUNT_BIG(*), COUNT_BIG(CASE WHEN [Value]]Column] IS NULL THEN NULL ELSE 1 END), " +
+            "CAST(NULL AS bigint), " +
             "CAST(NULL AS nvarchar(1)), CAST(NULL AS nvarchar(1)) FROM " +
             "[audit].[Odd]]Table] WHERE [Enabled] = @f0;",
             sql);

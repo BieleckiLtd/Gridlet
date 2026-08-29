@@ -112,7 +112,10 @@ public static class SqlServerSqlBuilder
     {
         var target = SqlServerIdentifier.QuoteQualified(schema, name);
         var quotedColumn = SqlServerIdentifier.Quote(column);
-        return $"SELECT COUNT_BIG(*), COUNT_BIG({quotedColumn}), " +
+        var nonNullCount = canGroup
+            ? $"COUNT_BIG({quotedColumn})"
+            : $"COUNT_BIG(CASE WHEN {quotedColumn} IS NULL THEN NULL ELSE 1 END)";
+        return $"SELECT COUNT_BIG(*), {nonNullCount}, " +
             (canGroup ? $"COUNT_BIG(DISTINCT {quotedColumn})" : "CAST(NULL AS bigint)") + ", " +
             (canRange ? $"MIN({quotedColumn}), MAX({quotedColumn})" :
                 "CAST(NULL AS nvarchar(1)), CAST(NULL AS nvarchar(1))") +
