@@ -937,24 +937,11 @@
 
 .gfd-foreign { display: contents; }
 
-/* The data grid. Its own scroll container, because a grid is placed in a box of a chosen size and
-   the rows that arrive are not the document's to predict. */
-.gfd-grid { border-collapse: collapse; width: 100%; }
-
-.gfd-grid th,
-.gfd-grid td {
-  border: 1px solid var(--border);
-  padding: 3px 8px;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.gfd-grid th {
-  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
-  font-weight: 600;
-  position: sticky;
-  top: 0;
-}
+/* The data grid is the workspace's own, so its appearance comes with it and is not restated here.
+   What a component adds is the box: a grid is placed at a chosen size and the number of rows that
+   arrive is not the document's to predict, so it scrolls inside that size rather than growing out
+   of the layout it was placed in. */
+.gfd-grid { width: 100%; }
 
 /* The document, edited as itself. It fills the surface the canvas would have used: the two are the
    same component in two forms, so they occupy the same place rather than competing for it. */

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 using Xunit;
 
@@ -133,7 +134,8 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         object? componentEvents = null,
         IEnumerable<object>? modules = null,
         bool isolated = false,
-        string css = "")
+        string css = "",
+        string? source = null)
     {
         var page = browserPage.Page;
 
@@ -161,6 +163,14 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         }
 
         var body = new List<string>();
+
+        // The route the component reads its rows from. The document names the route rather than the
+        // endpoint's id, so it keeps meaning the same endpoint in another environment.
+        if (source is not null)
+        {
+            body.Add($"<gridlet-source href=\"{Escape(source)}\"></gridlet-source>");
+        }
+
         foreach (var module in modules ?? [])
         {
             // A component names the modules it runs, and may name which of a module's classes it
@@ -1441,6 +1451,89 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         await page.GetByTestId("component-view-design").ClickAsync();
         await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Intact");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A grid bound to a published endpoint shows what the endpoint returned, drawn by the
+    /// workspace's own grid. The source is named by its route, which is what the document stores
+    /// and what the component calls, so it keeps meaning the same endpoint in another environment.
+    /// </summary>
+    /// <remarks>
+    /// Naming no columns is the case worth testing: the grid takes the columns the source returned,
+    /// so binding a grid to an endpoint shows its data without the document having to describe it
+    /// first — and what arrives is what the endpoint really answered rather than a shape the test
+    /// asked for.
+    /// </remarks>
+    [Fact]
+    public async Task A_data_grid_shows_the_rows_its_source_returned()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var route = $"grid-rows-{Guid.NewGuid():n}";
+        var published = await page.APIRequest.PostAsync("/gridlet/api/published", new APIRequestContextOptions
+        {
+            DataObject = new
+            {
+                name = "Grid rows",
+                method = "GET",
+                route,
+                connectionName = "Main",
+                sql = "SELECT 1",
+                parameters = Array.Empty<object>(),
+                enabled = true,
+            },
+        });
+        Assert.True(published.Ok, $"Publishing the endpoint failed: {published.Status}");
+
+        page = await OpenComponentAsync(browserPage, "Bound grid component",
+            [Control("answers", "grid", props: new { columns = "", header = true }, w: 400, h: 160)],
+            source: route);
+
+        // The pager reports where the component is in its rows, so it says whether the source
+        // answered at all before the grid is read for what it answered with.
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-record-position")).ToContainTextAsync("of 1");
+
+        var grid = Canvas(page, "answers");
+        await Assertions.Expect(grid.Locator("thead th")).ToHaveCountAsync(1);
+        await Assertions.Expect(grid.Locator("thead th").First).ToContainTextAsync("Answer");
+        await Assertions.Expect(grid.Locator("tbody tr")).ToHaveCountAsync(1);
+        await Assertions.Expect(grid.Locator("tbody td").First).ToHaveTextAsync("42");
+
+        // Drawn by the workspace's grid rather than one of the designer's own making, so a row in a
+        // component looks like a row anywhere else in the workspace.
+        await Assertions.Expect(grid).ToHaveClassAsync(new Regex("data-grid"));
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The document editor offers what the document can say, the same way the stylesheet editor
+    /// offers what a rule can say. The offers are read off the catalogue, so a kind that gains a
+    /// property gains it here too.
+    /// </summary>
+    [Fact]
+    public async Task Suggests_what_an_element_in_the_document_can_be_told()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Completing document",
+            [Control("go", "button", props: new { text = "Go" })]);
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var editor = page.GetByTestId("component-code-editor");
+        var items = page.GetByTestId("html-completions").Locator(".gfd-complete-item");
+
+        await editor.PressAsync("Control+End");
+        await editor.PressSequentiallyAsync("<butt");
+        await Assertions.Expect(items.First).ToContainTextAsync("button");
+
+        await editor.PressAsync("Enter");
+        await editor.PressSequentiallyAsync(" data-on-cl");
+        await Assertions.Expect(items.First).ToContainTextAsync("data-on-click");
 
         browserPage.AssertNoUnexpectedErrors();
     }

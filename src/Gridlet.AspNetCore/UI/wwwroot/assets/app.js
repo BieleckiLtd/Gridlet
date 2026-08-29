@@ -1608,6 +1608,11 @@
       modal,
       confirmModal,
       showContextMenu,
+      // The workspace's own grid, so a module showing rows shows them the way every other table
+      // here does: the same sorting, the same selection, the same cell rendering for a null, a
+      // number and a blob. A module drawing its own table would drift from all of it.
+      dataGrid,
+      renderCell,
       registerAction,
       registerSidebarSection,
       // A module tab comes back after a reload by describing itself, the same way built-in tabs do.

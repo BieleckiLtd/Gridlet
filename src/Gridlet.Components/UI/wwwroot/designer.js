@@ -14,7 +14,7 @@
   'use strict';
 
   const {
-    h, api, post, del, toast, modal, confirmModal,
+    h, api, post, del, toast, modal, confirmModal, dataGrid,
     registerSidebarSection, registerTabRestorer, openTab, closeTab, refreshTabs, state,
   } = window.gridlet;
 
@@ -501,11 +501,11 @@ export default class ${CLASS_NAME(name)} {
   // the caller, because only the caller knows whether the caret is in a selector, a property or a
   // value — and, for a selector, what this particular component actually contains.
 
-  function attachCompletions(input, highlight, suggest) {
+  function attachCompletions(input, highlight, suggest, testId = 'css-completions') {
     const list = h('div', {
       class: 'gfd-complete',
       role: 'listbox',
-      'data-testid': 'css-completions',
+      'data-testid': testId,
       hidden: '',
     });
     let items = [];
@@ -1443,27 +1443,31 @@ export default class ${CLASS_NAME(name)} {
       ],
       dataNote: 'A grid follows the component\'s own source: it shows the rows that came back. '
         + 'There is nothing to bind.',
+      // Drawn by the workspace's own grid rather than by one of this module's making. A row of
+      // query results and a row in a component are the same row, so they get the same header, the
+      // same selection and the same cell rendering for a null, a number and a blob. The only work
+      // here is the shape: the workspace hands its grid rows as arrays in column order, and a
+      // component holds them as objects, because that is what a formula names a column of.
       render: (c, context) => {
         const named = String(c.props.columns ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
         // What the source actually returned, so a grid with no columns named still says what it
         // will show rather than drawing an empty box while a component is being laid out.
         const columns = named.length ? named : (context.columns || []);
-        const table = h('table', { class: 'gfd-grid' });
 
-        if (c.props.header !== false) {
-          table.append(h('thead', {}, h('tr', {},
-            ...columns.map((column) => h('th', { text: column })))));
-        }
-
-        // Design shows the column names and one placeholder row, the same way a bound label shows
-        // its column name: a laid-out component reads as a description of what it will display.
-        // Preview shows the rows that came back.
+        // Design shows one placeholder row, the same way a bound label shows its column name: a
+        // laid-out component reads as a description of what it will display. Preview shows what
+        // came back.
         const rows = context.mode === 'preview'
-          ? context.rows || []
-          : [Object.fromEntries(columns.map((column) => [column, `[${column}]`]))];
+          ? (context.rows || []).map((row) => columns.map((column) => row?.[column] ?? null))
+          : [columns.map((column) => `[${column}]`)];
 
-        table.append(h('tbody', {}, ...rows.map((row) => h('tr', {},
-          ...columns.map((column) => h('td', { text: asText(row?.[column]) }))))));
+        const table = dataGrid(columns.map((name) => ({ name, dataTypeName: '' })), rows, {});
+        table.classList.add('gfd-grid');
+        if (c.props.header !== false) return table;
+
+        // A header is what a table comes with, so hiding it is done by taking it off rather than by
+        // building a different table without one.
+        table.querySelector('thead')?.remove();
         return table;
       },
     },
@@ -1837,7 +1841,154 @@ export default class ${CLASS_NAME(name)} {
       testId: 'component-code-editor',
       onInput: () => documentEdited(),
     });
+    code.surface.append(attachCompletions(
+      code.input, code.highlight, (text, caret) => htmlSuggestions(text, caret), 'html-completions'));
+
     const codePane = h('div', { class: 'gfd-code-pane', hidden: true }, code.surface, codeError);
+
+    // ---- what the document offers ----
+    //
+    // The same three things the panel offers, in the spelling the document uses: which controls
+    // exist, what each can be told, and what its value can be worked out from. They are read off
+    // the catalogue rather than listed again here, so a kind that gains a property gains it here
+    // too and cannot fall out of step.
+
+    // A property is camelCase in the model and an attribute cannot be, the same conversion
+    // format.js makes when it writes one.
+    const dashedName = (name) => String(name).replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
+
+    const HTML_TAGS = [
+      ['span', 'label'],
+      ['input', 'text box'],
+      ['textarea', 'text box, multi-line'],
+      ['select', 'drop-down'],
+      ['option', 'a drop-down choice'],
+      ['button', 'button'],
+      ['table', 'data grid — with data-role="grid"'],
+      ['label', 'check box — with data-role="checkbox"'],
+      ['div', 'panel or pager — with data-role'],
+      ['link', 'a module or the data source'],
+      ['style', "the component's CSS"],
+    ];
+
+    // Where the caret is: on a tag name, on an attribute name, inside an attribute's value, or in
+    // ordinary text where nothing is worth offering.
+    function htmlContext(text, caret) {
+      const before = text.slice(0, caret);
+      const open = before.lastIndexOf('<');
+      if (open === -1 || before.indexOf('>', open) !== -1) return { kind: 'text' };
+
+      const tag = before.slice(open + 1);
+
+      // An attribute value that has been opened and not closed. Matching from the end is what makes
+      // this the value being typed rather than one finished earlier in the same tag.
+      const value = /([A-Za-z_:][\w.:-]*)\s*=\s*"([^"]*)$/.exec(tag);
+      if (value) return { kind: 'value', attribute: value[1], word: value[2] };
+
+      const parts = tag.split(/\s+/);
+      if (parts.length === 1) return { kind: 'tag', word: parts[0] };
+      return { kind: 'attribute', tag: parts[0].toLowerCase(), word: parts[parts.length - 1] };
+    }
+
+    function htmlSuggestions(text, caret) {
+      const context = htmlContext(text, caret);
+      if (context.kind === 'text') return [];
+
+      const word = context.word || '';
+      const lowered = word.toLowerCase();
+      const matches = (candidate) => !lowered || candidate.toLowerCase().includes(lowered);
+      const item = (label, insert, detail) => ({ label, insert, detail, replace: word });
+
+      if (context.kind === 'tag') {
+        return HTML_TAGS.filter(([tag]) => matches(tag)).map(([tag, detail]) => item(tag, tag, detail));
+      }
+
+      if (context.kind === 'attribute') return attributeSuggestions(context.tag, matches, item);
+      return valueSuggestions(context.attribute, matches, item);
+    }
+
+    function attributeSuggestions(tag, matches, item) {
+      const offered = [];
+      const offer = (name, detail) => {
+        // Offered with the quotes already open: an attribute is being written to be given a value,
+        // and the next thing wanted is that value rather than two more keystrokes.
+        if (matches(name)) offered.push(item(name, `${name}="`, detail));
+      };
+
+      offer('data-name', 'what expressions and CSS call this control');
+      offer('id', 'the HTML id, for a <label for> to point at');
+      offer('class', 'classes, for the component\'s own CSS');
+      offer('title', 'the tooltip the person filling it in sees');
+      offer('style', 'left, top, width and height');
+
+      // Everything a control of this tag can be told, and everything it can be told to work out.
+      for (const [type, spec] of Object.entries(CATALOGUE)) {
+        if (spec.locked || tagOf(type) !== tag) continue;
+        for (const property of spec.properties || []) {
+          offer(`data-bind-${dashedName(property.key)}`, `${property.label} — as a formula`);
+        }
+        if (spec.bindable && valueKeyOf(spec) === 'value') {
+          offer('data-bind-value', 'what it shows — as a formula');
+        }
+      }
+
+      for (const [event, label, hint] of CONTROL_EVENTS) {
+        offer(`data-on-${event}`, `${label} — ${hint.toLowerCase()}`);
+      }
+
+      offer('data-role', 'which kind, where a tag serves two');
+      offer('data-color-light', 'text colour on a light theme');
+      offer('data-color-dark', 'text colour on a dark theme');
+      offer('data-fill-light', 'background on a light theme');
+      offer('data-fill-dark', 'background on a dark theme');
+
+      if (tag === 'input' || tag === 'textarea') {
+        offer('placeholder', 'shown while it is empty');
+        offer('readonly', 'shown but not typed into');
+      }
+
+      return offered;
+    }
+
+    function valueSuggestions(attribute, matches, item) {
+      // A binding and a handler are both formulas, so what they want first is the `=` that says so,
+      // and then the columns the source returned.
+      if (attribute.startsWith('data-bind-') || attribute.startsWith('data-on-')) {
+        const offered = [];
+        for (const column of model.columns) {
+          const formula = `=${dataReference(column)}`;
+          if (matches(formula)) offered.push(item(formula, formula, 'a column of the current row'));
+        }
+        for (const name of Object.keys(FUNCTIONS)) {
+          const call = `=${name}(`;
+          if (matches(call)) offered.push(item(call, call, 'a function'));
+        }
+        return offered;
+      }
+
+      if (attribute === 'data-role') {
+        return Object.entries(CATALOGUE)
+          .filter(([type, spec]) => spec.role !== false && !spec.locked && matches(type))
+          .map(([type, spec]) => item(type, type, spec.title));
+      }
+
+      return [];
+    }
+
+    // Which tag a kind is written as, so the offers for an element are the offers for what it is.
+    function tagOf(type) {
+      switch (type) {
+        case 'label': return 'span';
+        case 'textbox': return 'input';
+        case 'textarea': return 'textarea';
+        case 'checkbox': return 'label';
+        case 'select': return 'select';
+        case 'button': return 'button';
+        case 'grid': return 'table';
+        case 'pager': case 'panel': return 'div';
+        default: return null;
+      }
+    }
 
     const surface = h('div', { class: 'gfd-surface' }, canvas, codePane);
     const propertyBody = h('div', { class: 'gfd-properties-body' });
@@ -3304,24 +3455,26 @@ export default class ${CLASS_NAME(name)} {
     // endpoint's authorization and typed parameters as the only way in, and means a component cannot
     // reach data that was not deliberately published.
     function dataSourceEditors() {
-      const chosen = model.endpoints.find((e) => e.id === model.doc.source?.endpointId) || null;
+      // Matched on the route, because the route is what the document stores and what the component
+      // actually calls. An endpoint's id is Gridlet's own and does not belong in a document that is
+      // readable by whoever opens the component — and a document that named one would stop matching
+      // the moment it was copied to another environment.
+      const chosen = model.endpoints.find((e) => e.route === model.doc.source?.route) || null;
 
       const sourceSelect = h('select', {
         'data-testid': 'component-source',
         onchange: (event) => {
-          const endpoint = model.endpoints.find((e) => e.id === event.target.value) || null;
-          model.doc.source = endpoint
-            ? { endpointId: endpoint.id, route: endpoint.route, parameters: {} }
-            : null;
+          const endpoint = model.endpoints.find((e) => e.route === event.target.value) || null;
+          model.doc.source = endpoint ? { route: endpoint.route, parameters: {} } : null;
           markDirty();
           loadRows(true).then(() => { renderProperties(); renderCanvas(); });
         },
       },
         h('option', { value: '', text: 'None', selected: chosen ? null : '' }),
         model.endpoints.map((endpoint) => h('option', {
-          value: endpoint.id,
+          value: endpoint.route,
           text: `${endpoint.name} (${endpoint.route})`,
-          selected: chosen?.id === endpoint.id ? '' : null,
+          selected: chosen?.route === endpoint.route ? '' : null,
         })));
 
       const editors = [heading('Source'), row(model.doc, null, 'Endpoint', () => sourceSelect,
@@ -4419,7 +4572,9 @@ export default class ${CLASS_NAME(name)} {
 
     // ---- view switcher ----
 
-    const VIEWS = [['design', 'Design'], ['preview', 'Preview'], ['code', 'Code']];
+    // Code first, because that is the order the work goes in: the document is what a component is,
+    // Design is a way of drawing it, and Preview is it running.
+    const VIEWS = [['code', 'Code'], ['design', 'Design'], ['preview', 'Preview']];
 
     const viewButtons = new Map(VIEWS.map(([mode, label]) => [mode, h('button', {
       class: 'view-btn' + (mode === model.mode ? ' active' : ''),
