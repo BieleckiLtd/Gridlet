@@ -271,10 +271,10 @@ public sealed class ResultExportEndpointTests
         await using var offsetTimestampReader = await ParquetReader.CreateAsync(
             new MemoryStream(await offsetTimestampResponse.Content.ReadAsByteArrayAsync()));
         using var offsetTimestampRowGroup = offsetTimestampReader.OpenRowGroupReader(0);
-        var offsetTimestamps = new DateTime?[1];
-        await offsetTimestampRowGroup.ReadAsync<DateTime>(
+        var offsetTimestamps = new string?[1];
+        await offsetTimestampRowGroup.ReadAsync(
             Assert.Single(offsetTimestampReader.Schema.DataFields), offsetTimestamps.AsMemory());
-        Assert.Equal(new DateTime(2026, 8, 24, 3, 6, 7, DateTimeKind.Utc), offsetTimestamps[0]);
+        Assert.Equal("2026-08-24T05:06:07+02:00", offsetTimestamps[0]);
     }
 
     [Fact]
@@ -371,6 +371,13 @@ public sealed class ResultExportEndpointTests
             rows = new object?[][] { [9_007_199_254_740_992L] },
             providerName = "SQLite",
         });
+        var losslessInteger = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
+        {
+            columns = new[] { new { name = "A", dataTypeName = "MEDIUMINT" } },
+            rows = new object?[][] { [9_007_199_254_740_992L] },
+            providerName = "SQLite",
+            exactValues = new string?[][] { ["9007199254740993"] },
+        });
         var unsafeDecimal = await client.PostAsJsonAsync("/gridlet/api/exports/xlsx", new
         {
             columns = new[] { new { name = "A", dataTypeName = "decimal(18, 1)" } },
@@ -412,6 +419,16 @@ public sealed class ResultExportEndpointTests
         Assert.Contains("browser number precision", await unsafeInteger.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, unsafeSqliteInteger.StatusCode);
         Assert.Contains("browser number precision", await unsafeSqliteInteger.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.OK, losslessInteger.StatusCode);
+        await using (var losslessReader = await ParquetReader.CreateAsync(
+            new MemoryStream(await losslessInteger.Content.ReadAsByteArrayAsync())))
+        {
+            using var losslessGroup = losslessReader.OpenRowGroupReader(0);
+            var values = new long?[1];
+            await losslessGroup.ReadAsync<long>(
+                Assert.Single(losslessReader.Schema.DataFields), values.AsMemory());
+            Assert.Equal(9_007_199_254_740_993L, values[0]);
+        }
         Assert.Equal(HttpStatusCode.BadRequest, unsafeDecimal.StatusCode);
         Assert.Contains("browser number precision", await unsafeDecimal.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, declaredDecimalMismatch.StatusCode);

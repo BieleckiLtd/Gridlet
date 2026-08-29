@@ -228,7 +228,8 @@ public sealed record ResultExportRequest(
     ResultColumn[]? Columns,
     JsonElement[][]? Rows,
     string? ProviderName = null,
-    bool?[][]? BinaryValues = null);
+    bool?[][]? BinaryValues = null,
+    string?[][]? ExactValues = null);
 
 /// <summary>One condition in the <c>filter</c> query parameter of the table-data routes.</summary>
 /// <param name="Column">The column to compare.</param>

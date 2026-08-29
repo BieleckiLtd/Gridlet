@@ -5430,7 +5430,7 @@
                 { name: 'Value', dataTypeName: profile.dataType },
                 { name: 'Count', dataTypeName: 'bigint' },
                 { name: 'Share', dataTypeName: 'text' },
-              ], topRows, `${o.name}-${profile.column}-profile`) : null);
+              ], topRows, `${o.name}-${profile.column}-profile`, { scope }) : null);
           const topBody = h('tbody');
           for (const row of topRows) {
             topBody.append(h('tr', {},
@@ -11728,6 +11728,8 @@
         columns, rows,
         providerName: scope ? connectionFor(scope).providerName : null,
         binaryValues: rows.map((row) => binaryValuesByRow.get(row)
+          || columns.map(() => null)),
+        exactValues: rows.map((row) => exactNumbersByRow.get(row)
           || columns.map(() => null)),
       }),
     });

@@ -70,6 +70,11 @@ internal static partial class GridletResultExporter
             throw new GridletValidationException(
                 "Binary-value metadata must contain one entry for every export row.");
         }
+        if (request.ExactValues is not null && request.ExactValues.Length != request.Rows.Length)
+        {
+            throw new GridletValidationException(
+                "Exact-value metadata must contain one entry for every export row.");
+        }
 
         for (var columnIndex = 0; columnIndex < request.Columns.Length; columnIndex++)
         {
@@ -104,13 +109,22 @@ internal static partial class GridletResultExporter
                     $"Binary-value metadata for row {rowIndex + 1} must contain " +
                     $"{request.Columns.Length} entries.");
             }
+            if (request.ExactValues is not null
+                && (request.ExactValues[rowIndex] is not { } exactRow
+                    || exactRow.Length != request.Columns.Length))
+            {
+                throw new GridletValidationException(
+                    $"Exact-value metadata for row {rowIndex + 1} must contain " +
+                    $"{request.Columns.Length} entries.");
+            }
             for (var columnIndex = 0; columnIndex < request.Columns.Length; columnIndex++)
             {
+                var value = EffectiveValue(request, rowIndex, columnIndex);
                 ValidateBrowserNumber(
-                    request.Columns[columnIndex], request.Rows[rowIndex][columnIndex],
-                    request.ProviderName ?? string.Empty, columnIndex, rowIndex);
+                    request.Columns[columnIndex], value, request.ProviderName ?? string.Empty,
+                    columnIndex, rowIndex, request.ExactValues?[rowIndex][columnIndex] is not null);
                 ValidateDeclaredDecimal(
-                    request.Columns[columnIndex], request.Rows[rowIndex][columnIndex],
+                    request.Columns[columnIndex], value,
                     columnIndex, rowIndex);
             }
         }
@@ -122,7 +136,7 @@ internal static partial class GridletResultExporter
     {
         cancellationToken.ThrowIfCancellationRequested();
         var columns = request.Columns!;
-        var rows = request.Rows!;
+        var rows = EffectiveRows(request);
         using var output = new MemoryStream();
         using (var archive = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true))
         {
@@ -188,7 +202,7 @@ internal static partial class GridletResultExporter
         CancellationToken cancellationToken)
     {
         var columns = BuildParquetColumns(
-            request.Columns!, request.Rows!, request.ProviderName ?? string.Empty,
+            request.Columns!, EffectiveRows(request), request.ProviderName ?? string.Empty,
             request.BinaryValues);
         var schema = new ParquetSchema(columns.Select(column => column.Field));
         using var output = new MemoryStream();
@@ -569,6 +583,14 @@ internal static partial class GridletResultExporter
 
     private static bool TryParseExportDateTime(string? text, out DateTime value)
     {
+        // XLSX has no offset-aware cell type, and this Parquet schema intentionally describes
+        // local database timestamps. Keep offset-bearing values as text instead of shifting the
+        // displayed wall-clock time and then labelling it as unadjusted.
+        if (text is null || ExplicitOffset().IsMatch(text.Trim()))
+        {
+            value = default;
+            return false;
+        }
         if (DateTimeOffset.TryParse(
                 text, CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
@@ -796,12 +818,35 @@ internal static partial class GridletResultExporter
     private static bool IsValue(JsonElement value)
         => value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
 
+    private static IReadOnlyList<JsonElement[]> EffectiveRows(ResultExportRequest request)
+        => request.ExactValues is null
+            ? request.Rows!
+            : request.Rows!.Select((row, rowIndex) => row.Select((value, columnIndex) =>
+                EffectiveValue(request, rowIndex, columnIndex)).ToArray()).ToArray();
+
+    private static JsonElement EffectiveValue(
+        ResultExportRequest request,
+        int rowIndex,
+        int columnIndex)
+    {
+        var exact = request.ExactValues?[rowIndex][columnIndex];
+        if (exact is null) return request.Rows![rowIndex][columnIndex];
+        if (!ExactNumber().IsMatch(exact))
+        {
+            throw new GridletValidationException(
+                $"Exact-value metadata for row {rowIndex + 1}, column {columnIndex + 1} is invalid.");
+        }
+        using var document = JsonDocument.Parse(exact);
+        return document.RootElement.Clone();
+    }
+
     private static void ValidateBrowserNumber(
         ResultColumn column,
         JsonElement value,
         string providerName,
         int zeroBasedColumn,
-        int zeroBasedRow)
+        int zeroBasedRow,
+        bool hasExactValue)
     {
         if (value.ValueKind != JsonValueKind.Number) return;
         var type = (column.DataTypeName ?? string.Empty).Trim().ToLowerInvariant();
@@ -809,7 +854,7 @@ internal static partial class GridletResultExporter
             || type == "integer"
             || (providerName.Contains("sqlite", StringComparison.OrdinalIgnoreCase)
                 && type.Contains("int", StringComparison.Ordinal));
-        if (exactInteger && value.TryGetDecimal(out var integer)
+        if (!hasExactValue && exactInteger && value.TryGetDecimal(out var integer)
             && decimal.Truncate(integer) == integer
             && Math.Abs(integer) > MaxBrowserSafeInteger)
         {
@@ -819,7 +864,7 @@ internal static partial class GridletResultExporter
         var exactDecimal = type.StartsWith("decimal", StringComparison.Ordinal)
             || type.StartsWith("numeric", StringComparison.Ordinal)
             || type.Contains("money", StringComparison.Ordinal);
-        if (exactDecimal && SignificantDigitCount(value.GetRawText()) > 15)
+        if (!hasExactValue && exactDecimal && SignificantDigitCount(value.GetRawText()) > 15)
         {
             throw BrowserPrecisionLoss(zeroBasedColumn, zeroBasedRow);
         }
@@ -897,6 +942,12 @@ internal static partial class GridletResultExporter
 
     [GeneratedRegex(@"(?:decimal|numeric)\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", RegexOptions.IgnoreCase)]
     private static partial Regex DecimalType();
+
+    [GeneratedRegex(@"^[+-]?\d+(?:\.\d+)?$", RegexOptions.CultureInvariant)]
+    private static partial Regex ExactNumber();
+
+    [GeneratedRegex(@"(?:[zZ]|[+-]\d{2}:\d{2})$", RegexOptions.CultureInvariant)]
+    private static partial Regex ExplicitOffset();
 
     private enum ParquetValueKind
     {
