@@ -11,8 +11,24 @@ internal static class SqlServerConnectionFactory
     /// <see cref="SqlConnectionStringBuilder"/>, never through string concatenation.
     /// </summary>
     public static async Task<SqlConnection> OpenAsync(GridletConnectionContext context, CancellationToken cancellationToken)
+        => await OpenAsync(context, pooling: true, cancellationToken);
+
+    /// <summary>
+    /// Opens a connection that is physically closed on disposal. Use this when a short-lived
+    /// operation changes session state that SQL Server connection-pool reset does not restore.
+    /// </summary>
+    public static async Task<SqlConnection> OpenUnpooledAsync(
+        GridletConnectionContext context,
+        CancellationToken cancellationToken)
+        => await OpenAsync(context, pooling: false, cancellationToken);
+
+    private static async Task<SqlConnection> OpenAsync(
+        GridletConnectionContext context,
+        bool pooling,
+        CancellationToken cancellationToken)
     {
         var builder = new SqlConnectionStringBuilder(context.ConnectionString);
+        builder.Pooling = pooling;
         if (!string.IsNullOrEmpty(context.Database))
         {
             builder.InitialCatalog = context.Database;

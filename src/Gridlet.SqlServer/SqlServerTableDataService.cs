@@ -177,7 +177,8 @@ public sealed class SqlServerTableDataService : ITableDataService
         CancellationToken cancellationToken = default)
     {
         var qualifiedName = SqlServerIdentifier.QuoteQualified(schema, name);
-        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        await using var connection = await SqlServerConnectionFactory.OpenUnpooledAsync(
+            context, cancellationToken);
         string? columnName = null;
         string? dataType = null;
         string? systemType = null;
