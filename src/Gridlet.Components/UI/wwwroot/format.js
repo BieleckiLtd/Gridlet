@@ -35,6 +35,12 @@
     button: { tag: 'button' },
     pager: { tag: 'div', role: 'pager' },
     panel: { tag: 'div', role: 'panel', container: true },
+    // Markup the designer has no control for: a `<p>`, a `<table>`, an `<svg>` somebody wrote by
+    // hand. It is kept exactly as it was written and drawn where it was put, because a document is
+    // a file people edit and dropping the parts Gridlet did not recognise would quietly delete
+    // their work. It is `locked` because the designer can render it but cannot claim to know what
+    // its properties are, and a panel that offered to edit it would be guessing.
+    foreign: { locked: true },
   };
 
   // Geometry is an inline style because that is where a reader looks for it, and because the four
@@ -222,6 +228,14 @@
         if (props.position) pager.setAttribute('data-position', '');
         return pager;
       }
+      case 'foreign': {
+        // Written back exactly as it came in. The markup goes through the serializer verbatim
+        // rather than being rebuilt from a parsed tree: mixed content like `<p>Some <b>bold</b>
+        // text</p>` does not survive a rebuild, and a document must not lose text it was given.
+        const raw = document.createElement('gridlet-raw');
+        raw.setAttribute('data-raw', props.html ?? '');
+        return raw;
+      }
       case 'panel': {
         const panel = document.createElement('div');
         panel.setAttribute('data-role', 'panel');
@@ -234,9 +248,9 @@
         return panel;
       }
       default: {
-        // A kind this build does not know is kept rather than dropped. A newer document is refused
-        // at the envelope, but one that arrived by hand should still survive being opened and saved
-        // by a build that cannot draw one of its controls.
+        // A kind this build does not know is kept rather than dropped, the same way foreign markup
+        // is. A newer document is refused at the envelope, but one that arrived by hand should
+        // still survive being opened and saved by a build that cannot draw one of its controls.
         const unknown = document.createElement('div');
         unknown.setAttribute('data-role', control.type);
         return unknown;
@@ -374,7 +388,7 @@
       colors: readColors(element),
       bind: readBindings(element),
       events: readHandlers(element),
-      css: cssByControl.get(name) || '',
+      css: type === 'foreign' ? '' : (cssByControl.get(name) || ''),
       elementId: element.id || '',
       classes: element.getAttribute('class') || '',
       tip: element.getAttribute('title') || '',
@@ -406,7 +420,8 @@
       case 'span': return 'label';
       case 'select': return 'select';
       case 'button': return 'button';
-      default: return null;
+      // Everything else is somebody's own markup. It is kept and drawn, not discarded.
+      default: return 'foreign';
     }
   }
 
@@ -442,6 +457,8 @@
         const title = element.querySelector('[data-role="panel-title"]');
         return { title: title ? title.textContent : '' };
       }
+      case 'foreign':
+        return { html: element.outerHTML };
       default:
         return {};
     }
@@ -493,6 +510,16 @@
         .map((a) => (a.value === '' ? ` ${a.name}` : ` ${a.name}="${escapeAttribute(a.value)}"`))
         .join('');
       const tag = element.tagName.toLowerCase();
+
+      // Foreign markup is printed exactly as it arrived. Only the first line is indented to sit
+      // with its siblings: re-indenting the rest would change whitespace that is content inside a
+      // `<pre>`, and would make the next read differ from this write.
+      if (tag === 'gridlet-raw') {
+        const raw = (element.getAttribute('data-raw') || '').split('\n');
+        lines.push(pad + raw[0]);
+        for (const line of raw.slice(1)) lines.push(line);
+        return;
+      }
 
       if (VOID_TAGS.has(tag)) {
         lines.push(`${pad}<${tag}${attributes}>`);

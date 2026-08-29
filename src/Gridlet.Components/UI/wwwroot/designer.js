@@ -1378,7 +1378,32 @@ export default class ${CLASS_NAME(name)} {
       render: (c) => h('div', { class: 'gfd-panel' },
         c.props.title ? h('div', { class: 'gfd-panel-title', text: c.props.title }) : null),
     },
+    // Markup the document carries that the designer has no control for — a `<p>`, a `<table>`, an
+    // `<svg>` somebody wrote by hand. It is drawn because it is part of the component the author
+    // wrote, and it is locked because the designer can render it without being able to say what its
+    // properties are: a panel offering to edit it would be guessing, and a canvas that let it be
+    // dragged would be moving something the document positions itself. It is out of the palette
+    // because nothing in the designer creates one; they only ever arrive from the file.
+    foreign: {
+      title: 'Markup',
+      icon: '<>',
+      retired: true,
+      locked: true,
+      defaults: { w: 0, h: 0, props: { html: '' } },
+      style: {},
+      properties: [],
+      render: (c) => {
+        const holder = h('div', { class: 'gfd-foreign' });
+        // Parsed the way the browser parses the file it came from, because that is what it is.
+        holder.innerHTML = c.props.html ?? '';
+        return holder;
+      },
+    },
   };
+
+  // A kind the designer draws but does not edit. Selection, dragging, the properties panel and
+  // delete all go through the checks that ask this.
+  const isLocked = (control) => Boolean(CATALOGUE[control.type]?.locked);
 
   // Which property a control's displayed value lives in. `value` is the slot for controls whose
   // value is not a property of their own, and is what `bind` writes into the rendered element.
@@ -2070,8 +2095,11 @@ export default class ${CLASS_NAME(name)} {
       if (view.elementId) inner.id = view.elementId;
 
       const element = h('div', {
+        // `gfd-locked` is what the canvas and the marquee test to leave a control alone. It is a
+        // class rather than a check in each place because there are two ways to pick a control up
+        // and both find it by this selector, so neither can forget.
         class: 'gfd-control' + (selected ? ' selected' : '')
-          + (bound ? ' bound' : ''),
+          + (bound ? ' bound' : '') + (isLocked(control) ? ' gfd-locked' : ''),
         'data-id': control.id,
         'data-control-box': control.name || null,
         'data-type': control.type,
@@ -3544,6 +3572,18 @@ export default class ${CLASS_NAME(name)} {
       const text = themedColor(view.colors, 'text', style.color || 'currentColor');
       const background = themedColor(view.colors, 'background', style.background || 'transparent');
 
+      // Markup the document brought with it and gave no coordinates to is left where it falls. A
+      // component is a fixed canvas, so every control it owns is placed absolutely; a `<p>` written
+      // into the file by hand was never placed, and pinning it at 0,0 with no size would hide it
+      // rather than draw it. Anything the author did position is treated like any other control.
+      if (isLocked(control) && !view.x && !view.y && !view.w && !view.h) {
+        return [
+          `${selectorFor(control)} {`,
+          '  position: static;',
+          '}',
+        ].join('\n');
+      }
+
       // Every value the panel sets becomes a variable and then the property that reads it, in the
       // same rule. Nothing is left standing on a stylesheet you cannot see: what positions and
       // colours this control is all here, and custom CSS can redefine either the variable or the
@@ -3957,7 +3997,7 @@ export default class ${CLASS_NAME(name)} {
           left: Math.min(startX, upEvent.clientX), right: Math.max(startX, upEvent.clientX),
           top: Math.min(startY, upEvent.clientY), bottom: Math.max(startY, upEvent.clientY),
         };
-        const hits = [...canvas.querySelectorAll('.gfd-control')].filter((element) => {
+        const hits = [...canvas.querySelectorAll('.gfd-control:not(.gfd-locked)')].filter((element) => {
           const rect = element.getBoundingClientRect();
           return rect.left < box.right && rect.right > box.left
             && rect.top < box.bottom && rect.bottom > box.top;
@@ -3974,7 +4014,9 @@ export default class ${CLASS_NAME(name)} {
       // Preview is the component, not a drawing of it: clicks belong to the controls.
       if (model.mode === 'preview') return;
       const handle = event.target.closest('.gfd-handle');
-      const element = event.target.closest('.gfd-control');
+      // A locked control is not a thing to pick up. Pressing on one falls through to the marquee,
+      // the same as pressing the canvas, so a band drawn across it still selects what is around it.
+      const element = event.target.closest('.gfd-control:not(.gfd-locked)');
       if (!element) {
         marqueeSelect(event);
         return;

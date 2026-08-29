@@ -924,3 +924,11 @@
   justify-content: center;
   font-size: 14px;
 }
+
+/* Markup the document carries that the designer does not edit. It is drawn, and while designing it
+   takes no clicks: pressing it selects nothing and drags nothing, so it behaves like part of the
+   surface rather than like a control that refuses to move. Preview puts it back, because there the
+   component is the component and a link in somebody's own markup should work. */
+.gfd-canvas:not(.preview) .gfd-locked { pointer-events: none; }
+
+.gfd-foreign { display: contents; }
