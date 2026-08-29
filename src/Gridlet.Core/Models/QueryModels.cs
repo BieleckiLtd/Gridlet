@@ -53,6 +53,10 @@ public sealed record QueryStreamEvent(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string?[]>? ExactValues => ExactNumbers(Rows);
 
+    /// <summary>Per-cell runtime binary markers for providers with value-level storage types.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<bool?[]>? BinaryValues => BinaryNumbers(Rows);
+
     private static IReadOnlyList<string?[]>? ExactNumbers(IReadOnlyList<object?[]>? rows)
     {
         if (rows is null) return null;
@@ -74,6 +78,22 @@ public sealed record QueryStreamEvent(
                 if (exactValue is null) continue;
                 result ??= rows.Select(candidate => new string?[candidate.Length]).ToArray();
                 result[rowIndex][columnIndex] = exactValue;
+            }
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<bool?[]>? BinaryNumbers(IReadOnlyList<object?[]>? rows)
+    {
+        if (rows is null) return null;
+        bool?[][]? result = null;
+        for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
+        {
+            for (var columnIndex = 0; columnIndex < rows[rowIndex].Length; columnIndex++)
+            {
+                if (rows[rowIndex][columnIndex] is not byte[]) continue;
+                result ??= rows.Select(candidate => new bool?[candidate.Length]).ToArray();
+                result[rowIndex][columnIndex] = true;
             }
         }
         return result;

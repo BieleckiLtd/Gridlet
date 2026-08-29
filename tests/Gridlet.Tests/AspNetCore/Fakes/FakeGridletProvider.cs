@@ -444,7 +444,12 @@ public sealed class FakeGridletProvider :
     }
 
     private static Task<TableDataPage> GetFixedPage(string name, TableDataRequest request)
-        => Task.FromResult(name == "NegativeTotalExport"
+        => Task.FromResult(name == "ExactNumbersTable"
+            ? new TableDataPage(
+                [new ResultColumn("Amount", "decimal(38,20)"), new ResultColumn("Payload", "sql_variant")],
+                [[1.00000000000000000001m, new byte[] { 0, 255 }]],
+                request.Page, request.PageSize, TotalRows: 1)
+            : name == "NegativeTotalExport"
             ? new TableDataPage(
                 [new ResultColumn("Value", "int")],
                 [[1]], request.Page, request.PageSize, TotalRows: -1)
@@ -743,7 +748,7 @@ public sealed class FakeGridletProvider :
                 new ResultColumn("Payload", string.Empty, IsBinary: true),
             ]);
             yield return new QueryStreamEvent("rows", 0,
-                Rows: [["Łódź O'Brien", "line 1\nline | <2>", true, null, "AP8="]]);
+                Rows: [["Łódź O'Brien", "line 1\nline | <2>", true, null, new byte[] { 0, 255 }]]);
             yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
             yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
             yield break;

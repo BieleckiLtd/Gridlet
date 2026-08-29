@@ -546,11 +546,22 @@
   }
 
   const exactNumbersByRow = new WeakMap();
+  const binaryValuesByRow = new WeakMap();
 
   function parseNdjsonEvent(line) {
     const event = JSON.parse(line);
     rememberExactNumbers(event.rows, event.exactValues);
+    rememberBinaryValues(event.rows, event.binaryValues);
     return event;
+  }
+
+  function rememberBinaryValues(rows, binaryRows) {
+    if (!Array.isArray(rows) || !Array.isArray(binaryRows)) return;
+    rows.forEach((row, rowIndex) => {
+      if (Array.isArray(row) && Array.isArray(binaryRows[rowIndex])) {
+        binaryValuesByRow.set(row, binaryRows[rowIndex]);
+      }
+    });
   }
 
   function rememberExactNumbers(rows, exactRows) {
@@ -6397,6 +6408,7 @@
             // Every editable field is posted and may be normalized by the provider. Exact text
             // captured before the write is no longer authoritative for any cell in this row.
             exactNumbersByRow.delete(existingRow);
+            binaryValuesByRow.delete(existingRow);
             for (const [name, value] of Object.entries(values)) {
               const index = columnIndex(name);
               existingRow[index] = value;
@@ -11619,8 +11631,10 @@
     for (let offset = 0; offset < rows.length; offset += 1000) {
       const values = rows.slice(offset, offset + 1000).map((row) => {
         const exactValues = exactNumbersByRow.get(row);
+        const binaryValues = binaryValuesByRow.get(row);
         return '    (' + columns.map((column, index) =>
-          resultSqlLiteral(row[index], column, providerName, exactValues?.[index])).join(', ') + ')';
+          resultSqlLiteral(
+            row[index], column, providerName, exactValues?.[index], binaryValues?.[index])).join(', ') + ')';
       });
       statements.push(prefix + values.join(',\n') + ';');
     }
@@ -11634,7 +11648,7 @@
       : `[${text.replaceAll(']', ']]')}]`;
   }
 
-  function resultSqlLiteral(value, column, providerName, exactValue = null) {
+  function resultSqlLiteral(value, column, providerName, exactValue = null, binaryValue = null) {
     if (value === null || value === undefined) return 'NULL';
     if (typeof value === 'boolean') return value ? '1' : '0';
     const provider = String(providerName || '').toLowerCase();
@@ -11656,9 +11670,7 @@
       return String(value);
     }
 
-    const isBinary = column.isBinary || (provider.includes('sqlite')
-      ? /\bblob\b/.test(dataType)
-      : /\b(?:binary|varbinary|image|rowversion|timestamp)\b/.test(dataType));
+    const isBinary = binaryValue === true;
     if (isBinary && typeof value === 'string') {
       try {
         const bytes = Uint8Array.from(atob(value), (character) => character.charCodeAt(0));

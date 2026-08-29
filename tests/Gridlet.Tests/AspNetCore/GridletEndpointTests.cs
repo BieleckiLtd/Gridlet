@@ -1210,6 +1210,20 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Table_stream_carries_exact_numbers_and_runtime_binary_cells()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var body = await client.GetStringAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/ExactNumbersTable/data/stream");
+
+        Assert.Contains("\"exactValues\":[[\"1.00000000000000000001\",null]]", body,
+            StringComparison.Ordinal);
+        Assert.Contains("\"binaryValues\":[[null,true]]", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Failing_query_returns_400_with_database_error()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();
