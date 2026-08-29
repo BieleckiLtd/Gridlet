@@ -649,6 +649,46 @@ button.ghost { background: transparent; }
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
 }
 
+/* ---- exact column profile ---- */
+.column-profile { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 14px; }
+.profile-toolbar {
+  display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: end; gap: 8px;
+  padding-bottom: 10px; border-bottom: 1px solid var(--border);
+}
+.profile-toolbar > label:not(.checkbox-row) {
+  display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 11px;
+}
+.profile-toolbar select { min-width: 220px; }
+.profile-toolbar input[type="number"] { width: 92px; }
+.profile-results { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 14px; }
+.profile-heading, .profile-section-title {
+  display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+}
+.profile-heading h2, .profile-section-title h3 { margin: 0; }
+.profile-heading h2 { font: 600 16px var(--mono); }
+.profile-heading > div { display: flex; align-items: baseline; gap: 8px; }
+.profile-cards {
+  display: grid; flex: 0 0 auto; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px;
+}
+.profile-card, .profile-range > div {
+  display: flex; min-width: 0; flex-direction: column; gap: 4px;
+  padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2);
+}
+.profile-card > span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .45px; }
+.profile-card > strong { font: 600 20px var(--mono); }
+.profile-card > small { color: var(--muted); }
+.profile-range { display: grid; flex: 0 0 auto; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.profile-range code { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.profile-top { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 8px; }
+.profile-top .grid-scroll { min-height: 0; flex: 1; }
+
+@media (max-width: 760px) {
+  .profile-toolbar { align-items: stretch; flex-direction: column; }
+  .profile-toolbar > label:not(.checkbox-row), .profile-toolbar select { width: 100%; }
+  .profile-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .profile-range { grid-template-columns: minmax(0, 1fr); }
+}
+
 .panel-body { flex: 1; overflow: auto; padding: 12px; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .tree, #tabbar, .panel-body, .grid-scroll, .query-results, .agent-messages { overscroll-behavior: contain; }
 

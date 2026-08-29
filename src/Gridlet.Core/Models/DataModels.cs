@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Gridlet.Models;
 
 /// <summary>One key and its configured human-readable label.</summary>
@@ -37,6 +39,41 @@ public enum FilterOperator
 /// and <see cref="FilterOperator.IsNotNull"/>.
 /// </param>
 public sealed record TableDataFilter(string Column, FilterOperator Operator, string? Value = null);
+
+/// <summary>One value and its exact frequency within a column profile.</summary>
+public sealed record ColumnProfileValue(
+    object? Value,
+    [property: JsonNumberHandling(JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.WriteAsString)]
+    long Count);
+
+/// <summary>Requests exact aggregate statistics for one table or view column.</summary>
+public sealed record ColumnProfileRequest(
+    string Column,
+    int TopValues = 10,
+    IReadOnlyList<TableDataFilter>? Filters = null);
+
+/// <summary>Exact aggregate statistics for one column over the requested row scope.</summary>
+/// <param name="DistinctCount">
+/// The number of distinct non-null values, or <see langword="null"/> when the database type cannot
+/// participate in equality/grouping operations.
+/// </param>
+/// <param name="Limitation">
+/// Explains which aggregates the database type could not provide. Counts that are present remain
+/// exact even when another aggregate is unavailable.
+/// </param>
+public sealed record ColumnProfile(
+    string Column,
+    string DataType,
+    [property: JsonNumberHandling(JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.WriteAsString)]
+    long TotalCount,
+    [property: JsonNumberHandling(JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.WriteAsString)]
+    long NullCount,
+    [property: JsonNumberHandling(JsonNumberHandling.AllowReadingFromString | JsonNumberHandling.WriteAsString)]
+    long? DistinctCount,
+    object? Minimum,
+    object? Maximum,
+    IReadOnlyList<ColumnProfileValue> TopValues,
+    string? Limitation = null);
 
 /// <summary>A request for one page of table/view data.</summary>
 /// <param name="Filters">

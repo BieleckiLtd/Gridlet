@@ -59,6 +59,7 @@ internal static partial class GridletApiEndpoints
         api.MapGet("/connections/{connection}/databases/{database}/schemas", GetSchemas);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data", GetObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data/stream", StreamObjectData);
+        api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/profile", GetColumnProfile);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/structure", GetObjectStructure);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", SaveForeignKeyDisplay);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", DeleteForeignKeyDisplay);
@@ -249,6 +250,46 @@ internal static partial class GridletApiEndpoints
             var dataPage = await resolved.Provider.Data.GetPageAsync(
                 resolved.Context, schema, name, request, cancellationToken);
             return Results.Ok(dataPage);
+        });
+
+    private static Task<IResult> GetColumnProfile(
+        string connection,
+        string database,
+        string schema,
+        string name,
+        string? column,
+        int? topValues,
+        string? filter,
+        IGridletConnectionResolver resolver,
+        CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            if (string.IsNullOrWhiteSpace(column))
+            {
+                throw new GridletValidationException("A profile column is required.");
+            }
+            var resolved = resolver.Resolve(connection, database);
+            var maximumColumnLength = resolved.Provider.ProviderName switch
+            {
+                GridletProviderNames.SqlServer => 128,
+                GridletProviderNames.Sqlite => 255,
+                _ => 256,
+            };
+            if (column.Length > maximumColumnLength)
+            {
+                throw new GridletValidationException("The profile column name is too long.");
+            }
+
+            var profile = await resolved.Provider.Data.GetColumnProfileAsync(
+                resolved.Context,
+                schema,
+                name,
+                new ColumnProfileRequest(
+                    column,
+                    Math.Clamp(topValues ?? 10, 1, 50),
+                    ParseFilters(filter)),
+                cancellationToken);
+            return Results.Ok(profile);
         });
 
     private static async Task StreamObjectData(

@@ -306,6 +306,37 @@ public sealed class FakeGridletProvider :
         return GetPageCore(name, request);
     }
 
+    public Task<ColumnProfile> GetColumnProfileAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        ColumnProfileRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"profile {schema}.{name}.{request.Column} top({request.TopValues}) filters({request.Filters?.Count ?? 0})");
+        var filtered = request.Filters is { Count: > 0 };
+        return Task.FromResult(request.Column.ToLowerInvariant() switch
+        {
+            "status" => new ColumnProfile(
+                "Status", "int", filtered ? 1 : 2, filtered ? 0 : 1, 1, 1, 1,
+                filtered
+                    ? [new ColumnProfileValue(1, 1)]
+                    : [new ColumnProfileValue(null, 1), new ColumnProfileValue(1, 1)]),
+            "name" => new ColumnProfile(
+                "Name", "nvarchar(100)", filtered ? 1 : 2, 0, filtered ? 1 : 2,
+                "Ada", filtered ? "Ada" : "Grace",
+                filtered
+                    ? [new ColumnProfileValue("Ada", 1)]
+                    : [new ColumnProfileValue("Ada", 1), new ColumnProfileValue("Grace", 1)]),
+            _ => new ColumnProfile(
+                "Id", "int", filtered ? 1 : 2, 0, filtered ? 1 : 2,
+                1, filtered ? 1 : 2,
+                filtered
+                    ? [new ColumnProfileValue(1, 1)]
+                    : [new ColumnProfileValue(1, 1), new ColumnProfileValue(2, 1)]),
+        });
+    }
+
     /// <summary>
     /// Four rows served a page at a time, from a table that can be addressed and one that cannot.
     /// A caller that pages through the second one is reading an unordered table twice.
