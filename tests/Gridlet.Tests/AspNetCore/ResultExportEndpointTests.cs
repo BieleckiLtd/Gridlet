@@ -90,6 +90,18 @@ public sealed class ResultExportEndpointTests
         Assert.Contains("r=\"A2\" t=\"inlineStr\"", earlyDateWorksheet, StringComparison.Ordinal);
         Assert.Contains("1900-01-01", earlyDateWorksheet, StringComparison.Ordinal);
         Assert.Contains("r=\"A3\" s=\"2\"><v>61</v>", earlyDateWorksheet, StringComparison.Ordinal);
+
+        var sqliteTimestampResponse = await client.PostAsJsonAsync("/gridlet/api/exports/xlsx", new
+        {
+            columns = new[] { new { name = "Created", dataTypeName = "TIMESTAMP" } },
+            rows = new object?[][] { ["2026-08-24T05:06:07"] },
+            providerName = "SQLite",
+        });
+        using var sqliteTimestampArchive = new ZipArchive(
+            new MemoryStream(await sqliteTimestampResponse.Content.ReadAsByteArrayAsync()), ZipArchiveMode.Read);
+        var sqliteTimestampWorksheet = await ReadEntryAsync(
+            sqliteTimestampArchive, "xl/worksheets/sheet1.xml");
+        Assert.Contains("r=\"A2\" s=\"3\"><v>", sqliteTimestampWorksheet, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -200,6 +212,21 @@ public sealed class ResultExportEndpointTests
             Assert.Single(dateReader.Schema.DataFields), dates.AsMemory());
         Assert.Equal(new DateTime(2026, 8, 24), dates[0]);
         Assert.Null(dates[1]);
+
+        var sqliteTimestampResponse = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
+        {
+            columns = new[] { new { name = "Created", dataTypeName = "TIMESTAMP" } },
+            rows = new object?[][] { ["2026-08-24T05:06:07.123456"] },
+            providerName = "SQLite",
+        });
+        Assert.Equal(HttpStatusCode.OK, sqliteTimestampResponse.StatusCode);
+        await using var sqliteTimestampReader = await ParquetReader.CreateAsync(
+            new MemoryStream(await sqliteTimestampResponse.Content.ReadAsByteArrayAsync()));
+        using var sqliteTimestampRowGroup = sqliteTimestampReader.OpenRowGroupReader(0);
+        var sqliteTimestamps = new DateTime?[1];
+        await sqliteTimestampRowGroup.ReadAsync<DateTime>(
+            Assert.Single(sqliteTimestampReader.Schema.DataFields), sqliteTimestamps.AsMemory());
+        Assert.Equal(new DateTime(2026, 8, 24, 5, 6, 7).AddTicks(1_234_560), sqliteTimestamps[0]);
     }
 
     [Fact]
@@ -279,6 +306,11 @@ public sealed class ResultExportEndpointTests
             columns = new[] { new { name = "A", dataTypeName = "decimal(18, 1)" } },
             rows = new object?[][] { [123_456_789_012_345.6m] },
         });
+        var declaredDecimalMismatch = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
+        {
+            columns = new[] { new { name = "A", dataTypeName = "decimal(3, 0)" } },
+            rows = new object?[][] { [123.45m] },
+        });
         var malformedBinary = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
         {
             columns = new[] { new { name = "A", dataTypeName = "varbinary(max)" } },
@@ -310,6 +342,8 @@ public sealed class ResultExportEndpointTests
         Assert.Contains("browser number precision", await unsafeInteger.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, unsafeDecimal.StatusCode);
         Assert.Contains("browser number precision", await unsafeDecimal.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.BadRequest, declaredDecimalMismatch.StatusCode);
+        Assert.Contains("does not match", await declaredDecimalMismatch.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, malformedBinary.StatusCode);
         Assert.Contains("does not match", await malformedBinary.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, oversizedExcelCell.StatusCode);

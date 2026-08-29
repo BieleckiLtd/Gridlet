@@ -96,6 +96,9 @@ internal static partial class GridletResultExporter
                 ValidateBrowserNumber(
                     request.Columns[columnIndex], request.Rows[rowIndex][columnIndex],
                     columnIndex, rowIndex);
+                ValidateDeclaredDecimal(
+                    request.Columns[columnIndex], request.Rows[rowIndex][columnIndex],
+                    columnIndex, rowIndex);
             }
         }
     }
@@ -161,7 +164,8 @@ internal static partial class GridletResultExporter
             });
             WriteXmlEntry(archive, "xl/styles.xml", WriteExcelStyles);
             WriteXmlEntry(archive, "xl/worksheets/sheet1.xml", writer =>
-                WriteExcelWorksheet(writer, columns, rows, cancellationToken));
+                WriteExcelWorksheet(
+                    writer, columns, rows, request.ProviderName ?? string.Empty, cancellationToken));
         }
         return output.ToArray();
     }
@@ -306,6 +310,11 @@ internal static partial class GridletResultExporter
         {
             return ParquetValueKind.DateTime;
         }
+        if (type.StartsWith("timestamp", StringComparison.Ordinal)
+            && !providerName.Contains("sqlserver", StringComparison.OrdinalIgnoreCase))
+        {
+            return ParquetValueKind.DateTime;
+        }
         if (type.Contains("binary", StringComparison.Ordinal)
             || type is "image" or "rowversion" or "blob"
             || (type == "timestamp"
@@ -348,6 +357,7 @@ internal static partial class GridletResultExporter
         XmlWriter writer,
         IReadOnlyList<ResultColumn> columns,
         IReadOnlyList<JsonElement[]> rows,
+        string providerName,
         CancellationToken cancellationToken)
     {
         writer.WriteStartElement("worksheet", SpreadsheetNamespace);
@@ -403,6 +413,7 @@ internal static partial class GridletResultExporter
                     CellReference(columnIndex, excelRow),
                     columns[columnIndex],
                     rows[rowIndex][columnIndex],
+                    providerName,
                     rowIndex + 1);
             }
             writer.WriteEndElement();
@@ -419,6 +430,7 @@ internal static partial class GridletResultExporter
         string reference,
         ResultColumn column,
         JsonElement value,
+        string providerName,
         int rowNumber)
     {
         if (!IsValue(value)) return;
@@ -442,6 +454,7 @@ internal static partial class GridletResultExporter
         }
         if (value.ValueKind == JsonValueKind.String
             && TryExcelDate(
+                providerName,
                 column.DataTypeName ?? string.Empty,
                 value.GetString(),
                 out var date,
@@ -467,6 +480,7 @@ internal static partial class GridletResultExporter
     }
 
     private static bool TryExcelDate(
+        string providerName,
         string dataTypeName,
         string? text,
         out DateTime value,
@@ -476,7 +490,9 @@ internal static partial class GridletResultExporter
         dateOnly = type == "date";
         var supported = dateOnly || (type.StartsWith("datetime", StringComparison.Ordinal)
                 && !type.StartsWith("datetimeoffset", StringComparison.Ordinal))
-            || type.StartsWith("smalldatetime", StringComparison.Ordinal);
+            || type.StartsWith("smalldatetime", StringComparison.Ordinal)
+            || (type.StartsWith("timestamp", StringComparison.Ordinal)
+                && !providerName.Contains("sqlserver", StringComparison.OrdinalIgnoreCase));
         if (!supported || !DateTime.TryParse(
                 text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out value))
         {
@@ -732,6 +748,45 @@ internal static partial class GridletResultExporter
         if (exactDecimal && SignificantDigitCount(value.GetRawText()) > 15)
         {
             throw BrowserPrecisionLoss(zeroBasedColumn, zeroBasedRow);
+        }
+    }
+
+    private static void ValidateDeclaredDecimal(
+        ResultColumn column,
+        JsonElement value,
+        int zeroBasedColumn,
+        int zeroBasedRow)
+    {
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetDecimal(out var number)) return;
+        var type = (column.DataTypeName ?? string.Empty).Trim();
+        var match = DecimalType().Match(type);
+        int precision;
+        int scale;
+        if (match.Success)
+        {
+            precision = Math.Clamp(
+                int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture), 1, 38);
+            scale = Math.Clamp(
+                int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture), 0, precision);
+        }
+        else if (type.Contains("smallmoney", StringComparison.OrdinalIgnoreCase))
+        {
+            (precision, scale) = (10, 4);
+        }
+        else if (type.Contains("money", StringComparison.OrdinalIgnoreCase))
+        {
+            (precision, scale) = (19, 4);
+        }
+        else
+        {
+            return;
+        }
+
+        if (DecimalScale(number) > scale || DecimalIntegerDigits(number) > precision - scale)
+        {
+            throw new GridletValidationException(
+                $"Export value in column {zeroBasedColumn + 1}, row {zeroBasedRow + 1} " +
+                "does not match the column data type.");
         }
     }
 
