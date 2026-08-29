@@ -548,6 +548,7 @@
       data: (s, n, q) => `${objBase(s, n)}/data?${q}`,
       dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
       profile: (s, n, q) => `${objBase(s, n)}/profile?${q}`,
+      dataExport: (s, n, q) => `${objBase(s, n)}/data/export?${q}`,
       structure: (s, n) => `${objBase(s, n)}/structure`,
       definition: (s, n, type = null) => `${objBase(s, n)}/definition${type ? `?type=${enc(type)}` : ''}`,
       dependencies: (s, n) => `${objBase(s, n)}/dependencies`,
@@ -5917,6 +5918,38 @@
       const status = h('span', { class: 'muted', text: 'Loading…' });
       const cancel = h('button', { text: 'Cancel', onclick: () => controller.abort() });
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
+      let exportControls;
+      let fullExportInProgress = false;
+      const fullExport = async (format) => {
+        if (fullExportInProgress) return;
+        fullExportInProgress = true;
+        exportControls?.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+        const params = new URLSearchParams({ format });
+        if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
+        if (grid.filters.length) params.set('filter', JSON.stringify(grid.filters));
+        try {
+          params.set('probe', 'true');
+          await api(urls.dataExport(o.schema, o.name, params));
+          params.delete('probe');
+          const link = h('a', {
+            href: urls.dataExport(o.schema, o.name, params), download: '', hidden: '',
+          });
+          document.body.append(link);
+          link.click();
+          link.remove();
+        } catch (err) {
+          toast(`Export failed: ${err.message}`);
+        } finally {
+          fullExportInProgress = false;
+          exportControls?.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+        }
+      };
+      const createExportControls = () => exportButtons(
+        data.columns, data.rows, o.name,
+        currentConn().allowSqlExecution
+          ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope }
+          : null,
+        identity ? fullExport : null);
       actionBar.replaceChildren(...[
         o.type === 'Table' && !o.isInternal && !isVirtualObject(o)
           ? h('button', {
@@ -5938,10 +5971,7 @@
         useInQueryButton(o, scope),
         dependenciesButton(o, scope),
         h('span', { class: 'spacer' }),
-        exportButtons(data.columns, data.rows, o.name,
-          currentConn().allowSqlExecution
-            ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope }
-            : null),
+        (exportControls = createExportControls()),
         h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
         status,
         o.type === 'Table' && currentConn().allowWrites && !o.isInternal && canDropObject(o)
@@ -5978,7 +6008,12 @@
       try {
         await streamNdjson(urls.dataStream(o.schema, o.name, params), { signal: controller.signal }, (event) => {
           if (event.type === 'resultSet') {
-            if (event.rowIdentity) identity = event.rowIdentity;
+            if (event.rowIdentity && !identity) {
+              identity = event.rowIdentity;
+              const replacement = createExportControls();
+              exportControls.replaceWith(replacement);
+              exportControls = replacement;
+            }
             gridView.setColumns(event.columns);
           }
           else if (event.type === 'rows') {
@@ -11148,16 +11183,20 @@
 
   // ---- export ---------------------------------------------------------------------------
 
-  function exportButtons(columns, rows, baseName, apiDefinition = null) {
+  function exportButtons(columns, rows, baseName, apiDefinition = null, serverExport = null) {
     return h('span', { class: 'export-buttons' },
       h('button', {
-        class: 'ghost', title: 'Download as CSV', 'data-testid': 'export-csv',
-        onclick: () => exportData(columns, rows, 'csv', baseName),
-      }, 'CSV'),
+        class: 'ghost',
+        title: serverExport ? 'Download all filtered rows as CSV' : 'Download as CSV',
+        'data-testid': 'export-csv',
+        onclick: () => serverExport ? serverExport('csv') : exportData(columns, rows, 'csv', baseName),
+      }, serverExport ? 'Full CSV' : 'CSV'),
       h('button', {
-        class: 'ghost', title: 'Download as JSON', 'data-testid': 'export-json',
-        onclick: () => exportData(columns, rows, 'json', baseName),
-      }, 'JSON'),
+        class: 'ghost',
+        title: serverExport ? 'Download all filtered rows as JSON' : 'Download as JSON',
+        'data-testid': 'export-json',
+        onclick: () => serverExport ? serverExport('json') : exportData(columns, rows, 'json', baseName),
+      }, serverExport ? 'Full JSON' : 'JSON'),
       apiDefinition ? h('button', {
         class: 'ghost', title: 'Publish as an API endpoint', 'data-testid': 'publish-api',
         onclick: () => openPublishDialog(apiDefinition.sql, apiDefinition.name, apiDefinition.scope),
@@ -11174,7 +11213,9 @@
     } else {
       const escape = (v) => {
         if (v === null || v === undefined) return '';
-        const s = String(v);
+        let s = String(v);
+        const unsafe = typeof v === 'string' && /^\s*[=+\-@\t\r]/.test(v);
+        if (unsafe) s = `'${s}`;
         return /[",\n\r]/.test(s) ? '"' + s.replaceAll('"', '""') + '"' : s;
       };
       content = [

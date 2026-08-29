@@ -3690,6 +3690,63 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Downloads_the_full_table_even_when_the_browser_retains_one_row()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("localStorage.setItem('gridlet.queryMaxRows', '1')");
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("[title='dbo.Ledger']").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("1 row(s) - safety cap reached", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(panel.GetByTestId("export-csv")).ToHaveTextAsync("Full CSV");
+
+        var csvDownload = await page.RunAndWaitForDownloadAsync(
+            () => panel.GetByTestId("export-csv").ClickAsync());
+        Assert.Equal("Ledger.csv", csvDownload.SuggestedFilename);
+        var csv = await ReadDownloadAsync(csvDownload);
+        Assert.Equal(5, csv.Split("\r\n", StringSplitOptions.RemoveEmptyEntries).Length);
+        Assert.Contains("4,Alan", csv);
+
+        var jsonDownload = await page.RunAndWaitForDownloadAsync(
+            () => panel.GetByTestId("export-json").ClickAsync());
+        Assert.Equal("Ledger.json", jsonDownload.SuggestedFilename);
+        using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
+        Assert.Equal(4, document.RootElement.GetArrayLength());
+        Assert.Equal("Alan", document.RootElement[3].GetProperty("Name").GetString());
+
+        await page.RouteAsync("**/data/export?*", async route =>
+        {
+            if (route.Request.Url.Contains("probe=true", StringComparison.Ordinal))
+            {
+                await route.FulfillAsync(new()
+                {
+                    Status = 400,
+                    ContentType = "application/json",
+                    Body = "{\"error\":\"The export could not be validated.\"}",
+                });
+            }
+            else
+            {
+                await route.ContinueAsync();
+            }
+        });
+        await panel.GetByTestId("export-csv").ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack"))
+            .ToContainTextAsync("Export failed: The export could not be validated.");
+        await page.UnrouteAsync("**/data/export?*");
+
+        await page.Locator("[title='dbo.LedgerHeap']").ClickAsync();
+        panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByTestId("export-csv")).ToHaveTextAsync("CSV");
+        await Assertions.Expect(panel.GetByTestId("export-csv"))
+            .ToHaveAttributeAsync("title", "Download as CSV");
+        browserPage.AssertNoUnexpectedErrors("400");
+    }
+
+    [Fact]
     public async Task Tailors_object_explorer_and_designer_to_provider_capabilities()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -3746,6 +3803,22 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal("SQL_1-result1.json", jsonDownload.SuggestedFilename);
         using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
         Assert.Equal(42, document.RootElement[0].GetProperty("Answer").GetInt32());
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Csv_export_neutralizes_a_tab_prefixed_spreadsheet_value()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "formula-export");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+
+        var download = await page.RunAndWaitForDownloadAsync(
+            () => page.GetByTestId("export-csv").ClickAsync());
+
+        Assert.Equal("Text\r\n'\t2+3", await ReadDownloadAsync(download));
         browserPage.AssertNoUnexpectedErrors();
     }
 

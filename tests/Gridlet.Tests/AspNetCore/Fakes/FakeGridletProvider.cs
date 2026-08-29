@@ -294,16 +294,47 @@ public sealed class FakeGridletProvider :
     /// <summary>The filters the most recent page request carried, so their parsing can be asserted.</summary>
     public IReadOnlyList<TableDataFilter>? LastDataFilters { get; private set; }
 
+    /// <summary>The most recent complete page request, including sort and paging details.</summary>
+    public TableDataRequest? LastDataRequest { get; private set; }
+
     /// <summary>Every page asked for, in order, so a caller's paging can be asserted.</summary>
     public List<(int Page, int PageSize)> DataPageRequests { get; } = [];
+
+    /// <summary>When set, simulates a provider failure after an export has begun streaming.</summary>
+    public int? FailDataPage { get; set; }
+
+    /// <summary>When set, changes the reported schema after streaming has begun.</summary>
+    public int? ChangeExportColumnsPage { get; set; }
 
     public Task<TableDataPage> GetPageAsync(
         GridletConnectionContext context, string schema, string name, TableDataRequest request,
         CancellationToken cancellationToken = default)
     {
+        LastDataRequest = request;
         LastDataFilters = request.Filters;
         DataPageRequests.Add((request.Page, request.PageSize));
-        return GetPageCore(name, request);
+        if (request.Page == FailDataPage)
+        {
+            return Task.FromException<TableDataPage>(
+                new InvalidOperationException("SECRET_EXPORT_PAGE_FAILURE"));
+        }
+        return ChangedColumnsPageAsync(name, request);
+    }
+
+    private async Task<TableDataPage> ChangedColumnsPageAsync(string name, TableDataRequest request)
+    {
+        var page = await GetPageCore(name, request);
+        return request.Page == ChangeExportColumnsPage
+            ? page with
+            {
+                Columns =
+                [
+                    new ResultColumn("Name", "nvarchar(100)"),
+                    new ResultColumn("Id", "int"),
+                    ..page.Columns.Skip(2),
+                ],
+            }
+            : page;
     }
 
     public Task<ColumnProfile> GetColumnProfileAsync(
@@ -361,23 +392,60 @@ public sealed class FakeGridletProvider :
             request.Page,
             request.PageSize,
             TotalRows: all.Length,
-            RowIdentity: name == "LedgerHeap"
+            RowIdentity: name is "LedgerHeap" or "ClampedUnderreportedLedgerHeap"
                 ? null
-                : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]));
+                : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+            RowKeys: name is "LedgerHeap" or "ClampedUnderreportedLedgerHeap"
+                ? null
+                : taken.Select(row => new object?[] { row[0] }).ToArray());
     }
 
     private static Task<TableDataPage> GetPageCore(string name, TableDataRequest request)
     {
-        if (name is "Ledger" or "LedgerHeap")
+        if (name is "Ledger" or "LedgerHeap" or "UnderreportedLedger" or "ClampedLedger"
+            or "ClampedUnderreportedLedgerHeap" or "RepeatingLedger")
         {
-            return Task.FromResult(LedgerPage(name, request));
+            var effectiveRequest = name is "ClampedLedger" or "ClampedUnderreportedLedgerHeap"
+                ? request with { PageSize = 2 }
+                : name == "RepeatingLedger" ? request with { Page = 1 } : request;
+            var page = LedgerPage(name, effectiveRequest);
+            return Task.FromResult(name is "UnderreportedLedger" or "ClampedUnderreportedLedgerHeap"
+                ? page with { TotalRows = 1 }
+                : page);
         }
 
         return GetFixedPage(name, request);
     }
 
     private static Task<TableDataPage> GetFixedPage(string name, TableDataRequest request)
-        => Task.FromResult(name == "Orders"
+        => Task.FromResult(name == "NegativeTotalExport"
+            ? new TableDataPage(
+                [new ResultColumn("Value", "int")],
+                [[1]], request.Page, request.PageSize, TotalRows: -1)
+            : name == "IncompleteRowKeysExport"
+            ? new TableDataPage(
+                [new ResultColumn("Id", "int")],
+                [[1], [2]], request.Page, request.PageSize, TotalRows: 2,
+                RowIdentity: new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+                RowKeys: [[1]])
+            : name == "UnserializableExport"
+            ? new TableDataPage(
+                [new ResultColumn("Value", "object")],
+                [[new CircularValue()]], request.Page, request.PageSize, TotalRows: 1)
+            : name == "DuplicateColumns"
+            ? new TableDataPage(
+                [new ResultColumn("Value", "int"), new ResultColumn("value", "int")],
+                [[1, 2]], request.Page, request.PageSize, TotalRows: 1)
+            : name == "ExportCases"
+            ? new TableDataPage(
+                [new ResultColumn("Text", "nvarchar(max)"), new ResultColumn("Binary", "varbinary(max)"),
+                    new ResultColumn("When", "datetime2"), new ResultColumn("Nullable", "int"),
+                    new ResultColumn("Formula", "nvarchar(max)"),
+                    new ResultColumn("TabFormula", "nvarchar(max)")],
+                [["a,\"b\r\nc", new byte[] { 0, 255 },
+                    new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc), null, "=2+3", "\t2+3"]],
+                request.Page, request.PageSize, TotalRows: 1)
+            : name == "Orders"
             ? new TableDataPage(
                 [new ResultColumn("Id", "int"), new ResultColumn("PizzaId", "int"),
                     new ResultColumn("Promotion", "nvarchar(100)")],
@@ -412,6 +480,11 @@ public sealed class FakeGridletProvider :
                 TotalRows: 2,
                 RowIdentity: name == "NoKeys" ? null : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
                 RowKeys: name == "NoKeys" ? null : [[1], [2]]));
+
+    private sealed class CircularValue
+    {
+        public CircularValue Self => this;
+    }
 
     // ---- execution plans ----
 
@@ -542,8 +615,9 @@ public sealed class FakeGridletProvider :
 
     /// <summary>
     /// Streams a single-row result set. Recognised sentinels: <c>boom</c> fails before any event is
-    /// emitted (clean status code), and <c>stream-boom</c> fails after a row has streamed (in-body
-    /// error marker). Records the query options so cap behaviour can be asserted.
+    /// emitted, <c>stream-boom</c> fails after a row has streamed, and <c>formula-export</c>
+    /// supplies a spreadsheet-sensitive string. Records the query options so cap behaviour can be
+    /// asserted.
     /// </summary>
     public async IAsyncEnumerable<QueryStreamEvent> StreamAsync(
         GridletConnectionContext context, string sql, QueryRequestOptions options,
@@ -569,6 +643,17 @@ public sealed class FakeGridletProvider :
         {
             yield return new QueryStreamEvent("started");
             yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "formula-export")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent(
+                "resultSet", 0, [new ResultColumn("Text", "nvarchar(max)")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [["\t2+3"]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
             yield break;
         }
 

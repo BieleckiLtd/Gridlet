@@ -60,6 +60,7 @@ internal static partial class GridletApiEndpoints
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data", GetObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data/stream", StreamObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/profile", GetColumnProfile);
+        api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data/export", ExportObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/structure", GetObjectStructure);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", SaveForeignKeyDisplay);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", DeleteForeignKeyDisplay);
@@ -369,6 +370,106 @@ internal static partial class GridletApiEndpoints
                 httpContext, new QueryStreamEvent("error", Message: clientMessage));
         }
     }
+
+    private static Task<IResult> ExportObjectData(
+        string connection,
+        string database,
+        string schema,
+        string name,
+        string? format,
+        string? sort,
+        string? dir,
+        string? filter,
+        bool? probe,
+        HttpContext httpContext,
+        IGridletConnectionResolver resolver,
+        IOptionsMonitor<GridletOptions> options,
+        ILogger<GridletTableExportResult> logger,
+        CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var fetchSite = Convert.ToString(httpContext.Request.Headers["Sec-Fetch-Site"]);
+            if (fetchSite is not null
+                && (fetchSite.Equals("cross-site", StringComparison.OrdinalIgnoreCase)
+                    || fetchSite.Equals("same-site", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new GridletValidationException(
+                    "Full exports must be started from the Gridlet application origin.");
+            }
+            var exportFormat = string.IsNullOrWhiteSpace(format)
+                ? "csv"
+                : format.Trim().ToLowerInvariant();
+            if (exportFormat is not ("csv" or "json"))
+            {
+                throw new GridletValidationException("Export format must be csv or json.");
+            }
+
+            var resolved = resolver.Resolve(connection, database);
+            var pageSize = Math.Min(500, options.CurrentValue.Limits.MaxPageSize);
+            var direction = string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase)
+                ? SortDirection.Descending : SortDirection.Ascending;
+            var sortColumn = string.IsNullOrWhiteSpace(sort) ? null : sort;
+            var filters = ParseFilters(filter);
+            httpContext.Response.Headers.CacheControl = "no-store";
+            httpContext.Response.Headers.XContentTypeOptions = "nosniff";
+            // Fetch the first page before response headers are committed. Object, sort, and filter
+            // validation errors can therefore retain the API's normal structured status/body.
+            GridletTableExportResult result;
+            try
+            {
+                var firstPage = await resolved.Provider.Data.GetPageAsync(
+                    resolved.Context,
+                    schema,
+                    name,
+                    new TableDataRequest(1, pageSize, sortColumn, direction, filters),
+                    cancellationToken);
+                if (firstPage.Page != 1 || firstPage.PageSize <= 0 || firstPage.TotalRows < 0
+                    || firstPage.Rows.Count > firstPage.PageSize)
+                {
+                    throw new GridletValidationException(
+                        "The data provider returned invalid paging metadata for this export.");
+                }
+                if ((firstPage.TotalRows > firstPage.Rows.Count
+                        || firstPage.Rows.Count >= firstPage.PageSize)
+                    && firstPage.RowIdentity is null)
+                {
+                    throw new GridletValidationException(
+                        "A full export cannot safely page this object because it has no stable row identity.");
+                }
+                result = new GridletTableExportResult(
+                    resolved.Provider.Data,
+                    resolved.Context,
+                    schema,
+                    name,
+                    exportFormat,
+                    sortColumn,
+                    direction,
+                    filters,
+                    pageSize,
+                    firstPage,
+                    logger);
+                result.ValidateFirstPage(cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException
+                and not GridletObjectNotFoundException
+                and not GridletValidationException
+                and not GridletQueryException)
+            {
+                logger.LogError(ex,
+                    "Full {Format} export of {Schema}.{Name} failed before the response started.",
+                    exportFormat, schema, name);
+                return Results.Json(
+                    new GridletErrorResponse("An unexpected server error occurred."),
+                    statusCode: StatusCodes.Status500InternalServerError);
+            }
+            if (probe == true)
+            {
+                // The browser uses this bounded preflight to surface validation failures before
+                // handing the streaming response to its native download manager.
+                return Results.Ok(new { valid = true });
+            }
+            return result;
+        });
 
     /// <summary>
     /// Reads the <c>filter</c> query parameter, a JSON array of conditions. JSON rather than a
