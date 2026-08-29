@@ -34,6 +34,7 @@
     select: { tag: 'select' },
     button: { tag: 'button' },
     pager: { tag: 'div', role: 'pager' },
+    grid: { tag: 'table', role: 'grid' },
     panel: { tag: 'div', role: 'panel', container: true },
     // Markup the designer has no control for: a `<p>`, a `<table>`, an `<svg>` somebody wrote by
     // hand. It is kept exactly as it was written and drawn where it was put, because a document is
@@ -233,6 +234,27 @@
         if (props.edges) pager.setAttribute('data-edges', '');
         if (props.position) pager.setAttribute('data-position', '');
         return pager;
+      }
+      case 'grid': {
+        // The columns are the document's; the rows are not. A grid shows the component's own
+        // collection, so what is stored is which fields to show and in what order — written as the
+        // header they are, because that is what a table's columns are in HTML.
+        const table = document.createElement('table');
+        table.setAttribute('data-role', 'grid');
+        const columns = String(props.columns ?? '').split('\n').filter(Boolean);
+        if (columns.length) {
+          const head = document.createElement('thead');
+          const row = document.createElement('tr');
+          for (const column of columns) {
+            const cell = document.createElement('th');
+            cell.textContent = column;
+            row.append(cell);
+          }
+          head.append(row);
+          table.append(head);
+        }
+        if (props.header === false) table.setAttribute('data-no-header', '');
+        return table;
       }
       case 'foreign': {
         // Written back exactly as it came in. The markup goes through the serializer verbatim
@@ -467,6 +489,12 @@
         const title = element.querySelector('[data-role="panel-title"]');
         return { title: title ? title.textContent : '' };
       }
+      case 'grid':
+        return {
+          columns: [...element.querySelectorAll('thead th')]
+            .map((cell) => cell.textContent).join('\n'),
+          header: !element.hasAttribute('data-no-header'),
+        };
       case 'foreign':
         return { html: element.outerHTML };
       default:

@@ -101,6 +101,10 @@
 .gfd-tok-type { color: var(--code-variable); }
 .gfd-tok-private { color: var(--code-variable); font-style: italic; }
 
+/* Angle brackets and slashes. They are structure rather than content, so they sit back from
+   the tag names and attributes they hold together. */
+.gfd-tok-punctuation { color: var(--muted); }
+
 /* Which modules a component runs, on its Settings page. The checkbox is the whole relationship: the
    document names a module, or it does not. */
 .gfd-module-label {
@@ -932,3 +936,47 @@
 .gfd-canvas:not(.preview) .gfd-locked { pointer-events: none; }
 
 .gfd-foreign { display: contents; }
+
+/* The data grid. Its own scroll container, because a grid is placed in a box of a chosen size and
+   the rows that arrive are not the document's to predict. */
+.gfd-grid { border-collapse: collapse; width: 100%; }
+
+.gfd-grid th,
+.gfd-grid td {
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.gfd-grid th {
+  background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+
+/* The document, edited as itself. It fills the surface the canvas would have used: the two are the
+   same component in two forms, so they occupy the same place rather than competing for it. */
+/* The surface it sits in is a block box that scrolls a canvas, not a flex container, so the pane
+   takes its height from it rather than asking to be stretched by it. */
+.gfd-code-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+}
+
+.gfd-code-pane .gfd-code-surface { flex: 1; min-height: 0; }
+
+/* What the parser said, kept under the text rather than in a toast: it is about the line being
+   typed, and it goes away by fixing it. */
+.gfd-code-error {
+  border-top: 1px solid var(--danger, #c0392b);
+  color: var(--danger, #c0392b);
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.gfd-code-surface.invalid { outline: 1px solid var(--danger, #c0392b); }

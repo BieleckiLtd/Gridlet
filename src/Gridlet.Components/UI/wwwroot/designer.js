@@ -143,6 +143,56 @@
   // declaration and the value side of one. Where a word sits decides what it is — a name before a
   // colon inside braces is a property, the same name outside them is part of a selector — so the
   // scanner carries just enough state to know which side of a declaration it is on.
+  // Enough to read a document by: comments, tags, attribute names and their values. Like the others
+  // here it is a highlighter rather than a parser, and the document it is showing has already been
+  // parsed by the thing that matters — the browser.
+  function highlightHtml(source) {
+    const pattern = /(<!--[\s\S]*?-->)|(<\/?)([A-Za-z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?>)/g;
+    let output = '';
+    let at = 0;
+
+    for (const match of source.matchAll(pattern)) {
+      const [text, comment, open, tag, attributes, close] = match;
+      output += escapeHtml(source.slice(at, match.index));
+      at = match.index + text.length;
+
+      if (comment) {
+        output += `<span class="gfd-tok-comment">${escapeHtml(text)}</span>`;
+        continue;
+      }
+
+      output += `<span class="gfd-tok-punctuation">${escapeHtml(open)}</span>`
+        + `<span class="gfd-tok-type">${escapeHtml(tag)}</span>`
+        + highlightAttributes(attributes)
+        + `<span class="gfd-tok-punctuation">${escapeHtml(close)}</span>`;
+    }
+
+    return output + escapeHtml(source.slice(at));
+  }
+
+  function highlightAttributes(source) {
+    const pattern = /([A-Za-z_:][\w.:-]*)(\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)?/g;
+    let output = '';
+    let at = 0;
+
+    for (const match of source.matchAll(pattern)) {
+      const [text, name, equals, value] = match;
+      output += escapeHtml(source.slice(at, match.index));
+      at = match.index + text.length;
+
+      output += `<span class="gfd-tok-function">${escapeHtml(name)}</span>`;
+      if (equals) output += escapeHtml(equals);
+      // A formula in an attribute is the part worth finding, so it is coloured as what it is
+      // rather than as one more string.
+      if (value) {
+        const formula = /^["']?=/.test(value);
+        output += `<span class="gfd-tok-${formula ? 'keyword' : 'string'}">${escapeHtml(value)}</span>`;
+      }
+    }
+
+    return output + escapeHtml(source.slice(at));
+  }
+
   function highlightCss(source) {
     const pattern = /(\/\*[\s\S]*?\*\/)|("(?:\\[\s\S]|[^"\\])*"?|'(?:\\[\s\S]|[^'\\])*'?)|(@[A-Za-z-]+|!important)|([{}:;])|(--[A-Za-z0-9_-]+|[A-Za-z_-][\w-]*(?=\s*\()|[A-Za-z_-][\w-]*)|(#[0-9A-Fa-f]{3,8}\b|-?\d[\w.%]*)/g;
     let output = '';
@@ -1367,6 +1417,56 @@ export default class ${CLASS_NAME(name)} {
           c.props.edges ? step('»', 'Last record', rowCount - 1, last) : null);
       },
     },
+    // The other control whose subject is the whole collection rather than one row. A pager moves
+    // through the rows one at a time; a grid shows them at once. Neither binds to a column, because
+    // both are already pointed at the component's own source.
+    grid: {
+      title: 'Data grid',
+      icon: '▤',
+      defaults: {
+        w: 420,
+        h: 180,
+        // Empty means every column the source returns, which is the useful default: a grid added to
+        // a bound component shows the data straight away, and naming columns is how you narrow it.
+        props: { columns: '', header: true },
+      },
+      style: {
+        'border-collapse': 'collapse',
+        color: 'var(--text)',
+        'font-size': '13px',
+        overflow: 'auto',
+        display: 'block',
+      },
+      properties: [
+        LINES('columns', 'Columns (one per line, blank for all)'),
+        BOOL('header', 'Show header'),
+      ],
+      dataNote: 'A grid follows the component\'s own source: it shows the rows that came back. '
+        + 'There is nothing to bind.',
+      render: (c, context) => {
+        const named = String(c.props.columns ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
+        // What the source actually returned, so a grid with no columns named still says what it
+        // will show rather than drawing an empty box while a component is being laid out.
+        const columns = named.length ? named : (context.columns || []);
+        const table = h('table', { class: 'gfd-grid' });
+
+        if (c.props.header !== false) {
+          table.append(h('thead', {}, h('tr', {},
+            ...columns.map((column) => h('th', { text: column })))));
+        }
+
+        // Design shows the column names and one placeholder row, the same way a bound label shows
+        // its column name: a laid-out component reads as a description of what it will display.
+        // Preview shows the rows that came back.
+        const rows = context.mode === 'preview'
+          ? context.rows || []
+          : [Object.fromEntries(columns.map((column) => [column, `[${column}]`]))];
+
+        table.append(h('tbody', {}, ...rows.map((row) => h('tr', {},
+          ...columns.map((column) => h('td', { text: asText(row?.[column]) }))))));
+        return table;
+      },
+    },
     panel: {
       title: 'Panel',
       icon: '▦',
@@ -1726,7 +1826,20 @@ export default class ${CLASS_NAME(name)} {
     walk(doc.controls, migrateFormulas);
 
     const canvas = h('div', { class: 'gfd-canvas', tabindex: '0' });
-    const surface = h('div', { class: 'gfd-surface' }, canvas);
+
+    // The document itself, editable. Storing components as HTML is what makes this worth having:
+    // there is nothing to translate, so what is shown here is the file, and editing it is editing
+    // the component. The parse is the only judge of whether an edit is a component yet.
+    const codeError = h('div', { class: 'gfd-code-error', hidden: true, 'data-testid': 'component-code-error' });
+    const code = codeSurface({
+      paint: highlightHtml,
+      label: 'Component document',
+      testId: 'component-code-editor',
+      onInput: () => documentEdited(),
+    });
+    const codePane = h('div', { class: 'gfd-code-pane', hidden: true }, code.surface, codeError);
+
+    const surface = h('div', { class: 'gfd-surface' }, canvas, codePane);
     const propertyBody = h('div', { class: 'gfd-properties-body' });
     // Order matters: each control's default appearance first, then the designer's generated rules,
     // then the operator's custom rules, so equal-specificity custom rules win by document order.
@@ -2081,6 +2194,10 @@ export default class ${CLASS_NAME(name)} {
         mode: model.mode,
         rowIndex: model.rowIndex,
         rowCount: model.rows.length,
+        // The rows themselves, and the columns the source returns, for the kinds that show a
+        // collection rather than a place in one.
+        rows: model.rows,
+        columns: model.columns,
         goTo: (index) => showRow(index),
       });
       // In preview the tip is the whole tooltip: the component is the component, and the designer has no
@@ -4302,12 +4419,14 @@ export default class ${CLASS_NAME(name)} {
 
     // ---- view switcher ----
 
-    const viewButtons = ['design', 'preview'].map((mode) => h('button', {
+    const VIEWS = [['design', 'Design'], ['preview', 'Preview'], ['code', 'Code']];
+
+    const viewButtons = new Map(VIEWS.map(([mode, label]) => [mode, h('button', {
       class: 'view-btn' + (mode === model.mode ? ' active' : ''),
       'data-testid': 'component-view-' + mode,
       'aria-pressed': String(mode === model.mode),
       onclick: () => setMode(mode),
-    }, mode === 'design' ? 'Design' : 'Preview'));
+    }, label)]));
 
     // Only GET endpoints are offered: a read-only component must not be able to invoke something that
     // writes just because it was the nearest match in a list.
@@ -5001,21 +5120,66 @@ export default class ${CLASS_NAME(name)} {
       attachHandlers();
     }
 
+    // ---- the document, as itself ----
+
+    // Filling the editor from the model, rather than from whatever was typed last. Coming back to
+    // Code after drawing something has to show the drawing, and re-showing the text somebody left
+    // behind would quietly discard it.
+    function showDocument() {
+      code.input.value = FORMAT.toHtml(model.doc, model.name);
+      code.refresh();
+      showDocumentError(null);
+    }
+
+    function showDocumentError(message) {
+      codeError.textContent = message || '';
+      codeError.hidden = !message;
+      code.surface.classList.toggle('invalid', Boolean(message));
+    }
+
+    // An edit becomes the component the moment it parses. Until then the model keeps the last
+    // document that did, which is the same bargain a formula makes: what broke is on screen with
+    // what it broke, and nothing behind it has been damaged by a half-typed tag.
+    function documentEdited() {
+      let parsed;
+      try {
+        parsed = FORMAT.fromHtml(code.input.value);
+      } catch (err) {
+        showDocumentError(err.message);
+        return;
+      }
+
+      showDocumentError(null);
+      model.doc = parsed;
+      model.selection = [];
+      markDirty();
+      // Drawn now rather than on the way out, so the canvas behind the switch is already right and
+      // Preview runs what the text says.
+      renderCanvas();
+      renderProperties();
+    }
+
     async function setMode(mode) {
       if (model.mode === mode) return;
       model.mode = mode;
       // Leaving design clears the selection: a selected control is a designer concept, and coming
       // back with stale handles drawn over a component you were just filling in reads as a glitch.
-      if (mode === 'preview') model.selection = [];
-      for (const [index, button] of viewButtons.entries()) {
-        const active = (index === 0) === (mode === 'design');
-        button.classList.toggle('active', active);
-        button.setAttribute('aria-pressed', String(active));
+      if (mode !== 'design') model.selection = [];
+      for (const [name, button] of viewButtons) {
+        button.classList.toggle('active', name === mode);
+        button.setAttribute('aria-pressed', String(name === mode));
       }
-      palette.hidden = mode === 'preview';
-      // Both switches are about drawing the component. Preview has no grid to show and nothing to
-      // snap, so offering them there would be offering a control that does nothing.
-      gridSwitcher.hidden = mode === 'preview';
+
+      // The document is shown instead of the component, not beside it: they are the same thing in
+      // two forms, and drawing both would invite editing both at once.
+      codePane.hidden = mode !== 'code';
+      canvas.hidden = mode === 'code';
+      if (mode === 'code') showDocument();
+
+      palette.hidden = mode !== 'design';
+      // Both switches are about drawing the component. Anywhere but Design there is no grid to show
+      // and nothing to snap, so offering them would be offering a control that does nothing.
+      gridSwitcher.hidden = mode !== 'design';
       designer.classList.toggle('previewing', mode === 'preview');
       renderCanvas();
       renderProperties();
@@ -5307,7 +5471,7 @@ export default class ${CLASS_NAME(name)} {
       h('div', { class: 'gfd-main' },
         h('div', { class: 'viewbar gfd-viewbar' },
           saveButton,
-          h('div', { class: 'view-switcher', role: 'group', 'aria-label': 'Component view' }, ...viewButtons),
+          h('div', { class: 'view-switcher', role: 'group', 'aria-label': 'Component view' }, ...viewButtons.values()),
           h('div', { class: 'view-switcher', role: 'group', 'aria-label': 'Component theme' }, ...themeButtons.values()),
           gridSwitcher,
           palette),

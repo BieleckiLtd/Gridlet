@@ -60,6 +60,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             "checkbox" => $"<label data-role=\"checkbox\" {attrs}><input type=\"checkbox\"><span>{text}</span></label>",
             "select" => $"<select {attrs}>{Options(properties)}</select>",
             "pager" => $"<div data-role=\"pager\" data-edges data-position {attrs}></div>",
+            "grid" => $"<table data-role=\"grid\" {attrs}>{Header(properties)}</table>",
             "panel" => $"<div data-role=\"panel\" {attrs}></div>",
             "textarea" => $"<textarea data-role=\"textarea\" {Placeholder(properties)} {attrs}></textarea>",
             "textbox" when properties.TryGetValue("multiline", out var m) && m == "true"
@@ -72,6 +73,13 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         => properties.TryGetValue("options", out var options)
             ? string.Concat(options.Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Select(option => $"<option>{Escape(option)}</option>"))
+            : string.Empty;
+
+    /// <summary>A grid's columns, which are its header — the rows are the source's, not the document's.</summary>
+    private static string Header(IReadOnlyDictionary<string, string> properties)
+        => properties.TryGetValue("columns", out var columns) && columns.Length > 0
+            ? "<thead><tr>" + string.Concat(columns.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(column => $"<th>{Escape(column)}</th>")) + "</tr></thead>"
             : string.Empty;
 
     private static string Placeholder(IReadOnlyDictionary<string, string> properties)
@@ -1222,7 +1230,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         // One palette button per kind somebody can add. Multi-line is not one of them: the text box
         // does that now, and the kind survives only so documents that used it keep loading — which
         // is why the seeded textarea below still has to draw.
-        await Assertions.Expect(page.Locator(".gfd-palette button")).ToHaveCountAsync(7);
+        await Assertions.Expect(page.Locator(".gfd-palette button")).ToHaveCountAsync(8);
         await Assertions.Expect(page.Locator(".gfd-palette [data-type='textarea']")).ToHaveCountAsync(0);
         foreach (var name in new[]
         {
@@ -1349,6 +1357,90 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await OpenPanelTabAsync(page, "Settings");
         await Assertions.Expect(page.GetByTestId("expr-text"))
             .ToHaveValueAsync("=upper(\"still works\")");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A grid shows a collection rather than a place in one, so it draws its columns and, while the
+    /// component is being laid out, a placeholder row: a laid-out component reads as a description
+    /// of what it will show rather than as an empty box.
+    /// </summary>
+    [Fact]
+    public async Task A_data_grid_draws_the_columns_the_document_names()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Grid component",
+            [Control("rows", "grid", props: new { columns = "Name\nCity", header = true }, w: 400, h: 160)]);
+
+        var grid = Canvas(page, "rows");
+        await Assertions.Expect(grid.Locator("thead th")).ToHaveCountAsync(2);
+        await Assertions.Expect(grid.Locator("thead th").First).ToHaveTextAsync("Name");
+        await Assertions.Expect(grid.Locator("tbody td").First).ToHaveTextAsync("[Name]");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The document is the component, so Code shows the file itself rather than a rendering of it.
+    /// </summary>
+    [Fact]
+    public async Task Code_shows_the_document_the_component_is_stored_as()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Readable component",
+            [Control("caption", "label", props: new { text = "Hello" })]);
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var document = await page.GetByTestId("component-code-editor").InputValueAsync();
+
+        Assert.Contains(@"data-gridlet=""2""", document, StringComparison.Ordinal);
+        Assert.Contains(@"<span data-name=""caption""", document, StringComparison.Ordinal);
+        Assert.Contains(">Hello</span>", document, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Editing the document edits the component. This is the whole point of storing HTML: there is
+    /// nothing between what is typed here and what the component is.
+    /// </summary>
+    [Fact]
+    public async Task Editing_the_document_changes_the_component()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Editable component",
+            [Control("caption", "label", props: new { text = "Before" })]);
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var editor = page.GetByTestId("component-code-editor");
+        var document = await editor.InputValueAsync();
+        await editor.FillAsync(document.Replace(">Before<", ">After<", StringComparison.Ordinal));
+
+        await page.GetByTestId("component-view-design").ClickAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("After");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Half-typed markup is not a component yet. It is reported where it is being typed, and the
+    /// component keeps the last document that did parse — the same bargain a broken formula makes.
+    /// </summary>
+    [Fact]
+    public async Task Markup_that_is_not_a_document_is_reported_and_changes_nothing()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Broken edit component",
+            [Control("caption", "label", props: new { text = "Intact" })]);
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        await page.GetByTestId("component-code-editor").FillAsync("<p>not a component</p>");
+
+        await Assertions.Expect(page.GetByTestId("component-code-error")).ToBeVisibleAsync();
+
+        await page.GetByTestId("component-view-design").ClickAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Intact");
 
         browserPage.AssertNoUnexpectedErrors();
     }
