@@ -1,6 +1,7 @@
 using Gridlet.Abstractions;
 using Gridlet.Tests.AspNetCore.Fakes;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -43,4 +44,25 @@ internal static class GridletTestHost
             o.AddConnection("Main", "Server=secret-host;Database=hidden;", FakeGridletProvider.Name);
             o.Security.AllowAnonymous = true;
         });
+
+    /// <summary>Boots the standard host on a real ephemeral Kestrel socket.</summary>
+    public static async Task<(WebApplication App, HttpClient Client)> StartKestrelDefaultAsync()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Logging.ClearProviders();
+        builder.Services.AddGridlet(options =>
+        {
+            options.Storage.FilePath = Path.Combine(
+                Path.GetTempPath(), $"gridlet-tests-{Guid.NewGuid():n}.json");
+            options.AddConnection("Main", "Server=secret-host;Database=hidden;", FakeGridletProvider.Name);
+            options.Security.AllowAnonymous = true;
+        });
+        builder.Services.AddSingleton<IGridletProvider, FakeGridletProvider>();
+
+        var app = builder.Build();
+        app.MapGridlet("/gridlet");
+        await app.StartAsync();
+        return (app, new HttpClient { BaseAddress = new Uri(app.Urls.Single()) });
+    }
 }

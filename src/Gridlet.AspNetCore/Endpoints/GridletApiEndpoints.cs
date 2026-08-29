@@ -70,6 +70,7 @@ internal static partial class GridletApiEndpoints
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/sequence", GetSequence);
         api.MapPost("/connections/{connection}/databases/{database}/query", ExecuteQuery);
         MapQueryJobs(api);
+        MapResultExports(api);
         MapSessions(api);
         MapRoutines(api);
         MapPlans(api);
