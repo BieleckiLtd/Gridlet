@@ -65,6 +65,11 @@ internal static partial class GridletResultExporter
             throw new GridletValidationException(
                 $"Result exports cannot exceed {MaxCells:N0} cells.");
         }
+        if (request.BinaryValues is not null && request.BinaryValues.Length != request.Rows.Length)
+        {
+            throw new GridletValidationException(
+                "Binary-value metadata must contain one entry for every export row.");
+        }
 
         for (var columnIndex = 0; columnIndex < request.Columns.Length; columnIndex++)
         {
@@ -91,11 +96,19 @@ internal static partial class GridletResultExporter
                     $"Export row {rowIndex + 1} has {request.Rows[rowIndex].Length} values; " +
                     $"{request.Columns.Length} were expected.");
             }
+            if (request.BinaryValues is not null
+                && (request.BinaryValues[rowIndex] is not { } binaryRow
+                    || binaryRow.Length != request.Columns.Length))
+            {
+                throw new GridletValidationException(
+                    $"Binary-value metadata for row {rowIndex + 1} must contain " +
+                    $"{request.Columns.Length} entries.");
+            }
             for (var columnIndex = 0; columnIndex < request.Columns.Length; columnIndex++)
             {
                 ValidateBrowserNumber(
                     request.Columns[columnIndex], request.Rows[rowIndex][columnIndex],
-                    columnIndex, rowIndex);
+                    request.ProviderName ?? string.Empty, columnIndex, rowIndex);
                 ValidateDeclaredDecimal(
                     request.Columns[columnIndex], request.Rows[rowIndex][columnIndex],
                     columnIndex, rowIndex);
@@ -175,7 +188,8 @@ internal static partial class GridletResultExporter
         CancellationToken cancellationToken)
     {
         var columns = BuildParquetColumns(
-            request.Columns!, request.Rows!, request.ProviderName ?? string.Empty);
+            request.Columns!, request.Rows!, request.ProviderName ?? string.Empty,
+            request.BinaryValues);
         var schema = new ParquetSchema(columns.Select(column => column.Field));
         using var output = new MemoryStream();
         await using (var writer = await ParquetWriter.CreateAsync(
@@ -200,14 +214,16 @@ internal static partial class GridletResultExporter
     private static IReadOnlyList<ParquetColumn> BuildParquetColumns(
         IReadOnlyList<ResultColumn> columns,
         IReadOnlyList<JsonElement[]> rows,
-        string providerName)
+        string providerName,
+        IReadOnlyList<bool?[]>? binaryRows)
     {
         var names = UniqueColumnNames(columns);
         return columns.Select((column, index) =>
         {
             var values = rows.Select(row => row[index]).ToArray();
+            var binaryValues = binaryRows?.Select(row => row[index]).ToArray();
             var dataTypeName = column.DataTypeName ?? string.Empty;
-            var kind = ParquetKindFor(providerName, dataTypeName, values);
+            var kind = ParquetKindFor(providerName, dataTypeName, values, binaryValues);
             var field = CreateParquetField(names[index], dataTypeName, values, kind);
             return new ParquetColumn(field, kind, values, index + 1);
         }).ToArray();
@@ -277,7 +293,8 @@ internal static partial class GridletResultExporter
     private static ParquetValueKind ParquetKindFor(
         string providerName,
         string dataTypeName,
-        IReadOnlyList<JsonElement> values)
+        IReadOnlyList<JsonElement> values,
+        IReadOnlyList<bool?>? binaryValues)
     {
         var type = dataTypeName.Trim().ToLowerInvariant();
         ParquetValueKind? declaredKind = null;
@@ -324,9 +341,12 @@ internal static partial class GridletResultExporter
             declaredKind = ParquetValueKind.Binary;
         }
 
+        var sqlite = providerName.Contains("sqlite", StringComparison.OrdinalIgnoreCase);
         if (declaredKind is not null
-            && (!providerName.Contains("sqlite", StringComparison.OrdinalIgnoreCase)
-                || ValuesMatchKind(values, declaredKind.Value)))
+            && (!sqlite
+                || (declaredKind == ParquetValueKind.Binary
+                    ? ValuesAreMarkedBinary(values, binaryValues)
+                    : ValuesMatchKind(values, declaredKind.Value))))
         {
             return declaredKind.Value;
         }
@@ -343,6 +363,12 @@ internal static partial class GridletResultExporter
         }
         return ParquetValueKind.String;
     }
+
+    private static bool ValuesAreMarkedBinary(
+        IReadOnlyList<JsonElement> values,
+        IReadOnlyList<bool?>? binaryValues)
+        => binaryValues is not null
+            && values.Select((value, index) => !IsValue(value) || binaryValues[index] == true).All(result => result);
 
     private static bool ValuesMatchKind(
         IReadOnlyList<JsonElement> values,
@@ -773,13 +799,16 @@ internal static partial class GridletResultExporter
     private static void ValidateBrowserNumber(
         ResultColumn column,
         JsonElement value,
+        string providerName,
         int zeroBasedColumn,
         int zeroBasedRow)
     {
         if (value.ValueKind != JsonValueKind.Number) return;
         var type = (column.DataTypeName ?? string.Empty).Trim().ToLowerInvariant();
         var exactInteger = type.StartsWith("bigint", StringComparison.Ordinal)
-            || type == "integer";
+            || type == "integer"
+            || (providerName.Contains("sqlite", StringComparison.OrdinalIgnoreCase)
+                && type.Contains("int", StringComparison.Ordinal));
         if (exactInteger && value.TryGetDecimal(out var integer)
             && decimal.Truncate(integer) == integer
             && Math.Abs(integer) > MaxBrowserSafeInteger)

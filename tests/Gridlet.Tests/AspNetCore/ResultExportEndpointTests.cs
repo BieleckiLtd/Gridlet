@@ -235,9 +235,12 @@ public sealed class ResultExportEndpointTests
                 new { name = "WideInteger", dataTypeName = "INT" },
                 new { name = "Epoch", dataTypeName = "TIMESTAMP" },
                 new { name = "TextNumber", dataTypeName = "NUMERIC" },
+                new { name = "TextInBlob", dataTypeName = "BLOB" },
+                new { name = "BinaryInBlob", dataTypeName = "BLOB" },
             },
-            rows = new object?[][] { [3_000_000_000L, 1_700_000_000L, "007"] },
+            rows = new object?[][] { [3_000_000_000L, 1_700_000_000L, "007", "test", "AP8="] },
             providerName = "SQLite",
+            binaryValues = new bool?[][] { [null, null, null, null, true] },
         });
         Assert.Equal(HttpStatusCode.OK, dynamicResponse.StatusCode);
         await using var dynamicReader = await ParquetReader.CreateAsync(
@@ -252,6 +255,12 @@ public sealed class ResultExportEndpointTests
         var textNumbers = new string?[1];
         await dynamicRowGroup.ReadAsync(dynamicReader.Schema.DataFields[2], textNumbers.AsMemory());
         Assert.Equal("007", textNumbers[0]);
+        var blobText = new string?[1];
+        await dynamicRowGroup.ReadAsync(dynamicReader.Schema.DataFields[3], blobText.AsMemory());
+        Assert.Equal("test", blobText[0]);
+        var blobBytes = new byte[]?[1];
+        await dynamicRowGroup.ReadAsync(dynamicReader.Schema.DataFields[4], blobBytes.AsMemory());
+        Assert.Equal(new byte[] { 0, 255 }, blobBytes[0]);
 
         var offsetTimestampResponse = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
         {
@@ -356,6 +365,12 @@ public sealed class ResultExportEndpointTests
             columns = new[] { new { name = "A", dataTypeName = "bigint" } },
             rows = new object?[][] { [9_007_199_254_740_992L] },
         });
+        var unsafeSqliteInteger = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
+        {
+            columns = new[] { new { name = "A", dataTypeName = "MEDIUMINT" } },
+            rows = new object?[][] { [9_007_199_254_740_992L] },
+            providerName = "SQLite",
+        });
         var unsafeDecimal = await client.PostAsJsonAsync("/gridlet/api/exports/xlsx", new
         {
             columns = new[] { new { name = "A", dataTypeName = "decimal(18, 1)" } },
@@ -395,6 +410,8 @@ public sealed class ResultExportEndpointTests
         Assert.Contains("decimal export value", await wrongDecimal.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, unsafeInteger.StatusCode);
         Assert.Contains("browser number precision", await unsafeInteger.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.BadRequest, unsafeSqliteInteger.StatusCode);
+        Assert.Contains("browser number precision", await unsafeSqliteInteger.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, unsafeDecimal.StatusCode);
         Assert.Contains("browser number precision", await unsafeDecimal.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.Equal(HttpStatusCode.BadRequest, declaredDecimalMismatch.StatusCode);

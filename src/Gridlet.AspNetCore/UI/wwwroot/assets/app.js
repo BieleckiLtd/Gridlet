@@ -11727,6 +11727,8 @@
       body: JSON.stringify({
         columns, rows,
         providerName: scope ? connectionFor(scope).providerName : null,
+        binaryValues: rows.map((row) => binaryValuesByRow.get(row)
+          || columns.map(() => null)),
       }),
     });
     if (!response.ok) {
