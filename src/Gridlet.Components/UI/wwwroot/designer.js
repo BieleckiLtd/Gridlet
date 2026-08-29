@@ -1434,9 +1434,13 @@ export default class ${CLASS_NAME(name)} {
         'border-collapse': 'collapse',
         color: 'var(--text)',
         'font-size': '13px',
-        overflow: 'auto',
-        display: 'block',
       },
+      // A grid is placed at a size, and the number of rows that arrive is not the document's to
+      // predict, so it scrolls inside that size. That is what the box is for rather than an opinion
+      // about how a grid looks, which is why it is structure: an isolated component gives up
+      // Gridlet's styling on purpose, and must still be a component whose controls stay where they
+      // were put. A table needs `display: block` before it will scroll at all.
+      structure: { display: 'block', overflow: 'auto' },
       properties: [
         LINES('columns', 'Columns (one per line, blank for all)'),
         BOOL('header', 'Show header'),
@@ -3897,13 +3901,18 @@ export default class ${CLASS_NAME(name)} {
         '}',
       ].join('\n')];
 
-      // The element inside the box fills it, whatever it looks like. This is structure rather than
-      // appearance, so it is not one of the defaults below that a class is meant to beat.
+      // The element inside the box fills it, whatever it looks like, and a kind that needs more than
+      // filling in order to stay inside says so here. This is structure rather than appearance, so
+      // it is not one of the defaults below that a class is meant to beat, and an isolated component
+      // keeps it: asking for a clean slate means giving up Gridlet's styling, not giving up the box
+      // a control was placed in.
+      const structure = CATALOGUE[control.type]?.structure || {};
       rules.push([
         `${innerSelectorFor(control)} {`,
         '  box-sizing: border-box;',
         '  width: 100%;',
         '  height: 100%;',
+        ...Object.entries(structure).map(([property, value]) => `  ${property}: ${value};`),
         '}',
       ].join('\n'));
 

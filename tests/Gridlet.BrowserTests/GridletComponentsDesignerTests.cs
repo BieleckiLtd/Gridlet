@@ -1537,4 +1537,50 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         browserPage.AssertNoUnexpectedErrors();
     }
+
+    /// <summary>
+    /// A grid stays inside the box it was placed in, however many rows arrive, and scrolls instead
+    /// of spilling over the controls around it.
+    /// </summary>
+    /// <remarks>
+    /// Isolated is the case that broke: the scroll container used to live in the kind's appearance,
+    /// and an isolated component drops Gridlet's appearance on purpose, so the grid lost the box it
+    /// was placed in along with the styling. Staying where it was put is structure, not styling.
+    /// </remarks>
+    [Fact]
+    public async Task A_data_grid_stays_inside_the_box_it_was_placed_in()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Grid bounds component",
+            [Control("rows", "grid", props: new { columns = "A\nB\nC\nD\nE\nF\nG\nH", header = true },
+                x: 20, y: 20, w: 200, h: 60)],
+            isolated: true);
+
+        var box = Canvas(page, "rows");
+
+        // Measured against the geometry the document asked for, which is the promise a placed
+        // control makes to everything laid out around it.
+        var size = await box.EvaluateAsync<System.Text.Json.JsonElement>(
+            """
+            (grid) => {
+              const box = grid.closest('.gfd-control').getBoundingClientRect();
+              const rect = grid.getBoundingClientRect();
+              return {
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+                overflowsBox: rect.bottom > box.bottom + 1 || rect.right > box.right + 1,
+                scrolls: grid.scrollHeight > grid.clientHeight || grid.scrollWidth > grid.clientWidth,
+              };
+            }
+            """);
+
+        Assert.Equal(200, size.GetProperty("width").GetInt32());
+        Assert.Equal(60, size.GetProperty("height").GetInt32());
+        Assert.False(size.GetProperty("overflowsBox").GetBoolean(), "the grid spilled outside its box");
+
+        // Eight columns and a header cannot fit a 200x60 box, so it has to be scrolling to fit.
+        Assert.True(size.GetProperty("scrolls").GetBoolean(), "the grid did not scroll its content");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
 }
