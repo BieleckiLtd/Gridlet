@@ -3926,6 +3926,14 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal(
             "INSERT INTO [TargetTable] ([UnsafeId]) VALUES\n    (9007199254740993);",
             await ReadClipboardAsync());
+        await CopyAsync("Copy as JSON");
+        using (var unsafeJson = JsonDocument.Parse(await ReadClipboardAsync()))
+        {
+            Assert.Equal("9007199254740993",
+                unsafeJson.RootElement[0].GetProperty("UnsafeId").GetString());
+        }
+        await CopyAsync("Copy as Markdown");
+        Assert.Contains("| 9007199254740993 |", await ReadClipboardAsync(), StringComparison.Ordinal);
 
         await page.Locator("#new-query-btn").ClickAsync();
         await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-exponential-decimal");
@@ -3947,8 +3955,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await CopyAsync("Copy as JSON");
         using (var exactJson = JsonDocument.Parse(await ReadClipboardAsync()))
         {
-            Assert.Equal(JsonValueKind.Number,
-                exactJson.RootElement[0].GetProperty("ExactAmount").ValueKind);
+            Assert.Equal("123456789012345.6",
+                exactJson.RootElement[0].GetProperty("ExactAmount").GetString());
         }
 
         await page.Locator("#new-query-btn").ClickAsync();

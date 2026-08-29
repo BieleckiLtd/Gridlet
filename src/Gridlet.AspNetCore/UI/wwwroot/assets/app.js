@@ -6396,7 +6396,7 @@
           } else {
             // Every editable field is posted and may be normalized by the provider. Exact text
             // captured before the write is no longer authoritative for any cell in this row.
-            exactNumbersByRow.delete(existingRow);
+            const hadExactNumbers = exactNumbersByRow.delete(existingRow);
             for (const [name, value] of Object.entries(values)) {
               const index = columnIndex(name);
               existingRow[index] = value;
@@ -6410,6 +6410,7 @@
               else cell.removeAttribute('title');
             });
             editorRow.replaceWith(existingRowElement);
+            if (hadExactNumbers) await renderData();
           }
           return true;
         } catch (err) {
@@ -11596,7 +11597,12 @@
   function resultRowsAsObjects(columns, rows) {
     const names = uniqueResultColumnNames(columns);
     return rows.map((row) => Object.fromEntries(
-      names.map((name, index) => [name, row[index]])));
+      names.map((name, index) => [name, resultCopyValue(row, index)])));
+  }
+
+  function resultCopyValue(row, index) {
+    const exactValue = exactNumbersByRow.get(row)?.[index];
+    return typeof exactValue === 'string' ? exactValue : row[index];
   }
 
   function resultRowsAsSqlInsert(columns, rows, target, providerName) {
@@ -11676,7 +11682,8 @@
     const header = `| ${columns.map((column) => markdownCell(column.name)).join(' | ')} |`;
     const separator = `| ${columns.map(() => '---').join(' | ')} |`;
     return [header, separator,
-      ...rows.map((row) => `| ${columns.map((_, index) => markdownCell(row[index])).join(' | ')} |`),
+      ...rows.map((row) => `| ${columns.map((_, index) =>
+        markdownCell(resultCopyValue(row, index))).join(' | ')} |`),
     ].join('\n');
   }
 
