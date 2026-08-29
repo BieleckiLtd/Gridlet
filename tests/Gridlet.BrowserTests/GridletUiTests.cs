@@ -1562,14 +1562,14 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await using var browserPage = await fixture.NewPageAsync();
         var page = browserPage.Page;
         const string sourceStream = """
-            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"int"},{"name":"Name","dataType":"nvarchar(100)"},{"name":"SourceOnly","dataType":"int"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Customers"}}
-            {"type":"rows","resultSetIndex":0,"rows":[[1,"Ada",10],[2,"Grace",20]],"rowKeys":[[1],[2]]}
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"int"},{"name":"Name","dataType":"nvarchar(100)"},{"name":"Price","dataType":"decimal(18,2)"},{"name":"SourceOnly","dataType":"int"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Customers"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[1,"Ada",1.50,10],[2,"Grace",2.50,20]],"rowKeys":[[1],[2]],"exactValues":[[null,null,"1.50",null],[null,null,"2.50",null]]}
             {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
             {"type":"completed","recordsAffected":2}
             """;
         const string targetStream = """
-            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"INTEGER"},{"name":"Name","dataType":"TEXT"},{"name":"TargetOnly","dataType":"TEXT"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Customers"}}
-            {"type":"rows","resultSetIndex":0,"rows":[[1,"Ada changed","x"],[3,"Linus","y"]],"rowKeys":[[1],[3]]}
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"INTEGER"},{"name":"Name","dataType":"TEXT"},{"name":"Price","dataType":"REAL"},{"name":"TargetOnly","dataType":"TEXT"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Customers"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[1,"Ada changed",1.5,"x"],[3,"Linus",3.5,"y"]],"rowKeys":[[1],[3]]}
             {"type":"resultSetCompleted","resultSetIndex":0,"truncated":true}
             {"type":"completed","recordsAffected":2}
             """;
@@ -3819,6 +3819,219 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             () => page.GetByTestId("export-csv").ClickAsync());
 
         Assert.Equal("Text\r\n'\t2+3", await ReadDownloadAsync(download));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Copies_loaded_results_as_sql_json_and_markdown()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+        await OpenQueryAsync(page, "copy-formats");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+
+        async Task CopyAsync(string menuItem)
+        {
+            await ActivePanel(page).GetByTestId("copy-results").ClickAsync();
+            await page.GetByRole(AriaRole.Menuitem, new() { Name = menuItem, Exact = true }).ClickAsync();
+        }
+        async Task<string> ReadClipboardAsync() =>
+            (await page.EvaluateAsync<string>("navigator.clipboard.readText()"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        var copyButton = ActivePanel(page).GetByTestId("copy-results");
+        await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-haspopup", "menu");
+        await copyButton.FocusAsync();
+        await copyButton.PressAsync("Enter");
+        await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "true");
+        var keyboardMenu = page.Locator(".context-menu");
+        await Assertions.Expect(keyboardMenu).ToBeVisibleAsync();
+        var copyBounds = await copyButton.BoundingBoxAsync();
+        var menuBounds = await keyboardMenu.BoundingBoxAsync();
+        Assert.InRange(Math.Abs(menuBounds!.X - copyBounds!.X), 0, 2);
+        await keyboardMenu.GetByRole(AriaRole.Menuitem).Last.PressAsync("Tab");
+        await Assertions.Expect(keyboardMenu).ToBeHiddenAsync();
+        await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "false");
+        await copyButton.PressAsync("Enter");
+        keyboardMenu = page.Locator(".context-menu");
+        await keyboardMenu.PressAsync("Escape");
+        await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "false");
+
+        await CopyAsync("Copy as SQL INSERT");
+        await Assertions.Expect(copyButton).ToBeFocusedAsync();
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([Odd]]Name], [Note], [Active], [Missing], [Payload]) VALUES\n" +
+            "    (N'Łódź O''Brien', N'line 1\nline | <2>', 1, NULL, 0x00FF);",
+            await ReadClipboardAsync());
+
+        await CopyAsync("Copy as JSON");
+        using (var json = JsonDocument.Parse(
+            await ReadClipboardAsync()))
+        {
+            var row = Assert.Single(json.RootElement.EnumerateArray());
+            Assert.Equal("Łódź O'Brien", row.GetProperty("Odd]Name").GetString());
+            Assert.Equal("line 1\nline | <2>", row.GetProperty("Note").GetString());
+            Assert.True(row.GetProperty("Active").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, row.GetProperty("Missing").ValueKind);
+            Assert.Equal("AP8=", row.GetProperty("Payload").GetString());
+        }
+
+        await CopyAsync("Copy as Markdown");
+        Assert.Equal(
+            "| Odd]Name | Note | Active | Missing | Payload |\n" +
+            "| --- | --- | --- | --- | --- |\n" +
+            "| Łódź O'Brien | line 1<br>line \\| &lt;2&gt; | true | NULL | AP8= |",
+            await ReadClipboardAsync());
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByRole(
+            AriaRole.Cell, new() { Name = "Grace" })).ToBeVisibleAsync();
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([Id], [Name]) VALUES\n" +
+            "    (1, N'Ada'),\n" +
+            "    (2, N'Grace');",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("many:1001");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        var bulkInsert = await ReadClipboardAsync();
+        var statements = bulkInsert.Split("\n\n", StringSplitOptions.None);
+        Assert.Equal(2, statements.Length);
+        Assert.Equal(1_001, statements[0].Split('\n').Length);
+        Assert.EndsWith("    (999);", statements[0], StringComparison.Ordinal);
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([N]) VALUES\n    (1000);",
+            statements[1]);
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-unnamed-column");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([Column1]) VALUES\n    (1);",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-unsafe-number");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([UnsafeId]) VALUES\n    (9007199254740993);",
+            await ReadClipboardAsync());
+        await CopyAsync("Copy as JSON");
+        using (var unsafeJson = JsonDocument.Parse(await ReadClipboardAsync()))
+        {
+            Assert.Equal("9007199254740993",
+                unsafeJson.RootElement[0].GetProperty("UnsafeId").GetString());
+        }
+        await CopyAsync("Copy as Markdown");
+        Assert.Contains("| 9007199254740993 |", await ReadClipboardAsync(), StringComparison.Ordinal);
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-exponential-decimal");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([TinyAmount]) VALUES\n    (0.00000000000000000001);",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-exact-decimal");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([ExactAmount]) VALUES\n    (123456789012345.6);",
+            await ReadClipboardAsync());
+        await CopyAsync("Copy as JSON");
+        using (var exactJson = JsonDocument.Parse(await ReadClipboardAsync()))
+        {
+            Assert.Equal("123456789012345.6",
+                exactJson.RootElement[0].GetProperty("ExactAmount").GetString());
+        }
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-exact-variant");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([VariantAmount]) VALUES\n    (1.00000000000000000001);",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-large-float");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([ApproximateValue]) VALUES\n    (1e+21);",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-duplicate-columns");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as JSON");
+        using (var duplicateJson = JsonDocument.Parse(await ReadClipboardAsync()))
+        {
+            Assert.Equal(1, duplicateJson.RootElement[0].GetProperty("Value").GetInt32());
+            Assert.Equal(2, duplicateJson.RootElement[0].GetProperty("value_2").GetInt32());
+        }
+        await page.EvaluateAsync("navigator.clipboard.writeText('unchanged')");
+        await CopyAsync("Copy as SQL INSERT");
+        await Assertions.Expect(page.Locator("#toast-stack"))
+            .ToContainTextAsync("duplicate column names");
+        Assert.Equal("unchanged", await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-invalid-binary");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([Payload]) VALUES\n" +
+            "    (N'not-base64!!');",
+            await ReadClipboardAsync());
+
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-formats");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO \"TargetTable\" (\"Odd]Name\", \"Note\", \"Active\", \"Missing\", \"Payload\") VALUES\n" +
+            "    ('Łódź O''Brien', 'line 1\nline | <2>', 1, NULL, X'00FF');",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-dynamic-numeric");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO \"TargetTable\" (\"Value\") VALUES\n" +
+            "    ('007'),\n" +
+            "    (0.30000000000000004);",
+            await ReadClipboardAsync());
+
+        await page.EvaluateAsync(
+            "Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })");
+        await CopyAsync("Copy as JSON");
+        await Assertions.Expect(page.Locator("#toast-stack"))
+            .ToContainTextAsync("Copy failed - clipboard unavailable.");
+        Assert.DoesNotContain("Cannot read properties", await page.Locator("#toast-stack").InnerTextAsync(),
+            StringComparison.OrdinalIgnoreCase);
         browserPage.AssertNoUnexpectedErrors();
     }
 

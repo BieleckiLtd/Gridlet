@@ -444,7 +444,12 @@ public sealed class FakeGridletProvider :
     }
 
     private static Task<TableDataPage> GetFixedPage(string name, TableDataRequest request)
-        => Task.FromResult(name == "NegativeTotalExport"
+        => Task.FromResult(name == "ExactNumbersTable"
+            ? new TableDataPage(
+                [new ResultColumn("Amount", "decimal(38,20)"), new ResultColumn("Payload", "sql_variant")],
+                [[1.00000000000000000001m, new byte[] { 0, 255 }]],
+                request.Page, request.PageSize, TotalRows: 1)
+            : name == "NegativeTotalExport"
             ? new TableDataPage(
                 [new ResultColumn("Value", "int")],
                 [[1]], request.Page, request.PageSize, TotalRows: -1)
@@ -731,6 +736,122 @@ public sealed class FakeGridletProvider :
             yield break;
         }
 
+        if (sql == "copy-formats")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+            [
+                new ResultColumn("Odd]Name", "nvarchar(100)"),
+                new ResultColumn("Note", "nvarchar(max)"),
+                new ResultColumn("Active", "bit"),
+                new ResultColumn("Missing", "int"),
+                new ResultColumn("Payload", string.Empty),
+            ]);
+            yield return new QueryStreamEvent("rows", 0,
+                Rows: [["Łódź O'Brien", "line 1\nline | <2>", true, null, new byte[] { 0, 255 }]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-unsafe-number")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("UnsafeId", "bigint")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[9_007_199_254_740_993L]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-exact-decimal")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("ExactAmount", "decimal(18, 1)")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[123_456_789_012_345.6m]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-exact-variant")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("VariantAmount", "sql_variant")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[1.00000000000000000001m]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-dynamic-numeric")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("Value", "NUMERIC")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [["007"], [0.30000000000000004d]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-exponential-decimal")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("TinyAmount", "decimal(38, 20)")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[0.00000000000000000001m]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-large-float")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("ApproximateValue", "float")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[1e21]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-unnamed-column")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0, [new ResultColumn("", "int")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[1]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-duplicate-columns")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("Value", "int"), new ResultColumn("value", "int")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[1, 2]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-invalid-binary")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("Payload", "varbinary(max)")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [["not-base64!!"]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
         // "many:N" streams N rows in batches, to prove uncapped streaming past the global default.
         if (sql.StartsWith("many:", StringComparison.Ordinal) &&
             int.TryParse(sql["many:".Length..], out var total))
@@ -753,6 +874,7 @@ public sealed class FakeGridletProvider :
                 yield return new QueryStreamEvent("rows", 0, Rows: batch.ToArray());
             }
 
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
             yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
             yield break;
         }

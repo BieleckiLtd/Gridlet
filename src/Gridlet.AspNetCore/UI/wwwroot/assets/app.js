@@ -445,31 +445,57 @@
   function showContextMenu(event, items) {
     event.preventDefault();
     event.stopPropagation();
-    document.querySelector('.context-menu')?.remove();
-    const menu = h('div', { class: 'context-menu', role: 'menu' }, items.map((item) =>
+    const previousMenu = document.querySelector('.context-menu');
+    if (previousMenu?._dismiss) previousMenu._dismiss();
+    else previousMenu?.remove();
+    const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    let menu;
+    let closeOnFocusOut;
+    let dismissed = false;
+    const dismiss = (restoreFocus = false) => {
+      dismissed = true;
+      menu?.remove();
+      if (trigger?.hasAttribute('aria-haspopup')) {
+        trigger.setAttribute('aria-expanded', 'false');
+        if (restoreFocus) trigger.focus();
+      }
+      document.removeEventListener('pointerdown', close, true);
+      document.removeEventListener('keydown', close, true);
+      document.removeEventListener('focusin', close, true);
+      if (closeOnFocusOut) menu?.removeEventListener('focusout', closeOnFocusOut);
+    };
+    menu = h('div', { class: 'context-menu', role: 'menu' }, items.map((item) =>
       item.separator ? h('div', { class: 'context-menu-separator', role: 'separator' }) : h('button', {
         class: item.danger ? 'danger' : '',
         role: 'menuitem',
         text: item.label,
         disabled: item.disabled ? '' : null,
-        onclick: () => { menu.remove(); item.action(); },
+        onclick: () => { dismiss(true); item.action(); },
       })));
+    menu._dismiss = dismiss;
+    closeOnFocusOut = () => setTimeout(() => {
+      if (!dismissed && !menu.contains(document.activeElement)) dismiss();
+    });
+    menu.addEventListener('focusout', closeOnFocusOut);
     document.body.append(menu);
     const bounds = menu.getBoundingClientRect();
-    menu.style.left = Math.max(4, Math.min(event.clientX, window.innerWidth - bounds.width - 4)) + 'px';
-    menu.style.top = Math.max(4, Math.min(event.clientY, window.innerHeight - bounds.height - 4)) + 'px';
+    const triggerBounds = trigger?.getBoundingClientRect();
+    const keyboardActivation = event.clientX === 0 && event.clientY === 0 && triggerBounds;
+    const requestedX = keyboardActivation ? triggerBounds.left : event.clientX;
+    const requestedY = keyboardActivation ? triggerBounds.bottom : event.clientY;
+    menu.style.left = Math.max(4, Math.min(requestedX, window.innerWidth - bounds.width - 4)) + 'px';
+    menu.style.top = Math.max(4, Math.min(requestedY, window.innerHeight - bounds.height - 4)) + 'px';
+    if (trigger?.hasAttribute('aria-haspopup')) trigger.setAttribute('aria-expanded', 'true');
     menu.querySelector('button:not(:disabled)')?.focus();
     const close = (closeEvent) => {
       if (closeEvent.type === 'keydown' && closeEvent.key !== 'Escape') return;
       if (closeEvent.type === 'pointerdown' && menu.contains(closeEvent.target)) return;
-      menu.remove();
-      document.removeEventListener('pointerdown', close, true);
-      document.removeEventListener('keydown', close, true);
+      if (closeEvent.type === 'focusin' && menu.contains(closeEvent.target)) return;
+      dismiss(closeEvent.type === 'keydown');
     };
-    setTimeout(() => {
-      document.addEventListener('pointerdown', close, true);
-      document.addEventListener('keydown', close, true);
-    });
+    document.addEventListener('pointerdown', close, true);
+    document.addEventListener('keydown', close, true);
+    document.addEventListener('focusin', close, true);
   }
 
   // ---- API client -----------------------------------------------------------
@@ -513,10 +539,40 @@
       pending += value || '';
       const lines = pending.split('\n');
       pending = lines.pop();
-      for (const line of lines) if (line.trim()) onEvent(JSON.parse(line));
+      for (const line of lines) if (line.trim()) onEvent(parseNdjsonEvent(line));
       if (done) break;
     }
-    if (pending.trim()) onEvent(JSON.parse(pending));
+    if (pending.trim()) onEvent(parseNdjsonEvent(pending));
+  }
+
+  const exactNumbersByRow = new WeakMap();
+  const binaryValuesByRow = new WeakMap();
+
+  function parseNdjsonEvent(line) {
+    const event = JSON.parse(line);
+    rememberExactNumbers(event.rows, event.exactValues);
+    rememberBinaryValues(event.rows, event.binaryValues);
+    return event;
+  }
+
+  function rememberBinaryValues(rows, binaryRows) {
+    if (!Array.isArray(rows) || !Array.isArray(binaryRows)) return;
+    rows.forEach((row, rowIndex) => {
+      if (Array.isArray(row) && Array.isArray(binaryRows[rowIndex])) {
+        binaryValuesByRow.set(row, binaryRows[rowIndex]);
+      }
+    });
+  }
+
+  function rememberExactNumbers(rows, exactRows) {
+    if (!Array.isArray(rows) || !Array.isArray(exactRows)) return;
+    rows.forEach((row, rowIndex) => {
+      const exactValues = exactRows[rowIndex];
+      if (!Array.isArray(row) || !Array.isArray(exactValues)) return;
+      if (exactValues.some((value) => value !== null && value !== undefined)) {
+        exactNumbersByRow.set(row, exactValues);
+      }
+    });
   }
 
   async function executeSql(sql, scope = state) {
@@ -4603,7 +4659,7 @@
       difference.targetValue === null ? null : JSON.stringify(difference.targetValue),
     ]);
     const exports = exportButtons(exportColumns, exportRows,
-      `${source.object.name}-data-diff`);
+      `${source.object.name}-data-diff`, { scope: source.scope });
 
     const render = () => {
       const query = filter.value.trim().toLowerCase();
@@ -5957,8 +6013,11 @@
       const createExportControls = () => exportButtons(
         data.columns, data.rows, o.name,
         currentConn().allowSqlExecution
-          ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope }
-          : null,
+          ? {
+            sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope,
+            insertTarget: sqlName(o),
+          }
+          : { scope, insertTarget: sqlName(o) },
         identity ? fullExport : null);
       actionBar.replaceChildren(...[
         o.type === 'Table' && !o.isInternal && !isVirtualObject(o)
@@ -6346,7 +6405,14 @@
           if (isNew) {
             renderData();
           } else {
-            for (const [name, value] of Object.entries(values)) existingRow[columnIndex(name)] = value;
+            // Every editable field is posted and may be normalized by the provider. Exact text
+            // captured before the write is no longer authoritative for any cell in this row.
+            exactNumbersByRow.delete(existingRow);
+            binaryValuesByRow.delete(existingRow);
+            for (const [name, value] of Object.entries(values)) {
+              const index = columnIndex(name);
+              existingRow[index] = value;
+            }
             rowKey?.refresh?.(existingRow);
             existingRowElement.querySelectorAll('td:not(.row-selector)').forEach((cell, index) => {
               const rendered = friendly.renderCell(existingRow[index], dataColumns[index], existingRow);
@@ -9932,6 +9998,10 @@
       let completedSuccessfully = false;
       const messages = h('div', { class: 'query-messages' });
       const addEvent = (event) => {
+        // Attached events already pass through parseNdjsonEvent; keeping this here also makes
+        // the handler safe when events are supplied by another transport.
+        rememberExactNumbers(event.rows, event.exactValues);
+        rememberBinaryValues(event.rows, event.binaryValues);
         if (event.type === 'resultSet') {
           const metaText = h('span', { text: '0 row(s) - receiving…' });
           const exports = h('span', { class: 'export-buttons' });
@@ -10055,6 +10125,10 @@
       const sets = new Map();
       const messages = h('div', { class: 'query-messages' });
       const addEvent = (event) => {
+        // Detached job polls return parsed JSON rather than NDJSON, so retain the precision and
+        // runtime-type sidecars before the rows are handed to the grid.
+        rememberExactNumbers(event.rows, event.exactValues);
+        rememberBinaryValues(event.rows, event.binaryValues);
         if (event.type === 'resultSet') {
           const metaText = h('span', { text: '0 row(s) - receiving…' });
           const exports = h('span', { class: 'export-buttons' });
@@ -11452,7 +11526,26 @@
   // ---- export ---------------------------------------------------------------------------
 
   function exportButtons(columns, rows, baseName, apiDefinition = null, serverExport = null) {
+    const copy = h('button', {
+      class: 'ghost', title: 'Copy all loaded rows', 'data-testid': 'copy-results',
+      'aria-haspopup': 'menu', 'aria-expanded': 'false',
+      onclick: (event) => showContextMenu(event, [
+        {
+          label: 'Copy as SQL INSERT',
+          action: () => copyResultData(columns, rows, 'sql', apiDefinition),
+        },
+        {
+          label: 'Copy as JSON',
+          action: () => copyResultData(columns, rows, 'json', apiDefinition),
+        },
+        {
+          label: 'Copy as Markdown',
+          action: () => copyResultData(columns, rows, 'markdown', apiDefinition),
+        },
+      ]),
+    }, 'Copy ▾');
     return h('span', { class: 'export-buttons' },
+      copy,
       h('button', {
         class: 'ghost',
         title: serverExport ? 'Download all filtered rows as CSV' : 'Download as CSV',
@@ -11465,18 +11558,150 @@
         'data-testid': 'export-json',
         onclick: () => serverExport ? serverExport('json') : exportData(columns, rows, 'json', baseName),
       }, serverExport ? 'Full JSON' : 'JSON'),
-      apiDefinition ? h('button', {
+      apiDefinition?.sql ? h('button', {
         class: 'ghost', title: 'Publish as an API endpoint', 'data-testid': 'publish-api',
         onclick: () => openPublishDialog(apiDefinition.sql, apiDefinition.name, apiDefinition.scope),
       }, 'API') : null);
+  }
+
+  async function copyResultData(columns, rows, format, definition = null) {
+    let content;
+    try {
+      if (format === 'sql') {
+        const providerName = definition?.scope
+          ? connectionFor(definition.scope).providerName
+          : '';
+        content = resultRowsAsSqlInsert(columns, rows, 'TargetTable', providerName);
+      } else if (format === 'markdown') {
+        content = resultRowsAsMarkdown(columns, rows);
+      } else {
+        content = JSON.stringify(resultRowsAsObjects(columns, rows, true), null, 2);
+      }
+    } catch (err) {
+      toast(err?.message || 'Copy failed.');
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      toast('Copy failed - clipboard unavailable.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(content);
+      toast(`${rows.length} loaded row${rows.length === 1 ? '' : 's'} copied as ${
+        format === 'sql' ? 'SQL INSERT' : format === 'json' ? 'JSON' : 'Markdown'}.`, false);
+    } catch {
+      toast('Copy failed - clipboard unavailable.');
+    }
+  }
+
+  function uniqueResultColumnNames(columns) {
+    const names = [];
+    const used = new Set();
+    for (let index = 0; index < columns.length; index++) {
+      const base = resultColumnBaseName(columns[index], index);
+      let name = base;
+      let suffix = 2;
+      while (used.has(name.toLowerCase())) name = `${base}_${suffix++}`;
+      used.add(name.toLowerCase());
+      names.push(name);
+    }
+    return names;
+  }
+
+  function resultColumnBaseName(column, index) {
+    const name = String(column?.name ?? '');
+    return name.trim() ? name : `Column${index + 1}`;
+  }
+
+  function resultRowsAsObjects(columns, rows, preserveExact = false) {
+    const names = uniqueResultColumnNames(columns);
+    return rows.map((row) => Object.fromEntries(
+      names.map((name, index) => [name,
+        preserveExact ? resultCopyValue(row, index) : row[index]])));
+  }
+
+  function resultCopyValue(row, index) {
+    const exactValue = exactNumbersByRow.get(row)?.[index];
+    return typeof exactValue === 'string' ? exactValue : row[index];
+  }
+
+  function resultRowsAsSqlInsert(columns, rows, target, providerName) {
+    if (!columns.length || !rows.length) return '-- No loaded rows to insert.';
+    const uniqueNames = uniqueResultColumnNames(columns);
+    if (uniqueNames.some((name, index) => name !== resultColumnBaseName(columns[index], index))) {
+      throw new Error('Cannot safely copy SQL INSERT because the result has duplicate column names.');
+    }
+    const names = uniqueNames.map((name) => quoteSqlIdentifier(name, providerName)).join(', ');
+    const prefix = `INSERT INTO ${quoteSqlIdentifier(target, providerName)} (${names}) VALUES\n`;
+    const statements = [];
+    // SQL Server rejects a table-value constructor above 1,000 rows. The same conservative
+    // chunking also keeps copied SQLite statements from growing needlessly large.
+    for (let offset = 0; offset < rows.length; offset += 1000) {
+      const values = rows.slice(offset, offset + 1000).map((row) => {
+        const exactValues = exactNumbersByRow.get(row);
+        const binaryValues = binaryValuesByRow.get(row);
+        return '    (' + columns.map((column, index) =>
+          resultSqlLiteral(
+            row[index], column, providerName, exactValues?.[index], binaryValues?.[index])).join(', ') + ')';
+      });
+      statements.push(prefix + values.join(',\n') + ';');
+    }
+    return statements.join('\n\n');
+  }
+
+  function quoteSqlIdentifier(value, providerName) {
+    const text = String(value);
+    return String(providerName || '').toLowerCase().includes('sqlite')
+      ? `"${text.replaceAll('"', '""')}"`
+      : `[${text.replaceAll(']', ']]')}]`;
+  }
+
+  function resultSqlLiteral(value, column, providerName, exactValue = null, binaryValue = null) {
+    if (value === null || value === undefined) return 'NULL';
+    if (typeof value === 'boolean') return value ? '1' : '0';
+    const provider = String(providerName || '').toLowerCase();
+    if (typeof exactValue === 'string' && /^[+-]?\d+(?:\.\d+)?$/.test(exactValue)) return exactValue;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) return 'NULL';
+      return String(value);
+    }
+
+    const isBinary = binaryValue === true;
+    if (isBinary && typeof value === 'string') {
+      try {
+        const bytes = Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+        const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('').toUpperCase();
+        return provider.includes('sqlite') ? `X'${hex}'` : `0x${hex}`;
+      } catch {
+        throw new Error(`Cannot safely copy ${column.name} as SQL because its binary value is malformed.`);
+      }
+    }
+
+    const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    const prefix = provider.includes('sqlserver') ? 'N' : '';
+    return `${prefix}'${text.replaceAll("'", "''")}'`;
+  }
+
+  function resultRowsAsMarkdown(columns, rows) {
+    const markdownCell = (value) => {
+      if (value === null || value === undefined) return 'NULL';
+      const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+        .replaceAll('|', '\\|').replace(/\r?\n/g, '<br>');
+    };
+    const header = `| ${columns.map((column) => markdownCell(column.name)).join(' | ')} |`;
+    const separator = `| ${columns.map(() => '---').join(' | ')} |`;
+    return [header, separator,
+      ...rows.map((row) => `| ${columns.map((_, index) =>
+        markdownCell(resultCopyValue(row, index))).join(' | ')} |`),
+    ].join('\n');
   }
 
   function exportData(columns, rows, format, baseName) {
     let content;
     let type;
     if (format === 'json') {
-      content = JSON.stringify(
-        rows.map((r) => Object.fromEntries(columns.map((c, i) => [c.name, r[i]]))), null, 2);
+      content = JSON.stringify(resultRowsAsObjects(columns, rows), null, 2);
       type = 'application/json';
     } else {
       const escape = (v) => {
