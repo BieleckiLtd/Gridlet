@@ -4213,6 +4213,376 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Follows_a_foreign_key_value_to_the_referenced_row_and_restores_the_filter()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var targetRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/objects/dbo/Pizzas/data/stream", StringComparison.Ordinal))
+                targetRequests.Add(request.Url);
+        };
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        var follow = orders.GetByTitle("Follow PizzaId=1 to dbo.Pizzas").First;
+        await Assertions.Expect(follow).ToHaveAttributeAsync(
+            "aria-label", "Follow PizzaId=1 to dbo.Pizzas");
+        var foreignKeyCell = follow.Locator("xpath=..");
+        await foreignKeyCell.ClickAsync(new LocatorClickOptions { Position = new() { X = 4, Y = 4 } });
+        var editor = orders.Locator("tr.row-editor");
+        await Assertions.Expect(editor).ToHaveCountAsync(1);
+        await editor.Locator("input").First.PressAsync("Escape");
+        await Assertions.Expect(editor).ToHaveCountAsync(0);
+        follow = orders.GetByTitle("Follow PizzaId=1 to dbo.Pizzas").First;
+        await follow.ClickAsync();
+
+        var pizzas = ActivePanel(page);
+        await Assertions.Expect(pizzas.GetByTestId("filter-chip")).ToContainTextAsync("Id = 1");
+        Assert.Contains(targetRequests, url => Uri.UnescapeDataString(url)
+            .Contains("\"column\":\"Id\",\"operator\":\"equals\",\"value\":\"1\"", StringComparison.Ordinal));
+        await Assertions.Expect(page.Locator("#panels .panel tr.row-editor")).ToHaveCountAsync(0);
+
+        await page.ReloadAsync();
+        pizzas = ActivePanel(page);
+        await Assertions.Expect(page.Locator(".tab.active")).ToContainTextAsync("dbo.Pizzas");
+        await Assertions.Expect(pizzas.GetByTestId("filter-chip")).ToContainTextAsync("Id = 1");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Offers_each_foreign_key_when_one_column_has_multiple_relationships()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string structure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Orders\",\"type\":\"Table\"},"
+            + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\"},{\"name\":\"PizzaId\",\"dataType\":\"int\"}],"
+            + "\"indexes\":[],\"foreignKeys\":["
+            + "{\"name\":\"FK_Orders_Pizzas\",\"referencedSchema\":\"dbo\",\"referencedTable\":\"Pizzas\","
+            + "\"columns\":[{\"column\":\"PizzaId\",\"referencedColumn\":\"Id\"}]},"
+            + "{\"name\":\"FK_Orders_Customers\",\"referencedSchema\":\"dbo\",\"referencedTable\":\"Customers\","
+            + "\"columns\":[{\"column\":\"PizzaId\",\"referencedColumn\":\"Id\"}]}],"
+            + "\"checkConstraints\":[],\"uniqueConstraints\":[],"
+            + "\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]}}";
+        await page.RouteAsync("**/objects/dbo/Orders/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await orders.GetByTitle("Follow PizzaId=1 to 2 referenced tables").First.ClickAsync();
+        var menu = page.Locator(".context-menu");
+        await Assertions.Expect(menu.GetByRole(AriaRole.Menuitem)).ToHaveCountAsync(2);
+        await Assertions.Expect(menu).ToContainTextAsync("FK_Orders_Pizzas → dbo.Pizzas (PizzaId=1)");
+        var customers = menu.GetByRole(AriaRole.Menuitem,
+            new() { Name = "FK_Orders_Customers → dbo.Customers (PizzaId=1)", Exact = true });
+        await customers.ClickAsync();
+
+        var target = ActivePanel(page);
+        await Assertions.Expect(page.Locator(".tab.active")).ToContainTextAsync("dbo.Customers");
+        await Assertions.Expect(target.GetByTestId("filter-chip")).ToContainTextAsync("Id = 1");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Does_not_offer_foreign_key_navigation_for_binary_values()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string stream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataTypeName":"int"},{"name":"PizzaId","dataTypeName":"varbinary"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Orders"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[1,"AQID"]],"rowKeys":[[1]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":1}
+            """;
+        await page.RouteAsync("**/objects/dbo/Orders/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = stream,
+            }));
+
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("1 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(orders.Locator("button.fk-follow")).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Shows_incoming_foreign_keys_for_the_selected_row_and_opens_referencing_rows()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var orderRequests = new List<string>();
+        var structureRequests = 0;
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/objects/dbo/Orders/data/stream", StringComparison.Ordinal))
+                orderRequests.Add(request.Url);
+            if (request.Url.Contains("/structure", StringComparison.Ordinal)) structureRequests++;
+        };
+        // One unrelated metadata failure must not hide relationships found on healthy tables.
+        var customerStructureAttempts = 0;
+        await page.RouteAsync("**/objects/dbo/Customers/structure", route =>
+        {
+            if (Interlocked.Increment(ref customerStructureAttempts) > 1)
+                return route.ContinueAsync();
+            return route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 503, ContentType = "application/json", Body = "{\"error\":\"metadata offline\"}",
+            });
+        });
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Pizzas").ClickAsync();
+        var pizzas = ActivePanel(page);
+        await Assertions.Expect(pizzas.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await pizzas.Locator("tbody tr").First.Locator("td.row-selector").ClickAsync();
+        var incoming = pizzas.GetByTestId("incoming-references");
+        var requestsBeforeInspection = structureRequests;
+        await Assertions.Expect(incoming.GetByTestId("inspect-incoming-references")).ToBeVisibleAsync();
+        Assert.Equal(requestsBeforeInspection, structureRequests);
+        await incoming.GetByTestId("inspect-incoming-references").ClickAsync();
+        await Assertions.Expect(incoming.GetByTestId("incoming-reference")).ToHaveCountAsync(1);
+        await Assertions.Expect(incoming).ToContainTextAsync("dbo.Orders");
+        await Assertions.Expect(incoming).ToContainTextAsync("FK_Orders_Pizzas");
+        await Assertions.Expect(incoming).ToContainTextAsync("dbo.Orders.PizzaId → dbo.Pizzas.Id");
+        await Assertions.Expect(incoming).ToContainTextAsync("1 table could not be inspected");
+        await incoming.GetByTestId("retry-incoming-references").ClickAsync();
+        await Assertions.Expect(incoming.GetByTestId("retry-incoming-references")).ToHaveCountAsync(0);
+        await Assertions.Expect(incoming.GetByTestId("incoming-reference")).ToHaveCountAsync(1);
+        Assert.DoesNotContain("null", await incoming.InnerTextAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, customerStructureAttempts);
+
+        await pizzas.Locator("tbody tr").Nth(1).Locator("td:not(.row-selector)").Last.ClickAsync();
+        await Assertions.Expect(incoming).ToContainTextAsync("Incoming references to Id = 2");
+        await Assertions.Expect(incoming.GetByTestId("inspect-incoming-references")).ToBeVisibleAsync();
+        await Assertions.Expect(incoming.GetByRole(AriaRole.Button,
+            new() { Name = "Open referencing rows", Exact = true })).ToHaveCountAsync(0);
+        await pizzas.Locator("tr.row-editor input").First.PressAsync("Escape");
+        await pizzas.Locator("tbody tr").First.Locator("td.row-selector").ClickAsync();
+        await incoming.GetByTestId("inspect-incoming-references").ClickAsync();
+        await incoming.GetByRole(AriaRole.Button, new() { Name = "Open referencing rows", Exact = true })
+            .ClickAsync();
+
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByTestId("filter-chip")).ToContainTextAsync("PizzaId = 1");
+        Assert.Contains(orderRequests, url => Uri.UnescapeDataString(url)
+            .Contains("\"column\":\"PizzaId\",\"operator\":\"equals\",\"value\":\"1\"", StringComparison.Ordinal));
+        browserPage.AssertNoUnexpectedErrors("503");
+    }
+
+    [Fact]
+    public async Task Refreshing_objects_invalidates_cached_incoming_foreign_keys()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var includeCustomerReference = false;
+        await page.RouteAsync("**/objects/dbo/Customers/structure", route =>
+        {
+            var foreignKeys = includeCustomerReference
+                ? "[{\"name\":\"FK_Customers_FavouritePizza\",\"referencedSchema\":\"dbo\","
+                    + "\"referencedTable\":\"Pizzas\",\"columns\":[{\"column\":\"Id\",\"referencedColumn\":\"Id\"}]}]"
+                : "[]";
+            return route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Customers\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\"}],\"indexes\":[],\"foreignKeys\":" + foreignKeys
+                    + ",\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            });
+        });
+
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Pizzas").ClickAsync();
+        var pizzas = ActivePanel(page);
+        await Assertions.Expect(pizzas.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await pizzas.Locator("tbody tr").First.Locator("td.row-selector").ClickAsync();
+        var incoming = pizzas.GetByTestId("incoming-references");
+        await incoming.GetByTestId("inspect-incoming-references").ClickAsync();
+        await Assertions.Expect(incoming.GetByTestId("incoming-reference")).ToHaveCountAsync(1);
+
+        includeCustomerReference = true;
+        await page.GetByTitle("Reload objects").ClickAsync();
+        await pizzas.Locator("tbody tr").Nth(1).Locator("td.row-selector").ClickAsync();
+        await pizzas.Locator("tbody tr").First.Locator("td.row-selector").ClickAsync();
+        await incoming.GetByTestId("inspect-incoming-references").ClickAsync();
+        await Assertions.Expect(incoming.GetByTestId("incoming-reference")).ToHaveCountAsync(2);
+        await Assertions.Expect(incoming).ToContainTextAsync("FK_Customers_FavouritePizza");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Refreshing_objects_preserves_the_active_table_view_and_row_editor()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await orders.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await Assertions.Expect(orders.Locator(".structure")).ToBeVisibleAsync();
+        await page.GetByTitle("Reload objects").ClickAsync();
+        await Assertions.Expect(orders.Locator(".structure")).ToBeVisibleAsync();
+        await Assertions.Expect(orders.GetByRole(AriaRole.Button,
+            new() { Name = "Structure", Exact = true })).ToHaveAttributeAsync("aria-pressed", "true");
+        await Assertions.Expect(orders.Locator(".data-grid-scroll")).ToHaveCountAsync(0);
+
+        await orders.GetByRole(AriaRole.Button, new() { Name = "Data", Exact = true }).ClickAsync();
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await orders.Locator("tbody tr").First.Locator("td:not(.row-selector)").Last.ClickAsync();
+        await Assertions.Expect(orders.Locator("tr.row-editor")).ToHaveCountAsync(1);
+        await page.GetByTitle("Reload objects").ClickAsync();
+        await Assertions.Expect(orders.Locator("tr.row-editor")).ToHaveCountAsync(1);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Refreshing_objects_discards_an_inflight_outgoing_foreign_key_definition()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var attempts = 0;
+        var firstStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await page.RouteAsync("**/objects/dbo/Orders/structure", async route =>
+        {
+            var attempt = Interlocked.Increment(ref attempts);
+            if (attempt == 1)
+            {
+                firstStarted.TrySetResult(true);
+                await Task.WhenAny(releaseFirst.Task, Task.Delay(TimeSpan.FromSeconds(10)));
+            }
+            else
+            {
+                secondStarted.TrySetResult(true);
+            }
+
+            var foreignKeys = attempt == 1
+                ? "[]"
+                : "[{\"name\":\"FK_Orders_Pizzas\",\"referencedSchema\":\"dbo\","
+                    + "\"referencedTable\":\"Pizzas\",\"columns\":[{\"column\":\"PizzaId\",\"referencedColumn\":\"Id\"}]}]";
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Orders\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\"},{\"name\":\"PizzaId\"},{\"name\":\"Promotion\",\"isNullable\":true}],"
+                    + "\"indexes\":[],\"foreignKeys\":" + foreignKeys
+                    + ",\"checkConstraints\":[],\"uniqueConstraints\":[],"
+                    + "\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]}}",
+            });
+        });
+
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await page.GetByTitle("Reload objects").ClickAsync();
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        releaseFirst.TrySetResult(true);
+
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByTitle("Follow PizzaId=1 to dbo.Pizzas").First)
+            .ToBeVisibleAsync();
+        Assert.True(attempts >= 2);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Incoming_foreign_key_navigation_is_disabled_for_a_null_parent_key()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string stream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"int"},{"name":"Name","dataType":"nvarchar(100)"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Pizzas"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[null,"Unkeyed"]],"rowKeys":[[null]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":1}
+            """;
+        await page.RouteAsync("**/objects/dbo/Pizzas/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = stream,
+            }));
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Pizzas").ClickAsync();
+        var pizzas = ActivePanel(page);
+        await Assertions.Expect(pizzas.GetByText("1 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await pizzas.Locator("tbody tr").First.Locator("td.row-selector").ClickAsync();
+        var incoming = pizzas.GetByTestId("incoming-references");
+        await incoming.GetByTestId("inspect-incoming-references").ClickAsync();
+        var open = incoming.GetByRole(AriaRole.Button,
+            new() { Name = "Open referencing rows", Exact = true });
+        await Assertions.Expect(open).ToBeDisabledAsync();
+        await Assertions.Expect(open).ToHaveAttributeAsync(
+            "title", "A NULL key value cannot be referenced by a foreign key");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Follows_composite_foreign_keys_only_when_the_complete_key_is_present()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string structure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Orders\",\"type\":\"Table\"},"
+            + "\"columns\":[{\"name\":\"Id\"},{\"name\":\"PizzaId\"},{\"name\":\"Promotion\",\"isNullable\":true}],"
+            + "\"indexes\":[],\"foreignKeys\":[{\"name\":\"FK_Orders_Pizzas_Composite\","
+            + "\"referencedSchema\":\"dbo\",\"referencedTable\":\"Pizzas\",\"columns\":["
+            + "{\"column\":\"PizzaId\",\"referencedColumn\":\"Id\"},{\"column\":\"Promotion\",\"referencedColumn\":\"Name\"}]}],"
+            + "\"checkConstraints\":[],\"uniqueConstraints\":[],\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]}}";
+        await page.RouteAsync("**/objects/dbo/Orders/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        var targetRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/objects/dbo/Pizzas/data/stream", StringComparison.Ordinal))
+                targetRequests.Add(request.Url);
+        };
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        var follow = orders.GetByTitle("Follow PizzaId=1, Promotion=Featured to dbo.Pizzas").First;
+        await Assertions.Expect(follow).ToHaveAttributeAsync(
+            "aria-label", "Follow PizzaId=1, Promotion=Featured to dbo.Pizzas");
+        await follow.ClickAsync();
+        var pizzas = ActivePanel(page);
+        await Assertions.Expect(pizzas.GetByTestId("filter-chip")).ToHaveCountAsync(2);
+        await Assertions.Expect(pizzas.GetByTestId("filter-bar")).ToContainTextAsync("Id = 1");
+        await Assertions.Expect(pizzas.GetByTestId("filter-bar")).ToContainTextAsync("Name = Featured");
+        Assert.Contains(targetRequests, url =>
+        {
+            var decoded = Uri.UnescapeDataString(url);
+            return decoded.Contains("\"column\":\"Id\",\"operator\":\"equals\",\"value\":\"1\"", StringComparison.Ordinal)
+                && decoded.Contains("\"column\":\"Name\",\"operator\":\"equals\",\"value\":\"Featured\"", StringComparison.Ordinal);
+        });
+
+        await page.Locator(".tab").Filter(new() { HasText = "dbo.Orders" }).ClickAsync();
+        orders = ActivePanel(page);
+        await Assertions.Expect(orders.Locator("tbody tr").Nth(1).Locator("button.fk-follow"))
+            .ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Enables_friendly_foreign_key_display_and_searches_when_editing()
     {
         const string settingUrl =
@@ -4225,8 +4595,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GotoAsync("/gridlet/");
         await page.GetByTitle("dbo.Orders").ClickAsync();
         var panel = ActivePanel(page);
-        await Assertions.Expect(panel.Locator("tbody td:not(.row-selector)")
-            .Filter(new() { HasTextRegex = new Regex("^1$") }).First).ToBeVisibleAsync();
+        var rawForeignKey = panel.Locator("tbody td.foreign-key-cell").First;
+        await Assertions.Expect(rawForeignKey).ToBeVisibleAsync();
+        Assert.Equal("1", await rawForeignKey.EvaluateAsync<string>(
+            "cell => cell.firstChild?.firstChild?.textContent || ''"));
+        Assert.Equal("relative", await rawForeignKey.Locator(".foreign-key-content").EvaluateAsync<string>(
+            "element => getComputedStyle(element).position"));
 
         await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
         var foreignKeyRow = panel.Locator("tr").Filter(new() { HasText = "FK_Orders_Pizzas" });
@@ -4236,26 +4610,29 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await dialog.GetByRole(AriaRole.Button, new() { Name = "Show value", Exact = true }).ClickAsync();
 
         await panel.GetByRole(AriaRole.Button, new() { Name = "Data", Exact = true }).ClickAsync();
-        var margherita = panel.GetByRole(AriaRole.Cell, new() { Name = "1 Margherita", Exact = true });
+        var margherita = panel.Locator("td.foreign-key-cell")
+            .Filter(new() { HasText = "Margherita" }).First;
         await Assertions.Expect(margherita).ToBeVisibleAsync();
         var keyColor = await margherita.Locator("span").First.EvaluateAsync<string>(
             "element => getComputedStyle(element).color");
         var labelColor = await margherita.Locator(".fk-value-label").EvaluateAsync<string>(
             "element => getComputedStyle(element).color");
         Assert.NotEqual(keyColor, labelColor);
-        var broken = panel.GetByRole(AriaRole.Cell, new() { Name = "4 #REF!", Exact = true });
+        var broken = panel.Locator("td.foreign-key-cell").Filter(new() { HasText = "#REF!" }).First;
         await Assertions.Expect(broken).ToBeVisibleAsync();
         Assert.Equal("italic", await broken.Locator(".fk-value-label").EvaluateAsync<string>(
             "element => getComputedStyle(element).fontStyle"));
-        await Assertions.Expect(panel.GetByRole(AriaRole.Cell, new() { Name = "99 Missing reference", Exact = true }))
+        await Assertions.Expect(panel.Locator("td.foreign-key-cell")
+            .Filter(new() { HasText = "Missing reference" }).First)
             .ToBeVisibleAsync();
 
-        var editCell = panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(1);
-        await editCell.ClickAsync();
+        // The small arrow follows the key; the rest of the same cell must still open its editor.
+        await margherita.ClickAsync(new LocatorClickOptions { Position = new() { X = 4, Y = 4 } });
         await Assertions.Expect(panel.Locator("tr.row-editor")).ToHaveCountAsync(1);
         browserPage.AssertNoUnexpectedErrors();
         var pizza = panel.GetByLabel("PizzaId", new() { Exact = true });
         await Assertions.Expect(pizza).ToHaveValueAsync("1 Margherita");
+        await pizza.FocusAsync();
         var allValues = panel.GetByRole(AriaRole.Option, new() { Name = "1 Margherita", Exact = true });
         await Assertions.Expect(allValues).ToBeVisibleAsync();
         await Assertions.Expect(panel.GetByLabel("Show choices for PizzaId")).ToHaveCountAsync(0);
@@ -4316,7 +4693,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         var updatesBeforeDirectKeyEdit = fixture.Provider.Calls.Count(call =>
             call.StartsWith("update dbo.Orders", StringComparison.Ordinal));
-        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(1).ClickAsync();
+        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(0).ClickAsync();
         var directKeyPizza = panel.GetByLabel("PizzaId", new() { Exact = true });
         await directKeyPizza.FillAsync("3");
         await Assertions.Expect(panel.GetByRole(AriaRole.Option, new() { Name = "3 Hawaiian", Exact = true }))
@@ -4332,7 +4709,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         var updatesBeforeInvalidEdit = fixture.Provider.Calls.Count(call =>
             call.StartsWith("update dbo.Orders", StringComparison.Ordinal));
-        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(1).ClickAsync();
+        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(0).ClickAsync();
         var invalidPizza = panel.GetByLabel("PizzaId", new() { Exact = true });
         await invalidPizza.FillAsync("not-a-key");
         await invalidPizza.PressAsync("Control+Enter");
