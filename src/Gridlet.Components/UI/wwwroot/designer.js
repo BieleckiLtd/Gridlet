@@ -1838,7 +1838,7 @@ export default class ${CLASS_NAME(name)} {
     const code = codeSurface({
       paint: highlightHtml,
       label: 'Component document',
-      testId: 'component-code-editor',
+      testId: 'component-document-editor',
       onInput: () => documentEdited(),
     });
     code.surface.append(attachCompletions(
@@ -1867,7 +1867,8 @@ export default class ${CLASS_NAME(name)} {
       ['table', 'data grid — with data-role="grid"'],
       ['label', 'check box — with data-role="checkbox"'],
       ['div', 'panel or pager — with data-role'],
-      ['link', 'a module or the data source'],
+      ['gridlet-code', "the component's code-behind — a module it runs"],
+      ['gridlet-source', 'where its rows come from'],
       ['style', "the component's CSS"],
     ];
 
@@ -1909,11 +1910,23 @@ export default class ${CLASS_NAME(name)} {
 
     function attributeSuggestions(tag, matches, item) {
       const offered = [];
+      // Offered with the quotes already open: an attribute is being written to be given a value,
+      // and the next thing wanted is that value rather than two more keystrokes.
       const offer = (name, detail) => {
-        // Offered with the quotes already open: an attribute is being written to be given a value,
-        // and the next thing wanted is that value rather than two more keystrokes.
         if (matches(name)) offered.push(item(name, `${name}="`, detail));
       };
+
+      // Neither of these is a control, so nothing a control can be told applies to them.
+      if (tag === 'gridlet-code') {
+        offer('src', 'the module file this component runs');
+        offer('run', 'which class in it to run, when it exports more than one');
+        return offered;
+      }
+
+      if (tag === 'gridlet-source') {
+        offer('href', 'the published route its rows come from');
+        return offered;
+      }
 
       offer('data-name', 'what expressions and CSS call this control');
       offer('id', 'the HTML id, for a <label for> to point at');

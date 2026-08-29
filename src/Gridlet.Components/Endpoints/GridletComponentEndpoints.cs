@@ -73,7 +73,7 @@ internal sealed class GridletComponentEndpoints : IGridletEndpointContributor
         if (GridletComponent.VersionOf(body.Html) is not { } version)
         {
             return Results.BadRequest(new GridletErrorResponse(
-                "A component document must be HTML with a data-gridlet version on its <form> element."));
+                "A component document must be HTML whose root element carries a data-gridlet version."));
         }
 
         // Refusing a newer document is the whole point of the version: silently loading one would

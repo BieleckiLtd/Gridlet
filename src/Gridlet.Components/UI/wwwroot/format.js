@@ -65,7 +65,13 @@
   // ---- writing --------------------------------------------------------------
 
   function toHtml(doc, name) {
-    const root = document.createElement('form');
+    // The root is an ordinary element marked by an attribute, not a tag with meaning of its own. A
+    // `<form>` was tempting because a component is a form in the everyday sense, but the HTML
+    // element is not that: it submits, it makes Enter a submit, it owns the fields inside it, and it
+    // may not contain another one — which would stop a component ever holding a component. What
+    // makes this a component is `data-gridlet`, and a host that shows a top-level component as a
+    // real form is free to wrap it in one at that point.
+    const root = document.createElement('div');
     root.setAttribute('data-gridlet', String(SCHEMA));
     root.setAttribute('data-name', name || 'component');
     root.setAttribute('data-layout', doc.layout || 'free');
@@ -85,20 +91,23 @@
     writeBindings(root, doc.bind);
     writeHandlers(root, doc.events);
 
-    // A module is named, never inlined. `rel` says what the link is for, `href` is the file name
-    // the component imports it under, and a browser ignores the whole element — which is correct,
-    // because loading these is the runtime's job and not the document's.
+    // The component's code-behind: the modules it runs, named and never inlined. It says so in the
+    // document rather than being inferred from a formula that happens to resolve into one, so
+    // opening a component tells you what code runs with it before reading a single binding.
+    //
+    // A `<link rel>` would have done the job and read as a stylesheet reference. This is the
+    // relationship it actually is, spelled as what it is.
+    //
     // A module may be named on its own, or with one of the classes it exports: naming the class is
     // what says which of them the component runs, and a module holding two is the reason that is a
     // separate thing to say rather than being implied by the file.
     for (const module of doc.modules || []) {
-      const link = document.createElement('link');
-      link.setAttribute('rel', 'gridlet-module');
-      link.setAttribute('href', typeof module === 'string' ? module : (module.module || ''));
+      const code = document.createElement('gridlet-code');
+      code.setAttribute('src', typeof module === 'string' ? module : (module.module || ''));
       if (typeof module !== 'string' && module.class) {
-        link.setAttribute('data-class', module.class);
+        code.setAttribute('run', module.class);
       }
-      root.append(link);
+      root.append(code);
     }
 
     // The data source is a published route and the parameters handed to it. The connection and the
@@ -318,8 +327,10 @@
 
   function fromHtml(html) {
     const parsed = new DOMParser().parseFromString(String(html ?? ''), 'text/html');
-    const root = parsed.querySelector('form[data-gridlet]');
-    if (!root) throw new Error('Not a component document: no <form data-gridlet> element.');
+    // Found by the attribute rather than by the tag, so what a document is called does not depend
+    // on what it happens to be written as.
+    const root = parsed.querySelector('[data-gridlet]');
+    if (!root) throw new Error('Not a component document: nothing carries a data-gridlet version.');
 
     // The envelope is checked before anything is read out of it. A document written to a newer
     // schema is refused rather than half-understood: dropping what this build cannot read and then
@@ -348,13 +359,13 @@
       controls: [],
     };
 
-    for (const link of root.querySelectorAll(':scope > link[rel="gridlet-module"]')) {
-      const href = link.getAttribute('href');
-      if (!href) continue;
+    for (const code of root.querySelectorAll(':scope > gridlet-code[src]')) {
+      const src = code.getAttribute('src');
+      if (!src) continue;
       // A module named on its own stays a plain name. Only one that names a class needs the pair,
       // so the common case reads as the file name it is.
-      const className = link.getAttribute('data-class');
-      doc.modules.push(className ? { module: href, class: className } : href);
+      const className = code.getAttribute('run');
+      doc.modules.push(className ? { module: src, class: className } : src);
     }
 
     const source = root.querySelector(':scope > gridlet-source');
@@ -444,7 +455,8 @@
     const tag = element.tagName.toLowerCase();
     const role = element.getAttribute('data-role');
     // The document's own furniture: not controls, and never mistaken for one.
-    if (tag === 'link' || tag === 'style' || tag === 'gridlet-source' || tag === 'param') return null;
+    if (tag === 'link' || tag === 'style' || tag === 'param') return null;
+    if (tag === 'gridlet-source' || tag === 'gridlet-code') return null;
     if (role && KINDS[role]) return role;
     switch (tag) {
       case 'textarea': return 'textbox';

@@ -40,7 +40,7 @@ public sealed partial record GridletComponent(
     /// </summary>
     public static int? VersionOf(string? html)
     {
-        var tag = FormTag().Match(html ?? string.Empty);
+        var tag = DocumentTag().Match(html ?? string.Empty);
         return tag.Success && int.TryParse(tag.Groups["version"].Value, out var version)
             ? version
             : null;
@@ -52,7 +52,7 @@ public sealed partial record GridletComponent(
     /// </summary>
     public static string? NameOf(string? html)
     {
-        var tag = FormTag().Match(html ?? string.Empty);
+        var tag = DocumentTag().Match(html ?? string.Empty);
         if (!tag.Success)
         {
             return null;
@@ -65,10 +65,13 @@ public sealed partial record GridletComponent(
     // The opening tag of the document element, and nothing inside it. Reading the version and the
     // name off the same match is what keeps a control's `data-name` from answering for the
     // component's: a control's attributes are never part of this tag.
+    //
+    // Any tag will do. What makes an element the document is the attribute it carries, not what it
+    // is written as, so nothing here depends on a tag whose HTML meaning a component does not want.
     [GeneratedRegex(
-        """<form\b[^>]*\bdata-gridlet\s*=\s*["']?(?<version>\d+)[^>]*>""",
+        """<[A-Za-z][\w-]*\b[^>]*\bdata-gridlet\s*=\s*["']?(?<version>\d+)[^>]*>""",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex FormTag();
+    private static partial Regex DocumentTag();
 
     [GeneratedRegex(
         @"\bdata-name\s*=\s*""(?<name>[^""]*)""",

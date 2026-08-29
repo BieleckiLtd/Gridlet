@@ -173,20 +173,20 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         foreach (var module in modules ?? [])
         {
-            // A component names the modules it runs, and may name which of a module's classes it
-            // runs with it. A bare file name is the common case and stays a bare file name.
+            // The component's code-behind: the modules it runs, and optionally which of a module's
+            // classes it runs with. A bare file name is the common case and stays a bare file name.
             if (module is string file)
             {
-                body.Add($"<link rel=\"gridlet-module\" href=\"{Escape(file)}\">");
+                body.Add($"<gridlet-code src=\"{Escape(file)}\"></gridlet-code>");
                 continue;
             }
 
             var entry = Values(module);
-            var href = entry.TryGetValue("module", out var moduleFile) ? moduleFile : string.Empty;
+            var src = entry.TryGetValue("module", out var moduleFile) ? moduleFile : string.Empty;
             var className = entry.TryGetValue("class", out var value) ? value : null;
             body.Add(className is null
-                ? $"<link rel=\"gridlet-module\" href=\"{Escape(href)}\">"
-                : $"<link rel=\"gridlet-module\" href=\"{Escape(href)}\" data-class=\"{Escape(className)}\">");
+                ? $"<gridlet-code src=\"{Escape(src)}\"></gridlet-code>"
+                : $"<gridlet-code src=\"{Escape(src)}\" run=\"{Escape(className)}\"></gridlet-code>");
         }
 
         if (!string.IsNullOrEmpty(css))
@@ -196,7 +196,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         body.AddRange(controls);
 
-        var html = $"<form {string.Join(" ", attributes)}>{string.Join("", body)}</form>";
+        var html = $"<div {string.Join(" ", attributes)}>{string.Join("", body)}</div>";
 
         var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
         {
@@ -1402,7 +1402,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             [Control("caption", "label", props: new { text = "Hello" })]);
 
         await page.GetByTestId("component-view-code").ClickAsync();
-        var document = await page.GetByTestId("component-code-editor").InputValueAsync();
+        var document = await page.GetByTestId("component-document-editor").InputValueAsync();
 
         Assert.Contains(@"data-gridlet=""2""", document, StringComparison.Ordinal);
         Assert.Contains(@"<span data-name=""caption""", document, StringComparison.Ordinal);
@@ -1423,7 +1423,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             [Control("caption", "label", props: new { text = "Before" })]);
 
         await page.GetByTestId("component-view-code").ClickAsync();
-        var editor = page.GetByTestId("component-code-editor");
+        var editor = page.GetByTestId("component-document-editor");
         var document = await editor.InputValueAsync();
         await editor.FillAsync(document.Replace(">Before<", ">After<", StringComparison.Ordinal));
 
@@ -1445,7 +1445,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             [Control("caption", "label", props: new { text = "Intact" })]);
 
         await page.GetByTestId("component-view-code").ClickAsync();
-        await page.GetByTestId("component-code-editor").FillAsync("<p>not a component</p>");
+        await page.GetByTestId("component-document-editor").FillAsync("<p>not a component</p>");
 
         await Assertions.Expect(page.GetByTestId("component-code-error")).ToBeVisibleAsync();
 
@@ -1524,7 +1524,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             [Control("go", "button", props: new { text = "Go" })]);
 
         await page.GetByTestId("component-view-code").ClickAsync();
-        var editor = page.GetByTestId("component-code-editor");
+        var editor = page.GetByTestId("component-document-editor");
         var items = page.GetByTestId("html-completions").Locator(".gfd-complete-item");
 
         await editor.PressAsync("Control+End");

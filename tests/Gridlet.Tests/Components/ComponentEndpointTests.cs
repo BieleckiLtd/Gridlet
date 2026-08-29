@@ -44,7 +44,7 @@ public class ComponentEndpointTests
     }
 
     private static string Document(string name = "Customer entry", string layout = "free")
-        => $"""<form data-gridlet="2" data-name="{name}" data-layout="{layout}" style="width: 720px; height: 460px;"></form>""";
+        => $"""<div data-gridlet="2" data-name="{name}" data-layout="{layout}" style="width: 720px; height: 460px;"></div>""";
 
     [Fact]
     public async Task Components_roundtrip_through_the_store()
@@ -88,7 +88,7 @@ public class ComponentEndpointTests
         // Markup with no version on it is either not a component or is damaged. Storing it would
         // leave a file the designer cannot open.
         var notADocument = await client.PostAsJsonAsync("/gridlet/api/components",
-            new { name = "Broken", html = "<form><p>not a component</p></form>" });
+            new { name = "Broken", html = "<div><p>not a component</p></div>" });
         Assert.Equal(HttpStatusCode.BadRequest, notADocument.StatusCode);
     }
 
@@ -102,7 +102,7 @@ public class ComponentEndpointTests
             new
             {
                 name = "From the future",
-                html = $"""<form data-gridlet="{GridletComponent.CurrentDocumentVersion + 1}" data-name="From the future"></form>""",
+                html = $"""<div data-gridlet="{GridletComponent.CurrentDocumentVersion + 1}" data-name="From the future"></div>""",
             });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -120,10 +120,10 @@ public class ComponentEndpointTests
         // must not drop anything, or an older build would silently strip a newer build's work — or
         // somebody's own markup — on the next save.
         const string html = """
-            <form data-gridlet="2" data-name="Rich" data-layout="free">
+            <div data-gridlet="2" data-name="Rich" data-layout="free">
               <p>Some <b>bold</b> text &amp; an entity</p>
               <span data-name="label1" data-something-unknown="kept">Hello</span>
-            </form>
+            </div>
             """;
 
         var saved = await (await client.PostAsJsonAsync("/gridlet/api/components",
