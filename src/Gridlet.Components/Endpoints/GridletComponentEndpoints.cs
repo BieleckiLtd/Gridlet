@@ -9,11 +9,15 @@ using Microsoft.AspNetCore.Routing;
 namespace Gridlet.Components.Endpoints;
 
 /// <summary>Body for creating or replacing a component document.</summary>
+/// <param name="Html">
+/// The document itself. It is stored exactly as it arrives: the server reads the version and the
+/// name out of it and interprets nothing else, because the browser is the only thing that renders a
+/// component.
+/// </param>
 public sealed record ComponentSaveRequest(
     string? Id,
     string Name,
-    int SchemaVersion,
-    JsonElement Definition);
+    string Html);
 
 /// <summary>Body for creating or replacing a component's JavaScript module.</summary>
 public sealed record ComponentScriptSaveRequest(string? Source);
@@ -64,26 +68,28 @@ internal sealed class GridletComponentEndpoints : IGridletEndpointContributor
             return Results.BadRequest(new GridletErrorResponse("A component needs a name."));
         }
 
-        if (body.Definition.ValueKind != JsonValueKind.Object)
+        // A document says what it is. Anything that does not is either not a component or is
+        // damaged, and storing it would leave a file the designer cannot open.
+        if (GridletComponent.VersionOf(body.Html) is not { } version)
         {
-            return Results.BadRequest(new GridletErrorResponse("A component definition must be a JSON object."));
+            return Results.BadRequest(new GridletErrorResponse(
+                "A component document must be HTML with a data-gridlet version on its <form> element."));
         }
 
-        // Refusing a newer document is the whole point of the version field: silently loading one
-        // would let this build drop properties it does not know about and then save the loss back.
-        if (body.SchemaVersion > GridletComponent.CurrentSchemaVersion)
+        // Refusing a newer document is the whole point of the version: silently loading one would
+        // let this build drop what it does not know about and then save the loss back.
+        if (version > GridletComponent.CurrentDocumentVersion)
         {
             return Results.BadRequest(new GridletErrorResponse(
                 $"This component was designed with a newer version of Gridlet (document version " +
-                $"{body.SchemaVersion}, this build understands {GridletComponent.CurrentSchemaVersion})."));
+                $"{version}, this build understands {GridletComponent.CurrentDocumentVersion})."));
         }
 
         var saved = await store.SaveAsync(
             new GridletComponent(
                 string.IsNullOrWhiteSpace(body.Id) ? Guid.NewGuid().ToString("n") : body.Id,
                 body.Name.Trim(),
-                body.SchemaVersion <= 0 ? GridletComponent.CurrentSchemaVersion : body.SchemaVersion,
-                body.Definition,
+                body.Html,
                 DateTimeOffset.UtcNow),
             cancellationToken);
 

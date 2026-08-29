@@ -87,10 +87,16 @@
     // A module is named, never inlined. `rel` says what the link is for, `href` is the file name
     // the component imports it under, and a browser ignores the whole element — which is correct,
     // because loading these is the runtime's job and not the document's.
+    // A module may be named on its own, or with one of the classes it exports: naming the class is
+    // what says which of them the component runs, and a module holding two is the reason that is a
+    // separate thing to say rather than being implied by the file.
     for (const module of doc.modules || []) {
       const link = document.createElement('link');
       link.setAttribute('rel', 'gridlet-module');
-      link.setAttribute('href', typeof module === 'string' ? module : module.name);
+      link.setAttribute('href', typeof module === 'string' ? module : (module.module || ''));
+      if (typeof module !== 'string' && module.class) {
+        link.setAttribute('data-class', module.class);
+      }
       root.append(link);
     }
 
@@ -322,7 +328,11 @@
 
     for (const link of root.querySelectorAll(':scope > link[rel="gridlet-module"]')) {
       const href = link.getAttribute('href');
-      if (href) doc.modules.push(href);
+      if (!href) continue;
+      // A module named on its own stays a plain name. Only one that names a class needs the pair,
+      // so the common case reads as the file name it is.
+      const className = link.getAttribute('data-class');
+      doc.modules.push(className ? { module: href, class: className } : href);
     }
 
     const source = root.querySelector(':scope > gridlet-source');

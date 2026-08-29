@@ -1,4 +1,4 @@
-using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Gridlet.Components;
 
@@ -6,34 +6,79 @@ namespace Gridlet.Components;
 /// A component designed in the Gridlet components designer.
 /// </summary>
 /// <remarks>
-/// The stored document is a supported, versioned artifact: readable, diffable in review, and
-/// portable between environments by copying it. The envelope below is the part Gridlet interprets;
-/// the layout, control tree, custom styles and scripts live in <paramref name="Definition"/>, which
-/// the server stores verbatim and never executes. Envelope fields are added, never repurposed, so
-/// a document written by an older build keeps loading.
+/// The document is HTML, and it is the artifact: readable, diffable in review, and portable between
+/// environments by copying the file. A label is a <c>&lt;span&gt;</c>, a text box is an
+/// <c>&lt;input&gt;</c>, a drop-down is a <c>&lt;select&gt;</c> holding <c>&lt;option&gt;</c>s, and
+/// everything HTML already has a word for is spelled that way. Only what HTML has no word for —
+/// bindings, handlers, per-theme colours — is a <c>data-</c> attribute.
+/// <para>
+/// The server stores the document verbatim and never executes it. It reads exactly two things out
+/// of it: the version it was written to, so a document from a newer build is refused rather than
+/// silently downgraded, and the name it goes by. Everything else is the browser's to interpret,
+/// because the browser is the only thing that renders a component.
+/// </para>
+/// <para>
+/// A document is a description, never code. Handlers are <c>data-on-click</c> rather than
+/// <c>onclick</c>, and nothing writes or reads a <c>&lt;script&gt;</c>: the JavaScript a component
+/// runs lives in the modules it names, so saving a document and saving a module stay two different
+/// privileges. See <see cref="GridletComponentScript"/>.
+/// </para>
 /// </remarks>
-/// <param name="SchemaVersion">
-/// The version of the definition shape. A document claiming a newer version than this build
-/// understands is rejected on save rather than silently downgraded.
-/// </param>
-/// <param name="Definition">
-/// The designer's own document: layout mode, controls, styles and scripts. Opaque to the server by
-/// design, because the browser is the only thing that renders a component.
-/// </param>
-public sealed record GridletComponent(
+/// <param name="Html">The document, stored exactly as the designer wrote it.</param>
+public sealed partial record GridletComponent(
     string Id,
     string Name,
-    int SchemaVersion,
-    JsonElement Definition,
+    string Html,
     DateTimeOffset UpdatedAtUtc)
 {
-    /// <summary>The definition shape this build writes and understands.</summary>
-    public const int CurrentSchemaVersion = 1;
+    /// <summary>The document version this build writes and understands.</summary>
+    public const int CurrentDocumentVersion = 2;
+
+    /// <summary>
+    /// The version a document claims, or <c>null</c> when it does not claim one and so is not a
+    /// component document at all.
+    /// </summary>
+    public static int? VersionOf(string? html)
+    {
+        var tag = FormTag().Match(html ?? string.Empty);
+        return tag.Success && int.TryParse(tag.Groups["version"].Value, out var version)
+            ? version
+            : null;
+    }
+
+    /// <summary>
+    /// The name a document goes by, read from the element that carries the version so a control's
+    /// own <c>data-name</c> can never be mistaken for the component's.
+    /// </summary>
+    public static string? NameOf(string? html)
+    {
+        var tag = FormTag().Match(html ?? string.Empty);
+        if (!tag.Success)
+        {
+            return null;
+        }
+
+        var name = DocumentName().Match(tag.Value);
+        return name.Success ? System.Net.WebUtility.HtmlDecode(name.Groups["name"].Value) : null;
+    }
+
+    // The opening tag of the document element, and nothing inside it. Reading the version and the
+    // name off the same match is what keeps a control's `data-name` from answering for the
+    // component's: a control's attributes are never part of this tag.
+    [GeneratedRegex(
+        """<form\b[^>]*\bdata-gridlet\s*=\s*["']?(?<version>\d+)[^>]*>""",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex FormTag();
+
+    [GeneratedRegex(
+        @"\bdata-name\s*=\s*""(?<name>[^""]*)""",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex DocumentName();
 }
 
 /// <summary>
-/// Persistence for designed components. The default implementation stores a JSON file under the host's
-/// content root; replace the registration to persist elsewhere.
+/// Persistence for designed components. The default implementation stores one HTML file per
+/// component in a folder; replace the registration to persist elsewhere.
 /// </summary>
 public interface IComponentStore
 {
@@ -50,17 +95,14 @@ public interface IComponentStore
 public sealed class GridletComponentsOptions
 {
     /// <summary>
-    /// Where the default store keeps component documents. Relative paths resolve against the host's
-    /// content root. Kept separate from Gridlet's own state file so components can be source-controlled
-    /// or promoted between environments on their own.
+    /// The folder holding a workspace's components: one <c>.html</c> file per component, and beside
+    /// them the <c>.js</c> modules components attach, one file per module. Relative paths resolve
+    /// against the host's content root.
+    /// <para>
+    /// Both are ordinary files rather than records inside a container, so an editor, a linter, a
+    /// diff and a code review all see them as the source they are. A component and the modules it
+    /// runs live together because they are one thing to copy, promote or review.
+    /// </para>
     /// </summary>
-    public string FilePath { get; set; } = "gridlet-components.json";
-
-    /// <summary>
-    /// Folder holding the JavaScript modules components attach, one file per module. Relative paths
-    /// resolve against the host's content root. They are kept as ordinary <c>.js</c> files rather
-    /// than inside the component documents so an editor, a linter, a diff and a code review all see
-    /// them as the source they are.
-    /// </summary>
-    public string ScriptsPath { get; set; } = "gridlet-components";
+    public string Path { get; set; } = "gridlet-components";
 }

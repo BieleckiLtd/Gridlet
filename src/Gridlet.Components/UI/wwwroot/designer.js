@@ -3,7 +3,10 @@
 // Loaded by the Gridlet shell when the Gridlet.Components package is installed. Everything it needs
 // from the shell arrives through window.gridlet; it reaches into nothing else.
 //
-// The document this writes is the artifact: readable, diffable, and versioned by SCHEMA_VERSION.
+// The document this writes is the artifact: HTML, readable and diffable, read and written through
+// format.js. What the designer holds while a component is open is a working model of that document;
+// format.js is the only thing that turns one into the other, so there is exactly one place that
+// knows what a component looks like on disk.
 // Renderers here are shared in spirit with the eventual runtime — the designer draws a control the
 // same way a published component will, so what you see is what runs.
 
@@ -15,7 +18,7 @@
     registerSidebarSection, registerTabRestorer, openTab, closeTab, refreshTabs, state,
   } = window.gridlet;
 
-  const SCHEMA_VERSION = 1;
+  const FORMAT = window.GridletComponentFormat;
   const GRID = 8;
 
   // Where the workspace is served from. A dynamic import() inside a classic script resolves against
@@ -1617,7 +1620,10 @@ export default class ${CLASS_NAME(name)} {
   });
 
   function buildDesigner(panel, tab, saved) {
-    const doc = saved ? structuredClone(saved.definition) : newDocument();
+    // A stored component arrives as its document. Parsing it here rather than holding the markup
+    // around is what keeps the rest of the designer working on one shape: the model is the same
+    // whether a component was just created or read back off disk.
+    const doc = saved ? FORMAT.fromHtml(saved.html) : newDocument();
     const model = {
       id: saved?.id || null,
       name: saved?.name || 'New component',
@@ -4185,8 +4191,7 @@ export default class ${CLASS_NAME(name)} {
         const savedComponent = await post('api/components', {
           id: model.id,
           name: model.name.trim(),
-          schemaVersion: SCHEMA_VERSION,
-          definition: model.doc,
+          html: FORMAT.toHtml(model.doc, model.name.trim()),
         });
         model.id = savedComponent.id;
         tab.hasUnsavedDefinition = false;

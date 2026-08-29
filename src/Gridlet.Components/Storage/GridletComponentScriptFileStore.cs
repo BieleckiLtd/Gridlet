@@ -15,7 +15,7 @@ internal sealed class GridletComponentScriptFileStore : IComponentScriptStore
 
     public GridletComponentScriptFileStore(IOptions<GridletComponentsOptions> options, IHostEnvironment environment)
     {
-        var configured = options.Value.ScriptsPath;
+        var configured = options.Value.Path;
         _directory = Path.IsPathRooted(configured)
             ? configured
             : Path.Combine(environment.ContentRootPath, configured);

@@ -17,6 +17,11 @@ namespace Gridlet.BrowserTests;
 [Collection(BrowserCollection.Name)]
 public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 {
+    /// <summary>
+    /// One control, as the markup a component document holds. This mirrors what the designer's own
+    /// writer produces: a label is a span, a text box is an input, a button is a button. Building it
+    /// here rather than posting a model keeps the tests honest about what is actually stored.
+    /// </summary>
     private static string Control(
         string name,
         string type,
@@ -26,28 +31,88 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         int x = 10,
         int y = 10,
         int w = 300,
-        int h = 24) => JsonSerializer.Serialize(new
+        int h = 24)
+    {
+        var properties = Values(props ?? new { text = "literal" });
+        var attributes = new List<string>
         {
-            id = name,
-            type,
-            name,
-            x,
-            y,
-            w,
-            h,
-            props = props ?? new { text = "literal" },
-            css = "",
-            elementId = "",
-            classes = "",
-            colors = new
+            $"data-name=\"{Escape(name)}\"",
+            $"style=\"left: {x}px; top: {y}px; width: {w}px; height: {h}px;\"",
+        };
+
+        foreach (var (key, value) in Values(bind))
+        {
+            attributes.Add($"data-bind-{Dashed(key)}=\"{Escape(value)}\"");
+        }
+
+        foreach (var (key, value) in Values(events))
+        {
+            attributes.Add($"data-on-{Dashed(key)}=\"{Escape(value)}\"");
+        }
+
+        var text = properties.TryGetValue("text", out var t) ? Escape(t) : string.Empty;
+        var attrs = string.Join(" ", attributes);
+
+        return type switch
+        {
+            "label" => $"<span {attrs}>{text}</span>",
+            "button" => $"<button type=\"button\" {attrs}>{text}</button>",
+            "checkbox" => $"<label data-role=\"checkbox\" {attrs}><input type=\"checkbox\"><span>{text}</span></label>",
+            "select" => $"<select {attrs}>{Options(properties)}</select>",
+            "pager" => $"<div data-role=\"pager\" data-edges data-position {attrs}></div>",
+            "panel" => $"<div data-role=\"panel\" {attrs}></div>",
+            "textarea" => $"<textarea data-role=\"textarea\" {Placeholder(properties)} {attrs}></textarea>",
+            "textbox" when properties.TryGetValue("multiline", out var m) && m == "true"
+                => $"<textarea {Placeholder(properties)} {attrs}></textarea>",
+            _ => $"<input type=\"text\" {Placeholder(properties)} {attrs}>",
+        };
+    }
+
+    private static string Options(IReadOnlyDictionary<string, string> properties)
+        => properties.TryGetValue("options", out var options)
+            ? string.Concat(options.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(option => $"<option>{Escape(option)}</option>"))
+            : string.Empty;
+
+    private static string Placeholder(IReadOnlyDictionary<string, string> properties)
+        => properties.TryGetValue("placeholder", out var placeholder)
+            ? $"placeholder=\"{Escape(placeholder)}\""
+            : string.Empty;
+
+    /// <summary>
+    /// An anonymous object as the name/value pairs it stands for, so a test can keep writing
+    /// <c>new { text = "=data.Name" }</c> while what gets stored is markup.
+    /// </summary>
+    private static Dictionary<string, string> Values(object? source)
+    {
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (source is null)
+        {
+            return values;
+        }
+
+        foreach (var property in JsonSerializer.SerializeToElement(source).EnumerateObject())
+        {
+            values[property.Name] = property.Value.ValueKind switch
             {
-                light = new { text = "", background = "" },
-                dark = new { text = "", background = "" },
-            },
-            bind = bind ?? new { },
-            events = events ?? new { },
-            tip = "",
-        });
+                JsonValueKind.String => property.Value.GetString() ?? string.Empty,
+                JsonValueKind.True => "true",
+                JsonValueKind.False => "false",
+                _ => property.Value.ToString(),
+            };
+        }
+
+        return values;
+    }
+
+    private static string Dashed(string name)
+        => string.Concat(name.Select(c => char.IsUpper(c) ? "-" + char.ToLowerInvariant(c) : c.ToString()));
+
+    private static string Escape(string value) => value
+        .Replace("&", "&amp;", StringComparison.Ordinal)
+        .Replace("<", "&lt;", StringComparison.Ordinal)
+        .Replace(">", "&gt;", StringComparison.Ordinal)
+        .Replace("\"", "&quot;", StringComparison.Ordinal);
 
     /// <summary>
     /// Seeds a component and opens it in the designer. Returns the page, ready on the canvas.
@@ -63,33 +128,61 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         string css = "")
     {
         var page = browserPage.Page;
-        var definition = new
+
+        var attributes = new List<string>
         {
-            layout = "free",
-            width = 720,
-            height = 460,
-            css,
-            showScrollbars = false,
-            resizable = false,
-            isolated,
-            source = (object?)null,
-            elementId = "",
-            classes = "",
-            tip = "",
-            modules = modules?.ToArray() ?? [],
-            controls = controls.Select(control => JsonDocument.Parse(control).RootElement).ToArray(),
-            colors = new
-            {
-                light = new { text = "", background = "" },
-                dark = new { text = "", background = "" },
-            },
-            bind = componentBind ?? new { },
-            events = componentEvents ?? new { },
+            @"data-gridlet=""2""",
+            $"data-name=\"{Escape(name)}\"",
+            @"data-layout=""free""",
+            @"style=""width: 720px; height: 460px;""",
         };
+
+        if (isolated)
+        {
+            attributes.Add("data-isolated");
+        }
+
+        foreach (var (key, value) in Values(componentBind))
+        {
+            attributes.Add($"data-bind-{Dashed(key)}=\"{Escape(value)}\"");
+        }
+
+        foreach (var (key, value) in Values(componentEvents))
+        {
+            attributes.Add($"data-on-{Dashed(key)}=\"{Escape(value)}\"");
+        }
+
+        var body = new List<string>();
+        foreach (var module in modules ?? [])
+        {
+            // A component names the modules it runs, and may name which of a module's classes it
+            // runs with it. A bare file name is the common case and stays a bare file name.
+            if (module is string file)
+            {
+                body.Add($"<link rel=\"gridlet-module\" href=\"{Escape(file)}\">");
+                continue;
+            }
+
+            var entry = Values(module);
+            var href = entry.TryGetValue("module", out var moduleFile) ? moduleFile : string.Empty;
+            var className = entry.TryGetValue("class", out var value) ? value : null;
+            body.Add(className is null
+                ? $"<link rel=\"gridlet-module\" href=\"{Escape(href)}\">"
+                : $"<link rel=\"gridlet-module\" href=\"{Escape(href)}\" data-class=\"{Escape(className)}\">");
+        }
+
+        if (!string.IsNullOrEmpty(css))
+        {
+            body.Add($"<style>{css}</style>");
+        }
+
+        body.AddRange(controls);
+
+        var html = $"<form {string.Join(" ", attributes)}>{string.Join("", body)}</form>";
 
         var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
         {
-            DataObject = new { name, definition },
+            DataObject = new { name, html },
         });
         Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
 
