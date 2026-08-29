@@ -947,15 +947,15 @@
    same component in two forms, so they occupy the same place rather than competing for it. */
 /* The surface it sits in is a block box that scrolls a canvas, not a flex container, so the pane
    takes its height from it rather than asking to be stretched by it. */
+/* The document, edited as itself. Laid out exactly like the module tab, because it is the same
+   editor doing the same job: an editor that sat differently here would read as a different tool.
+   The margins are .gfd-code-surface's own — nothing is added on top of them. */
 .gfd-code-pane {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
-  height: 100%;
-  width: 100%;
 }
-
-.gfd-code-pane .gfd-code-surface { flex: 1; min-height: 0; }
 
 /* What the parser said, kept under the text rather than in a toast: it is about the line being
    typed, and it goes away by fixing it. */

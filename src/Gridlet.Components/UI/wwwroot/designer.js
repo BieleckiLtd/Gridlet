@@ -1990,7 +1990,11 @@ export default class ${CLASS_NAME(name)} {
       }
     }
 
-    const surface = h('div', { class: 'gfd-surface' }, canvas, codePane);
+    // The code pane stands beside the canvas surface rather than inside it. The surface pads a
+    // component so it floats on a backdrop, and a document is not a component floating on anything:
+    // inside, the pane inherited that padding on top of the editor's own and sat further from its
+    // edges than every other editor in the workspace.
+    const surface = h('div', { class: 'gfd-surface' }, canvas);
     const propertyBody = h('div', { class: 'gfd-properties-body' });
     // Order matters: each control's default appearance first, then the designer's generated rules,
     // then the operator's custom rules, so equal-specificity custom rules win by document order.
@@ -5328,7 +5332,7 @@ export default class ${CLASS_NAME(name)} {
       // The document is shown instead of the component, not beside it: they are the same thing in
       // two forms, and drawing both would invite editing both at once.
       codePane.hidden = mode !== 'code';
-      canvas.hidden = mode === 'code';
+      surface.hidden = mode === 'code';
       if (mode === 'code') showDocument();
 
       palette.hidden = mode !== 'design';
@@ -5631,7 +5635,8 @@ export default class ${CLASS_NAME(name)} {
           gridSwitcher,
           palette),
         recordBar,
-        surface),
+        surface,
+        codePane),
       rail);
 
     panel.append(defaultStyle, generatedStyle, customStyle, designer);
