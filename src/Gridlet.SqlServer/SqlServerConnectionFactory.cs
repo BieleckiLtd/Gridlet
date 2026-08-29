@@ -28,7 +28,10 @@ internal static class SqlServerConnectionFactory
         CancellationToken cancellationToken)
     {
         var builder = new SqlConnectionStringBuilder(context.ConnectionString);
-        builder.Pooling = pooling;
+        if (!pooling)
+        {
+            builder.Pooling = false;
+        }
         if (!string.IsNullOrEmpty(context.Database))
         {
             builder.InitialCatalog = context.Database;
