@@ -40,6 +40,11 @@ internal sealed class GridletTableExportResult(
     /// </summary>
     internal void ValidateFirstPage(CancellationToken cancellationToken)
     {
+        if (firstPage.Rows.Any(row => row.Length != firstPage.Columns.Count))
+        {
+            throw new GridletValidationException(
+                "The data provider returned a row whose values do not match the export columns.");
+        }
         if (firstPage.RowKeys is { } rowKeys && rowKeys.Count != firstPage.Rows.Count)
         {
             throw new GridletValidationException(
@@ -213,7 +218,9 @@ internal sealed class GridletTableExportResult(
         while (true)
         {
             if (page.Page != pageNumber || page.PageSize <= 0 || page.TotalRows < 0
-                || page.Rows.Count > page.PageSize)
+                || page.Rows.Count > page.PageSize
+                || !page.Columns.SequenceEqual(firstPage.Columns)
+                || page.Rows.Any(row => row.Length != firstPage.Columns.Count))
             {
                 throw new GridletValidationException(
                     "The data provider returned invalid paging metadata during this export.");
@@ -255,12 +262,23 @@ internal sealed class GridletTableExportResult(
             }
 
             pageNumber++;
-            page = await data.GetPageAsync(
-                context,
-                schema,
-                name,
-                new TableDataRequest(pageNumber, pageSize, sort, direction, filters),
-                cancellationToken);
+            try
+            {
+                page = await data.GetPageAsync(
+                    context,
+                    schema,
+                    name,
+                    new TableDataRequest(pageNumber, pageSize, sort, direction, filters),
+                    cancellationToken);
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+            {
+                // Keep provider I/O faults distinct from response-body I/O. The outer handler
+                // must log and abort a live download rather than mistaking a database failure for
+                // a client disconnect and returning a cleanly truncated file.
+                throw new GridletQueryException(
+                    "The data provider failed while reading an export page.", ex);
+            }
         }
     }
 

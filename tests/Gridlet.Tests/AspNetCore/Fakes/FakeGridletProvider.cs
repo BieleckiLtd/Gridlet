@@ -303,6 +303,9 @@ public sealed class FakeGridletProvider :
     /// <summary>When set, simulates a provider failure after an export has begun streaming.</summary>
     public int? FailDataPage { get; set; }
 
+    /// <summary>When set, changes the reported schema after streaming has begun.</summary>
+    public int? ChangeExportColumnsPage { get; set; }
+
     public Task<TableDataPage> GetPageAsync(
         GridletConnectionContext context, string schema, string name, TableDataRequest request,
         CancellationToken cancellationToken = default)
@@ -315,7 +318,23 @@ public sealed class FakeGridletProvider :
             return Task.FromException<TableDataPage>(
                 new InvalidOperationException("SECRET_EXPORT_PAGE_FAILURE"));
         }
-        return GetPageCore(name, request);
+        return ChangedColumnsPageAsync(name, request);
+    }
+
+    private async Task<TableDataPage> ChangedColumnsPageAsync(string name, TableDataRequest request)
+    {
+        var page = await GetPageCore(name, request);
+        return request.Page == ChangeExportColumnsPage
+            ? page with
+            {
+                Columns =
+                [
+                    new ResultColumn("Name", "nvarchar(100)"),
+                    new ResultColumn("Id", "int"),
+                    ..page.Columns.Skip(2),
+                ],
+            }
+            : page;
     }
 
     public Task<ColumnProfile> GetColumnProfileAsync(

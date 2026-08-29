@@ -586,6 +586,31 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Export_aborts_when_a_provider_changes_columns_between_pages()
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Limits.DefaultPageSize = 2;
+            options.Limits.MaxPageSize = 2;
+            options.Security.AllowAnonymous = true;
+        });
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        fake.ChangeExportColumnsPage = 2;
+
+        using var response = await client.SendAsync(new HttpRequestMessage(
+            HttpMethod.Get,
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Ledger/data/export"
+            + "?format=json"), HttpCompletionOption.ResponseHeadersRead);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await Assert.ThrowsAnyAsync<Exception>(async () =>
+            await response.Content.ReadAsByteArrayAsync());
+        Assert.Equal([(1, 2), (2, 2)], fake.DataPageRequests);
+    }
+
+    [Fact]
     public async Task Export_rejects_a_negative_provider_total_before_streaming()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();
