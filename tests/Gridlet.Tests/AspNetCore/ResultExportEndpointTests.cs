@@ -227,6 +227,45 @@ public sealed class ResultExportEndpointTests
         await sqliteTimestampRowGroup.ReadAsync<DateTime>(
             Assert.Single(sqliteTimestampReader.Schema.DataFields), sqliteTimestamps.AsMemory());
         Assert.Equal(new DateTime(2026, 8, 24, 5, 6, 7).AddTicks(1_234_560), sqliteTimestamps[0]);
+
+        var dynamicResponse = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
+        {
+            columns = new[]
+            {
+                new { name = "WideInteger", dataTypeName = "INT" },
+                new { name = "Epoch", dataTypeName = "TIMESTAMP" },
+                new { name = "TextNumber", dataTypeName = "NUMERIC" },
+            },
+            rows = new object?[][] { [3_000_000_000L, 1_700_000_000L, "007"] },
+            providerName = "SQLite",
+        });
+        Assert.Equal(HttpStatusCode.OK, dynamicResponse.StatusCode);
+        await using var dynamicReader = await ParquetReader.CreateAsync(
+            new MemoryStream(await dynamicResponse.Content.ReadAsByteArrayAsync()));
+        using var dynamicRowGroup = dynamicReader.OpenRowGroupReader(0);
+        var wideIntegers = new long?[1];
+        await dynamicRowGroup.ReadAsync<long>(dynamicReader.Schema.DataFields[0], wideIntegers.AsMemory());
+        Assert.Equal(3_000_000_000L, wideIntegers[0]);
+        var epochs = new long?[1];
+        await dynamicRowGroup.ReadAsync<long>(dynamicReader.Schema.DataFields[1], epochs.AsMemory());
+        Assert.Equal(1_700_000_000L, epochs[0]);
+        var textNumbers = new string?[1];
+        await dynamicRowGroup.ReadAsync(dynamicReader.Schema.DataFields[2], textNumbers.AsMemory());
+        Assert.Equal("007", textNumbers[0]);
+
+        var offsetTimestampResponse = await client.PostAsJsonAsync("/gridlet/api/exports/parquet", new
+        {
+            columns = new[] { new { name = "Created", dataTypeName = "TIMESTAMP" } },
+            rows = new object?[][] { ["2026-08-24T05:06:07+02:00"] },
+            providerName = "SQLite",
+        });
+        await using var offsetTimestampReader = await ParquetReader.CreateAsync(
+            new MemoryStream(await offsetTimestampResponse.Content.ReadAsByteArrayAsync()));
+        using var offsetTimestampRowGroup = offsetTimestampReader.OpenRowGroupReader(0);
+        var offsetTimestamps = new DateTime?[1];
+        await offsetTimestampRowGroup.ReadAsync<DateTime>(
+            Assert.Single(offsetTimestampReader.Schema.DataFields), offsetTimestamps.AsMemory());
+        Assert.Equal(new DateTime(2026, 8, 24, 3, 6, 7, DateTimeKind.Utc), offsetTimestamps[0]);
     }
 
     [Fact]
@@ -240,6 +279,22 @@ public sealed class ResultExportEndpointTests
 
         Assert.Equal(GridletResultExporter.MaxRequestBytes,
             endpoint.Metadata.GetMetadata<IRequestSizeLimitMetadata>()?.MaxRequestBodySize);
+    }
+
+    [Fact]
+    public async Task Result_export_endpoint_rejects_an_oversized_body_before_deserialization()
+    {
+        var (app, client) = await GridletTestHost.StartKestrelDefaultAsync();
+        await using var cleanup = app;
+        using var disposeClient = client;
+        using var content = new StringContent(
+            new string('x', checked((int)GridletResultExporter.MaxRequestBytes + 1)),
+            System.Text.Encoding.UTF8,
+            "application/json");
+
+        var response = await client.PostAsync("/gridlet/api/exports/xlsx", content);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
     }
 
     [Fact]

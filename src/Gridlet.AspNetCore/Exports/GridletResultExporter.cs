@@ -280,47 +280,55 @@ internal static partial class GridletResultExporter
         IReadOnlyList<JsonElement> values)
     {
         var type = dataTypeName.Trim().ToLowerInvariant();
-        if (type is "bit" or "bool" or "boolean") return ParquetValueKind.Boolean;
+        ParquetValueKind? declaredKind = null;
+        if (type is "bit" or "bool" or "boolean") declaredKind = ParquetValueKind.Boolean;
         if (type.StartsWith("tinyint", StringComparison.Ordinal)
             || type.StartsWith("smallint", StringComparison.Ordinal)
             || type == "int" || type.StartsWith("int(", StringComparison.Ordinal))
         {
-            return ParquetValueKind.Int32;
+            declaredKind = ParquetValueKind.Int32;
         }
         if (type.StartsWith("bigint", StringComparison.Ordinal) || type == "integer")
         {
-            return ParquetValueKind.Int64;
+            declaredKind = ParquetValueKind.Int64;
         }
         if (type.StartsWith("decimal", StringComparison.Ordinal)
             || type.StartsWith("numeric", StringComparison.Ordinal)
             || type.Contains("money", StringComparison.Ordinal))
         {
-            return ParquetValueKind.Decimal;
+            declaredKind = ParquetValueKind.Decimal;
         }
         if (type.StartsWith("real", StringComparison.Ordinal)
             || type.StartsWith("float", StringComparison.Ordinal)
             || type.StartsWith("double", StringComparison.Ordinal))
         {
-            return ParquetValueKind.Double;
+            declaredKind = ParquetValueKind.Double;
         }
-        if (type == "date") return ParquetValueKind.Date;
+        if (type == "date") declaredKind = ParquetValueKind.Date;
         if ((type.StartsWith("datetime", StringComparison.Ordinal)
                 && !type.StartsWith("datetimeoffset", StringComparison.Ordinal))
             || type.StartsWith("smalldatetime", StringComparison.Ordinal))
         {
-            return ParquetValueKind.DateTime;
+            declaredKind = ParquetValueKind.DateTime;
         }
         if (type.StartsWith("timestamp", StringComparison.Ordinal)
             && !providerName.Contains("sqlserver", StringComparison.OrdinalIgnoreCase))
         {
-            return ParquetValueKind.DateTime;
+            declaredKind = ParquetValueKind.DateTime;
         }
         if (type.Contains("binary", StringComparison.Ordinal)
             || type is "image" or "rowversion" or "blob"
             || (type == "timestamp"
                 && providerName.Contains("sqlserver", StringComparison.OrdinalIgnoreCase)))
         {
-            return ParquetValueKind.Binary;
+            declaredKind = ParquetValueKind.Binary;
+        }
+
+        if (declaredKind is not null
+            && (!providerName.Contains("sqlite", StringComparison.OrdinalIgnoreCase)
+                || ValuesMatchKind(values, declaredKind.Value)))
+        {
+            return declaredKind.Value;
         }
 
         var actual = values.Where(IsValue).ToArray();
@@ -334,6 +342,30 @@ internal static partial class GridletResultExporter
                     : ParquetValueKind.Double;
         }
         return ParquetValueKind.String;
+    }
+
+    private static bool ValuesMatchKind(
+        IReadOnlyList<JsonElement> values,
+        ParquetValueKind kind)
+        => values.Where(IsValue).All(value => kind switch
+        {
+            ParquetValueKind.Boolean => value.ValueKind is JsonValueKind.True or JsonValueKind.False,
+            ParquetValueKind.Int32 => value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out _),
+            ParquetValueKind.Int64 => value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out _),
+            ParquetValueKind.Double => value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out _),
+            ParquetValueKind.Decimal => value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out _),
+            ParquetValueKind.Date or ParquetValueKind.DateTime =>
+                value.ValueKind == JsonValueKind.String && TryParseExportDateTime(value.GetString(), out _),
+            ParquetValueKind.Binary => value.ValueKind == JsonValueKind.String
+                && IsBase64(value.GetString()),
+            _ => true,
+        });
+
+    private static bool IsBase64(string? value)
+    {
+        if (value is null) return false;
+        var buffer = new byte[value.Length];
+        return Convert.TryFromBase64String(value, buffer, out _);
     }
 
     private static string[] UniqueColumnNames(IReadOnlyList<ResultColumn> columns)
@@ -493,8 +525,7 @@ internal static partial class GridletResultExporter
             || type.StartsWith("smalldatetime", StringComparison.Ordinal)
             || (type.StartsWith("timestamp", StringComparison.Ordinal)
                 && !providerName.Contains("sqlserver", StringComparison.OrdinalIgnoreCase));
-        if (!supported || !DateTime.TryParse(
-                text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out value))
+        if (!supported || !TryParseExportDateTime(text, out value))
         {
             value = default;
             return false;
@@ -508,6 +539,20 @@ internal static partial class GridletResultExporter
             return false;
         }
         return true;
+    }
+
+    private static bool TryParseExportDateTime(string? text, out DateTime value)
+    {
+        if (DateTimeOffset.TryParse(
+                text, CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+        {
+            value = parsed.UtcDateTime;
+            return true;
+        }
+        value = default;
+        return false;
     }
 
     private static bool ExcelNumberIsExact(string raw)
@@ -931,9 +976,8 @@ internal static partial class GridletResultExporter
 
         private DateTime ParseDateTime(JsonElement value)
         {
-            if (value.ValueKind == JsonValueKind.String && DateTime.TryParse(
-                    value.GetString(), CultureInfo.InvariantCulture,
-                    DateTimeStyles.RoundtripKind, out var date))
+            if (value.ValueKind == JsonValueKind.String
+                && TryParseExportDateTime(value.GetString(), out var date))
             {
                 return date;
             }
