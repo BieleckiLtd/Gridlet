@@ -8,7 +8,8 @@ namespace Gridlet.Tests.AspNetCore.Fakes;
 public sealed class FakeGridletProvider :
     IGridletProvider, IGridletProviderMetadata, ISchemaReader, ITableDataService, IQueryRunner,
     IQuerySessionRunner, IQueryPlanRunner, ITableWriteService, ITableDdlService,
-    IForeignKeyLookupProvider, ITableImportProvider, ISequenceProvider
+    IForeignKeyLookupProvider, ITableImportProvider, ISequenceProvider,
+    IDatabaseSecurityProvider, ITriggerManagementProvider, IColumnDistinctValuesProvider
 {
     public const GridletProviderNames Name = GridletProviderNames.SqlServer;
 
@@ -74,7 +75,9 @@ public sealed class FakeGridletProvider :
         SupportsQueryPlans: true,
         SupportsSequences: true,
         SupportsImport: true,
-        SupportsDefaultConstraints: true);
+        SupportsDefaultConstraints: true,
+        SupportsSecurityOverview: true,
+        SupportsTriggerManagement: true);
 
     public ISchemaReader Schema => this;
 
@@ -85,6 +88,39 @@ public sealed class FakeGridletProvider :
     public ITableWriteService Writes => this;
 
     public ITableDdlService Ddl => this;
+
+    public Task<DatabaseSecurityOverview> GetSecurityOverviewAsync(
+        GridletConnectionContext context, CancellationToken cancellationToken = default)
+        => Task.FromResult(new DatabaseSecurityOverview(
+            "app_user", "app_login", "app_login",
+            [
+                new DatabasePrincipalInfo("app_user", "SQL_USER", "INSTANCE", "dbo"),
+                new DatabasePrincipalInfo("report_reader", "DATABASE_ROLE"),
+            ],
+            [new DatabaseRoleMembershipInfo("report_reader", "app_user")],
+            [new DatabasePermissionInfo("report_reader", "dbo", "GRANT", "SELECT", "SCHEMA", "[dbo]")],
+            [new EffectivePermissionInfo("DATABASE", "CONNECT"), new EffectivePermissionInfo("DATABASE", "SELECT")]));
+
+    public Task<IReadOnlyList<TriggerInfo>> GetTriggersAsync(
+        GridletConnectionContext context, CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<TriggerInfo>>(
+        [
+            new TriggerInfo("AuditCustomers", TriggerScopes.Object, false, ["INSERT"],
+                "CREATE TRIGGER dbo.AuditCustomers ON dbo.Customers AFTER INSERT AS SELECT 1;",
+                "dbo", "dbo", "Customers"),
+            new TriggerInfo("AuditDatabaseDdl", TriggerScopes.Database, true, ["CREATE_TABLE"],
+                "CREATE TRIGGER AuditDatabaseDdl ON DATABASE FOR CREATE_TABLE AS SELECT 1;"),
+            new TriggerInfo("AuditLogins", TriggerScopes.Server, false, ["LOGON"],
+                "CREATE TRIGGER AuditLogins ON ALL SERVER FOR LOGON AS SELECT 1;"),
+        ]);
+
+    public Task SetTriggerEnabledAsync(
+        GridletConnectionContext context, TriggerStateDesign trigger,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"setTriggerState {trigger.Scope}.{trigger.Schema}.{trigger.Name} enabled={trigger.Enabled}");
+        return Task.CompletedTask;
+    }
 
     // ---- schema ----
 
@@ -236,6 +272,37 @@ public sealed class FakeGridletProvider :
             .Take(limit)
             .ToArray();
         return Task.FromResult<IReadOnlyList<ForeignKeyLookupItem>>(matches);
+    }
+
+    public Task<IReadOnlyList<object?>> GetDistinctColumnValuesAsync(
+        GridletConnectionContext context, string schema, string table, string column,
+        string? search, int limit, CancellationToken cancellationToken = default)
+    {
+        // Small deterministic sets so the UI can be exercised without a database.
+        IReadOnlyList<object?> values = column.ToLowerInvariant() switch
+        {
+            "name" => new object?[] { "Ada", "Grace", "Edsger", "Alan" },
+            "promotion" => new object?[] { "Featured", "Weekend", null },
+            "status" => new object?[] { "Placed", "Preparing", "Ready", "OutForDelivery", "Delivered", "Cancelled" },
+            "pizzaid" => new object?[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 },
+            "id" => new object?[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 },
+            _ => Array.Empty<object?>(),
+        };
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var trimmed = search.Trim();
+            values = values.Where(v => Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture)?
+                .StartsWith(trimmed, StringComparison.OrdinalIgnoreCase) == true).ToArray();
+        }
+        // For distribution (empty search, limit <=10) sample evenly across the set.
+        if (string.IsNullOrWhiteSpace(search) && limit <= 10 && values.Count > limit)
+        {
+            var step = (double)values.Count / limit;
+            var sampled = new List<object?>();
+            for (var i = 0; i < limit; i++) sampled.Add(values[Math.Min(values.Count - 1, (int)(i * step))]);
+            values = sampled;
+        }
+        return Task.FromResult<IReadOnlyList<object?>>(values.Take(limit).ToArray());
     }
 
     public Task<string?> GetObjectDefinitionAsync(

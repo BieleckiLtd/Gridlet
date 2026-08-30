@@ -24,8 +24,40 @@ public sealed record GridletProviderCapabilities(
     IReadOnlyList<string>? SupportedTableOptions = null,
     bool SupportsSequences = false,
     bool SupportsImport = false,
-    bool SupportsDefaultConstraints = false)
+    bool SupportsDefaultConstraints = false,
+    bool SupportsSecurityOverview = false,
+    bool SupportsTriggerManagement = false)
 {
+    /// <summary>Creates the previous twenty-field capability shape without relying on optional-parameter ABI.</summary>
+    public GridletProviderCapabilities(
+        string defaultSchema,
+        bool supportsSchemas,
+        bool supportsViews,
+        bool supportsStoredProcedures,
+        bool supportsFunctions,
+        bool supportsTriggers,
+        bool supportsClusteredPrimaryKeys,
+        IReadOnlyList<string> suggestedDataTypes,
+        string selectExample,
+        string createTriggerExample,
+        string objectEditMode,
+        bool supportsCheckConstraints,
+        bool supportsUniqueConstraints,
+        bool supportsIndexes,
+        bool supportsSessions,
+        bool supportsQueryPlans,
+        IReadOnlyList<string>? supportedTableOptions,
+        bool supportsSequences,
+        bool supportsImport,
+        bool supportsDefaultConstraints)
+        : this(defaultSchema, supportsSchemas, supportsViews, supportsStoredProcedures,
+            supportsFunctions, supportsTriggers, supportsClusteredPrimaryKeys, suggestedDataTypes,
+            selectExample, createTriggerExample, objectEditMode, supportsCheckConstraints,
+            supportsUniqueConstraints, supportsIndexes, supportsSessions, supportsQueryPlans,
+            supportedTableOptions, supportsSequences, supportsImport, supportsDefaultConstraints, false, false)
+    {
+    }
+
     /// <summary>Creates the previous nineteen-field capability shape without relying on optional-parameter ABI.</summary>
     public GridletProviderCapabilities(
         string defaultSchema,
@@ -171,6 +203,51 @@ public sealed record GridletProviderCapabilities(
             supportsFunctions, supportsTriggers, supportsClusteredPrimaryKeys, suggestedDataTypes,
             selectExample, createTriggerExample, objectEditMode, false, false, false, false, false, null, false, false)
     {
+    }
+
+    /// <summary>Deconstructs the previous twenty-field capability shape.</summary>
+    public void Deconstruct(
+        out string defaultSchema,
+        out bool supportsSchemas,
+        out bool supportsViews,
+        out bool supportsStoredProcedures,
+        out bool supportsFunctions,
+        out bool supportsTriggers,
+        out bool supportsClusteredPrimaryKeys,
+        out IReadOnlyList<string> suggestedDataTypes,
+        out string selectExample,
+        out string createTriggerExample,
+        out string objectEditMode,
+        out bool supportsCheckConstraints,
+        out bool supportsUniqueConstraints,
+        out bool supportsIndexes,
+        out bool supportsSessions,
+        out bool supportsQueryPlans,
+        out IReadOnlyList<string>? supportedTableOptions,
+        out bool supportsSequences,
+        out bool supportsImport,
+        out bool supportsDefaultConstraints)
+    {
+        defaultSchema = DefaultSchema;
+        supportsSchemas = SupportsSchemas;
+        supportsViews = SupportsViews;
+        supportsStoredProcedures = SupportsStoredProcedures;
+        supportsFunctions = SupportsFunctions;
+        supportsTriggers = SupportsTriggers;
+        supportsClusteredPrimaryKeys = SupportsClusteredPrimaryKeys;
+        suggestedDataTypes = SuggestedDataTypes;
+        selectExample = SelectExample;
+        createTriggerExample = CreateTriggerExample;
+        objectEditMode = ObjectEditMode;
+        supportsCheckConstraints = SupportsCheckConstraints;
+        supportsUniqueConstraints = SupportsUniqueConstraints;
+        supportsIndexes = SupportsIndexes;
+        supportsSessions = SupportsSessions;
+        supportsQueryPlans = SupportsQueryPlans;
+        supportedTableOptions = SupportedTableOptions;
+        supportsSequences = SupportsSequences;
+        supportsImport = SupportsImport;
+        supportsDefaultConstraints = SupportsDefaultConstraints;
     }
 
     /// <summary>Deconstructs the legacy eleven-field capability shape.</summary>

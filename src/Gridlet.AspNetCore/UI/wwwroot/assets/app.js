@@ -41,6 +41,12 @@
     lock: ['M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-6', 'M11 16a1 1 0 1 0 2 0a1 1 0 0 0 -2 0', 'M8 11v-4a4 4 0 1 1 8 0v4'],
     microphone: ['M9 5a3 3 0 0 1 3 -3a3 3 0 0 1 3 3v5a3 3 0 0 1 -3 3a3 3 0 0 1 -3 -3l0 -5', 'M5 10a7 7 0 0 0 14 0', 'M8 21l8 0', 'M12 17l0 4'],
     plus: ['M12 5l0 14', 'M5 12l14 0'],
+    // Completion categories. The popup shows these instead of spelling the category out.
+    'completion-keyword': ['M7 8l-4 4l4 4', 'M17 8l4 4l-4 4'],
+    'completion-function': ['M3 19a2 2 0 0 0 2 2c2 0 2 -4 3 -9s1 -9 3 -9a2 2 0 0 1 2 2', 'M5 12h6'],
+    'completion-object': ['M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2z', 'M3 10h18', 'M10 3v18'],
+    'completion-column': ['M4 6h5.5', 'M4 10h5.5', 'M4 14h5.5', 'M4 18h5.5', 'M14.5 6h5.5', 'M14.5 10h5.5', 'M14.5 14h5.5', 'M14.5 18h5.5'],
+    'completion-value': ['M4 8h16', 'M4 12h16', 'M4 16h16', 'M8 8v8', 'M12 8v8'],
     // Not from the set. The sharing control wears its mark inside the shield rather than beside
     // it, and this narrower shield leaves room for one. Tabler's own shield is rounder and puts
     // its mark outside the shape, which reads as a shield with a speck next to it at this size.
@@ -603,6 +609,9 @@
       objects: () => `${dbBase()}/objects`,
       schemas: () => `${dbBase()}/schemas`,
       schema: (s) => `${dbBase()}/schemas/${enc(s)}`,
+      security: () => `${dbBase()}/security`,
+      triggers: () => `${dbBase()}/triggers`,
+      triggerState: () => `${dbBase()}/triggers/state`,
       data: (s, n, q) => `${objBase(s, n)}/data?${q}`,
       dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
       profile: (s, n, q) => `${objBase(s, n)}/profile?${q}`,
@@ -645,6 +654,13 @@
       foreignKeyDisplay: (s, n, fk) => `${objBase(s, n)}/foreign-key-displays/${enc(fk)}`,
       foreignKeyLookup: (s, n, fk) => `${objBase(s, n)}/foreign-key-displays/${enc(fk)}/lookup`,
       constraint: (s, n, constraint) => `${objBase(s, n)}/constraints/${enc(constraint)}`,
+      distinctValues: (s, n, col, search, limit) => {
+        const params = new URLSearchParams();
+        if (search) params.set('search', search);
+        if (limit) params.set('limit', String(limit));
+        const qs = params.toString();
+        return `${objBase(s, n)}/columns/${enc(col)}/distinct-values${qs ? `?${qs}` : ''}`;
+      },
       dropObject: (s, n, type) => `${objBase(s, n)}?type=${enc(type)}`,
       renameObject: (s, n, type) => `${objBase(s, n)}/rename?type=${enc(type)}`,
       renameIndex: (s, n, index) => `${objBase(s, n)}/indexes/${enc(index)}/rename`,
@@ -817,6 +833,7 @@
     objectEditMode: 'Alter', supportsCheckConstraints: false,
     supportsUniqueConstraints: false, supportsIndexes: false, supportsSequences: false,
     supportsImport: false, supportsDefaultConstraints: false,
+    supportsSecurityOverview: false, supportsTriggerManagement: false,
   };
   const capabilitiesFor = (scope) => connectionFor(scope).capabilities || DEFAULT_CAPABILITIES;
   const currentCapabilities = () => capabilitiesFor(state);
@@ -837,6 +854,63 @@
   const SQL_KEYWORDS = (`ADD ALL ALTER AND ANY AS ASC AUTHORIZATION BACKUP BEGIN BETWEEN BREAK BROWSE BULK BY CASCADE CASE CHECK CHECKPOINT CLOSE CLUSTERED COALESCE COLLATE COLUMN COMMIT COMPUTE CONSTRAINT CONTAINS CONTINUE CONVERT CREATE CROSS CURRENT CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER CURSOR DATABASE DBCC DEALLOCATE DECLARE DEFAULT DELETE DENY DESC DISK DISTINCT DISTRIBUTED DOUBLE DROP DUMP ELSE END ERRLVL ESCAPE EXCEPT EXEC EXECUTE EXISTS EXIT EXTERNAL FETCH FILE FILLFACTOR FOR FOREIGN FREETEXT FROM FULL FUNCTION GOTO GRANT GROUP HAVING HOLDLOCK IDENTITY IDENTITYCOL IF IN INDEX INNER INSERT INTERSECT INTO IS JOIN KEY KILL LEFT LIKE LINENO LOAD MERGE NATIONAL NOCHECK NONCLUSTERED NOT NULL NULLIF OF OFF OFFSETS ON OPEN OPENDATASOURCE OPENQUERY OPENROWSET OPENXML OPTION OR ORDER OUTER OVER PERCENT PIVOT PLAN PRECISION PRIMARY PRINT PROC PROCEDURE PUBLIC RAISERROR READ READTEXT RECONFIGURE REFERENCES REPLICATION RESTORE RESTRICT RETURN REVERT REVOKE RIGHT ROLLBACK ROWCOUNT ROWGUIDCOL RULE SAVE SCHEMA SECURITYAUDIT SELECT SEMANTICKEYPHRASETABLE SEMANTICSIMILARITYDETAILSTABLE SEMANTICSIMILARITYTABLE SESSION_USER SET SETUSER SHUTDOWN SOME STATISTICS SYSTEM_USER TABLE TABLESAMPLE TEXTSIZE THEN TO TOP TRAN TRANSACTION TRIGGER TRUNCATE TRY_CONVERT TSEQUAL UNION UNIQUE UNPIVOT UPDATE UPDATETEXT USE USER VALUES VARYING VIEW WAITFOR WHEN WHERE WHILE WITH WITHIN GROUP WRITETEXT`).split(/\s+/);
   const SQL_FUNCTIONS = (`ABS AVG CAST CONCAT COUNT DATEADD DATEDIFF DATENAME DATEPART FORMAT GETDATE ISNULL LEN LOWER LTRIM MAX MIN NEWID OBJECT_ID REPLACE ROUND RTRIM SCOPE_IDENTITY STRING_AGG SUBSTRING SUM SYSDATETIME UPPER`).split(/\s+/);
 
+  // sql-docs.js carries the per-dialect keyword and function lists together with their
+  // descriptions. It is a plain script, so it is absent in unit tests and in any host that
+  // trims the asset; every use falls back to the combined lists above.
+  const sqlDocs = () => window.GridletSqlDocs || null;
+  const sqlProviderName = (scope = state) => connectionFor(scope).providerName || '';
+  const sqlDocLookup = (scope, value) => sqlDocs()?.lookup(sqlProviderName(scope), value) || null;
+  const dialectKeywords = (scope) => sqlDocs()?.keywords(sqlProviderName(scope)) || SQL_KEYWORDS;
+  const dialectFunctions = (scope) => sqlDocs()?.functions(sqlProviderName(scope)) || SQL_FUNCTIONS;
+
+  // Completion rows carry the category they belong to, which drives the badge on the row, the
+  // heading of the documentation panel, and the filter chips. Categories that describe the
+  // language come from sql-docs.js; the rest are worked out from the connected database.
+  const COMPLETION_OBJECT_CATEGORIES = {
+    Table: 'table', View: 'view', StoredProcedure: 'routine', Function: 'routine', UserDefinedType: 'type',
+  };
+  const COMPLETION_FILTERS = [
+    { id: 'keyword', label: 'Keywords and operators', categories: ['keyword', 'operator'] },
+    { id: 'function', label: 'Functions', categories: ['function', 'aggregate', 'window'] },
+    { id: 'object', label: 'Tables, views, and routines', categories: ['table', 'view', 'routine', 'type', 'schema'] },
+    { id: 'column', label: 'Columns and parameters', categories: ['column', 'join', 'parameter', 'identifier'] },
+    { id: 'value', label: 'Distinct column values', categories: ['value'] },
+  ];
+  const COMPLETION_FILTER_KEY = 'gridlet.completionFilters.v2';
+
+  // Keywords, operators, and functions belong to the dialect; everything else belongs to the
+  // database the user is browsing.
+  const LANGUAGE_COMPLETION_CATEGORIES = ['keyword', 'operator', 'function', 'aggregate', 'window'];
+  const isLanguageCompletion = (category) => LANGUAGE_COMPLETION_CATEGORIES.includes(category);
+
+  function completionFilterOf(category) {
+    return COMPLETION_FILTERS.find((filter) => filter.categories.includes(category)) || null;
+  }
+
+  function readCompletionFilters() {
+    let stored = null;
+    try { stored = JSON.parse(localStorage.getItem(COMPLETION_FILTER_KEY) || 'null'); } catch { /* unavailable */ }
+    const known = Array.isArray(stored) ? stored.filter((id) => COMPLETION_FILTERS.some((f) => f.id === id)) : [];
+    return new Set(known.length ? known : COMPLETION_FILTERS.map((filter) => filter.id));
+  }
+
+  function writeCompletionFilters(enabled) {
+    try { localStorage.setItem(COMPLETION_FILTER_KEY, JSON.stringify([...enabled])); } catch { /* unavailable */ }
+  }
+
+  function classifyCompletion(value, scope, fromContext) {
+    if (value.startsWith('@')) return 'parameter';
+    if (value.endsWith('.')) return 'schema';
+    if (/\s=\s/.test(value)) return 'join';
+    const object = objectsFor(scope).find((candidate) => [candidate.name, `${candidate.schema}.${candidate.name}`,
+      `[${candidate.schema.replaceAll(']', ']]')}].[${candidate.name.replaceAll(']', ']]')}]`]
+      .some((name) => name.toLowerCase() === value.toLowerCase()));
+    if (object) return COMPLETION_OBJECT_CATEGORIES[object.type] || 'table';
+    const documented = sqlDocLookup(scope, value);
+    if (documented) return documented.category;
+    return fromContext ? 'column' : 'identifier';
+  }
+
   function sqlSuggestions(scope = state) {
     const known = objectsFor(scope);
     const objects = known.flatMap((o) => [
@@ -845,7 +919,7 @@
       o.name,
     ]);
     const schemas = known.map((o) => o.schema + '.');
-    return [...new Set([...objects, ...schemas, ...SQL_KEYWORDS, ...SQL_FUNCTIONS])];
+    return [...new Set([...objects, ...schemas, ...dialectKeywords(scope), ...dialectFunctions(scope)])];
   }
 
   const unquoteSqlIdentifier = (value) => {
@@ -939,6 +1013,276 @@
       }
     }
     return suggestions;
+  }
+
+  // ---- value completion (WHERE col = 'value') --------------------------------
+  // Heuristics: a predicate value is offered only when the column can be resolved to a
+  // table the statement reads, and its distinct set looks worthwhile. Check constraints
+  // that list the allowed values are preferred over a data scan; when no constraint is
+  // present a DISTINCT query is issued with a prefix filter.
+
+  const isTextLikeType = (dataType) => {
+    if (!dataType) return true;
+    return /char|text|nchar|nvarchar|varchar|enum|xml|json|uniqueidentifier|guid/i.test(dataType);
+  };
+  const isDateType = (dataType, columnName = '') => {
+    if (dataType && /date|time/i.test(dataType)) return true;
+    if (columnName && /date|time|atutc|created|updated/i.test(columnName)) return true;
+    return false;
+  };
+  const isNumericType = (dataType) => {
+    if (!dataType) return false;
+    return /^(int|bigint|smallint|tinyint|decimal|numeric|float|real|money|double|number|boolean|bit)/i.test(dataType.trim());
+  };
+
+  const escapeSqlString = (value) => String(value).replaceAll("'", "''");
+
+  const valuesFromCheckConstraints = (structure, columnName) => {
+    const values = [];
+    if (!structure || !structure.checkConstraints) return values;
+    const escaped = columnName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const colTest = new RegExp(`(?:\\[${escaped.replace(/\]/g, '')}\\]|"${escaped}"|\`${escaped}\`|\\b${escaped}\\b)`, 'i');
+    for (const cc of structure.checkConstraints) {
+      const def = cc.definition || '';
+      if (!def || !colTest.test(def)) continue;
+      for (const match of def.matchAll(/\bIN\s*\(\s*([^)]+?)\s*\)/gi)) {
+        const inside = match[1];
+        // Prefer quoted string literals; fall back to bare tokens for numeric enums.
+        const quoted = [...inside.matchAll(/N?'((?:''|[^'])*)'/g)].map(m => m[1].replace(/''/g, "'"));
+        if (quoted.length) {
+          values.push(...quoted);
+        } else {
+          const bare = inside.split(',').map(s => s.trim()).filter(Boolean);
+          values.push(...bare);
+        }
+      }
+    }
+    return [...new Set(values)];
+  };
+
+  const formatValueForCompletion = (rawValue, dataType) => {
+    if (rawValue === null || rawValue === undefined) return 'NULL';
+    // Numeric and boolean values are inserted without quotes; everything else is a string literal.
+    if (typeof rawValue === 'number' || typeof rawValue === 'boolean') return String(rawValue);
+    // The provider returns materialised CLR values; treat any non-string as string.
+    const str = String(rawValue);
+    if (!isTextLikeType(dataType) && /^-?\d+(\.\d+)?$/.test(str)) return str;
+    if (/^(true|false)$/i.test(str) && /^(bit|boolean)/i.test(dataType || '')) return str.toLowerCase();
+    return `'${escapeSqlString(str)}'`;
+  };
+
+  function detectValueCompletionContext(beforeCaret) {
+    // Normalise trailing whitespace after an operator that expects a value: "WHERE x = " or "WHERE x IN ("
+    // The detection runs on the raw statement prefix, so an open string like "'pla" is still visible.
+    const b = beforeCaret;
+    // IN (...) context: the caret is inside the parentheses that follow an IN.
+    // Find the last IN that opens a list and is not yet closed.
+    let lastIn = -1, lastInEnd = -1;
+    for (const m of b.matchAll(/\bIN\s*\(/gi)) {
+      lastIn = m.index;
+      lastInEnd = m.index + m[0].length;
+    }
+    if (lastIn >= 0) {
+      const after = b.slice(lastInEnd);
+      if (!after.includes(')')) {
+        // Inside an IN list. Column is the identifier before IN.
+        const beforeIn = b.slice(0, lastIn);
+        const colMatch = beforeIn.match(/((?:\[[^\]]+\]|"[^"]+"|`[^`]+`|[A-Za-z_][\w$#@]*)(?:\s*\.\s*(?:\[[^\]]+\]|"[^"]+"|`[^`]+`|[A-Za-z_][\w$#@]*))*)\s*(?:NOT\s+)?\s*$/i);
+        if (colMatch) {
+          const colExpr = colMatch[1].trim();
+          const afterParen = after;
+          // Prefix is after the last comma or the opening paren.
+          const lastComma = afterParen.lastIndexOf(',');
+          const segment = lastComma >= 0 ? afterParen.slice(lastComma + 1) : afterParen;
+          const trimmed = segment.trimStart();
+          const qMatchIn = trimmed.match(/^N?'/);
+          let prefix = '', hasOpeningQuote = false, nPrefix = false;
+          if (qMatchIn) {
+            hasOpeningQuote = true;
+            nPrefix = trimmed.startsWith("N'");
+            const rest = trimmed.slice(qMatchIn[0].length);
+            // Inside IN the value is open when there is no closing ' before the caret.
+            let closing = -1;
+            for (let i = 0; i < rest.length; i++) {
+              if (rest[i] === "'") {
+                if (rest[i + 1] === "'") { i++; continue; }
+                closing = i;
+                break;
+              }
+            }
+            if (closing >= 0) {
+              // The quoted value before the caret is already closed (e.g. "'Placed'"); the caret is after it,
+              // so it is not inside a value that needs completing. Let the next segment handle fresh input.
+              // For IN this means the current element is complete; offer nothing until a new element starts.
+              return null;
+            }
+            prefix = rest;
+            // Keep the original raw length for replacement, but use unescaped for filtering.
+            prefix = prefix.replace(/''/g, "'");
+          } else {
+            // Unquoted prefix (numeric) or empty after comma.
+            const m2 = trimmed.match(/^([^\s,']*)/);
+            prefix = m2 ? m2[1] : '';
+          }
+          // How many characters before the caret belong to the value being typed.
+          // For the open quoted case the raw length includes the opening quote.
+          const rawPrefixLen = hasOpeningQuote ? trimmed.slice(qMatchIn[0].length).length : prefix.length;
+          const replaces = hasOpeningQuote ? (nPrefix ? 2 : 1) + rawPrefixLen : prefix.length;
+          // For IN the closing ) is not yet typed, so we are definitely in a value position.
+          // When the current element is still open (or empty) we can suggest the next values.
+          return { columnExpr: colExpr, prefix, hasOpeningQuote, replaces, isInList: true, operator: 'IN' };
+        }
+      }
+    }
+    // Comparison context: col = 'prefix , col <> 'prefix , col LIKE 'prefix etc.
+    // Find the last comparison in the statement – e.g. "WHERE a = 'x' AND b = 'y" should use b.
+    // A tolerant identifier pattern is used here; the column is later resolved against the
+    // loaded structures, so an over-match is harmless and an under-match would hide values.
+    let lastCmp = null;
+    const cmpPattern = /([A-Za-z0-9_\[\]"\.`$#@]+(?:\s*\.\s*[A-Za-z0-9_\[\]"\.`$#@]+)*)\s*(=|<>|!=|<=|>=|<|>|\bLIKE\b|\bILIKE\b)/gi;
+    for (const m of b.matchAll(cmpPattern)) {
+      lastCmp = m;
+    }
+    if (lastCmp) {
+      const colExpr = lastCmp[1].trim();
+      const operator = lastCmp[2];
+      const afterOp = b.slice(lastCmp.index + lastCmp[0].length);
+      const trimmedAfter = afterOp.trimStart();
+      let prefix = '', hasOpeningQuote = false, replaces = 0;
+      const qMatch = trimmedAfter.match(/^N?'/);
+      if (qMatch) {
+        hasOpeningQuote = true;
+        const rest = trimmedAfter.slice(qMatch[0].length);
+        // Value inside quotes runs until next ' or end (unclosed). An escaped '' counts as part of value.
+        let endIdx = rest.length;
+        let closed = false;
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === "'") {
+            if (rest[i + 1] === "'") { i++; continue; }
+            endIdx = i;
+            closed = true;
+            break;
+          }
+        }
+        if (closed) {
+          // The literal before the caret is already closed (e.g. "'Placed'"); the caret sits after it.
+          // That predicate is complete, so there is no value prefix to complete.
+          return null;
+        }
+        const rawPrefix = rest.slice(0, endIdx);
+        prefix = rawPrefix.replace(/''/g, "'");
+        replaces = qMatch[0].length + rawPrefix.length;
+      } else {
+        const m2 = trimmedAfter.match(/^([^\s,;)]*)/);
+        prefix = m2 ? m2[1] : '';
+        // If user typed a partial unquoted string like pla, that's the prefix.
+        replaces = prefix.length;
+        hasOpeningQuote = false;
+      }
+      // Only treat this as a value context if the operator is the last comparison in the clause.
+      return { columnExpr: colExpr, prefix, hasOpeningQuote, replaces, isInList: false, operator };
+    }
+    return null;
+  }
+
+  function resolveValueColumn(sources, loaded, columnExpr) {
+    const parts = [];
+    const partRe = /(?:\[[^\]]+\]|"[^"]+"|`[^`]+`|[A-Za-z_][\w$#@]*)/g;
+    let m;
+    while ((m = partRe.exec(columnExpr))) parts.push(unquoteSqlIdentifier(m[0]));
+    if (!parts.length) return null;
+    let colName, qualifier;
+    if (parts.length >= 2) {
+      qualifier = parts[parts.length - 2];
+      colName = parts[parts.length - 1];
+    } else {
+      colName = parts[0];
+    }
+    if (qualifier) {
+      const source = loaded.find(s => s.alias.toLowerCase() === qualifier.toLowerCase()
+        || s.object.name.toLowerCase() === qualifier.toLowerCase());
+      if (!source) return null;
+      const columnInfo = (source.structure.columns || []).find(c => c.name.toLowerCase() === colName.toLowerCase());
+      if (!columnInfo) return null;
+      return { source, columnInfo };
+    }
+    // Unqualified: find which source owns the column. Single source is the common case.
+    const candidates = loaded.filter(s => (s.structure.columns || []).some(c => c.name.toLowerCase() === colName.toLowerCase()));
+    if (!candidates.length) return null;
+    // Prefer the only candidate, otherwise the first (ambiguous). Could combine, but one is less surprising.
+    const source = candidates.length === 1 ? candidates[0]
+      : candidates.find(s => s.alias.toLowerCase() === colName.toLowerCase()) || candidates[0];
+    const columnInfo = (source.structure.columns || []).find(c => c.name.toLowerCase() === colName.toLowerCase());
+    return columnInfo ? { source, columnInfo } : null;
+  }
+
+  async function valueCompletionSuggestions(sql, caret, scope) {
+    const statement = currentSqlStatement(sql, caret);
+    const ctx = detectValueCompletionContext(statement.beforeCaret);
+    if (!ctx) return null;
+    const sources = sqlSources(statement.sql, scope);
+    if (!sources.length) return null;
+    let loaded;
+    try { loaded = await Promise.all(sources.map(s => loadCompletionStructure(s, scope))); }
+    catch { return null; }
+    const resolved = resolveValueColumn(sources, loaded, ctx.columnExpr);
+    if (!resolved) return null;
+    const { source, columnInfo } = resolved;
+    // Skip columns where distinct values would never be useful.
+    if (columnInfo.isPrimaryKey) return null;
+    if (columnInfo.isIdentity && !isTextLikeType(columnInfo.dataType)) return null;
+
+    // Check constraints give the authoritative allowed set without touching data.
+    let rawValues = valuesFromCheckConstraints(source.structure, columnInfo.name);
+    let sourceLabel = 'Allowed values';
+    if (rawValues.length) {
+      if (ctx.prefix) {
+        const low = ctx.prefix.toLowerCase();
+        rawValues = rawValues.filter(v => String(v).toLowerCase().startsWith(low));
+      }
+      rawValues = rawValues.slice(0, 20);
+    } else {
+      // No constraint set: ask the server for distinct values. Only do this when it plausibly helps.
+      // Text-like columns are always worth a round-trip; for numeric/date we show a 10-value
+      // distribution when the predicate is a range (>, >=, <, <=) so the user can pick a
+      // threshold without guessing. High-cardinality identity keys are skipped above.
+      const isRangeOp = ['>', '>=', '<', '<='].includes(ctx.operator);
+      const isDate = isDateType(columnInfo.dataType, columnInfo.name);
+      const isNumeric = isNumericType(columnInfo.dataType);
+      const isNumericOrDate = isNumeric || isDate;
+      const isText = isTextLikeType(columnInfo.dataType) && !isDate;
+      if (!isText) {
+        if (!ctx.prefix && !(isRangeOp && isNumericOrDate)) return null;
+      }
+      const limit = isRangeOp && isNumericOrDate ? 10 : 20;
+      try {
+        const resp = await api(urlsFor(scope).distinctValues(source.object.schema, source.object.name, columnInfo.name, ctx.prefix || '', limit));
+        rawValues = resp.values || [];
+      } catch {
+        return null;
+      }
+      if (!rawValues.length) return null;
+      sourceLabel = isRangeOp && isNumericOrDate ? 'Distribution' : 'Distinct values';
+    }
+    if (!rawValues.length) return null;
+    const formatted = rawValues.map(v => {
+      const formattedValue = formatValueForCompletion(v, columnInfo.dataType);
+      // When the user has already typed an opening quote, the completion should insert the
+      // same quoted literal and replace the opening quote plus the typed prefix. Otherwise it
+      // replaces just the typed prefix (which may be empty after " = ").
+      return { raw: v, formatted: formattedValue };
+    });
+    // Build match objects compatible with the normal completion pipeline.
+    const matches = formatted.map(({ formatted: value }) => ({
+      value,
+      category: 'value',
+      doc: { summary: `${sourceLabel} for ${source.displayAlias}.${columnInfo.name}.` , dialect: '', url: '' },
+      // For value completions the popup's documentation link would mislead.
+      replaces: ctx.replaces,
+      _valueRaw: value,
+    }));
+    // Preserve the context so the caller can decide replacement length.
+    return { matches, ctx, source, columnInfo };
   }
 
   async function contextualSqlSuggestions(sql, caret, prefix, scope = state) {
@@ -1331,6 +1675,30 @@
     return lines.join('\n');
   }
 
+  // Places where a space still leaves an obvious next token: after a clause keyword, a comma, or an
+  // opening parenthesis in a list.
+  const SQL_COMPLETION_OPENERS = /(?:\b(?:FROM|JOIN|ON|INTO|UPDATE|SELECT|WHERE|HAVING|SET|BY|AND|OR|VALUES|EXEC|EXECUTE)\s+|,\s*)$/i;
+  const sqlOpensCompletion = (before) => SQL_COMPLETION_OPENERS.test(before);
+
+  // A multi-word keyword such as ORDER BY completes as one item, so the caret may sit inside a
+  // phrase whose first words are already typed. These are the runs of words that end at the caret,
+  // longest first, so a suggestion can replace what was typed of the phrase rather than sit beside
+  // it. The last word alone is left out: that is the plain prefix.
+  function sqlCompletionPhrasePrefixes(value, caret) {
+    const line = value.slice(0, caret).split('\n').pop();
+    const found = line.match(/(?:[A-Za-z_][\w$#@]*[ \t])+(?:[A-Za-z_][\w$#@]*)?$/);
+    if (!found) return [];
+    const phrase = found[0];
+    const starts = [];
+    for (let i = 0; i < phrase.length; i++) {
+      if ((i === 0 || /[ \t]/.test(phrase[i - 1])) && /[A-Za-z_]/.test(phrase[i])) starts.push(i);
+    }
+    // A phrase that ends in a space has no last word to leave out.
+    const usable = /[ \t]$/.test(phrase) ? starts : starts.slice(0, -1);
+    // No keyword of either dialect is longer than three words.
+    return usable.slice(-3).map((start) => phrase.slice(start));
+  }
+
   function sqlCompletionPrefix(value, caret) {
     const before = value.slice(0, caret);
     const found = before.match(/(?:@@?[A-Za-z_][\w$#@]*|\[?[A-Za-z_][\w$#@]*\]?\.(?:\[?[A-Za-z_][\w$#@]*\]?)?|\[?[A-Za-z_][\w$#@]*\]?)$/);
@@ -1362,14 +1730,21 @@
       'aria-label': options.label || 'SQL editor',
       readonly: options.readOnly ? '' : null,
     });
-    const completion = h('div', { class: 'sql-completions', hidden: '' });
+    const completionChips = h('div', { class: 'sql-completion-filters', role: 'group', 'aria-label': 'Completion categories' });
+    const completionList = h('div', { class: 'sql-completion-list' });
+    const completionDoc = h('aside', {
+      class: 'sql-completion-doc', 'data-testid': 'sql-completion-doc', 'aria-live': 'polite',
+    });
+    const completion = h('div', { class: 'sql-completions', hidden: '' },
+      completionChips, h('div', { class: 'sql-completion-body' }, completionList, completionDoc));
     const diagnostic = h('div', { class: 'sql-diagnostic muted' });
     const surface = h('div', { class: 'sql-surface' }, lines, highlight, input, completion);
     const editor = h('div', {
       class: `sql-editor${options.readOnly ? ' read-only' : ''}`,
       'data-editor-language': 'sql',
     }, surface, diagnostic);
-    let matches = [], selected = 0, completionRequest = 0;
+    let matches = [], visibleMatches = [], selected = 0, completionRequest = 0;
+    let completionFilters = readCompletionFilters();
 
     const refresh = () => {
       highlight.innerHTML = highlightSql(input.value);
@@ -1380,11 +1755,129 @@
       diagnostic.className = 'sql-diagnostic sql-invalid';
       diagnostic.hidden = !problem;
     };
-    const hideCompletion = () => { completion.hidden = true; matches = []; };
+    const hideCompletion = () => {
+      completion.hidden = true; matches = []; visibleMatches = [];
+      surface.classList.remove('completing');
+      editor.classList.remove('completing');
+    };
+
+    // The documentation panel describes whatever the pointer is over, and falls back to the
+    // keyboard selection when the pointer is elsewhere. Language items quote the official
+    // documentation in one sentence and link to it; database objects describe themselves.
+    const describeCompletion = (match) => {
+      if (!match) {
+        completionDoc.replaceChildren(h('p', { class: 'muted', text: 'Point at a suggestion to read what it does.' }));
+        return;
+      }
+      const indexUrl = sqlDocs()?.indexUrl(sqlProviderName(scope)) || null;
+      const parts = [h('div', { class: 'sql-completion-doc-name', text: match.value })];
+      const link = (url, text) => h('a', {
+        class: 'sql-completion-doc-link', href: url, target: '_blank', rel: 'noopener noreferrer', text,
+        // The editor loses focus the moment the pointer goes down, which closes the popup before
+        // a plain click can land. Keeping focus in the textarea and opening the tab here instead
+        // makes the link work wherever the popup is.
+        onmousedown: (e) => { e.preventDefault(); window.open(url, '_blank', 'noopener'); },
+      });
+      if (match.doc) {
+        parts.push(h('p', { class: 'sql-completion-doc-text', text: match.doc.summary }));
+        if (match.doc.url) parts.push(link(match.doc.url, `${match.doc.dialect} documentation ↗`));
+      } else {
+        parts.push(h('p', { class: 'sql-completion-doc-text muted', text: completionFallbackText(match) }));
+        // Only language items get the reference link. A table or column of this database is not
+        // described anywhere in the dialect documentation, so the link would lead nowhere useful.
+        if (indexUrl && isLanguageCompletion(match.category)) parts.push(link(indexUrl, 'Language reference ↗'));
+      }
+      completionDoc.replaceChildren(...parts);
+    };
+
+    const completionFallbackText = (match) => {
+      switch (match.category) {
+        case 'table': return 'Table in this database.';
+        case 'view': return 'View in this database.';
+        case 'routine': return 'Stored routine in this database.';
+        case 'type': return 'User defined type in this database.';
+        case 'schema': return 'Schema in this database.';
+        case 'column': return 'Column of a table this statement reads.';
+        case 'join': return 'Join condition suggested from a foreign key.';
+        case 'parameter': return 'Parameter of the routine being executed.';
+        case 'value': return match.doc?.summary || 'Distinct value in this column.';
+        default: return 'No description is available for this item.';
+      }
+    };
+
+    const renderCompletionChips = () => {
+      completionChips.replaceChildren(...COMPLETION_FILTERS.map((filter) => {
+        const count = matches.filter((match) => completionFilterOf(match.category) === filter).length;
+        const on = completionFilters.has(filter.id);
+        const label = `${on ? 'Hide' : 'Show'} ${filter.label.toLowerCase()}`;
+        return h('button', {
+          type: 'button', class: `sql-completion-chip${on ? ' active' : ''}`,
+          'data-testid': `completion-filter-${filter.id}`,
+          'aria-pressed': on ? 'true' : 'false',
+          // A category with nothing to show cannot be toggled, so it reads as unavailable.
+          disabled: count ? null : '',
+          title: count ? label : `No ${filter.label.toLowerCase()} match what you typed`,
+          'aria-label': label,
+          onmousedown: (e) => e.preventDefault(),
+          onclick: () => {
+            if (!count) return;
+            if (completionFilters.has(filter.id)) completionFilters.delete(filter.id);
+            else completionFilters.add(filter.id);
+            if (!completionFilters.size) completionFilters = new Set(COMPLETION_FILTERS.map((x) => x.id));
+            writeCompletionFilters(completionFilters);
+            renderCompletionRows();
+            positionCompletion();
+            input.focus();
+          },
+        }, icon(`completion-${filter.id}`));
+      }));
+    };
+
+    const select = (index) => {
+      selected = index;
+      [...completionList.children].forEach((row, i) => row.classList.toggle('active', i === selected));
+      describeCompletion(visibleMatches[selected]);
+    };
+
+    const renderCompletionRows = () => {
+      visibleMatches = matches.filter((match) => {
+        const filter = completionFilterOf(match.category);
+        return !filter || completionFilters.has(filter.id);
+      });
+      if (selected >= visibleMatches.length) selected = 0;
+      renderCompletionChips();
+      if (!visibleMatches.length) {
+        completionList.replaceChildren(h('p', { class: 'sql-completion-empty muted', text: 'No matches in the categories you are showing.' }));
+        describeCompletion(null);
+        return;
+      }
+      completionList.replaceChildren(...visibleMatches.map((match, index) => {
+        const filter = completionFilterOf(match.category);
+        return h('button', {
+          type: 'button', class: `sql-completion-row${index === selected ? ' active' : ''}`,
+          // The accessible name stays the bare value so the row reads as the text it inserts.
+          'aria-label': match.value, 'data-category': match.category,
+          onmousedown: (e) => { e.preventDefault(); insert(match.value, match.replaces); },
+          // Pointing at a row moves the selection there. The description then survives the pointer
+          // travelling to the documentation panel, and the link inside it can be reached.
+          onmouseenter: () => { select(index); },
+        },
+        h('span', { class: 'sql-completion-mark', title: match.category }, filter ? icon(`completion-${filter.id}`) : null),
+        h('span', { class: 'sql-completion-value', text: match.value }));
+      }));
+      describeCompletion(visibleMatches[selected]);
+    };
     // The popup follows the caret instead of sitting at the bottom of the surface, so it never
     // covers the line being typed. It flips above the caret and shrinks when space runs out.
+    // A short editor would leave room for two rows, so while the popup is open the editor stops
+    // clipping and the popup measures itself against the surrounding panel instead.
+    const completionBounds = () => (editor.closest('.panel, .modal-body, .inline-editor') || surface).getBoundingClientRect();
     const positionCompletion = () => {
       if (completion.hidden) return;
+      const bounds = completionBounds();
+      const surfaceRect = surface.getBoundingClientRect();
+      // In a narrow editor the documentation panel cannot sit beside the list, so it moves below it.
+      completion.classList.toggle('stacked', bounds.width < 560);
       const style = getComputedStyle(input);
       const lineHeight = parseFloat(style.lineHeight) || 20;
       const tabSize = parseInt(style.tabSize, 10) || 4;
@@ -1395,52 +1888,110 @@
       const caretLeft = parseFloat(style.paddingLeft) + column * sqlCharWidth(style.font) - input.scrollLeft;
       const caretTop = parseFloat(style.paddingTop) + (rows.length - 1) * lineHeight - input.scrollTop;
       const margin = 6, gap = 2;
-      const below = surface.clientHeight - (caretTop + lineHeight) - margin - gap;
-      const above = caretTop - margin - gap;
-      const flip = below < Math.min(above, 120);
-      completion.style.maxHeight = `${Math.max(48, Math.min(210, flip ? above : below))}px`;
+      // Space either side of the caret line, measured inside the panel rather than the editor box.
+      const below = bounds.bottom - (surfaceRect.top + caretTop + lineHeight) - margin - gap;
+      const above = (surfaceRect.top + caretTop) - bounds.top - margin - gap;
+      const flip = below < Math.min(above, 160);
+      completion.style.maxHeight = `${Math.max(96, Math.min(340, flip ? above : below))}px`;
+      const minTop = bounds.top - surfaceRect.top + margin;
       completion.style.top = flip
-        ? `${Math.max(margin, caretTop - gap - completion.offsetHeight)}px`
+        ? `${Math.max(minTop, caretTop - gap - completion.offsetHeight)}px`
         : `${caretTop + lineHeight + gap}px`;
-      const maxLeft = Math.max(margin, surface.clientWidth - completion.offsetWidth - margin);
-      completion.style.left = `${Math.max(margin, Math.min(caretLeft, maxLeft))}px`;
+      const minLeft = bounds.left - surfaceRect.left + margin;
+      const maxLeft = Math.max(minLeft, bounds.right - surfaceRect.left - completion.offsetWidth - margin);
+      completion.style.left = `${Math.max(minLeft, Math.min(caretLeft, maxLeft))}px`;
     };
     const complete = async (force = false) => {
       const request = ++completionRequest;
+      // Value completion (WHERE col = 'value') is attempted first. It applies even with no
+      // typed prefix – e.g. "WHERE Status = " should list the distinct values immediately –
+      // and when it claims the caret the normal column/keyword popup would be noise.
+      let valueResult = null;
+      try { valueResult = await valueCompletionSuggestions(input.value, input.selectionStart, scope); }
+      catch { valueResult = null; }
+      if (request !== completionRequest) return;
+      if (valueResult && valueResult.matches && valueResult.matches.length) {
+        matches = valueResult.matches;
+        selected = 0;
+        renderCompletionRows();
+        completion.hidden = false;
+        surface.classList.add('completing');
+        editor.classList.add('completing');
+        positionCompletion();
+        return;
+      }
+      // If the caret is in a predicate value position but no distinct set looks worthwhile,
+      // keep the popup closed unless the user explicitly asked (Ctrl+Space). Showing columns
+      // or keywords after "WHERE col = " is not what was asked for.
+      if (valueResult && valueResult.ctx && !force) { hideCompletion(); return; }
+
       const prefix = sqlCompletionPrefix(input.value, input.selectionStart);
-      if (!force && prefix.length < 2) { hideCompletion(); return; }
-      const contextual = await contextualSqlSuggestions(input.value, input.selectionStart, prefix, scope);
+      const phrases = sqlCompletionPhrasePrefixes(input.value, input.selectionStart);
+      const starts = (value, typed) => typed && value.toLowerCase().startsWith(typed.toLowerCase());
+      // A multi-word keyword is offered from its first word on, so ORDER BY is still reachable
+      // after ORDER and the space that follows it.
+      const continued = sqlSuggestions(scope).filter((x) => phrases.some((phrase) => starts(x, phrase)));
+      // A space does not have to end the suggestions. After a clause keyword or a comma the editor
+      // still knows what belongs at the caret, so it keeps offering the context-aware items there.
+      // The full keyword list stays out of that popup, because nothing has been typed to narrow it.
+      const opening = !prefix && sqlOpensCompletion(input.value.slice(0, input.selectionStart));
+      if (!force && !opening && !continued.length && prefix.length < 2) { hideCompletion(); return; }
+      // One letter is not enough to search the whole database, but it is enough to finish a phrase.
+      const narrow = force || prefix.length >= 2;
+      const contextual = narrow || opening
+        ? await contextualSqlSuggestions(input.value, input.selectionStart, prefix, scope)
+        : [];
       if (request !== completionRequest || prefix !== sqlCompletionPrefix(input.value, input.selectionStart)) return;
-      matches = [...contextual, ...sqlSuggestions(scope).filter((x) => x.toLowerCase().startsWith(prefix.toLowerCase()))]
-        .filter((x, i, all) => x.toLowerCase() !== prefix.toLowerCase() && all.findIndex((y) => y.toLowerCase() === x.toLowerCase()) === i)
-        .slice(0, 20);
+      const contextualSet = new Set(contextual.map((value) => value.toLowerCase()));
+      // What a suggestion replaces: the longest phrase it continues, or the word at the caret.
+      const replaced = (value) => phrases.find((phrase) => starts(value, phrase))
+        ?? (starts(value, prefix) ? prefix : null);
+      const language = narrow
+        ? sqlSuggestions(scope).filter((x) => replaced(x) !== null)
+        : continued;
+      matches = [...contextual, ...language]
+        // An exact match keeps its row: the word may be complete, but its description is what the
+        // popup is being read for. Only duplicates are dropped.
+        .filter((x, i, all) => all.findIndex((y) => y.toLowerCase() === x.toLowerCase()) === i)
+        .slice(0, 20)
+        .map((value) => ({
+          value,
+          category: classifyCompletion(value, scope, contextualSet.has(value.toLowerCase())),
+          doc: sqlDocLookup(scope, value),
+          replaces: (replaced(value) || '').length,
+        }));
       selected = 0;
       if (!matches.length) { hideCompletion(); return; }
-      completion.replaceChildren(...matches.map((x, i) => h('button', {
-        type: 'button', class: i === selected ? 'active' : '', text: x,
-        onmousedown: (e) => { e.preventDefault(); insert(x, prefix.length); },
-      })));
+      renderCompletionRows();
       completion.hidden = false;
+      surface.classList.add('completing');
+      editor.classList.add('completing');
       positionCompletion();
     };
     const insert = (value, prefixLength = 0) => {
       const start = input.selectionStart - prefixLength, end = input.selectionEnd;
       input.setRangeText(value, start, end, 'end');
       input.dispatchEvent(new Event('input', { bubbles: true }));
+      // The input event above starts a completion for the text just inserted. Retiring the request
+      // discards it, so accepting a suggestion closes the popup instead of reopening it.
+      completionRequest++;
       hideCompletion(); input.focus();
     };
     input.addEventListener('input', () => { refresh(); if (!options.readOnly) complete(); });
     input.addEventListener('scroll', () => { highlight.scrollTop = input.scrollTop; highlight.scrollLeft = input.scrollLeft; lines.scrollTop = input.scrollTop; positionCompletion(); });
     input.addEventListener('blur', () => setTimeout(hideCompletion, 120));
+    completionList.addEventListener('mouseleave', () => describeCompletion(visibleMatches[selected]));
     input.addEventListener('keydown', (e) => {
       if (options.readOnly) return;
       if (e.ctrlKey && e.key === ' ') { e.preventDefault(); complete(true); return; }
-      if (!completion.hidden && ['ArrowDown', 'ArrowUp'].includes(e.key)) {
-        e.preventDefault(); selected = (selected + (e.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length;
-        [...completion.children].forEach((x, i) => x.classList.toggle('active', i === selected));
-      } else if (!completion.hidden && (e.key === 'Enter' || e.key === 'Tab')
+      if (!completion.hidden && visibleMatches.length && ['ArrowDown', 'ArrowUp'].includes(e.key)) {
+        e.preventDefault();
+        select((selected + (e.key === 'ArrowDown' ? 1 : visibleMatches.length - 1)) % visibleMatches.length);
+        completionList.children[selected]?.scrollIntoView({ block: 'nearest' });
+      } else if (!completion.hidden && visibleMatches.length && (e.key === 'Enter' || e.key === 'Tab')
         && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault(); insert(matches[selected], sqlCompletionPrefix(input.value, input.selectionStart).length);
+        e.preventDefault();
+        insert(visibleMatches[selected].value, visibleMatches[selected].replaces);
       } else if (e.key === 'Escape') hideCompletion();
       else if (e.key === 'Tab') { e.preventDefault(); insert('    '); }
     });
@@ -1565,6 +2116,7 @@
   });
 
   registerTabRestorer('diagram', (descriptor) => openDiagramTab(descriptor.scope));
+
   registerTabRestorer('schema-compare', (descriptor) =>
     openSchemaCompareTab(descriptor.source, descriptor.target));
   registerTabRestorer('data-compare', async (descriptor) => {
@@ -1582,6 +2134,8 @@
   registerTabRestorer('object-search', (descriptor) => openObjectSearchTab(descriptor));
 
   registerTabRestorer('apis', () => openApisTab());
+  registerTabRestorer('security', (descriptor) => openSecurityTab(descriptor.scope));
+  registerTabRestorer('trigger-management', (descriptor) => openTriggerManagementTab(descriptor.scope));
 
   // ---- modules ----------------------------------------------------------------
   // Optional packages (installed by the host) ship their own scripts and styles. The server
@@ -2046,6 +2600,68 @@
     return area;
   }
 
+  // Splitter between two stacked result grids. Dragging (or ArrowUp/Down) moves the boundary
+  // between the adjacent panels only; every panel is pinned to its current height first so the
+  // other panels keep their size.
+  function resultSetGrip(above, below, container) {
+    const grip = h('div', {
+      class: 'result-set-grip', role: 'separator',
+      'aria-label': 'Resize result grid', 'aria-orientation': 'horizontal', tabindex: '0',
+    });
+    const minPanelHeight = 96;
+    const pinAllPanels = () => {
+      for (const panel of container.querySelectorAll(':scope > .result-set')) {
+        panel.style.flex = `0 0 ${panel.getBoundingClientRect().height}px`;
+      }
+    };
+    // Virtualized grids size their render window from the container height, so they need a
+    // re-render once that height changes; non-virtualized grids are unaffected.
+    const rerenderVirtualGrids = () => {
+      for (const scroll of container.querySelectorAll(':scope > .result-set > .grid-scroll')) {
+        scroll.dispatchEvent(new Event('scroll'));
+      }
+    };
+    const applyDelta = (startAbove, startBelow, delta) => {
+      const bound = Math.min(Math.max(delta, minPanelHeight - startBelow), startAbove - minPanelHeight);
+      above.style.flex = `0 0 ${startAbove + bound}px`;
+      below.style.flex = `0 0 ${startBelow - bound}px`;
+    };
+    grip.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      grip.setPointerCapture(event.pointerId);
+      grip.classList.add('dragging');
+      document.body.style.cursor = 'row-resize';
+      pinAllPanels();
+      const startY = event.clientY;
+      const startAbove = above.getBoundingClientRect().height;
+      const startBelow = below.getBoundingClientRect().height;
+      const move = (moveEvent) => {
+        applyDelta(startAbove, startBelow, moveEvent.clientY - startY);
+        rerenderVirtualGrids();
+      };
+      const stop = () => {
+        grip.removeEventListener('pointermove', move);
+        grip.removeEventListener('pointerup', stop);
+        grip.removeEventListener('pointercancel', stop);
+        grip.classList.remove('dragging');
+        document.body.style.cursor = '';
+        rerenderVirtualGrids();
+      };
+      grip.addEventListener('pointermove', move);
+      grip.addEventListener('pointerup', stop);
+      grip.addEventListener('pointercancel', stop);
+    });
+    grip.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      event.preventDefault();
+      pinAllPanels();
+      applyDelta(above.getBoundingClientRect().height, below.getBoundingClientRect().height,
+        event.key === 'ArrowUp' ? -24 : 24);
+      rerenderVirtualGrids();
+    });
+    return grip;
+  }
+
   // ---- sidebar tree ------------------------------------------------------------
 
   const SECTIONS = [
@@ -2110,7 +2726,29 @@
           },
             h('span', { class: 'badge badge-S', text: 'S' }),
             h('span', { class: 'item-name', text: s.name }),
-            h('span', { class: 'schema-owner', text: s.owner })))), !!filter));
+          h('span', { class: 'schema-owner', text: s.owner })))), !!filter));
+    }
+
+    const administration = [];
+    if (capabilities.supportsSecurityOverview && (!filter || 'security users roles permissions'.includes(filter))) {
+      administration.push(h('button', {
+        class: 'tree-item', title: 'Database users, roles, and permissions',
+        onclick: () => openSecurityTab(),
+      }, h('span', { class: 'badge badge-U', text: 'U' }),
+      h('span', { class: 'item-name', text: 'Security' })));
+    }
+    if (capabilities.supportsTriggerManagement && (!filter || 'all triggers ddl server database'.includes(filter))) {
+      administration.push(h('button', {
+        class: 'tree-item', title: 'DML, database DDL, and server DDL triggers',
+        onclick: () => openTriggerManagementTab(),
+      }, h('span', { class: 'badge badge-R', text: 'R' }),
+      h('span', { class: 'item-name', text: 'All triggers' })));
+    }
+    if (administration.length) {
+      const summary = h('summary', {}, 'Administration ',
+        h('span', { class: 'count', text: String(administration.length) }));
+      tree.append(treeSection('administration', false, summary,
+        h('div', { class: 'items' }, administration), !!filter));
     }
 
     for (const [label, types, badge, capability] of SECTIONS) {
@@ -2213,6 +2851,109 @@
       await loadObjects();
       toast(`Schema ${schema.name} deleted.`, false);
     }, 'Delete schema');
+  }
+
+  function administrationTable(title, headers, rows) {
+    return h('section', {}, h('h3', { text: title }),
+      rows.length
+        ? h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
+          h('thead', {}, h('tr', {}, headers.map((header) => h('th', { text: header })))),
+          h('tbody', {}, rows)))
+        : h('p', { class: 'muted', text: 'None visible to the current database identity.' }));
+  }
+
+  function openSecurityTab(scope = scopeOf()) {
+    const key = `security:${scopeKey(scope)}`;
+    const existing = state.tabs.find((tab) => tab.key === key);
+    if (existing) { setActiveTab(existing.id); return; }
+    const body = h('div', { class: 'panel-body' }, h('div', { class: 'loading', text: 'Loading…' }));
+    const tab = {
+      id: state.nextTabId++, key, scope, badge: 'U', title: 'Security',
+      panel: h('div', { class: 'panel' },
+        h('div', { class: 'viewbar' }, h('h2', { text: 'Database security' })), body),
+      loaded: false, load: async () => {
+        try {
+          const security = await api(urlsFor(scope).security());
+          const identity = h('div', { class: 'temporal-info', 'data-testid': 'security-identity' },
+            h('strong', { text: security.currentUser || 'Unknown database user' }),
+            h('span', { text: `Login: ${security.login || 'unknown'}` }),
+            security.originalLogin && security.originalLogin !== security.login
+              ? h('span', { text: `Original login: ${security.originalLogin}` }) : null);
+          body.replaceChildren(identity,
+            administrationTable('Effective permissions', ['Scope', 'Permission'],
+              (security.effectivePermissions || []).map((permission) => h('tr', {},
+                h('td', { text: permission.scope }), h('td', { text: permission.permission })))),
+            administrationTable('Users and roles', ['Name', 'Type', 'Authentication', 'Default schema', 'Flags'],
+              (security.principals || []).map((principal) => h('tr', {},
+                h('td', { text: principal.name }), h('td', { text: principal.type }),
+                h('td', { text: principal.authenticationType || '' }),
+                h('td', { text: principal.defaultSchema || '' }),
+                h('td', { text: [principal.isFixedRole ? 'fixed role' : '', principal.isSystem ? 'system' : '']
+                  .filter(Boolean).join(', ') })))),
+            administrationTable('Role memberships', ['Role', 'Member'],
+              (security.roleMemberships || []).map((membership) => h('tr', {},
+                h('td', { text: membership.role }), h('td', { text: membership.member })))),
+            administrationTable('Explicit permissions', ['Grantee', 'State', 'Permission', 'Scope', 'Securable', 'Grantor'],
+              (security.explicitPermissions || []).map((permission) => h('tr', {},
+                h('td', { text: permission.grantee }), h('td', { text: permission.state }),
+                h('td', { text: permission.permission }), h('td', { text: permission.scope }),
+                h('td', { class: 'mono', text: permission.securable || '' }),
+                h('td', { text: permission.grantor })))));
+        } catch (err) { body.replaceChildren(errorBox(err.message)); }
+      },
+      restore: { kind: 'security', scope },
+    };
+    addTab(tab);
+  }
+
+  function openTriggerManagementTab(scope = scopeOf()) {
+    const key = `trigger-management:${scopeKey(scope)}`;
+    const existing = state.tabs.find((tab) => tab.key === key);
+    if (existing) { setActiveTab(existing.id); return; }
+    const body = h('div', { class: 'panel-body' }, h('div', { class: 'loading', text: 'Loading…' }));
+    const tab = {
+      id: state.nextTabId++, key, scope, badge: 'R', title: 'All triggers',
+      panel: h('div', { class: 'panel' },
+        h('div', { class: 'viewbar' }, h('h2', { text: 'Trigger management' })), body),
+      loaded: false, load: async () => {
+        const render = async () => {
+          try {
+            const triggers = await api(urlsFor(scope).triggers());
+            const rows = triggers.map((trigger) => {
+              const target = trigger.scope === 'object'
+                ? `${trigger.parentSchema}.${trigger.parentName}`
+                : trigger.scope === 'database' ? scope.database : 'all server';
+              const toggle = connectionFor(scope).allowDdl ? h('button', {
+                class: 'mini-btn',
+                text: trigger.isDisabled ? 'Enable' : 'Disable',
+                'aria-label': `${trigger.isDisabled ? 'Enable' : 'Disable'} trigger ${trigger.name}`,
+                onclick: async () => {
+                  try {
+                    await post(urlsFor(scope).triggerState(), {
+                      name: trigger.name, scope: trigger.scope, enabled: trigger.isDisabled,
+                      schema: trigger.schema, parentSchema: trigger.parentSchema, parentName: trigger.parentName,
+                    });
+                    toast(`Trigger ${trigger.name} ${trigger.isDisabled ? 'enabled' : 'disabled'}.`, false);
+                    await render();
+                  } catch (err) { toast(err.message); }
+                },
+              }) : null;
+              const definition = trigger.definition ? h('details', {},
+                h('summary', { text: 'Show SQL' }), h('pre', { class: 'mono', text: trigger.definition })) : null;
+              return h('tr', {}, h('td', { text: trigger.name }), h('td', { text: trigger.scope }),
+                h('td', { class: 'mono', text: target }), h('td', { text: (trigger.events || []).join(', ') }),
+                h('td', { text: trigger.isDisabled ? 'Disabled' : 'Enabled' }), h('td', {}, definition),
+                h('td', { class: 'cell-actions' }, toggle));
+            });
+            body.replaceChildren(administrationTable('DML and DDL triggers',
+              ['Name', 'Scope', 'Target', 'Events', 'State', 'Definition', ''], rows));
+          } catch (err) { body.replaceChildren(errorBox(err.message)); }
+        };
+        await render();
+      },
+      restore: { kind: 'trigger-management', scope },
+    };
+    addTab(tab);
   }
 
   function openSequenceDialog() {
@@ -9952,7 +10693,7 @@
       runButton.disabled = true;
       status.textContent = mode === 'actual' ? 'Running for actual plan…' : 'Explaining…';
       results.replaceChildren();
-      results.classList.remove('single-result');
+      results.classList.remove('single-result', 'multi-result');
       try {
         const plan = await post(urls.queryPlan(), { sql, mode });
         historyOutcome = 'succeeded';
@@ -9990,7 +10731,7 @@
       runButton.disabled = true;
       cancelButton.disabled = false;
       results.replaceChildren();
-      results.classList.remove('single-result');
+      results.classList.remove('single-result', 'multi-result');
       const startedAt = performance.now();
       const historyStartedAt = Date.now();
       let historyDuration = null;
@@ -10001,6 +10742,7 @@
       }, 100);
 
       const sets = new Map();
+      let lastPanel = null;
       let completedSuccessfully = false;
       const messages = h('div', { class: 'query-messages' });
       const addEvent = (event) => {
@@ -10015,12 +10757,17 @@
           const scroll = h('div', { class: 'grid-scroll' });
           const gridView = progressiveDataGrid(scroll, { selectable: true });
           gridView.setColumns(event.columns);
-          results.append(meta, scroll);
+          const panel = h('div', { class: 'result-set' }, meta, scroll);
+          if (lastPanel) results.append(resultSetGrip(lastPanel, panel, results));
+          results.append(panel);
+          lastPanel = panel;
           sets.set(event.resultSetIndex, {
             columns: gridView.columns, rows: gridView.rows, metaText, meta, exports, scroll, gridView,
           });
-          // A single result set fills the panel; a second reverts to capped, scroll-between grids.
+          // A single result set fills the panel; further sets each get an equal, resizable share
+          // of it with their own scrollbar.
           results.classList.toggle('single-result', sets.size === 1);
+          results.classList.toggle('multi-result', sets.size > 1);
         } else if (event.type === 'rows') {
           const set = sets.get(event.resultSetIndex);
           if (!set) return;

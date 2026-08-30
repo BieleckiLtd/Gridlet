@@ -19,6 +19,15 @@ namespace Gridlet.Tests.AspNetCore;
 public class GridletEndpointTests
 {
     [Fact]
+    public void Distinct_value_endpoint_uses_the_provider_identifier_limit()
+    {
+        Assert.Equal(128, global::Gridlet.AspNetCore.GridletApiEndpoints.MaximumColumnIdentifierLength(
+            GridletProviderNames.SqlServer));
+        Assert.Equal(255, global::Gridlet.AspNetCore.GridletApiEndpoints.MaximumColumnIdentifierLength(
+            GridletProviderNames.Sqlite));
+    }
+
+    [Fact]
     public async Task Ui_index_is_served_with_mount_path_as_base_href()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();
@@ -306,6 +315,32 @@ public class GridletEndpointTests
             "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data?page=1&pageSize=50");
 
         Assert.Contains("totalRows", body);
+    }
+
+    [Fact]
+    public async Task Administration_endpoints_expose_security_and_manage_all_trigger_scopes()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        const string database = "/gridlet/api/connections/Main/databases/FakeDb";
+
+        var security = await client.GetStringAsync($"{database}/security");
+        var triggers = await client.GetStringAsync($"{database}/triggers");
+        var changed = await client.PostAsJsonAsync($"{database}/triggers/state", new
+        {
+            name = "AuditDatabaseDdl",
+            scope = "database",
+            enabled = true,
+        });
+
+        Assert.Contains("\"currentUser\":\"app_user\"", security);
+        Assert.Contains("\"role\":\"report_reader\"", security);
+        Assert.Contains("\"permission\":\"SELECT\"", security);
+        Assert.Contains("\"name\":\"AuditDatabaseDdl\"", triggers);
+        Assert.Contains("\"scope\":\"server\"", triggers);
+        Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        Assert.Contains("setTriggerState database..AuditDatabaseDdl enabled=True", fake.Calls);
     }
 
     [Fact]

@@ -478,6 +478,7 @@ button.ghost { background: transparent; }
 .badge-R { background: #573034; color: #ff9aa2; }
 .badge-S { background: #3b355e; color: #b9a9ff; }
 .badge-Q { background: #263244; color: #9db9e4; }
+.badge-U { background: #3d3157; color: #c7a7f3; }
 .badge-Y { background: #3e354f; color: #c9adf5; }
 .badge-O { background: #3b4148; color: #c1c9d2; }
 .badge-search { background: #243f52; color: #75c8f0; }
@@ -496,6 +497,7 @@ button.ghost { background: transparent; }
 :root[data-theme="light"] .badge-R { background: #f8dfe1; color: #92363d; }
 :root[data-theme="light"] .badge-S { background: #e6e0f5; color: #594692; }
 :root[data-theme="light"] .badge-Q { background: #e1e8f1; color: #405a7d; }
+:root[data-theme="light"] .badge-U { background: #e9def5; color: #65418b; }
 :root[data-theme="light"] .badge-Y { background: #e9e1f4; color: #64428d; }
 :root[data-theme="light"] .badge-O { background: #e4e8ec; color: #4e5964; }
 :root[data-theme="light"] .badge-search { background: #dcecf5; color: #176185; }
@@ -1062,6 +1064,10 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   background: var(--accent-dim);
 }
 .sql-surface { position: relative; flex: 1; min-height: 100px; overflow: hidden; }
+/* While the completion popup is open the editor stops clipping, so the list and its
+   documentation panel can use the height of the panel rather than of the editor box. */
+.sql-editor.completing, .sql-surface.completing { overflow: visible; }
+.sql-editor.completing { position: relative; z-index: 30; }
 .sql-input, .sql-highlight {
   position: absolute; inset: 0; margin: 0; border: 0; border-radius: 0;
   padding: 9px 12px 9px 55px; font: 13px/1.5 var(--mono); tab-size: 4;
@@ -1087,13 +1093,43 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 .sql-diagnostic { padding: 4px 10px; border-top: 1px solid var(--border); font: 11.5px var(--sans); }
 .sql-invalid { color: var(--error-text); }
 .sql-completions {
-  position: absolute; z-index: 5; top: 0; left: 0;
-  min-width: 180px; max-width: min(360px, calc(100% - 16px));
-  max-height: 210px; overflow: auto; padding: 4px; border: 1px solid var(--code-border);
+  position: absolute; z-index: 45; top: 0; left: 0;
+  display: flex; flex-direction: column; min-width: 200px; max-width: calc(100% - 16px);
+  max-height: 210px; overflow: hidden; padding: 4px; border: 1px solid var(--code-border);
   border-radius: 6px; background: var(--code-popup); box-shadow: 0 8px 25px var(--shadow);
 }
-.sql-completions button { display: block; min-width: 100%; padding: 4px 8px; border: 0; text-align: left; white-space: nowrap; font-family: var(--mono); background: transparent; }
-.sql-completions button:hover, .sql-completions button.active { background: var(--accent-dim); }
+.sql-completion-filters { display: flex; flex: 0 0 auto; gap: 3px; padding: 1px 1px 4px; border-bottom: 1px solid var(--code-border); }
+.sql-completion-chip {
+  display: flex; align-items: center; justify-content: center; width: 24px; height: 22px;
+  padding: 0; border: 1px solid transparent; border-radius: 5px; color: var(--muted); background: transparent;
+}
+.sql-completion-chip svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.sql-completion-chip:hover:not(:disabled) { color: var(--text); border-color: var(--code-border); }
+.sql-completion-chip.active { color: var(--text); border-color: var(--accent); background: var(--accent-dim); }
+.sql-completion-chip:disabled { opacity: .35; }
+.sql-completion-body { display: flex; min-height: 0; flex: 1; gap: 4px; }
+.sql-completion-list { flex: 1 1 auto; min-width: 170px; max-width: 340px; overflow: auto; padding-top: 3px; }
+.sql-completion-row {
+  display: flex; align-items: baseline; gap: 8px; min-width: 100%; padding: 3px 8px;
+  border: 0; text-align: left; white-space: nowrap; background: transparent;
+}
+.sql-completion-row:hover, .sql-completion-row.active { background: var(--accent-dim); }
+.sql-completion-mark { display: flex; flex: 0 0 auto; align-self: center; color: var(--muted); }
+.sql-completion-mark svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.sql-completion-row.active .sql-completion-mark { color: var(--text); }
+.sql-completion-value { flex: 1; font-family: var(--mono); }
+.sql-completion-empty { padding: 6px 8px; font: 11.5px var(--sans); }
+.sql-completion-doc {
+  flex: 0 0 250px; min-width: 0; overflow: auto; padding: 5px 8px;
+  border-left: 1px solid var(--code-border); font: 11.5px/1.45 var(--sans);
+}
+.sql-completions.stacked .sql-completion-body { flex-direction: column; }
+.sql-completions.stacked .sql-completion-list { max-width: none; }
+.sql-completions.stacked .sql-completion-doc { flex: 0 0 auto; max-height: 96px; border-left: 0; border-top: 1px solid var(--code-border); }
+.sql-completion-doc-name { margin-bottom: 4px; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.sql-completion-doc-text { margin: 0 0 5px; }
+.sql-completion-doc-link { color: var(--accent); text-decoration: none; }
+.sql-completion-doc-link:hover { text-decoration: underline; }
 .inline-editor .sql-editor { flex: 1; resize: none; }
 
 @media (forced-colors: active) {
@@ -1102,11 +1138,30 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 }
 
 .query-results { flex: 1; overflow-x: hidden; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
-.query-results > .grid-scroll { max-width: 100%; }
-/* A lone result set fills the panel and owns the only scrollbar, so the grid never scrolls inside
-   a second scrollbar. Multiple result sets keep the capped height and let .query-results scroll. */
+.result-set { display: flex; flex-direction: column; min-width: 0; }
+.result-set > .grid-scroll { max-width: 100%; }
+/* A lone result set fills the panel and owns the only scrollbar. With several sets each panel
+   gets an equal share with its own scrollbar, and the grips between panels resize the shares. */
 .query-results.single-result { overflow: hidden; }
-.query-results.single-result > .grid-scroll { flex: 1; min-height: 0; max-height: none; }
+.query-results.single-result > .result-set { flex: 1; min-height: 0; }
+.query-results.single-result > .result-set > .grid-scroll { flex: 1; min-height: 0; max-height: none; }
+.query-results.multi-result { gap: 0; }
+.query-results.multi-result > .result-set { flex: 1 1 0; min-height: 96px; }
+.query-results.multi-result > .result-set > .grid-scroll { flex: 1; min-height: 0; max-height: none; }
+.query-results.multi-result > .result-set > .grid-scroll.virtualized { max-height: none; }
+.query-results.multi-result > :not(.result-set):not(.result-set-grip) { margin-top: 8px; }
+.result-set-grip {
+  height: 11px;
+  flex: 0 0 11px;
+  cursor: row-resize;
+  touch-action: none;
+  border-top: 1px solid transparent;
+  outline: none;
+}
+.result-set-grip:hover, .result-set-grip:focus-visible, .result-set-grip.dragging {
+  border-top-color: var(--accent);
+  background: var(--accent-dim);
+}
 .result-meta { font-size: 12.5px; }
 .message { color: var(--ok); font-size: 12.5px; white-space: pre-wrap; }
 
