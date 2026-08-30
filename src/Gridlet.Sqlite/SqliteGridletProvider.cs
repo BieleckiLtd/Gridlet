@@ -192,11 +192,12 @@ public sealed class SqliteGridletProvider :
         }
         else
         {
-            var escaped = EscapeLike(trimmed);
-            command.Parameters.AddWithValue("@search", escaped);
+            var (exact, pattern) = BuildDistinctValueSearch(trimmed);
+            command.Parameters.AddWithValue("@search", exact);
+            command.Parameters.AddWithValue("@pattern", pattern);
             command.CommandText =
                 $"SELECT DISTINCT {quotedColumn} FROM {qualified} WHERE {quotedColumn} IS NOT NULL " +
-                $"AND CAST({quotedColumn} AS TEXT) LIKE @search || '%' ESCAPE '\\' ORDER BY " +
+                $"AND CAST({quotedColumn} AS TEXT) LIKE @pattern ESCAPE '\\' ORDER BY " +
                 $"CASE WHEN CAST({quotedColumn} AS TEXT) = @search THEN 0 ELSE 1 END, {quotedColumn} LIMIT @limit;";
         }
         command.Parameters.AddWithValue("@limit", capped);
@@ -211,4 +212,7 @@ public sealed class SqliteGridletProvider :
 
     private static string EscapeLike(string value)
         => value.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+
+    internal static (string Exact, string Pattern) BuildDistinctValueSearch(string value)
+        => (value, $"{EscapeLike(value)}%");
 }

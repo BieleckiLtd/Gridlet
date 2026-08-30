@@ -106,6 +106,15 @@ public sealed class SqliteProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public void Distinct_value_prefix_keeps_exact_text_separate_from_the_like_pattern()
+    {
+        var (exact, pattern) = SqliteGridletProvider.BuildDistinctValueSearch(@"50%_\");
+
+        Assert.Equal(@"50%_\", exact);
+        Assert.Equal("50\\%\\_\\\\%", pattern);
+    }
+
+    [Fact]
     public async Task Reports_sqlite_technology_and_engine_version()
     {
         var infoProvider = Assert.IsAssignableFrom<IGridletDatabaseSystemInfoProvider>(provider);
