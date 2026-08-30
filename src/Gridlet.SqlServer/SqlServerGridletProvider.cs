@@ -221,7 +221,7 @@ public sealed class SqlServerGridletProvider :
                 var offset = i * step;
                 // OFFSET/FETCH requires ORDER BY, supported on SQL Server 2012+.
                 await using var offCmd = connection.CreateCommand();
-                offCmd.CommandText = $"SELECT {quotedColumn} FROM (SELECT DISTINCT {quotedColumn} AS v FROM {qualified} WHERE {quotedColumn} IS NOT NULL) t ORDER BY v OFFSET @off ROWS FETCH NEXT 1 ROWS ONLY;";
+                offCmd.CommandText = BuildDistributionSampleSql(quotedColumn, qualified);
                 offCmd.Parameters.AddWithValue("@off", offset);
                 var val = await offCmd.ExecuteScalarAsync(cancellationToken);
                 if (val is not null && val is not DBNull) sampled.Add(SqlServerValues.Materialize(val));
@@ -239,13 +239,12 @@ public sealed class SqlServerGridletProvider :
         }
         else
         {
-            // Escape LIKE specials before using the prefix.
-            var escaped = EscapeLike(trimmed);
-            command.Parameters.AddWithValue("@search", escaped);
-            command.Parameters.AddWithValue("@contains", $"%{escaped}%");
+            var (exact, pattern) = BuildDistinctValueSearch(trimmed);
+            command.Parameters.AddWithValue("@search", exact);
+            command.Parameters.AddWithValue("@pattern", pattern);
             command.CommandText =
                 $"SELECT DISTINCT TOP (@limit) {quotedColumn} FROM {qualified} WHERE {quotedColumn} IS NOT NULL " +
-                $"AND CONVERT(nvarchar(max), {quotedColumn}) LIKE @search + '%' ESCAPE '[' ORDER BY " +
+                $"AND CONVERT(nvarchar(max), {quotedColumn}) LIKE @pattern ORDER BY " +
                 $"CASE WHEN CONVERT(nvarchar(max), {quotedColumn}) = @search THEN 0 ELSE 1 END, {quotedColumn};";
         }
 
@@ -261,4 +260,11 @@ public sealed class SqlServerGridletProvider :
 
     private static string EscapeLike(string value)
         => value.Replace("[", "[[]").Replace("%", "[%]").Replace("_", "[_]");
+
+    internal static (string Exact, string Pattern) BuildDistinctValueSearch(string value)
+        => (value, $"{EscapeLike(value)}%");
+
+    internal static string BuildDistributionSampleSql(string quotedColumn, string qualified)
+        => $"SELECT v FROM (SELECT DISTINCT {quotedColumn} AS v FROM {qualified} WHERE {quotedColumn} IS NOT NULL) t " +
+           "ORDER BY v OFFSET @off ROWS FETCH NEXT 1 ROWS ONLY;";
 }

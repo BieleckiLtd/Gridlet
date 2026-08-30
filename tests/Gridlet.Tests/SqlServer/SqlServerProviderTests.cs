@@ -20,6 +20,31 @@ public sealed class SqlServerProviderTests
         Assert.True(capabilities.SupportsTriggerManagement);
     }
 
+    [Fact]
+    public void Distribution_sampling_selects_the_derived_value_alias()
+    {
+        var sql = SqlServerGridletProvider.BuildDistributionSampleSql("[Amount]", "[dbo].[Orders]");
+
+        Assert.StartsWith("SELECT v FROM (SELECT DISTINCT [Amount] AS v", sql);
+        Assert.DoesNotContain("SELECT [Amount] FROM (", sql);
+    }
+
+    [Fact]
+    public void Distinct_value_prefix_keeps_exact_text_separate_from_the_like_pattern()
+    {
+        var (exact, pattern) = SqlServerGridletProvider.BuildDistinctValueSearch("50%_[");
+
+        Assert.Equal("50%_[", exact);
+        Assert.Equal("50[%][_][[]%", pattern);
+    }
+
+    [Fact]
+    public void Security_overview_includes_application_roles()
+    {
+        Assert.Equal("'S', 'U', 'G', 'E', 'X', 'R', 'A', 'C', 'K'",
+            SqlServerSecurityService.DatabasePrincipalTypes);
+    }
+
     [Theory]
     [InlineData("object", true, "ENABLE TRIGGER [audit].[TrackOrders] ON [sales].[Orders];")]
     [InlineData("database", false, "DISABLE TRIGGER [TrackDdl] ON DATABASE;")]

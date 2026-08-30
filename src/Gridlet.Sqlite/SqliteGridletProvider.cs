@@ -177,7 +177,7 @@ public sealed class SqliteGridletProvider :
             {
                 var offset = i * step;
                 await using var offCmd = connection.CreateCommand();
-                offCmd.CommandText = $"SELECT {quotedColumn} FROM (SELECT DISTINCT {quotedColumn} AS v FROM {qualified} WHERE {quotedColumn} IS NOT NULL ORDER BY v) LIMIT 1 OFFSET @off;";
+                offCmd.CommandText = $"SELECT v FROM (SELECT DISTINCT {quotedColumn} AS v FROM {qualified} WHERE {quotedColumn} IS NOT NULL ORDER BY v) LIMIT 1 OFFSET @off;";
                 offCmd.Parameters.AddWithValue("@off", offset);
                 var val = await offCmd.ExecuteScalarAsync(cancellationToken);
                 if (val is not null && val is not DBNull) sampled.Add(SqliteValues.Materialize(val));

@@ -119,4 +119,15 @@ public sealed class SchemaModelsTests
 
         Assert.NotNull(constructor);
     }
+
+    [Fact]
+    public void Pre_administration_capability_deconstruct_shape_remains_available()
+    {
+        var deconstruct = typeof(GridletProviderCapabilities).GetMethods()
+            .SingleOrDefault(method => method.Name == nameof(GridletProviderCapabilities.Deconstruct)
+                && method.GetParameters().Length == 20);
+
+        Assert.NotNull(deconstruct);
+        Assert.All(deconstruct.GetParameters(), parameter => Assert.True(parameter.IsOut));
+    }
 }

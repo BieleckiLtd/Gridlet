@@ -12,6 +12,15 @@ namespace Gridlet.Tests.AspNetCore;
 public class GridletEndpointTests
 {
     [Fact]
+    public void Distinct_value_endpoint_uses_the_provider_identifier_limit()
+    {
+        Assert.Equal(128, global::Gridlet.AspNetCore.GridletApiEndpoints.MaximumColumnIdentifierLength(
+            GridletProviderNames.SqlServer));
+        Assert.Equal(255, global::Gridlet.AspNetCore.GridletApiEndpoints.MaximumColumnIdentifierLength(
+            GridletProviderNames.Sqlite));
+    }
+
+    [Fact]
     public async Task Ui_index_is_served_with_mount_path_as_base_href()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();

@@ -570,7 +570,7 @@ internal static partial class GridletApiEndpoints
                 throw new GridletValidationException("A column name is required.");
             }
 
-            if (column.Length > 128)
+            if (column.Length > MaximumColumnIdentifierLength(resolved.Provider.ProviderName))
             {
                 throw new GridletValidationException("The column name is too long.");
             }
@@ -580,6 +580,14 @@ internal static partial class GridletApiEndpoints
                 resolved.Context, schema, name, column, search, capped, cancellationToken);
             return Results.Ok(new ColumnDistinctValuesResponse(values));
         });
+
+    internal static int MaximumColumnIdentifierLength(GridletProviderNames providerName)
+        => providerName switch
+        {
+            GridletProviderNames.SqlServer => 128,
+            GridletProviderNames.Sqlite => 255,
+            _ => 256,
+        };
 
     private static ForeignKeyInfo FindSingleColumnForeignKey(TableDefinition definition, string name)
     {

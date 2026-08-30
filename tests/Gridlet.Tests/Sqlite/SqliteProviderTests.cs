@@ -83,6 +83,29 @@ public sealed class SqliteProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Distribution_sampling_returns_values_exposed_by_the_derived_table()
+    {
+        await provider.Query.ExecuteAsync(context,
+            """
+            CREATE TABLE Measurements (Value INTEGER NOT NULL);
+            WITH RECURSIVE numbers(Value) AS (
+                SELECT 1
+                UNION ALL
+                SELECT Value + 1 FROM numbers WHERE Value < 20
+            )
+            INSERT INTO Measurements SELECT Value FROM numbers;
+            """,
+            new QueryRequestOptions(100, 30));
+
+        var values = await provider.GetDistinctColumnValuesAsync(
+            context, "main", "Measurements", "Value", search: null, limit: 10);
+
+        Assert.Equal(
+            [1L, 3L, 5L, 7L, 9L, 11L, 13L, 15L, 17L, 19L],
+            values.Select(Convert.ToInt64));
+    }
+
+    [Fact]
     public async Task Reports_sqlite_technology_and_engine_version()
     {
         var infoProvider = Assert.IsAssignableFrom<IGridletDatabaseSystemInfoProvider>(provider);

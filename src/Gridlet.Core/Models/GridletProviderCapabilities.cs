@@ -205,6 +205,51 @@ public sealed record GridletProviderCapabilities(
     {
     }
 
+    /// <summary>Deconstructs the previous twenty-field capability shape.</summary>
+    public void Deconstruct(
+        out string defaultSchema,
+        out bool supportsSchemas,
+        out bool supportsViews,
+        out bool supportsStoredProcedures,
+        out bool supportsFunctions,
+        out bool supportsTriggers,
+        out bool supportsClusteredPrimaryKeys,
+        out IReadOnlyList<string> suggestedDataTypes,
+        out string selectExample,
+        out string createTriggerExample,
+        out string objectEditMode,
+        out bool supportsCheckConstraints,
+        out bool supportsUniqueConstraints,
+        out bool supportsIndexes,
+        out bool supportsSessions,
+        out bool supportsQueryPlans,
+        out IReadOnlyList<string>? supportedTableOptions,
+        out bool supportsSequences,
+        out bool supportsImport,
+        out bool supportsDefaultConstraints)
+    {
+        defaultSchema = DefaultSchema;
+        supportsSchemas = SupportsSchemas;
+        supportsViews = SupportsViews;
+        supportsStoredProcedures = SupportsStoredProcedures;
+        supportsFunctions = SupportsFunctions;
+        supportsTriggers = SupportsTriggers;
+        supportsClusteredPrimaryKeys = SupportsClusteredPrimaryKeys;
+        suggestedDataTypes = SuggestedDataTypes;
+        selectExample = SelectExample;
+        createTriggerExample = CreateTriggerExample;
+        objectEditMode = ObjectEditMode;
+        supportsCheckConstraints = SupportsCheckConstraints;
+        supportsUniqueConstraints = SupportsUniqueConstraints;
+        supportsIndexes = SupportsIndexes;
+        supportsSessions = SupportsSessions;
+        supportsQueryPlans = SupportsQueryPlans;
+        supportedTableOptions = SupportedTableOptions;
+        supportsSequences = SupportsSequences;
+        supportsImport = SupportsImport;
+        supportsDefaultConstraints = SupportsDefaultConstraints;
+    }
+
     /// <summary>Deconstructs the legacy eleven-field capability shape.</summary>
     public void Deconstruct(
         out string defaultSchema,
