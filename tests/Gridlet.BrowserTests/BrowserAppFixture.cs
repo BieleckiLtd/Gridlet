@@ -116,7 +116,7 @@ public sealed class BrowserAppFixture : IAsyncLifetime
     }
 }
 
-internal sealed class BrowserSqliteProvider(FakeGridletProvider inner) : IGridletProvider, IGridletProviderMetadata, IColumnDistinctValuesProvider
+internal sealed class BrowserSqliteProvider(FakeGridletProvider inner) : IGridletProvider, IGridletProviderMetadata
 {
     public const GridletProviderNames Name = GridletProviderNames.Sqlite;
 
@@ -151,11 +151,6 @@ internal sealed class BrowserSqliteProvider(FakeGridletProvider inner) : IGridle
     public ITableWriteService Writes => inner.Writes;
 
     public ITableDdlService Ddl => inner.Ddl;
-
-    public Task<IReadOnlyList<object?>> GetDistinctColumnValuesAsync(
-        GridletConnectionContext context, string schema, string table, string column,
-        string? search, int limit, CancellationToken cancellationToken = default)
-        => inner.GetDistinctColumnValuesAsync(context, schema, table, column, search, limit, cancellationToken);
 }
 
 public sealed class BrowserGridletAgentService : IGridletAgentService
