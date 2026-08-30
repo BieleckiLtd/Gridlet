@@ -445,31 +445,57 @@
   function showContextMenu(event, items) {
     event.preventDefault();
     event.stopPropagation();
-    document.querySelector('.context-menu')?.remove();
-    const menu = h('div', { class: 'context-menu', role: 'menu' }, items.map((item) =>
+    const previousMenu = document.querySelector('.context-menu');
+    if (previousMenu?._dismiss) previousMenu._dismiss();
+    else previousMenu?.remove();
+    const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    let menu;
+    let closeOnFocusOut;
+    let dismissed = false;
+    const dismiss = (restoreFocus = false) => {
+      dismissed = true;
+      menu?.remove();
+      if (trigger?.hasAttribute('aria-haspopup')) {
+        trigger.setAttribute('aria-expanded', 'false');
+        if (restoreFocus) trigger.focus();
+      }
+      document.removeEventListener('pointerdown', close, true);
+      document.removeEventListener('keydown', close, true);
+      document.removeEventListener('focusin', close, true);
+      if (closeOnFocusOut) menu?.removeEventListener('focusout', closeOnFocusOut);
+    };
+    menu = h('div', { class: 'context-menu', role: 'menu' }, items.map((item) =>
       item.separator ? h('div', { class: 'context-menu-separator', role: 'separator' }) : h('button', {
         class: item.danger ? 'danger' : '',
         role: 'menuitem',
         text: item.label,
         disabled: item.disabled ? '' : null,
-        onclick: () => { menu.remove(); item.action(); },
+        onclick: () => { dismiss(true); item.action(); },
       })));
+    menu._dismiss = dismiss;
+    closeOnFocusOut = () => setTimeout(() => {
+      if (!dismissed && !menu.contains(document.activeElement)) dismiss();
+    });
+    menu.addEventListener('focusout', closeOnFocusOut);
     document.body.append(menu);
     const bounds = menu.getBoundingClientRect();
-    menu.style.left = Math.max(4, Math.min(event.clientX, window.innerWidth - bounds.width - 4)) + 'px';
-    menu.style.top = Math.max(4, Math.min(event.clientY, window.innerHeight - bounds.height - 4)) + 'px';
+    const triggerBounds = trigger?.getBoundingClientRect();
+    const keyboardActivation = event.clientX === 0 && event.clientY === 0 && triggerBounds;
+    const requestedX = keyboardActivation ? triggerBounds.left : event.clientX;
+    const requestedY = keyboardActivation ? triggerBounds.bottom : event.clientY;
+    menu.style.left = Math.max(4, Math.min(requestedX, window.innerWidth - bounds.width - 4)) + 'px';
+    menu.style.top = Math.max(4, Math.min(requestedY, window.innerHeight - bounds.height - 4)) + 'px';
+    if (trigger?.hasAttribute('aria-haspopup')) trigger.setAttribute('aria-expanded', 'true');
     menu.querySelector('button:not(:disabled)')?.focus();
     const close = (closeEvent) => {
       if (closeEvent.type === 'keydown' && closeEvent.key !== 'Escape') return;
       if (closeEvent.type === 'pointerdown' && menu.contains(closeEvent.target)) return;
-      menu.remove();
-      document.removeEventListener('pointerdown', close, true);
-      document.removeEventListener('keydown', close, true);
+      if (closeEvent.type === 'focusin' && menu.contains(closeEvent.target)) return;
+      dismiss(closeEvent.type === 'keydown');
     };
-    setTimeout(() => {
-      document.addEventListener('pointerdown', close, true);
-      document.addEventListener('keydown', close, true);
-    });
+    document.addEventListener('pointerdown', close, true);
+    document.addEventListener('keydown', close, true);
+    document.addEventListener('focusin', close, true);
   }
 
   // ---- API client -----------------------------------------------------------
@@ -486,7 +512,9 @@
         const body = await res.json();
         message = body.error || body.detail || body.title || message;
       } catch { /* body was not JSON */ }
-      throw new Error(message);
+      const error = new Error(message);
+      error.status = res.status;
+      throw error;
     }
     return res.json();
   }
@@ -511,10 +539,40 @@
       pending += value || '';
       const lines = pending.split('\n');
       pending = lines.pop();
-      for (const line of lines) if (line.trim()) onEvent(JSON.parse(line));
+      for (const line of lines) if (line.trim()) onEvent(parseNdjsonEvent(line));
       if (done) break;
     }
-    if (pending.trim()) onEvent(JSON.parse(pending));
+    if (pending.trim()) onEvent(parseNdjsonEvent(pending));
+  }
+
+  const exactNumbersByRow = new WeakMap();
+  const binaryValuesByRow = new WeakMap();
+
+  function parseNdjsonEvent(line) {
+    const event = JSON.parse(line);
+    rememberExactNumbers(event.rows, event.exactValues);
+    rememberBinaryValues(event.rows, event.binaryValues);
+    return event;
+  }
+
+  function rememberBinaryValues(rows, binaryRows) {
+    if (!Array.isArray(rows) || !Array.isArray(binaryRows)) return;
+    rows.forEach((row, rowIndex) => {
+      if (Array.isArray(row) && Array.isArray(binaryRows[rowIndex])) {
+        binaryValuesByRow.set(row, binaryRows[rowIndex]);
+      }
+    });
+  }
+
+  function rememberExactNumbers(rows, exactRows) {
+    if (!Array.isArray(rows) || !Array.isArray(exactRows)) return;
+    rows.forEach((row, rowIndex) => {
+      const exactValues = exactRows[rowIndex];
+      if (!Array.isArray(row) || !Array.isArray(exactValues)) return;
+      if (exactValues.some((value) => value !== null && value !== undefined)) {
+        exactNumbersByRow.set(row, exactValues);
+      }
+    });
   }
 
   async function executeSql(sql, scope = state) {
@@ -547,12 +605,18 @@
       schema: (s) => `${dbBase()}/schemas/${enc(s)}`,
       data: (s, n, q) => `${objBase(s, n)}/data?${q}`,
       dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
+      profile: (s, n, q) => `${objBase(s, n)}/profile?${q}`,
+      dataExport: (s, n, q) => `${objBase(s, n)}/data/export?${q}`,
       structure: (s, n) => `${objBase(s, n)}/structure`,
       definition: (s, n, type = null) => `${objBase(s, n)}/definition${type ? `?type=${enc(type)}` : ''}`,
       dependencies: (s, n) => `${objBase(s, n)}/dependencies`,
       routine: (s, n) => `${objBase(s, n)}/routine`,
       routineScript: (s, n) => `${objBase(s, n)}/routine/script`,
       query: () => `${dbBase()}/query`,
+      queryJobs: () => `${dbBase()}/query/jobs`,
+      queryJob: (id, after = null) => `${dbBase()}/query/jobs/${enc(id)}`
+        + (after == null ? '' : `?after=${after}&waitMs=1000`),
+      resultExport: (format) => `api/exports/${enc(format)}`,
       queryPlan: () => `${dbBase()}/query/plan`,
       sessions: () => `${dbBase()}/sessions`,
       session: (id) => `api/sessions/${enc(id)}`,
@@ -605,6 +669,10 @@
   const del = (url) => api(url, { method: 'DELETE' });
 
   const isVirtualObject = (o) => !!o?.subKind && /virtual/i.test(o.subKind);
+  const objectBadge = (o) => o?.isInternal ? 'I' : isVirtualObject(o) ? 'VT' : ({
+    Table: 'T', View: 'V', StoredProcedure: 'P', ScalarFunction: 'F',
+    TableValuedFunction: 'F', Trigger: 'R', Sequence: 'Q', UserDefinedType: 'Y',
+  })[o?.type] || 'O';
   const canDropObject = (o) => !o?.isInternal && o?.type !== 'UserDefinedType';
   const canDesignObject = (o) => canDropObject(o) && !isVirtualObject(o);
 
@@ -618,6 +686,8 @@
     schemas: [],
     objectsByScope: new Map(),
     structures: new Map(),
+    incomingRelationships: new Map(),
+    metadataGeneration: 0,
     routines: new Map(),
     tabs: [],
     activeTabId: null,
@@ -645,6 +715,17 @@
 
   const scopeOf = () => ({ connection: state.connection, database: state.database });
   const scopeKey = (scope) => `${scope.connection} ${scope.database}`;
+  const invalidateScopeEntries = (cache, scope) => {
+    const prefix = `${scopeKey(scope)} `.toLowerCase();
+    for (const key of cache.keys()) {
+      if (key.startsWith(prefix)) cache.delete(key);
+    }
+  };
+  const invalidateScopeMetadata = (scope) => {
+    state.metadataGeneration++;
+    invalidateScopeEntries(state.structures, scope);
+    invalidateScopeEntries(state.incomingRelationships, scope);
+  };
   const sameScope = (a, b) => a.connection === b.connection && a.database === b.database;
   // Tabs without a scope (published APIs, API requests) are never out of context.
   const isCurrentScope = (scope) => !scope || sameScope(scope, state);
@@ -657,6 +738,21 @@
     : state.objectsByScope.get(scopeKey(scope)) || []);
   // Only the sidebar's own scope can refresh the tree.
   const refreshObjects = (scope) => (isCurrentScope(scope) ? loadObjects() : Promise.resolve());
+
+  async function loadStructureMetadata(scope, schema, name, options) {
+    const key = `${scopeKey(scope)} ${schema}.${name}`.toLowerCase();
+    const cached = state.structures.get(key);
+    if (cached) return cached;
+    const generation = state.metadataGeneration;
+    const structure = await api(urlsFor(scope).structure(schema, name), options);
+    // A refresh or DDL operation may finish while the request is in flight. Never put its
+    // pre-refresh response back into the cache; fetch against the new metadata generation.
+    if (generation !== state.metadataGeneration) {
+      return loadStructureMetadata(scope, schema, name, options);
+    }
+    state.structures.set(key, structure);
+    return structure;
+  }
 
   const connectionFor = (scope) =>
     (state.meta && state.meta.connections.find((c) => c.name === scope.connection)) || {};
@@ -794,12 +890,8 @@
   }
 
   async function loadCompletionStructure(source, scope) {
-    const key = `${scopeKey(scope)} ${source.object.schema}.${source.object.name}`.toLowerCase();
-    let structure = state.structures.get(key);
-    if (!structure) {
-      structure = await api(urlsFor(scope).structure(source.object.schema, source.object.name));
-      state.structures.set(key, structure);
-    }
+    const structure = await loadStructureMetadata(
+      scope, source.object.schema, source.object.name);
     return { ...source, structure };
   }
 
@@ -1460,11 +1552,16 @@
       candidate.schema === descriptor.schema &&
       candidate.name === descriptor.name &&
       candidate.type === descriptor.type);
-    if (object) openObjectTab(object, descriptor.scope);
+    if (object) openObjectTab(object, descriptor.scope,
+      descriptor.filters?.length ? { filters: descriptor.filters } : null);
   });
 
   registerTabRestorer('query', (descriptor) => {
-    openQueryTab(descriptor.sql || '', descriptor.title || null, descriptor.scope);
+    openQueryTab(descriptor.sql || '', descriptor.title || null, descriptor.scope, {
+      jobId: descriptor.jobId || null,
+      jobSql: descriptor.jobSql || null,
+      jobHistoryRecorded: Boolean(descriptor.jobHistoryRecorded),
+    });
   });
 
   registerTabRestorer('diagram', (descriptor) => openDiagramTab(descriptor.scope));
@@ -1481,6 +1578,8 @@
         descriptor.keyColumns, descriptor.maxRows);
     }
   });
+
+  registerTabRestorer('object-search', (descriptor) => openObjectSearchTab(descriptor));
 
   registerTabRestorer('apis', () => openApisTab());
 
@@ -1656,7 +1755,7 @@
     await loadModules();
 
     navigationOverflow = setupOverflowToolbar($('#topbar'), [
-      $('#version'), $('#about-btn'), $('#apis-btn'), $('#schema-compare-btn'), $('#ask-btn'),
+      $('#version'), $('#about-btn'), $('#apis-btn'), $('#schema-compare-btn'), $('#object-search-btn'), $('#ask-btn'),
       $('#theme-btn'), $('#refresh-btn'), $('.connection-pickers'), $('#new-query-btn'), $('#diagram-btn'),
       ...moduleActions,
     ], 'More app actions');
@@ -1673,7 +1772,8 @@
     navigationOverflow.refresh();
 
     window.addEventListener('beforeunload', (event) => {
-      if (!state.tabs.some((tab) => tab.hasUnsavedDefinition || tab.isRunning)) return;
+      if (!state.tabs.some((tab) => tab.hasUnsavedDefinition
+        || (tab.isRunning && !tab.detachableJob))) return;
       event.preventDefault();
       event.returnValue = '';
     });
@@ -1692,6 +1792,7 @@
     $('#ask-btn').addEventListener('click', () => openAgentTab());
     $('#diagram-btn').addEventListener('click', () => openDiagramTab());
     $('#schema-compare-btn').addEventListener('click', () => openSchemaCompareTab());
+    $('#object-search-btn').addEventListener('click', () => openObjectSearchTab());
     $('#new-query-btn').addEventListener('click', () => openQueryTab());
     $('#apis-btn').addEventListener('click', () => openApisTab());
     $('#about-btn').addEventListener('click', showAbout);
@@ -1703,6 +1804,7 @@
       { label: 'Query', action: () => openQueryTab() },
       { label: 'ER diagram', action: () => openDiagramTab() },
       { label: 'Compare schemas', action: () => openSchemaCompareTab() },
+      { label: 'Find objects everywhere', action: () => openObjectSearchTab() },
       { label: 'Refresh objects', action: () => loadObjects() },
       ...(currentConn().allowDdl ? [
         { separator: true },
@@ -1763,6 +1865,8 @@
     state.database = name;
     refreshAgentAvailability();
     state.structures.clear();
+    state.incomingRelationships.clear();
+    state.metadataGeneration++;
     $('#database-select').value = name;
     $('#database-select').themedSelectSync();
     renderTabBar();
@@ -1787,12 +1891,20 @@
     }
     // Tabs on other scopes complete their suggestions from this cache.
     state.objectsByScope.set(scopeKey(scope), objects);
+    // Incoming relationships are assembled from every table definition in the scope. A tree
+    // refresh commonly follows DDL, so even an unchanged object list can conceal new/dropped FKs.
+    invalidateScopeMetadata(scope);
     if (!sameScope(scope, state)) return;
     state.objects = objects;
     state.schemas = schemas;
     refreshTypeSuggestions();
     restoreFilter();
     renderTree();
+    const activeTab = state.tabs.find((tab) => tab.id === state.activeTabId);
+    if (activeTab?.scope && sameScope(activeTab.scope, scope)
+      && !activeTab.panel.querySelector('tr.row-editor')) {
+      activeTab.refreshData?.();
+    }
   }
 
   // The filter is part of how the tree was left, alongside which sections were expanded, and it is
@@ -2432,6 +2544,384 @@
   }
 
   // ---- tabs -------------------------------------------------------------------
+
+  const objectSearchQueryLimit = 4096;
+
+  const boundedObjectSearchQuery = (value) => {
+    const bounded = String(value || '').slice(0, objectSearchQueryLimit);
+    return /[\uD800-\uDBFF]$/.test(bounded) ? bounded.slice(0, -1) : bounded;
+  };
+
+  const objectSearchCompareText = (left, right) => left < right ? -1 : left > right ? 1 : 0;
+
+  const normalizedObjectSearchText = (value) => String(value || '')
+    .replace(/\s+/g, ' ').trim().toLowerCase();
+
+  const objectSearchModes = new Set(['names', 'all', 'definitions']);
+
+  function openObjectSearchTab(initial = {}) {
+    const existing = state.tabs.find((candidate) => candidate.key === 'object-search');
+    if (existing) {
+      setActiveTab(existing.id);
+      existing.searchInput?.focus();
+      return;
+    }
+    const panel = h('div', {
+      class: 'panel object-search-panel', 'data-testid': 'object-search',
+    });
+    const tab = {
+      id: state.nextTabId++, key: 'object-search', badge: '⌕', badgeClass: 'badge-search',
+      title: 'Find objects', panel, loaded: false,
+      query: boundedObjectSearchQuery(initial.query),
+      mode: objectSearchModes.has(initial.mode) ? initial.mode : 'names',
+      definitionLimit: ['500', '2000', 'all'].includes(String(initial.definitionLimit))
+        ? String(initial.definitionLimit) : '500',
+      includeSystem: Boolean(initial.includeSystem),
+      includeInternal: Boolean(initial.includeInternal),
+      load: () => loadObjectSearchTab(tab),
+      restore: () => ({
+        kind: 'object-search', query: boundedObjectSearchQuery(tab.query), mode: tab.mode,
+        definitionLimit: tab.definitionLimit,
+        includeSystem: tab.includeSystem, includeInternal: tab.includeInternal,
+      }),
+    };
+    addTab(tab);
+  }
+
+  const objectSearchTerms = (query) => (query.match(/"[^"]+"|\S+/g) || [])
+    .map((term) => normalizedObjectSearchText(term.replace(/^"|"$/g, ''))).filter(Boolean);
+
+  const objectSearchMatches = (text, terms) => {
+    const candidate = normalizedObjectSearchText(text);
+    return terms.every((term) => candidate.includes(term));
+  };
+
+  function objectSearchDefinitionMatch(definition, terms) {
+    const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const occurrences = terms.map((term) => new RegExp(
+      term.split(' ').map(escape).join('\\s+'), 'iu').exec(definition));
+    if (occurrences.some((match) => !match)) return null;
+    const first = occurrences.reduce((earliest, match) =>
+      !earliest || match.index < earliest.index ? match : earliest, null);
+    const index = first.index;
+    const line = definition.slice(0, index).split(/\r?\n/).length;
+    const start = Math.max(0, index - 90);
+    const end = Math.min(definition.length, index + Math.max(first[0].length, 1) + 150);
+    let text = definition.slice(start, end).replace(/\s+/g, ' ').trim();
+    if (start) text = `…${text}`;
+    if (end < definition.length) text += '…';
+    return { line, text };
+  }
+
+  async function objectSearchMap(items, concurrency, operation, signal) {
+    let next = 0;
+    const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+      while (next < items.length) {
+        if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        const index = next++;
+        await operation(items[index], index);
+      }
+    });
+    await Promise.all(workers);
+  }
+
+  function objectSearchTakeFair(candidates, limit) {
+    const ordered = [...candidates].sort((left, right) =>
+      objectSearchCompareText(scopeKey(left.scope), scopeKey(right.scope))
+      || objectSearchCompareText(left.object.schema, right.object.schema)
+      || objectSearchCompareText(left.object.name, right.object.name)
+      || objectSearchCompareText(left.object.type, right.object.type));
+    if (limit >= ordered.length) return ordered;
+    const byScope = new Map();
+    for (const candidate of ordered) {
+      const key = scopeKey(candidate.scope);
+      if (!byScope.has(key)) byScope.set(key, []);
+      byScope.get(key).push(candidate);
+    }
+    const selected = [];
+    let offset = 0;
+    while (selected.length < limit) {
+      let added = false;
+      for (const scoped of byScope.values()) {
+        if (offset < scoped.length) {
+          selected.push(scoped[offset]);
+          added = true;
+          if (selected.length === limit) break;
+        }
+      }
+      if (!added) break;
+      offset++;
+    }
+    return selected;
+  }
+
+  async function loadObjectSearchTab(tab) {
+    const controls = h('form', { class: 'viewbar object-search-toolbar' });
+    const query = h('input', {
+      type: 'search', value: tab.query, placeholder: 'Object name or definition text…',
+      'aria-label': 'Object search text', 'data-testid': 'object-search-query', autocomplete: 'off',
+      maxlength: objectSearchQueryLimit,
+    });
+    const mode = h('select', {
+      'aria-label': 'Search in', 'data-testid': 'object-search-mode',
+    }, h('option', { value: 'names', text: 'Names and descriptions' }),
+    h('option', { value: 'all', text: 'Names + definitions' }),
+    h('option', { value: 'definitions', text: 'Definitions only' }));
+    mode.value = tab.mode;
+    const definitionLimit = h('select', {
+      'aria-label': 'Definition scan limit', 'data-testid': 'object-search-definition-limit',
+    }, h('option', { value: '500', text: 'First 500 objects' }),
+    h('option', { value: '2000', text: 'First 2,000 objects' }),
+    h('option', { value: 'all', text: 'All objects (slow)' }));
+    definitionLimit.value = tab.definitionLimit;
+    definitionLimit.disabled = mode.value === 'names';
+    const includeSystem = h('input', { type: 'checkbox' });
+    includeSystem.checked = tab.includeSystem;
+    const includeInternal = h('input', { type: 'checkbox' });
+    includeInternal.checked = tab.includeInternal;
+    const run = h('button', {
+      type: 'submit', class: 'primary', text: 'Search', 'data-testid': 'object-search-run',
+    });
+    const cancel = h('button', {
+      type: 'button', text: 'Cancel', hidden: '', 'data-testid': 'object-search-cancel',
+    });
+    controls.append(query, h('label', {}, 'Search in ', mode),
+      h('label', {}, 'Definition limit ', definitionLimit),
+      h('label', { class: 'checkbox-row' }, includeSystem, 'System databases'),
+      h('label', { class: 'checkbox-row' }, includeInternal, 'Internal objects'), run, cancel);
+    const status = h('div', {
+      id: 'object-search-status', class: 'object-search-status muted', role: 'status',
+      'aria-live': 'polite', 'aria-atomic': 'true',
+      'data-testid': 'object-search-status', text: 'Enter at least two characters to search.',
+    });
+    const results = h('div', {
+      class: 'object-search-results', 'data-testid': 'object-search-results',
+      'aria-describedby': 'object-search-status', 'aria-busy': 'false',
+    });
+    tab.panel.replaceChildren(controls, status, results);
+    tab.searchInput = query;
+    let request = 0;
+    let controller = null;
+    const resultLimit = 1000;
+
+    const setRunning = (running) => {
+      query.disabled = running;
+      mode.disabled = running;
+      definitionLimit.disabled = running || mode.value === 'names';
+      includeSystem.disabled = running;
+      includeInternal.disabled = running;
+      run.disabled = running;
+      cancel.hidden = !running;
+      results.setAttribute('aria-busy', String(running));
+    };
+
+    const render = (matches, summary, failures, definitionCoverage) => {
+      const visible = matches.slice(0, resultLimit);
+      const orderedFailures = [...failures].sort(objectSearchCompareText);
+      const grouped = new Map();
+      for (const match of visible) {
+        const key = `${match.scope.connection} / ${match.scope.database}`;
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(match);
+      }
+      const content = [];
+      if (matches.length > resultLimit) content.push(h('div', {
+          class: 'warning-box object-search-warning', 'data-testid': 'object-search-result-warning',
+          text: `Showing the first ${resultLimit.toLocaleString()} matches. Refine the search to see the rest.`,
+        }));
+      if (definitionCoverage?.omitted) content.push(h('div', {
+          class: 'warning-box object-search-warning', 'data-testid': 'object-search-definition-warning',
+          text: `Definition text was searched for ${definitionCoverage.searched.toLocaleString()} of `
+            + `${definitionCoverage.eligible.toLocaleString()} eligible objects, distributed across databases. `
+            + 'Increase the Definition limit and search again to scan more.',
+        }));
+      if (orderedFailures.length) content.push(h('details', { class: 'object-search-failures' },
+          h('summary', { text: `${orderedFailures.length} location${orderedFailures.length === 1 ? '' : 's'} could not be searched` }),
+          h('ul', {}, ...orderedFailures.slice(0, 20).map((failure) => h('li', { text: failure }))),
+          orderedFailures.length > 20 ? h('p', { class: 'muted', text: `${orderedFailures.length - 20} more failures omitted.` }) : null));
+      for (const [scopeName, scopedMatches] of grouped.entries()) {
+        const list = h('div', { class: 'object-search-list' });
+        for (const match of scopedMatches) {
+          const badge = objectBadge(match.object);
+          list.append(h('button', {
+            type: 'button', class: 'object-search-result',
+            'data-testid': 'object-search-result',
+            title: `Open ${match.object.schema}.${match.object.name} in ${scopeName}`,
+            onclick: () => openObjectTab(match.object, match.scope),
+          }, h('span', {
+            class: `badge badge-${badge}`, text: badge, title: match.object.type,
+          }), h('span', { class: 'object-search-result-body' },
+          h('strong', { text: `${match.object.schema}.${match.object.name}` }),
+          h('span', { class: 'muted', text: `${match.object.type} · ${match.reasons.join(' + ')}` }),
+          match.snippet ? h('span', {
+            class: 'mono object-search-snippet', text: `Line ${match.snippet.line}: ${match.snippet.text}`,
+          }) : match.object.description ? h('span', {
+            class: 'object-search-snippet', text: match.object.description,
+          }) : null)));
+        }
+        content.push(h('section', { class: 'object-search-group' },
+          h('h3', {}, scopeName, ' ', h('span', {
+            class: 'object-search-count', text: String(scopedMatches.length),
+          })), list));
+      }
+      if (!matches.length && summary) content.push(h('div', {
+          class: 'empty-inner object-search-empty',
+          text: 'No matching objects were found in the searched locations.',
+        }));
+      results.replaceChildren(...content);
+    };
+
+    const search = async () => {
+      const boundedQuery = boundedObjectSearchQuery(query.value.trim());
+      query.value = boundedQuery;
+      const terms = objectSearchTerms(boundedQuery);
+      if (boundedQuery.length < 2 || !terms.length) {
+        status.textContent = 'Enter at least two characters to search.';
+        results.replaceChildren();
+        query.focus();
+        return;
+      }
+      const current = ++request;
+      controller?.abort();
+      controller = new AbortController();
+      const signal = controller.signal;
+      tab.query = boundedQuery;
+      tab.mode = mode.value;
+      tab.includeSystem = includeSystem.checked;
+      tab.includeInternal = includeInternal.checked;
+      saveSession();
+      setRunning(true);
+      results.replaceChildren(h('div', { class: 'loading', text: 'Discovering databases…' }));
+      status.textContent = `Searching ${state.meta.connections.length} connection${state.meta.connections.length === 1 ? '' : 's'}…`;
+      const failures = [];
+      const scopes = [];
+      let candidates = [];
+      try {
+        await objectSearchMap(state.meta.connections, 4, async (connection) => {
+          try {
+            const databases = await api(urlsFor({ connection: connection.name }).databases(connection.name), { signal });
+            for (const database of databases) {
+              if (!includeSystem.checked && database.isSystem) continue;
+              scopes.push({ connection: connection.name, database: database.name });
+            }
+          } catch (err) {
+            if (err.name === 'AbortError') throw err;
+            failures.push(`${connection.name}: ${err.message}`);
+          }
+        }, signal);
+        if (current !== request) return;
+        scopes.sort((left, right) => objectSearchCompareText(scopeKey(left), scopeKey(right)));
+        status.textContent = `Listing objects in ${scopes.length} database${scopes.length === 1 ? '' : 's'}…`;
+        await objectSearchMap(scopes, 6, async (scope) => {
+          try {
+            const objects = await api(urlsFor(scope).objects(), { signal });
+            for (const object of objects) {
+              if (!includeInternal.checked && object.isInternal) continue;
+              candidates.push({ scope, object });
+            }
+          } catch (err) {
+            if (err.name === 'AbortError') throw err;
+            failures.push(`${scope.connection} / ${scope.database}: ${err.message}`);
+          }
+        }, signal);
+        if (current !== request) return;
+
+        const found = new Map();
+        const resultKey = (candidate) => `${scopeKey(candidate.scope)}\0${candidate.object.schema}\0${candidate.object.name}\0${candidate.object.type}`.toLowerCase();
+        if (mode.value !== 'definitions') {
+          for (const candidate of candidates) {
+            const reasons = [];
+            if (objectSearchMatches(`${candidate.object.schema}.${candidate.object.name}`, terms)) reasons.push('name');
+            if (objectSearchMatches(candidate.object.description, terms)) reasons.push('description');
+            if (reasons.length) found.set(resultKey(candidate), { ...candidate, reasons, snippet: null });
+          }
+        }
+
+        let definitionCoverage = null;
+        if (mode.value !== 'names') {
+          const eligible = mode.value === 'all'
+            ? candidates.filter((candidate) => !found.has(resultKey(candidate)))
+            : candidates;
+          const requestedLimit = definitionLimit.value === 'all'
+            ? eligible.length : Number(definitionLimit.value);
+          const definitionCandidates = objectSearchTakeFair(eligible, requestedLimit);
+          definitionCoverage = {
+            searched: definitionCandidates.length,
+            eligible: eligible.length,
+            omitted: eligible.length - definitionCandidates.length,
+          };
+          status.textContent = `Searching definitions for ${definitionCandidates.length.toLocaleString()} object`
+            + `${definitionCandidates.length === 1 ? '' : 's'}…`;
+          await objectSearchMap(definitionCandidates, 8, async (candidate) => {
+            try {
+              const response = await api(urlsFor(candidate.scope).definition(
+                candidate.object.schema, candidate.object.name, candidate.object.type), { signal });
+              const snippet = objectSearchDefinitionMatch(response.definition || '', terms);
+              if (snippet) {
+                const key = resultKey(candidate);
+                found.set(key, { ...candidate, reasons: ['definition'], snippet });
+              }
+            } catch (err) {
+              if (err.name === 'AbortError') throw err;
+              failures.push(`${candidate.scope.connection} / ${candidate.scope.database} / ${candidate.object.schema}.${candidate.object.name}: ${err.message}`);
+            }
+          }, signal);
+        }
+        if (current !== request) return;
+        const matches = [...found.values()].sort((left, right) =>
+          objectSearchCompareText(left.scope.connection, right.scope.connection)
+          || objectSearchCompareText(left.scope.database, right.scope.database)
+          || objectSearchCompareText(left.object.schema, right.object.schema)
+          || objectSearchCompareText(left.object.name, right.object.name));
+        status.textContent = `${matches.length.toLocaleString()} match${matches.length === 1 ? '' : 'es'} · `
+          + `${candidates.length.toLocaleString()} object${candidates.length === 1 ? '' : 's'} · `
+          + `${scopes.length.toLocaleString()} database${scopes.length === 1 ? '' : 's'} · `
+          + `${state.meta.connections.length.toLocaleString()} connection${state.meta.connections.length === 1 ? '' : 's'}`
+          + (definitionCoverage ? ` · ${definitionCoverage.searched.toLocaleString()} / ${definitionCoverage.eligible.toLocaleString()} definitions` : '')
+          + (failures.length ? ` · ${failures.length.toLocaleString()} failure${failures.length === 1 ? '' : 's'}` : '');
+        render(matches, true, failures, definitionCoverage);
+      } catch (err) {
+        if (current !== request || err.name === 'AbortError') return;
+        status.textContent = 'Search unavailable';
+        results.replaceChildren(errorBox(err.message));
+      } finally {
+        if (current === request) {
+          setRunning(false);
+          controller = null;
+        }
+      }
+    };
+
+    controls.addEventListener('submit', (event) => { event.preventDefault(); search(); });
+    cancel.addEventListener('click', () => {
+      request++;
+      controller?.abort();
+      controller = null;
+      setRunning(false);
+      status.textContent = 'Search cancelled.';
+      results.replaceChildren();
+    });
+    for (const control of [query, mode, definitionLimit, includeSystem, includeInternal]) {
+      control.addEventListener('change', () => {
+        tab.query = boundedObjectSearchQuery(query.value.trim());
+        tab.mode = mode.value;
+        tab.definitionLimit = definitionLimit.value;
+        tab.includeSystem = includeSystem.checked;
+        tab.includeInternal = includeInternal.checked;
+        definitionLimit.disabled = mode.value === 'names';
+        saveSession();
+      });
+    }
+    tab.onClose = () => {
+      request++;
+      controller?.abort();
+      controller = null;
+    };
+    query.focus();
+    if (tab.query.trim().length >= 2) {
+      status.textContent = 'Search settings restored. Press Search to run.';
+    }
+  }
 
   function openDiagramTab(scope = scopeOf()) {
     const key = `diagram:${scopeKey(scope)}`;
@@ -4175,7 +4665,7 @@
       difference.targetValue === null ? null : JSON.stringify(difference.targetValue),
     ]);
     const exports = exportButtons(exportColumns, exportRows,
-      `${source.object.name}-data-diff`);
+      `${source.object.name}-data-diff`, { scope: source.scope });
 
     const render = () => {
       const query = filter.value.trim().toLowerCase();
@@ -4654,19 +5144,16 @@
 
   // ---- object tabs (tables, views, procedures, functions, triggers) -------------
 
-  function openObjectTab(o, scope = scopeOf()) {
+  function openObjectTab(o, scope = scopeOf(), navigation = null) {
     const key = objectTabKey(o, scope);
     const existing = state.tabs.find((t) => t.key === key);
     if (existing) {
       setActiveTab(existing.id);
-      return;
+      if (navigation?.filters?.length) existing.navigateToFilters?.(navigation.filters);
+      return existing;
     }
 
-    const badge = o.isInternal ? 'I' : isVirtualObject(o) ? 'VT' : o.type === 'Table' ? 'T'
-      : o.type === 'View' ? 'V'
-      : o.type === 'StoredProcedure' ? 'P'
-      : o.type === 'Trigger' ? 'R'
-      : o.type === 'Sequence' ? 'Q' : 'F';
+    const badge = objectBadge(o);
 
     const tab = {
       id: state.nextTabId++,
@@ -4678,7 +5165,11 @@
       loaded: false,
       load: () => {},
       object: o,
-      restore: { kind: 'object', scope, schema: o.schema, name: o.name, type: o.type },
+      initialFilters: navigation?.filters || [],
+      restore: () => ({
+        kind: 'object', scope, schema: o.schema, name: o.name, type: o.type,
+        filters: tab.dataFilters?.() || [],
+      }),
     };
 
     if (o.type === 'Table' || o.type === 'View') {
@@ -4697,6 +5188,7 @@
     }
 
     addTab(tab);
+    return tab;
   }
 
   function buildDataObjectTab(tab, o) {
@@ -4706,18 +5198,40 @@
     const urls = urlsFor(scope);
     const currentConn = () => connectionFor(scope);
     const currentCapabilities = () => capabilitiesFor(scope);
-    const grid = { sort: null, dir: 'asc', filters: [] };
-    const views = ['Data', 'Structure', 'Definition'];
+    const grid = { sort: null, dir: 'asc', filters: [...(tab.initialFilters || [])] };
+    tab.initialFilters = null;
+    tab.dataFilters = () => grid.filters.map((filter) => ({ ...filter }));
+    const views = ['Data', 'Profile', 'Structure', 'Definition'];
     const viewBar = h('div', { class: 'viewbar' });
     const body = h('div', { class: 'panel-body' });
     const actionBar = h('div', { class: 'object-actions' });
     tab.panel.append(viewBar, body, actionBar);
     let currentView = 'Data';
     let structurePromise = null;
+    let structureGeneration = -1;
     let activeDataLoad = null;
+    let activeProfileLoad = null;
+    tab.onClose = () => {
+      activeDataLoad?.abort();
+      activeProfileLoad?.abort();
+    };
 
-    const ensureStructure = () => (structurePromise ??= api(urls.structure(o.schema, o.name)));
-    const invalidateStructure = () => { structurePromise = null; };
+    const ensureStructure = () => {
+      if (!structurePromise || structureGeneration !== state.metadataGeneration) {
+        structureGeneration = state.metadataGeneration;
+        const request = loadStructureMetadata(scope, o.schema, o.name);
+        structurePromise = request;
+        request.catch(() => {
+          if (structurePromise === request) structurePromise = null;
+        });
+      }
+      return structurePromise;
+    };
+    const invalidateStructure = () => {
+      structurePromise = null;
+      structureGeneration = -1;
+      invalidateScopeMetadata(scope);
+    };
 
     const openImportDialog = () => {
       const file = h('input', {
@@ -4759,7 +5273,12 @@
       // own business rather than the workspace's: leaving the tab for another one keeps the edit,
       // and only closing the tab or changing the view here throws it away.
       if (view !== currentView && !await (tab.beforeViewChange?.() ?? true)) return;
-      if (view !== 'Data') { activeDataLoad?.abort(); activeDataLoad = null; }
+      if (view !== 'Data') {
+        activeDataLoad?.abort();
+        activeDataLoad = null;
+        tab.refreshData = null;
+      }
+      if (view !== 'Profile') { activeProfileLoad?.abort(); activeProfileLoad = null; }
       tab.beforeViewChange = null;
       tab.beforeClose = null;
       if (tab.hasUnsavedDefinition) {
@@ -4782,6 +5301,7 @@
       actionBar.replaceChildren();
       viewBar.replaceChildren(viewSwitcher);
       if (view === 'Data') renderData();
+      else if (view === 'Profile') renderProfile();
       else if (view === 'Structure') renderStructure();
       else {
         const definitionActions = h('div', { class: 'inline-form' });
@@ -4790,6 +5310,175 @@
         if (o.type === 'Table') renderTableDefinition(body, o, tab, definitionActions);
         else renderObjectDefinition(body, o, tab, definitionActions);
       }
+    };
+
+    const renderProfile = async () => {
+      activeProfileLoad?.abort();
+      activeProfileLoad = null;
+      body.replaceChildren(h('div', { class: 'loading', text: 'Loading columns…' }));
+      actionBar.replaceChildren();
+      let structure;
+      try {
+        structure = await ensureStructure();
+      } catch (err) {
+        body.replaceChildren(errorBox(err.message));
+        return;
+      }
+      const columns = (structure.columns || []).filter((column) => !column.isHidden);
+      if (!columns.length) {
+        body.replaceChildren(h('div', { class: 'empty-inline', text: 'This object has no profileable columns.' }));
+        return;
+      }
+
+      const column = h('select', {
+        'aria-label': 'Profile column', 'data-testid': 'profile-column',
+      }, ...columns.map((candidate) => h('option', {
+        value: candidate.name, text: `${candidate.name} (${candidate.dataType})`,
+      })));
+      const topValues = h('input', {
+        type: 'number', min: '1', max: '50', value: '10',
+        'aria-label': 'Top values count', 'data-testid': 'profile-top-count',
+      });
+      const useFilters = h('input', {
+        type: 'checkbox', disabled: grid.filters.length ? null : '',
+        'data-testid': 'profile-use-filters',
+      });
+      const run = h('button', {
+        type: 'button', class: 'primary', text: 'Profile', 'data-testid': 'profile-run',
+      });
+      const cancel = h('button', {
+        type: 'button', text: 'Cancel', hidden: '', 'data-testid': 'profile-cancel',
+      });
+      const status = h('span', {
+        class: 'muted profile-status', role: 'status', 'aria-live': 'polite',
+        'data-testid': 'profile-status', text: 'Ready.',
+      });
+      const controls = h('div', { class: 'profile-toolbar' },
+        h('label', {}, 'Column ', column),
+        h('label', {}, 'Top values ', topValues),
+        h('label', { class: 'checkbox-row' }, useFilters,
+          grid.filters.length
+            ? `Use ${grid.filters.length} current data filter${grid.filters.length === 1 ? '' : 's'}`
+            : 'No current data filters'),
+        run, cancel, h('span', { class: 'spacer' }), status);
+      const results = h('div', {
+        class: 'profile-results', 'data-testid': 'profile-results',
+      });
+      body.replaceChildren(h('div', { class: 'column-profile' }, controls, results));
+
+      const setRunning = (running) => {
+        column.disabled = running;
+        topValues.disabled = running;
+        useFilters.disabled = running || !grid.filters.length;
+        run.disabled = running;
+        cancel.hidden = !running;
+      };
+      const exactCount = (value) => BigInt(String(value));
+      const format = (value) => value == null ? 'Unavailable' : exactCount(value).toLocaleString();
+      const percent = (count, total) => {
+        const denominator = exactCount(total);
+        if (!denominator) return '0.0%';
+        const tenths = (exactCount(count) * 1000n + denominator / 2n) / denominator;
+        return `${tenths / 10n}.${tenths % 10n}%`;
+      };
+      const exportCount = (value) => {
+        const count = exactCount(value);
+        return count <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(count) : count.toString();
+      };
+      let request = 0;
+      const load = async () => {
+        const current = ++request;
+        activeProfileLoad?.abort();
+        const controller = new AbortController();
+        activeProfileLoad = controller;
+        const requestedTop = Math.min(50, Math.max(1, Number(topValues.value) || 10));
+        topValues.value = String(requestedTop);
+        const params = new URLSearchParams({
+          column: column.value, topValues: String(requestedTop),
+        });
+        if (useFilters.checked && grid.filters.length) {
+          params.set('filter', JSON.stringify(grid.filters));
+        }
+        setRunning(true);
+        status.textContent = `Profiling ${column.value}…`;
+        results.replaceChildren(h('div', { class: 'loading', text: 'Computing exact aggregates…' }));
+        try {
+          const profile = await api(urls.profile(o.schema, o.name, params), {
+            signal: controller.signal,
+          });
+          if (current !== request) return;
+          const nonNull = exactCount(profile.totalCount) - exactCount(profile.nullCount);
+          const cards = h('div', { class: 'profile-cards' },
+            h('div', { class: 'profile-card', 'data-profile-metric': 'rows' }, h('span', { text: 'Rows' }),
+              h('strong', { text: format(profile.totalCount) })),
+            h('div', { class: 'profile-card', 'data-profile-metric': 'non-null' }, h('span', { text: 'Non-null' }),
+              h('strong', { text: format(nonNull) }),
+              h('small', { text: percent(nonNull, profile.totalCount) })),
+            h('div', { class: 'profile-card', 'data-profile-metric': 'null' }, h('span', { text: 'Null' }),
+              h('strong', { text: format(profile.nullCount) }),
+              h('small', { text: percent(profile.nullCount, profile.totalCount) })),
+            h('div', { class: 'profile-card', 'data-profile-metric': 'distinct' }, h('span', { text: 'Distinct non-null' }),
+              h('strong', { text: format(profile.distinctCount) })));
+          const range = h('div', { class: 'profile-range' },
+            h('div', {}, h('span', { class: 'muted', text: 'Minimum' }),
+              h('code', { text: dataCompareValueText(profile.minimum) })),
+            h('div', {}, h('span', { class: 'muted', text: 'Maximum' }),
+              h('code', { text: dataCompareValueText(profile.maximum) })));
+          const topRows = (profile.topValues || []).map((entry) => [
+            entry.value, exportCount(entry.count),
+            percent(entry.count, profile.totalCount),
+          ]);
+          const topHeader = h('div', { class: 'profile-section-title' },
+            h('h3', { text: 'Top values' }),
+            topRows.length ? exportButtons(
+              [
+                { name: 'Value', dataTypeName: profile.dataType },
+                { name: 'Count', dataTypeName: 'bigint' },
+                { name: 'Share', dataTypeName: 'text' },
+              ], topRows, `${o.name}-${profile.column}-profile`, { scope }) : null);
+          const topBody = h('tbody');
+          for (const row of topRows) {
+            topBody.append(h('tr', {},
+              h('td', { class: 'mono', text: dataCompareValueText(row[0]) }),
+              h('td', { text: format(row[1]) }),
+              h('td', { text: row[2] })));
+          }
+          const topContent = topRows.length
+            ? h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
+              h('thead', {}, h('tr', {},
+                ...['Value', 'Count', 'Share'].map((text) => h('th', { text })))), topBody))
+            : h('p', { class: 'muted', text: 'No grouped values are available.' });
+          const topSection = h('section', { class: 'profile-top' }, topHeader, topContent);
+          results.replaceChildren(
+            h('div', { class: 'profile-heading' },
+              h('div', {}, h('h2', { text: profile.column }),
+                h('span', { class: 'muted', text: profile.dataType })),
+              h('span', { class: 'muted', text: useFilters.checked ? 'Current filtered rows' : 'All rows' })),
+            profile.limitation ? h('div', { class: 'warning-box', text: profile.limitation }) : null,
+            cards, range, topSection);
+          status.textContent = `Profiled ${format(profile.totalCount)} row${exactCount(profile.totalCount) === 1n ? '' : 's'}`;
+        } catch (err) {
+          if (current !== request || err.name === 'AbortError') return;
+          status.textContent = 'Profile unavailable';
+          results.replaceChildren(errorBox(err.message));
+        } finally {
+          if (current === request) {
+            setRunning(false);
+            if (activeProfileLoad === controller) activeProfileLoad = null;
+          }
+        }
+      };
+      let hasProfiled = false;
+      run.addEventListener('click', () => { hasProfiled = true; load(); });
+      column.addEventListener('change', () => { if (hasProfiled) load(); });
+      cancel.addEventListener('click', () => {
+        request++;
+        activeProfileLoad?.abort();
+        activeProfileLoad = null;
+        setRunning(false);
+        status.textContent = 'Profile cancelled.';
+        results.replaceChildren();
+      });
     };
 
     const renderData = async () => {
@@ -4804,8 +5493,10 @@
           structure = await ensureStructure();
         }
       } catch (err) {
+        if (activeDataLoad !== controller) return;
         toast(`Table structure is unavailable; showing raw values. ${err.message}`);
       }
+      if (activeDataLoad !== controller) return;
 
       const displays = new Map();
       for (const setting of structure?.foreignKeyDisplays || []) {
@@ -4818,7 +5509,7 @@
       }
       const valueKey = (value) => JSON.stringify(value);
       let lookupWarningShown = false;
-      const friendlyCell = (value, column) => {
+      const rawFriendlyCell = (value, column) => {
         if (value === null || value === undefined) return renderCell(value);
         const display = displays.get(column.name.toLowerCase());
         if (!display || display.failed) return renderCell(value);
@@ -4843,6 +5534,106 @@
             h('span', { class: 'fk-value-label null', text: 'Missing reference' }));
         }
         return renderCell(value);
+      };
+      const outgoingByColumn = new Map();
+      for (const foreignKey of structure?.foreignKeys || []) {
+        for (const pair of foreignKey.columns || []) {
+          const key = pair.column.toLowerCase();
+          if (!outgoingByColumn.has(key)) outgoingByColumn.set(key, []);
+          outgoingByColumn.get(key).push(foreignKey);
+        }
+      }
+      const foreignKeyFilterReason = (columnName, value) => {
+        if (value === null || value === undefined) {
+          return 'The complete key is not present in this row';
+        }
+        if (typeof value === 'object') {
+          return 'This key value cannot be represented by a table filter';
+        }
+        const resultColumn = data.columns.find((column) =>
+          column.name.toLowerCase() === columnName.toLowerCase());
+        const metadataColumn = structure?.columns?.find((column) =>
+          column.name.toLowerCase() === columnName.toLowerCase());
+        const dataType = (resultColumn?.dataTypeName || resultColumn?.dataType
+          || metadataColumn?.dataType || '').toLowerCase().split('(')[0].trim();
+        if (['binary', 'varbinary', 'image', 'rowversion', 'timestamp', 'blob'].includes(dataType)) {
+          return 'Binary key values cannot be represented by a table filter';
+        }
+        return null;
+      };
+      const followForeignKey = async (foreignKey, row) => {
+        const filters = [];
+        for (const pair of foreignKey.columns || []) {
+          const index = data.columns.findIndex((column) =>
+            column.name.toLowerCase() === pair.column.toLowerCase());
+          const reason = index < 0
+            ? 'The complete key is not present in this row'
+            : foreignKeyFilterReason(pair.column, row[index]);
+          if (reason) {
+            toast(`Cannot follow ${foreignKey.name}. ${reason}.`);
+            return;
+          }
+            filters.push({
+              column: pair.referencedColumn, operator: 'equals', value: dataCompareValueText(row[index]),
+            });
+        }
+        try {
+          const objects = await objectsForScope(scope);
+          const target = objects.find((candidate) => candidate.type === 'Table'
+            && candidate.schema.toLowerCase() === foreignKey.referencedSchema.toLowerCase()
+            && candidate.name.toLowerCase() === foreignKey.referencedTable.toLowerCase());
+          if (!target) {
+            toast(`Referenced table ${foreignKey.referencedSchema}.${foreignKey.referencedTable} is unavailable.`);
+            return;
+          }
+          openObjectTab(target, scope, { filters });
+        } catch (err) {
+          toast(`Could not follow ${foreignKey.name}. ${err.message}`);
+        }
+      };
+      const friendlyCell = (value, column, row) => {
+        const cell = rawFriendlyCell(value, column);
+        const foreignKeys = outgoingByColumn.get(column.name.toLowerCase()) || [];
+        const followable = foreignKeys.filter((foreignKey) => (foreignKey.columns || []).every((pair) => {
+          const index = data.columns.findIndex((candidate) =>
+            candidate.name.toLowerCase() === pair.column.toLowerCase());
+          return index >= 0 && !foreignKeyFilterReason(pair.column, row?.[index]);
+        }));
+        if (!followable.length) return cell;
+        const targetText = followable.length === 1
+          ? `${followable[0].referencedSchema}.${followable[0].referencedTable}`
+          : `${followable.length} referenced tables`;
+        const keyText = followable.length === 1
+          ? followable[0].columns.map((pair) => {
+            const index = data.columns.findIndex((candidate) =>
+              candidate.name.toLowerCase() === pair.column.toLowerCase());
+            return `${pair.column}=${dataCompareValueText(row[index])}`;
+          }).join(', ')
+          : `${column.name}=${dataCompareValueText(value)}`;
+        const link = h('button', {
+          type: 'button', class: 'fk-follow',
+          title: `Follow ${keyText} to ${targetText}`,
+          'aria-label': `Follow ${keyText} to ${targetText}`,
+          onclick: (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (followable.length === 1) followForeignKey(followable[0], row);
+            else showContextMenu(event, followable.map((foreignKey) => ({
+              label: `${foreignKey.name} → ${foreignKey.referencedSchema}.${foreignKey.referencedTable} (`
+                + foreignKey.columns.map((pair) => {
+                  const index = data.columns.findIndex((candidate) =>
+                    candidate.name.toLowerCase() === pair.column.toLowerCase());
+                  return `${pair.column}=${dataCompareValueText(row[index])}`;
+                }).join(', ') + ')',
+              action: () => followForeignKey(foreignKey, row),
+            })));
+          },
+        }, '↗');
+        cell.classList.add('foreign-key-cell');
+        const content = h('span', { class: 'foreign-key-content' });
+        content.append(...cell.childNodes, link);
+        cell.append(content);
+        return cell;
       };
       const resolveFriendlyValues = async (rows) => {
         for (const [columnName, display] of displays) {
@@ -4946,7 +5737,165 @@
             toast(rows.length === 1 ? 'Row deleted.' : `${rows.length} rows deleted.`, false);
             renderData();
           }),
-      } : null;
+        } : null;
+
+      const incomingPanel = h('section', {
+        class: 'incoming-references', hidden: '', 'data-testid': 'incoming-references',
+      });
+      let incomingRequest = 0;
+      const incomingMetadataKey = `${scopeKey(scope)} ${o.schema}.${o.name}`.toLowerCase();
+      let incomingMetadataPromise = state.incomingRelationships.get(incomingMetadataKey) || null;
+      const loadIncomingMetadata = () => {
+        if (incomingMetadataPromise
+          && state.incomingRelationships.get(incomingMetadataKey) === incomingMetadataPromise) {
+          return incomingMetadataPromise;
+        }
+        incomingMetadataPromise = (async () => {
+          const objects = (await objectsForScope(scope)).filter((candidate) =>
+            candidate.type === 'Table' && !candidate.isInternal && !isVirtualObject(candidate));
+          const definitions = new Array(objects.length);
+          const failures = [];
+          let next = 0;
+          const worker = async () => {
+            while (next < objects.length) {
+              const index = next++;
+              const object = objects[index];
+              try {
+                definitions[index] = await loadStructureMetadata(scope, object.schema, object.name);
+              } catch (err) {
+                if (err.name === 'AbortError') throw err;
+                failures.push(`${object.schema}.${object.name}: ${err.message}`);
+              }
+            }
+          };
+          await Promise.all(Array.from({ length: Math.min(6, objects.length) }, worker));
+          const relationships = [];
+          definitions.forEach((definition, index) => {
+            for (const foreignKey of definition?.foreignKeys || []) {
+              if (foreignKey.referencedSchema.toLowerCase() === o.schema.toLowerCase()
+                && foreignKey.referencedTable.toLowerCase() === o.name.toLowerCase()) {
+                relationships.push({ source: objects[index], foreignKey });
+              }
+            }
+          });
+          return { relationships, failures };
+        })();
+        state.incomingRelationships.set(incomingMetadataKey, incomingMetadataPromise);
+        incomingMetadataPromise.then((metadata) => {
+          if (metadata.failures.length
+            && state.incomingRelationships.get(incomingMetadataKey) === incomingMetadataPromise) {
+            state.incomingRelationships.delete(incomingMetadataKey);
+            incomingMetadataPromise = null;
+          }
+        }).catch(() => {
+          if (state.incomingRelationships.get(incomingMetadataKey) === incomingMetadataPromise) {
+            state.incomingRelationships.delete(incomingMetadataKey);
+            incomingMetadataPromise = null;
+          }
+        });
+        return incomingMetadataPromise;
+      };
+
+      const showIncomingReferences = async (selectedRows) => {
+        const current = ++incomingRequest;
+        if (!selectedRows.length) {
+          incomingPanel.hidden = true;
+          incomingPanel.replaceChildren();
+          return;
+        }
+        incomingPanel.hidden = false;
+        if (selectedRows.length !== 1) {
+          incomingPanel.replaceChildren(h('h3', { text: 'Incoming references' }),
+            h('p', { class: 'muted', text: 'Select one row to inspect incoming foreign keys.' }));
+          return;
+        }
+        const row = selectedRows[0];
+        const heading = () => h('h3', { text: `Incoming references to ${describeRow(row)}` });
+        const inspect = h('button', {
+          type: 'button', text: 'Inspect incoming references',
+          'data-testid': 'inspect-incoming-references',
+          onclick: async () => {
+            if (current !== incomingRequest) return;
+            inspect.disabled = true;
+            incomingPanel.replaceChildren(heading(),
+              h('div', { class: 'loading', text: 'Loading relationship metadata…' }));
+            try {
+              const metadata = await loadIncomingMetadata();
+              if (current !== incomingRequest || !incomingPanel.isConnected) return;
+              const entries = metadata.relationships.map(({ source, foreignKey }) => {
+                const filters = [];
+                let unavailableReason = null;
+                for (const pair of foreignKey.columns || []) {
+                  const index = columnIndex(pair.referencedColumn);
+                  const key = index < 0 ? rowKey(row) : null;
+                  const keyEntry = key && Object.entries(key).find(([column]) =>
+                    column.toLowerCase() === pair.referencedColumn.toLowerCase());
+                  const value = index >= 0 ? row[index] : keyEntry?.[1];
+                  if (index < 0 && value === undefined) {
+                    unavailableReason = 'The referenced key is not present in the loaded columns';
+                    break;
+                  }
+                  if (value === null || value === undefined) {
+                    unavailableReason = 'A NULL key value cannot be referenced by a foreign key';
+                    break;
+                  }
+                  const filterReason = foreignKeyFilterReason(pair.referencedColumn, value);
+                  if (filterReason) {
+                    unavailableReason = filterReason;
+                    break;
+                  }
+                  filters.push({ column: pair.column, operator: 'equals', value: dataCompareValueText(value) });
+                }
+                const mapping = (foreignKey.columns || []).map((pair) =>
+                  `${source.schema}.${source.name}.${pair.column} → ${o.schema}.${o.name}.${pair.referencedColumn}`).join(', ');
+                return h('div', { class: 'incoming-reference', 'data-testid': 'incoming-reference' },
+                  h('span', { class: 'badge badge-FK', text: 'FK' }),
+                  h('span', { class: 'incoming-reference-body' },
+                    h('strong', { text: `${source.schema}.${source.name}` }),
+                    h('span', { class: 'muted', text: foreignKey.name }),
+                    h('span', { class: 'mono', text: mapping })),
+                  h('button', {
+                    type: 'button', disabled: unavailableReason ? '' : null,
+                    title: unavailableReason
+                      || `Open rows in ${source.schema}.${source.name} that reference this row`,
+                    text: 'Open referencing rows',
+                    onclick: () => openObjectTab(source, scope, { filters }),
+                  }));
+              });
+              const retry = metadata.failures.length ? h('button', {
+                type: 'button', text: 'Retry incomplete inspection',
+                'data-testid': 'retry-incoming-references',
+                onclick: () => {
+                  inspect.disabled = false;
+                  inspect.click();
+                },
+              }) : null;
+              const warning = metadata.failures.length ? h('div', {
+                  class: 'warning-box',
+                  title: metadata.failures.join('\n'),
+                }, h('span', {
+                  text: `${metadata.failures.length} table${metadata.failures.length === 1 ? '' : 's'} could not be inspected.`,
+                }), retry) : null;
+              incomingPanel.replaceChildren(...[
+                heading(),
+                warning,
+                entries.length ? h('div', { class: 'incoming-reference-list' }, ...entries)
+                  : h('p', { class: 'muted', text: 'No visible tables have a foreign key to this row.' }),
+              ].filter(Boolean));
+            } catch (err) {
+              if (current !== incomingRequest || err.name === 'AbortError') return;
+              inspect.disabled = false;
+              incomingPanel.replaceChildren(heading(), errorBox(err.message), h('button', {
+                type: 'button', text: 'Retry incoming-reference inspection',
+                'data-testid': 'retry-incoming-references',
+                onclick: () => inspect.click(),
+              }));
+            }
+          },
+        });
+        incomingPanel.replaceChildren(heading(),
+          h('p', { class: 'muted', text: 'Relationship metadata is loaded only when requested.' }), inspect);
+      };
 
       // Filtering happens in SQL, on every row of the object, not on the page already fetched -
       // otherwise "find the row" would only ever search the first few hundred rows.
@@ -4986,6 +5935,7 @@
                 operator: operator.value,
                 value: needsValue(operator.value) ? value.value : null,
               }];
+              saveSession();
               close();
               renderData();
             },
@@ -5010,6 +5960,7 @@
               class: 'chip-remove', title: 'Remove this filter', 'aria-label': 'Remove filter',
               onclick: () => {
                 grid.filters = grid.filters.filter((_, position) => position !== index);
+                saveSession();
                 renderData();
               },
             }, '×')));
@@ -5017,7 +5968,7 @@
         if (grid.filters.length > 1) {
           bar.append(h('button', {
             class: 'ghost', 'data-testid': 'clear-filters',
-            onclick: () => { grid.filters = []; renderData(); },
+            onclick: () => { grid.filters = []; saveSession(); renderData(); },
           }, 'Clear all'));
         }
         return bar;
@@ -5039,6 +5990,41 @@
       const status = h('span', { class: 'muted', text: 'Loading…' });
       const cancel = h('button', { text: 'Cancel', onclick: () => controller.abort() });
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
+      let exportControls;
+      let fullExportInProgress = false;
+      const fullExport = async (format) => {
+        if (fullExportInProgress) return;
+        fullExportInProgress = true;
+        exportControls?.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+        const params = new URLSearchParams({ format });
+        if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
+        if (grid.filters.length) params.set('filter', JSON.stringify(grid.filters));
+        try {
+          params.set('probe', 'true');
+          await api(urls.dataExport(o.schema, o.name, params));
+          params.delete('probe');
+          const link = h('a', {
+            href: urls.dataExport(o.schema, o.name, params), download: '', hidden: '',
+          });
+          document.body.append(link);
+          link.click();
+          link.remove();
+        } catch (err) {
+          toast(`Export failed: ${err.message}`);
+        } finally {
+          fullExportInProgress = false;
+          exportControls?.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+        }
+      };
+      const createExportControls = () => exportButtons(
+        data.columns, data.rows, o.name,
+        currentConn().allowSqlExecution
+          ? {
+            sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope,
+            insertTarget: sqlName(o),
+          }
+          : { scope, insertTarget: sqlName(o) },
+        identity ? fullExport : null);
       actionBar.replaceChildren(...[
         o.type === 'Table' && !o.isInternal && !isVirtualObject(o)
           ? h('button', {
@@ -5060,10 +6046,7 @@
         useInQueryButton(o, scope),
         dependenciesButton(o, scope),
         h('span', { class: 'spacer' }),
-        exportButtons(data.columns, data.rows, o.name,
-          currentConn().allowSqlExecution
-            ? { sql: `SELECT * FROM ${sqlName(o)};`, name: displayName(o, scope), scope }
-            : null),
+        (exportControls = createExportControls()),
         h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
         status,
         o.type === 'Table' && currentConn().allowWrites && !o.isInternal && canDropObject(o)
@@ -5076,7 +6059,7 @@
           class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
         }) : null,
       ].filter(Boolean));
-      body.replaceChildren(filterBar(), scroll);
+      body.replaceChildren(filterBar(), scroll, incomingPanel);
       const gridView = progressiveDataGrid(scroll, {
         columns: data.columns,
         rows: data.rows,
@@ -5086,6 +6069,7 @@
         direction: () => grid.dir,
         onRender: (value) => { table = value; },
         renderCell: friendlyCell,
+        onSelectionChange: showIncomingReferences,
         onSort: (column) => {
           if (grid.sort === column) grid.dir = grid.dir === 'asc' ? 'desc' : 'asc';
           else { grid.sort = column; grid.dir = 'asc'; }
@@ -5099,7 +6083,12 @@
       try {
         await streamNdjson(urls.dataStream(o.schema, o.name, params), { signal: controller.signal }, (event) => {
           if (event.type === 'resultSet') {
-            if (event.rowIdentity) identity = event.rowIdentity;
+            if (event.rowIdentity && !identity) {
+              identity = event.rowIdentity;
+              const replacement = createExportControls();
+              exportControls.replaceWith(replacement);
+              exportControls = replacement;
+            }
             gridView.setColumns(event.columns);
           }
           else if (event.type === 'rows') {
@@ -5120,6 +6109,7 @@
           else if (event.type === 'error') throw new Error(event.message);
         });
       } catch (err) {
+        if (activeDataLoad !== controller) return;
         if (err.name === 'AbortError') status.textContent = 'Cancelled';
         else { body.append(errorBox(err.message)); status.textContent = 'Failed'; }
       } finally {
@@ -5421,10 +6411,17 @@
           if (isNew) {
             renderData();
           } else {
-            for (const [name, value] of Object.entries(values)) existingRow[columnIndex(name)] = value;
+            // Every editable field is posted and may be normalized by the provider. Exact text
+            // captured before the write is no longer authoritative for any cell in this row.
+            exactNumbersByRow.delete(existingRow);
+            binaryValuesByRow.delete(existingRow);
+            for (const [name, value] of Object.entries(values)) {
+              const index = columnIndex(name);
+              existingRow[index] = value;
+            }
             rowKey?.refresh?.(existingRow);
             existingRowElement.querySelectorAll('td:not(.row-selector)').forEach((cell, index) => {
-              const rendered = friendly.renderCell(existingRow[index], dataColumns[index]);
+              const rendered = friendly.renderCell(existingRow[index], dataColumns[index], existingRow);
               cell.className = rendered.className;
               cell.replaceChildren(...rendered.childNodes);
               if (rendered.title) cell.title = rendered.title;
@@ -6222,6 +7219,14 @@
       body.replaceChildren(h('div', { class: 'structure' }, sections));
     };
 
+    tab.navigateToFilters = async (filters) => {
+      const editor = tab.panel.querySelector('tr.row-editor');
+      if (editor && !await editor._commitEditor()) return;
+      grid.filters = (filters || []).map((filter) => ({ ...filter }));
+      saveSession();
+      if (currentView === 'Data') await renderData();
+      else await switchView('Data');
+    };
     tab.load = () => switchView('Data');
   }
 
@@ -8628,7 +9633,10 @@
       entry.connection !== scope.connection || entry.database !== scope.database));
   };
 
-  function openQueryTab(initialSql = '', initialTitle = null, scope = scopeOf(), { autoRun = false } = {}) {
+  function openQueryTab(initialSql = '', initialTitle = null, scope = scopeOf(), {
+    autoRun = false, jobId: restoredJobId = null, jobSql: restoredJobSql = null,
+    jobHistoryRecorded = false,
+  } = {}) {
     if (!scope.database) {
       toast('Select a database first.');
       return;
@@ -8674,6 +9682,7 @@
     let savedQueries = [];
     let selectedSavedId = null;
     let activeQuery = null;
+    let activeJobId = restoredJobId;
 
     const showQueryHistory = () => {
       const content = h('div', { class: 'query-history-dialog' });
@@ -8906,7 +9915,13 @@
       panel: null,
       // Read at save time rather than captured here, so the SQL that comes back is the SQL that
       // was on screen, not whatever the tab happened to open with.
-      restore: () => ({ kind: 'query', scope, sql: editor.value, title: tab.title }),
+      activeJobSql: restoredJobSql,
+      jobHistoryRecorded,
+      restore: () => ({
+        kind: 'query', scope, sql: editor.value, title: tab.title,
+        jobId: activeJobId, jobSql: tab.activeJobSql,
+        jobHistoryRecorded: tab.jobHistoryRecorded,
+      }),
     };
 
     // ---- execution plans ----------------------------------------------------------------
@@ -8960,15 +9975,18 @@
       }
     };
 
-    const run = async (dangerConfirmed = false) => {
+    const runAttached = async (dangerConfirmed = false) => {
       editor.hideCompletion();
       const sql = editor.executableSql();
       if (!sql) return;
-      if (!dangerConfirmed && confirmUnqualifiedMutation(sql, () => { run(true); })) return;
+      if (!dangerConfirmed && confirmUnqualifiedMutation(sql, () => { runAttached(true); })) return;
       if (activeQuery) activeQuery.abort();
       const controller = new AbortController();
       activeQuery = controller;
       tab.isRunning = true;
+      tab.detachableJob = false;
+      activeJobId = null;
+      tab.activeJobSql = null;
       runButton.disabled = true;
       cancelButton.disabled = false;
       results.replaceChildren();
@@ -8986,6 +10004,10 @@
       let completedSuccessfully = false;
       const messages = h('div', { class: 'query-messages' });
       const addEvent = (event) => {
+        // Attached events already pass through parseNdjsonEvent; keeping this here also makes
+        // the handler safe when events are supplied by another transport.
+        rememberExactNumbers(event.rows, event.exactValues);
+        rememberBinaryValues(event.rows, event.binaryValues);
         if (event.type === 'resultSet') {
           const metaText = h('span', { text: '0 row(s) - receiving…' });
           const exports = h('span', { class: 'export-buttons' });
@@ -9040,7 +10062,7 @@
       };
 
       try {
-        await streamNdjson(session ? urls.sessionQuery(session.id) : urls.query(), {
+        await streamNdjson(urls.sessionQuery(session.id), {
           method: 'POST', body: JSON.stringify({ sql, maxRows: Number(maxRowsInput.value) }), signal: controller.signal,
         }, addEvent);
         if (completedSuccessfully && /\b(?:CREATE(?:\s+OR\s+ALTER)?|ALTER|DROP)\s+(?:VIEW|TABLE|PROCEDURE|PROC|FUNCTION|SCHEMA)\b/i.test(sql)) {
@@ -9073,15 +10095,261 @@
       }
     };
 
+    const runDetached = async (
+      dangerConfirmed = false, existingJobId = null, restoredSql = null,
+    ) => {
+      editor.hideCompletion();
+      const sql = restoredSql || editor.executableSql();
+      if (!sql || tab.isRunning) return;
+      if (!existingJobId && !dangerConfirmed
+        && confirmUnqualifiedMutation(sql, () => { runDetached(true); })) return;
+
+      const controller = new AbortController();
+      activeQuery = controller;
+      tab.isRunning = true;
+      tab.detachableJob = true;
+      runButton.disabled = true;
+      cancelButton.disabled = false;
+      results.replaceChildren();
+      results.classList.remove('single-result');
+      const startedAt = performance.now();
+      let historyStartedAt = Date.now();
+      let historyDuration = null;
+      let terminalStatus = null;
+      let terminalEvent = false;
+      let reattachAvailable = false;
+      let retryingPoll = false;
+      let jobId = existingJobId;
+      runButton.textContent = 'Run';
+      status.textContent = existingJobId ? 'Reattaching to query job…' : 'Starting query job…';
+      const timer = setInterval(() => {
+        if (!terminalEvent && !retryingPoll && !status.textContent.startsWith('Cancelling')) {
+          status.textContent = `Running in background… ${((performance.now() - startedAt) / 1000).toFixed(1)} s`;
+        }
+      }, 100);
+
+      const sets = new Map();
+      const messages = h('div', { class: 'query-messages' });
+      const addEvent = (event) => {
+        // Detached job polls return parsed JSON rather than NDJSON, so retain the precision and
+        // runtime-type sidecars before the rows are handed to the grid.
+        rememberExactNumbers(event.rows, event.exactValues);
+        rememberBinaryValues(event.rows, event.binaryValues);
+        if (event.type === 'resultSet') {
+          const metaText = h('span', { text: '0 row(s) - receiving…' });
+          const exports = h('span', { class: 'export-buttons' });
+          const meta = h('div', { class: 'result-meta muted' },
+            metaText, h('span', { class: 'spacer' }), exports);
+          const scroll = h('div', { class: 'grid-scroll' });
+          const gridView = progressiveDataGrid(scroll, { selectable: true });
+          gridView.setColumns(event.columns);
+          results.append(meta, scroll);
+          sets.set(event.resultSetIndex, {
+            columns: gridView.columns, rows: gridView.rows, metaText, meta, exports, scroll, gridView,
+          });
+          results.classList.toggle('single-result', sets.size === 1);
+        } else if (event.type === 'rows') {
+          const set = sets.get(event.resultSetIndex);
+          if (!set) return;
+          set.gridView.appendRows(event.rows);
+          set.metaText.textContent = `${set.rows.length} row(s) - receiving…`;
+        } else if (event.type === 'resultSetCompleted') {
+          const set = sets.get(event.resultSetIndex);
+          if (!set) return;
+          if (!set.gridView.table) set.gridView.render();
+          set.metaText.textContent = set.rows.length + ' row(s)'
+            + (event.truncated ? ' - truncated at the configured limit' : '');
+          const controls = exportButtons(set.columns, set.rows,
+            `${tab.title}-result${event.resultSetIndex + 1}`,
+            { sql, name: tab.title.startsWith('Query ') ? '' : tab.title, scope });
+          set.exports.replaceWith(controls);
+          set.exports = controls;
+          setupOverflowToolbar(set.meta, [controls], 'More result actions');
+        } else if (event.type === 'message') {
+          messages.append(h('div', { class: 'message mono', text: event.message }));
+          if (!messages.isConnected) results.append(messages);
+        } else if (event.type === 'completed') {
+          terminalEvent = true;
+          historyDuration = event.durationMs;
+          if (!sets.size && event.recordsAffected >= 0) {
+            const count = event.recordsAffected;
+            results.append(h('div', {
+              class: 'result-meta',
+              text: `Query executed successfully — ${count} ${count === 1 ? 'record' : 'records'} affected`,
+            }));
+          }
+          status.textContent = event.durationMs + ' ms';
+        } else if (event.type === 'error') {
+          terminalEvent = true;
+          historyDuration = event.durationMs;
+          results.append(errorBox(event.message));
+          status.textContent = 'Failed';
+        } else if (event.type === 'cancelled') {
+          terminalEvent = true;
+          historyDuration = event.durationMs;
+          status.textContent = 'Cancelled';
+        }
+      };
+
+      try {
+        if (!jobId) {
+          activeJobId = null;
+          tab.jobHistoryRecorded = false;
+          const started = await post(urls.queryJobs(), {
+            sql, maxRows: Number(maxRowsInput.value),
+          });
+          jobId = started.id;
+          activeJobId = jobId;
+          tab.activeJobSql = sql;
+          historyStartedAt = Date.parse(started.startedAt) || historyStartedAt;
+          saveSession();
+        } else {
+          activeJobId = jobId;
+          tab.activeJobSql = sql;
+        }
+
+        const waitBeforeRetry = (milliseconds) => new Promise((resolve, reject) => {
+          const onAbort = () => {
+            clearTimeout(timerId);
+            reject(new DOMException('Aborted', 'AbortError'));
+          };
+          const timerId = setTimeout(() => {
+            controller.signal.removeEventListener('abort', onAbort);
+            resolve();
+          }, milliseconds);
+          controller.signal.addEventListener('abort', onAbort, { once: true });
+        });
+        let cursor = 0;
+        let pollFailures = 0;
+        while (!terminalStatus) {
+          let snapshot;
+          try {
+            snapshot = await api(urls.queryJob(jobId, cursor), { signal: controller.signal });
+            pollFailures = 0;
+          } catch (err) {
+            if (err.name === 'AbortError' || err.status === 404 || ++pollFailures > 3) throw err;
+            retryingPoll = true;
+            status.textContent = `Connection interrupted — retrying query job (${pollFailures}/3)…`;
+            await waitBeforeRetry(250 * (2 ** (pollFailures - 1)));
+            retryingPoll = false;
+            continue;
+          }
+          for (const event of snapshot.events || []) addEvent(event);
+          cursor = snapshot.nextEventIndex;
+          historyStartedAt = Date.parse(snapshot.startedAt) || historyStartedAt;
+          if (cursor < snapshot.eventCount) continue;
+          if (['succeeded', 'failed', 'cancelled'].includes(snapshot.status)) {
+            terminalStatus = snapshot.status;
+          }
+        }
+        if (terminalStatus === 'cancelled' && !terminalEvent) addEvent({ type: 'cancelled' });
+        if (terminalStatus === 'failed' && !terminalEvent) {
+          addEvent({ type: 'error', message: 'The query job failed.' });
+        }
+        if (terminalStatus === 'succeeded'
+          && /\b(?:CREATE(?:\s+OR\s+ALTER)?|ALTER|DROP)\s+(?:VIEW|TABLE|PROCEDURE|PROC|FUNCTION|SCHEMA)\b/i.test(sql)) {
+          await refreshObjects(scope);
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          reattachAvailable = Boolean(jobId);
+          status.textContent = 'Detached — query continues on the server';
+        } else if (jobId && err.status === 404) {
+          terminalStatus = 'expired';
+          activeJobId = null;
+          tab.activeJobSql = null;
+          status.textContent = 'Query job expired';
+          results.append(errorBox(err.message));
+          saveSession();
+        } else if (jobId) {
+          reattachAvailable = true;
+          status.textContent = 'Connection lost — choose Reattach to resume this query job';
+          results.append(errorBox(err.message));
+        } else {
+          terminalStatus = 'failed';
+          status.textContent = 'Failed';
+          results.append(errorBox(err.message));
+        }
+      } finally {
+        clearInterval(timer);
+        if (terminalStatus && !tab.jobHistoryRecorded) {
+          addQueryHistory(scope, {
+            sql,
+            startedAt: historyStartedAt,
+            durationMs: Number.isFinite(historyDuration)
+              ? historyDuration
+              : Math.max(0, Math.round(performance.now() - startedAt)),
+            outcome: terminalStatus === 'succeeded' ? 'succeeded'
+              : terminalStatus === 'cancelled' ? 'cancelled' : 'failed',
+          });
+          tab.jobHistoryRecorded = true;
+          saveSession();
+        }
+        if (activeQuery === controller) {
+          activeQuery = null;
+          const unresolvedJob = Boolean(jobId && !terminalStatus);
+          const stillRunning = unresolvedJob && !reattachAvailable;
+          tab.isRunning = stillRunning;
+          tab.detachableJob = unresolvedJob;
+          runButton.disabled = stillRunning;
+          runButton.textContent = reattachAvailable ? 'Reattach' : 'Run';
+          cancelButton.disabled = !unresolvedJob;
+        }
+      }
+    };
+
+    const run = (dangerConfirmed = false) => {
+      if (tab.isRunning) return;
+      if (!session && tab.detachableJob && activeJobId) {
+        return runDetached(true, activeJobId, tab.activeJobSql);
+      }
+      return session ? runAttached(dangerConfirmed) : runDetached(dangerConfirmed);
+    };
+
     runButton.addEventListener('click', () => run());
-    cancelButton.addEventListener('click', () => activeQuery?.abort());
+    cancelButton.addEventListener('click', async () => {
+      if (tab.detachableJob && activeJobId) {
+        cancelButton.disabled = true;
+        status.textContent = 'Cancelling on the server…';
+        try {
+          await del(urls.queryJob(activeJobId));
+        } catch (err) {
+          toast(err.message);
+          cancelButton.disabled = false;
+        }
+      } else {
+        activeQuery?.abort();
+      }
+    });
 
-    // Closing the tab ends the session, so an unfinished transaction is rolled back now rather
-    // than left holding locks until it times out.
-    tab.onClose = () => closeSession({ silent: true });
+    let cancelJobOnClose = false;
+    tab.onClose = async () => {
+      activeQuery?.abort();
+      if (cancelJobOnClose && activeJobId) {
+        try { await del(urls.queryJob(activeJobId)); } catch { /* already finished/expired */ }
+      }
+      await closeSession({ silent: true });
+    };
 
-    tab.beforeClose = () => {
-      if (!session?.transaction?.isOpen) return Promise.resolve(true);
+    tab.beforeClose = async () => {
+      if (tab.detachableJob && activeJobId) {
+        const cancel = await new Promise((resolve) => {
+          let decision = false;
+          modal('Query still running',
+            h('p', {
+              text: `Close ${tab.title} and cancel its server-side query job? Switching to another tab does not cancel it.`,
+            }), [
+              { label: 'Keep tab open', onClick: (close) => close() },
+              {
+                label: 'Cancel and close', danger: true,
+                onClick: (close) => { decision = true; close(); },
+              },
+            ], () => resolve(decision));
+        });
+        if (!cancel) return false;
+        cancelJobOnClose = true;
+      }
+      if (!session?.transaction?.isOpen) return true;
       return new Promise((resolve) => {
         let decision = false;
         modal('Transaction still open',
@@ -9093,11 +10361,13 @@
     };
 
     tab.beforeLeave = () => {
-      if (!tab.isRunning) return Promise.resolve(true);
+      if (!tab.isRunning || tab.detachableJob) return Promise.resolve(true);
       return new Promise((resolve) => {
         let decision = false;
         modal('Query still running',
-          h('p', { text: `The query on ${tab.title} is still running. Stop it before leaving; otherwise it keeps running on the server and you lose the ability to cancel it or return to its results.` }), [
+          h('p', {
+            text: `The pinned-session query on ${tab.title} must stay attached to keep transaction ownership clear.`,
+          }), [
           { label: 'Stay', onClick: (close) => close() },
           { label: 'Stop query', danger: true, onClick: (close) => {
             activeQuery?.abort();
@@ -9164,7 +10434,8 @@
     addTab(tab);
     refreshSaved();
     editor.focus();
-    if (autoRun) run();
+    if (restoredJobId) runDetached(true, restoredJobId, restoredJobSql || initialSql);
+    else if (autoRun) run();
   }
 
   // ---- publishing -----------------------------------------------------------------
@@ -9952,6 +11223,8 @@
           }
           rowElements.forEach((element, index) => element.classList.toggle('selected', selected.has(rowOffset + index)));
           table.focus({ preventScroll: true });
+          options.onSelectionChange?.([...selected].sort((a, b) => a - b)
+            .map((index) => allRows[index]).filter(Boolean));
         };
         tr.classList.toggle('selected', selected.has(globalIndex));
         tr.prepend(h('td', { class: 'row-selector', title: 'Select row', onclick: selectRow }, String(globalIndex + 1)));
@@ -9960,6 +11233,7 @@
             cell.addEventListener('click', async () => {
               selected.clear(); selected.add(globalIndex); selection.anchor = globalIndex;
               rowElements.forEach((element, index) => element.classList.toggle('selected', selected.has(rowOffset + index)));
+              options.onSelectionChange?.([row]);
               await options.rowActions.onEdit(row, tr, columns[columnIndex].name, rowIndex);
             });
           });
@@ -10029,6 +11303,7 @@
         onSort: options.onSort,
         rowActions,
         renderCell: options.renderCell,
+        onSelectionChange: options.onSelectionChange,
       });
       if (virtual) {
         const tbody = table.tBodies[0];
@@ -10256,33 +11531,249 @@
 
   // ---- export ---------------------------------------------------------------------------
 
-  function exportButtons(columns, rows, baseName, apiDefinition = null) {
+  function exportButtons(columns, rows, baseName, apiDefinition = null, serverExport = null) {
+    const exportScope = apiDefinition?.scope || null;
+    const copy = h('button', {
+      class: 'ghost', title: 'Copy all loaded rows', 'data-testid': 'copy-results',
+      'aria-haspopup': 'menu', 'aria-expanded': 'false',
+      onclick: (event) => showContextMenu(event, [
+        {
+          label: 'Copy as SQL INSERT',
+          action: () => copyResultData(columns, rows, 'sql', apiDefinition),
+        },
+        {
+          label: 'Copy as JSON',
+          action: () => copyResultData(columns, rows, 'json', apiDefinition),
+        },
+        {
+          label: 'Copy as Markdown',
+          action: () => copyResultData(columns, rows, 'markdown', apiDefinition),
+        },
+      ]),
+    }, 'Copy ▾');
+    const richExportButton = (format, label) => {
+      const button = h('button', {
+        class: 'ghost', title: `Download as ${label}`,
+        'data-testid': `export-${format}`,
+        onclick: async () => {
+          button.disabled = true;
+          try { await exportRichData(columns, rows, format, baseName, exportScope); }
+          catch (err) { toast(err.message); }
+          finally { button.disabled = false; }
+        },
+      }, label);
+      return button;
+    };
     return h('span', { class: 'export-buttons' },
+      copy,
       h('button', {
-        class: 'ghost', title: 'Download as CSV', 'data-testid': 'export-csv',
-        onclick: () => exportData(columns, rows, 'csv', baseName),
-      }, 'CSV'),
+        class: 'ghost',
+        title: serverExport ? 'Download all filtered rows as CSV' : 'Download as CSV',
+        'data-testid': 'export-csv',
+        onclick: () => serverExport ? serverExport('csv') : exportData(columns, rows, 'csv', baseName),
+      }, serverExport ? 'Full CSV' : 'CSV'),
       h('button', {
-        class: 'ghost', title: 'Download as JSON', 'data-testid': 'export-json',
-        onclick: () => exportData(columns, rows, 'json', baseName),
-      }, 'JSON'),
-      apiDefinition ? h('button', {
+        class: 'ghost',
+        title: serverExport ? 'Download all filtered rows as JSON' : 'Download as JSON',
+        'data-testid': 'export-json',
+        onclick: () => serverExport ? serverExport('json') : exportData(columns, rows, 'json', baseName),
+      }, serverExport ? 'Full JSON' : 'JSON'),
+      richExportButton('xlsx', 'Excel'),
+      richExportButton('parquet', 'Parquet'),
+      apiDefinition?.sql ? h('button', {
         class: 'ghost', title: 'Publish as an API endpoint', 'data-testid': 'publish-api',
         onclick: () => openPublishDialog(apiDefinition.sql, apiDefinition.name, apiDefinition.scope),
       }, 'API') : null);
+  }
+
+  async function copyResultData(columns, rows, format, definition = null) {
+    let content;
+    try {
+      if (format === 'sql') {
+        const providerName = definition?.scope
+          ? connectionFor(definition.scope).providerName
+          : '';
+        content = resultRowsAsSqlInsert(columns, rows, 'TargetTable', providerName);
+      } else if (format === 'markdown') {
+        content = resultRowsAsMarkdown(columns, rows);
+      } else {
+        content = JSON.stringify(resultRowsAsObjects(columns, rows, true), null, 2);
+      }
+    } catch (err) {
+      toast(err?.message || 'Copy failed.');
+      return;
+    }
+    if (!navigator.clipboard?.writeText) {
+      toast('Copy failed - clipboard unavailable.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(content);
+      toast(`${rows.length} loaded row${rows.length === 1 ? '' : 's'} copied as ${
+        format === 'sql' ? 'SQL INSERT' : format === 'json' ? 'JSON' : 'Markdown'}.`, false);
+    } catch {
+      toast('Copy failed - clipboard unavailable.');
+    }
+  }
+
+  function uniqueResultColumnNames(columns) {
+    const names = [];
+    const used = new Set();
+    for (let index = 0; index < columns.length; index++) {
+      const base = resultColumnBaseName(columns[index], index);
+      let name = base;
+      let suffix = 2;
+      while (used.has(name.toLowerCase())) name = `${base}_${suffix++}`;
+      used.add(name.toLowerCase());
+      names.push(name);
+    }
+    return names;
+  }
+
+  function resultColumnBaseName(column, index) {
+    const name = String(column?.name ?? '');
+    return name.trim() ? name : `Column${index + 1}`;
+  }
+
+  function resultRowsAsObjects(columns, rows, preserveExact = false) {
+    const names = uniqueResultColumnNames(columns);
+    return rows.map((row) => Object.fromEntries(
+      names.map((name, index) => [name,
+        preserveExact ? resultCopyValue(row, index) : row[index]])));
+  }
+
+  function resultCopyValue(row, index) {
+    const exactValue = exactNumbersByRow.get(row)?.[index];
+    return typeof exactValue === 'string' ? exactValue : row[index];
+  }
+
+  function resultRowsAsSqlInsert(columns, rows, target, providerName) {
+    if (!columns.length || !rows.length) return '-- No loaded rows to insert.';
+    const uniqueNames = uniqueResultColumnNames(columns);
+    if (uniqueNames.some((name, index) => name !== resultColumnBaseName(columns[index], index))) {
+      throw new Error('Cannot safely copy SQL INSERT because the result has duplicate column names.');
+    }
+    const names = uniqueNames.map((name) => quoteSqlIdentifier(name, providerName)).join(', ');
+    const prefix = `INSERT INTO ${quoteSqlIdentifier(target, providerName)} (${names}) VALUES\n`;
+    const statements = [];
+    // SQL Server rejects a table-value constructor above 1,000 rows. The same conservative
+    // chunking also keeps copied SQLite statements from growing needlessly large.
+    for (let offset = 0; offset < rows.length; offset += 1000) {
+      const values = rows.slice(offset, offset + 1000).map((row) => {
+        const exactValues = exactNumbersByRow.get(row);
+        const binaryValues = binaryValuesByRow.get(row);
+        return '    (' + columns.map((column, index) =>
+          resultSqlLiteral(
+            row[index], column, providerName, exactValues?.[index], binaryValues?.[index])).join(', ') + ')';
+      });
+      statements.push(prefix + values.join(',\n') + ';');
+    }
+    return statements.join('\n\n');
+  }
+
+  function quoteSqlIdentifier(value, providerName) {
+    const text = String(value);
+    return String(providerName || '').toLowerCase().includes('sqlite')
+      ? `"${text.replaceAll('"', '""')}"`
+      : `[${text.replaceAll(']', ']]')}]`;
+  }
+
+  function resultSqlLiteral(value, column, providerName, exactValue = null, binaryValue = null) {
+    if (value === null || value === undefined) return 'NULL';
+    if (typeof value === 'boolean') return value ? '1' : '0';
+    const provider = String(providerName || '').toLowerCase();
+    if (typeof exactValue === 'string' && /^[+-]?\d+(?:\.\d+)?$/.test(exactValue)) return exactValue;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) return 'NULL';
+      return String(value);
+    }
+
+    const isBinary = binaryValue === true;
+    if (isBinary && typeof value === 'string') {
+      try {
+        const bytes = Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+        const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('').toUpperCase();
+        return provider.includes('sqlite') ? `X'${hex}'` : `0x${hex}`;
+      } catch {
+        throw new Error(`Cannot safely copy ${column.name} as SQL because its binary value is malformed.`);
+      }
+    }
+
+    const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    const prefix = provider.includes('sqlserver') ? 'N' : '';
+    return `${prefix}'${text.replaceAll("'", "''")}'`;
+  }
+
+  function resultRowsAsMarkdown(columns, rows) {
+    const markdownCell = (value) => {
+      if (value === null || value === undefined) return 'NULL';
+      const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+        .replaceAll('|', '\\|').replace(/\r?\n/g, '<br>');
+    };
+    const header = `| ${columns.map((column) => markdownCell(column.name)).join(' | ')} |`;
+    const separator = `| ${columns.map(() => '---').join(' | ')} |`;
+    return [header, separator,
+      ...rows.map((row) => `| ${columns.map((_, index) =>
+        markdownCell(resultCopyValue(row, index))).join(' | ')} |`),
+    ].join('\n');
+  }
+
+  async function exportRichData(columns, rows, format, baseName, scope) {
+    const response = await fetch(urls.resultExport(format), {
+      method: 'POST',
+      headers: {
+        Accept: format === 'xlsx'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : 'application/vnd.apache.parquet',
+        'Content-Type': 'application/json',
+        'X-Gridlet-Request': '1',
+      },
+      body: JSON.stringify({
+        columns, rows,
+        providerName: scope ? connectionFor(scope).providerName : null,
+        binaryValues: rows.map((row) => binaryValuesByRow.get(row)
+          || columns.map(() => null)),
+        exactValues: rows.map((row) => exactNumbersByRow.get(row)
+          || columns.map(() => null)),
+      }),
+    });
+    if (!response.ok) {
+      if (response.status === 413) {
+        throw new Error(
+          'This result set is too large for Excel or Parquet export. Lower the row cap and try again.');
+      }
+      let message = `${response.status} ${response.statusText}`;
+      try {
+        const body = await response.json();
+        message = body.error || body.detail || body.title || message;
+      } catch { /* response was not JSON */ }
+      throw new Error(message);
+    }
+
+    const href = URL.createObjectURL(await response.blob());
+    const link = h('a', {
+      href,
+      download: (baseName || 'gridlet-export').replace(/[^\w.-]+/g, '_') + '.' + format,
+    });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
   }
 
   function exportData(columns, rows, format, baseName) {
     let content;
     let type;
     if (format === 'json') {
-      content = JSON.stringify(
-        rows.map((r) => Object.fromEntries(columns.map((c, i) => [c.name, r[i]]))), null, 2);
+      content = JSON.stringify(resultRowsAsObjects(columns, rows), null, 2);
       type = 'application/json';
     } else {
       const escape = (v) => {
         if (v === null || v === undefined) return '';
-        const s = String(v);
+        let s = String(v);
+        const unsafe = typeof v === 'string' && /^\s*[=+\-@\t\r]/.test(v);
+        if (unsafe) s = `'${s}`;
         return /[",\n\r]/.test(s) ? '"' + s.replaceAll('"', '""') + '"' : s;
       };
       content = [

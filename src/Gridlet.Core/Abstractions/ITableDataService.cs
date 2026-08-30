@@ -12,4 +12,13 @@ public interface ITableDataService
         string name,
         TableDataRequest request,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Returns exact aggregate statistics for one validated column.</summary>
+    Task<ColumnProfile> GetColumnProfileAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        ColumnProfileRequest request,
+        CancellationToken cancellationToken = default)
+        => throw new GridletValidationException("This provider does not support column profiling.");
 }

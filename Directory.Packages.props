@@ -19,6 +19,7 @@
     <PackageVersion Include="Microsoft.Agents.AI.Anthropic" Version="1.13.0-preview.260703.1" />
     <PackageVersion Include="Microsoft.Agents.AI.GitHub.Copilot" Version="1.12.0-rc1" />
     <PackageVersion Include="OllamaSharp" Version="5.4.25" />
+    <PackageVersion Include="Parquet.Net" Version="6.1.0" />
 
     <!-- tests -->
     <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.0" />

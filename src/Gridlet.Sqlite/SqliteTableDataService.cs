@@ -131,6 +131,83 @@ public sealed class SqliteTableDataService : ITableDataService
             rowKeys);
     }
 
+    public async Task<ColumnProfile> GetColumnProfileAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        ColumnProfileRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
+        var qualifiedName = SqliteIdentifier.QuoteQualified(schema, name);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(
+            connection, schema, name, cancellationToken);
+        var column = definition.Columns.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, request.Column, StringComparison.OrdinalIgnoreCase))
+            ?? throw new GridletValidationException(
+                $"Profile column '{request.Column}' does not exist on {qualifiedName}.");
+        if (column.IsHidden)
+        {
+            throw new GridletValidationException(
+                $"Hidden column '{column.Name}' is not available in table data.");
+        }
+
+        var quotedColumn = SqliteIdentifier.Quote(column.Name);
+        var filter = SqliteFilterBuilder.Build(
+            request.Filters, definition.Columns);
+        await using var transaction = (Microsoft.Data.Sqlite.SqliteTransaction)
+            await connection.BeginTransactionAsync(cancellationToken);
+        await using var aggregate = connection.CreateCommand();
+        aggregate.Transaction = transaction;
+        aggregate.CommandText =
+            $"SELECT COUNT(*), COUNT({quotedColumn}), COUNT(DISTINCT {quotedColumn}), " +
+            $"MIN({quotedColumn}), MAX({quotedColumn}) FROM {qualifiedName}{filter.Clause};";
+        AddFilterParameters(aggregate, filter.Parameters);
+        long totalCount;
+        long nonNullCount;
+        long distinctCount;
+        object? minimum;
+        object? maximum;
+        await using (var reader = await aggregate.ExecuteReaderAsync(cancellationToken))
+        {
+            await reader.ReadAsync(cancellationToken);
+            totalCount = reader.GetInt64(0);
+            nonNullCount = reader.GetInt64(1);
+            distinctCount = reader.GetInt64(2);
+            minimum = SqliteValues.Materialize(reader.GetValue(3));
+            maximum = SqliteValues.Materialize(reader.GetValue(4));
+        }
+
+        await using var top = connection.CreateCommand();
+        top.Transaction = transaction;
+        top.CommandText =
+            $"SELECT {quotedColumn}, COUNT(*) AS frequency FROM {qualifiedName}{filter.Clause} " +
+            $"GROUP BY {quotedColumn} ORDER BY 2 DESC, 1 ASC LIMIT @topValues;";
+        AddFilterParameters(top, filter.Parameters);
+        top.Parameters.AddWithValue("@topValues", Math.Clamp(request.TopValues, 1, 50));
+        var topValues = new List<ColumnProfileValue>();
+        await using (var topReader = await top.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await topReader.ReadAsync(cancellationToken))
+            {
+                topValues.Add(new ColumnProfileValue(
+                    SqliteValues.Materialize(topReader.GetValue(0)), topReader.GetInt64(1)));
+            }
+        }
+        await transaction.CommitAsync(cancellationToken);
+
+        return new ColumnProfile(
+            column.Name,
+            column.DataType,
+            totalCount,
+            totalCount - nonNullCount,
+            distinctCount,
+            minimum,
+            maximum,
+            topValues);
+    }
+
     private static void AddFilterParameters(
         Microsoft.Data.Sqlite.SqliteCommand command,
         IReadOnlyList<(string Name, object? Value)> parameters)

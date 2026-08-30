@@ -43,6 +43,10 @@ public sealed class SqliteTableDataFilterTests : IAsyncLifetime
                 ('Wide widget', 50, NULL, 0, '7', 8),
                 ('Gadget', 12.5, '50% off', 1, '008', 7),
                 ('Gizmo', 100, 'discontinued', 0, '009', 9);
+            CREATE TABLE FrequencyValues (frequency TEXT);
+            INSERT INTO FrequencyValues (frequency) VALUES ('b'), ('a');
+            CREATE VIRTUAL TABLE SearchProducts USING fts5(Value);
+            INSERT INTO SearchProducts (Value) VALUES ('Widget');
             """;
         await command.ExecuteNonQueryAsync();
     }
@@ -142,6 +146,74 @@ public sealed class SqliteTableDataFilterTests : IAsyncLifetime
 
         Assert.Single(page.Rows);
         Assert.Equal(2, page.TotalRows);
+    }
+
+    [Fact]
+    public async Task A_column_profile_reports_exact_null_distinct_range_and_frequency_values()
+    {
+        var profile = await data.GetColumnProfileAsync(
+            context, "main", "Products", new ColumnProfileRequest("Notes", 10));
+
+        Assert.Equal("Notes", profile.Column);
+        Assert.Equal("TEXT", profile.DataType);
+        Assert.Equal(4, profile.TotalCount);
+        Assert.Equal(1, profile.NullCount);
+        Assert.Equal(3, profile.DistinctCount);
+        Assert.Equal("50% off", profile.Minimum);
+        Assert.Equal("in stock", profile.Maximum);
+        Assert.Equal(4, profile.TopValues.Count);
+        Assert.Contains(profile.TopValues, value => value.Value is null && value.Count == 1);
+        Assert.Contains(profile.TopValues, value => Equals(value.Value, "discontinued") && value.Count == 1);
+    }
+
+    [Fact]
+    public async Task A_column_profile_applies_filters_and_limits_top_values()
+    {
+        var profile = await data.GetColumnProfileAsync(
+            context,
+            "main",
+            "Products",
+            new ColumnProfileRequest(
+                "Price",
+                TopValues: 1,
+                Filters: [new TableDataFilter("InStock", FilterOperator.Equals, "1")]));
+
+        Assert.Equal(2, profile.TotalCount);
+        Assert.Equal(0, profile.NullCount);
+        Assert.Equal(2, profile.DistinctCount);
+        Assert.Equal(5d, Convert.ToDouble(profile.Minimum));
+        Assert.Equal(12.5d, Convert.ToDouble(profile.Maximum));
+        var top = Assert.Single(profile.TopValues);
+        Assert.Equal(1, top.Count);
+    }
+
+    [Fact]
+    public async Task A_column_named_frequency_uses_its_value_as_the_profile_tie_breaker()
+    {
+        var profile = await data.GetColumnProfileAsync(
+            context, "main", "FrequencyValues", new ColumnProfileRequest("frequency", 10));
+
+        Assert.Equal(["a", "b"], profile.TopValues.Select(value => value.Value).ToArray());
+        Assert.All(profile.TopValues, value => Assert.Equal(1, value.Count));
+    }
+
+    [Fact]
+    public async Task A_column_profile_rejects_an_unknown_column()
+        => await Assert.ThrowsAsync<GridletValidationException>(() => data.GetColumnProfileAsync(
+            context, "main", "Products", new ColumnProfileRequest("Notes; DROP TABLE Products")));
+
+    [Fact]
+    public async Task A_column_profile_accepts_the_hidden_filters_used_by_data_paging()
+    {
+        var profile = await data.GetColumnProfileAsync(
+            context,
+            "main",
+            "SearchProducts",
+            new ColumnProfileRequest(
+                "Value", Filters: [new TableDataFilter("SearchProducts", FilterOperator.Equals, "1")]));
+
+        Assert.Equal(0, profile.TotalCount);
+        Assert.Empty(profile.TopValues);
     }
 
     [Fact]
