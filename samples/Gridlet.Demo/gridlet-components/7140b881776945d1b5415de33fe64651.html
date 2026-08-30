@@ -1,0 +1,31 @@
+<div data-gridlet="2" data-name="Customer entry" data-layout="free" data-isolated id="customerComponent" class="compact tinted" data-color-light="#b93104" data-color-dark="#049515" data-fill-light="#fffbf5" data-fill-dark="#0a1133" style="width: 735px; height: 460px;">
+  <gridlet-code src="my.js"></gridlet-code>
+  <gridlet-source href="customers"></gridlet-source>
+  <style>.btn {
+background: light-dark(rgba(228,228,228), black);
+border: 1px solid black;
+border-color: light-dark(red, green);
+border-radius: 5px;
+}
+
+/* @control button2 */
+#button2 {
+background:red;
+}</style>
+  <input type="text" readonly data-name="textbox1" data-bind-value="=data.Email" style="left: 152px; top: 64px; width: 200px; height: 24px;">
+  <button type="button" data-name="button1" class="btn" data-bind-text="=(&quot;Save &quot; + nameBox.value)" style="left: 24px; top: 160px; width: 328px; height: 64px;">Save Grace Hopper</button>
+  <span data-name="label2" style="left: 24px; top: 32px; width: 120px; height: 24px;">Name</span>
+  <span data-name="label3" style="left: 24px; top: 64px; width: 120px; height: 24px;">Email</span>
+  <span data-name="label4" style="left: 24px; top: 96px; width: 120px; height: 24px;">Points</span>
+  <label data-role="checkbox" data-name="checkbox1" data-bind-value="=data.MarketingOptIn" style="left: 152px; top: 128px; width: 200px; height: 24px;">
+    <input type="checkbox">
+    <span>Yes</span>
+  </label>
+  <span data-name="label6" style="left: 24px; top: 128px; width: 120px; height: 24px;">Marketing</span>
+  <textarea readonly data-name="textbox2" data-bind-value="=json(data, 2)" style="left: 376px; top: 32px; width: 328px; height: 192px;"></textarea>
+  <div data-role="pager" data-edges data-position data-name="pager1" style="left: 576px; top: 424px; width: 152px; height: 30px;"></div>
+  <button type="button" data-name="button2" id="button2" class="btn" style="left: 592px; top: 240px; width: 110px; height: 32px;">Delete</button>
+  <input type="text" data-name="textbox3" data-bind-value="=width()" style="left: 24px; top: 352px; width: 680px; height: 30px;">
+  <input type="text" readonly data-name="nameBox" data-bind-value="=concat(data.FirstName, &quot; &quot;, data.LastName)" style="left: 152px; top: 32px; width: 200px; height: 24px;">
+  <input type="text" data-name="textbox5" data-bind-value="=data.LoyaltyPoints" style="left: 152px; top: 96px; width: 200px; height: 24px;">
+</div>

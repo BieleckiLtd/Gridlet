@@ -37,8 +37,7 @@ public class ComponentScriptEndpointTests : IDisposable
 
         gridlet.AddComponents(components =>
         {
-            components.FilePath = Path.Combine(Path.GetTempPath(), $"gridlet-components-tests-{Guid.NewGuid():n}.json");
-            components.ScriptsPath = _scripts;
+            components.Path = _scripts;
         });
 
         builder.Services.AddSingleton<IGridletProvider, FakeGridletProvider>();

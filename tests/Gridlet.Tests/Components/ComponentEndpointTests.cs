@@ -31,8 +31,8 @@ public class ComponentEndpointTests
 
         if (withComponents)
         {
-            gridlet.AddComponents(components => components.FilePath = Path.Combine(
-                Path.GetTempPath(), $"gridlet-components-tests-{Guid.NewGuid():n}.json"));
+            gridlet.AddComponents(components => components.Path = Path.Combine(
+                Path.GetTempPath(), $"gridlet-components-tests-{Guid.NewGuid():n}"));
         }
 
         builder.Services.AddSingleton<IGridletProvider, FakeGridletProvider>();
@@ -43,8 +43,8 @@ public class ComponentEndpointTests
         return (app, app.GetTestClient());
     }
 
-    private static object Definition(string layout = "free")
-        => new { layout, width = 720, height = 460, css = "", controls = Array.Empty<object>() };
+    private static string Document(string name = "Customer entry", string layout = "free")
+        => $"""<div data-gridlet="2" data-name="{name}" data-layout="{layout}" style="width: 720px; height: 460px;"></div>""";
 
     [Fact]
     public async Task Components_roundtrip_through_the_store()
@@ -53,7 +53,7 @@ public class ComponentEndpointTests
         await using var _ = app;
 
         var saved = await (await client.PostAsJsonAsync("/gridlet/api/components",
-                new { name = "Customer entry", schemaVersion = 1, definition = Definition() }))
+                new { name = "Customer entry", html = Document() }))
             .Content.ReadFromJsonAsync<GridletComponent>();
         Assert.NotNull(saved);
         Assert.Equal("Customer entry", saved!.Name);
@@ -63,10 +63,10 @@ public class ComponentEndpointTests
 
         // Saving with the same id replaces rather than duplicating.
         await client.PostAsJsonAsync("/gridlet/api/components",
-            new { id = saved.Id, name = "Customer entry", schemaVersion = 1, definition = Definition("grid") });
+            new { id = saved.Id, name = "Customer entry", html = Document(layout: "grid") });
         list = await client.GetFromJsonAsync<List<GridletComponent>>("/gridlet/api/components");
         Assert.Single(list!);
-        Assert.Equal("grid", list![0].Definition.GetProperty("layout").GetString());
+        Assert.Contains(@"data-layout=""grid""", list![0].Html, StringComparison.Ordinal);
 
         var fetched = await client.GetFromJsonAsync<GridletComponent>($"/gridlet/api/components/{saved.Id}");
         Assert.Equal(saved.Id, fetched!.Id);
@@ -76,18 +76,20 @@ public class ComponentEndpointTests
     }
 
     [Fact]
-    public async Task A_component_needs_a_name_and_an_object_definition()
+    public async Task A_component_needs_a_name_and_a_document_that_says_it_is_one()
     {
         var (app, client) = await StartAsync();
         await using var _ = app;
 
         var unnamed = await client.PostAsJsonAsync("/gridlet/api/components",
-            new { name = "  ", schemaVersion = 1, definition = Definition() });
+            new { name = "  ", html = Document() });
         Assert.Equal(HttpStatusCode.BadRequest, unnamed.StatusCode);
 
-        var notAnObject = await client.PostAsJsonAsync("/gridlet/api/components",
-            new { name = "Broken", schemaVersion = 1, definition = "not a document" });
-        Assert.Equal(HttpStatusCode.BadRequest, notAnObject.StatusCode);
+        // Markup with no version on it is either not a component or is damaged. Storing it would
+        // leave a file the designer cannot open.
+        var notADocument = await client.PostAsJsonAsync("/gridlet/api/components",
+            new { name = "Broken", html = "<div><p>not a component</p></div>" });
+        Assert.Equal(HttpStatusCode.BadRequest, notADocument.StatusCode);
     }
 
     [Fact]
@@ -100,8 +102,7 @@ public class ComponentEndpointTests
             new
             {
                 name = "From the future",
-                schemaVersion = GridletComponent.CurrentSchemaVersion + 1,
-                definition = Definition(),
+                html = $"""<div data-gridlet="{GridletComponent.CurrentDocumentVersion + 1}" data-name="From the future"></div>""",
             });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -110,30 +111,27 @@ public class ComponentEndpointTests
     }
 
     [Fact]
-    public async Task Definitions_are_stored_verbatim_including_properties_this_build_ignores()
+    public async Task Documents_are_stored_verbatim_including_markup_this_build_ignores()
     {
         var (app, client) = await StartAsync();
         await using var _ = app;
 
-        // A document is the operator's artifact. Round-tripping it must not quietly drop anything,
-        // or an older build would silently strip a newer build's work on the next save.
+        // A document is the operator's artifact and the server interprets none of it. Round-tripping
+        // must not drop anything, or an older build would silently strip a newer build's work — or
+        // somebody's own markup — on the next save.
+        const string html = """
+            <div data-gridlet="2" data-name="Rich" data-layout="free">
+              <p>Some <b>bold</b> text &amp; an entity</p>
+              <span data-name="label1" data-something-unknown="kept">Hello</span>
+            </div>
+            """;
+
         var saved = await (await client.PostAsJsonAsync("/gridlet/api/components",
-                new
-                {
-                    name = "Rich",
-                    schemaVersion = 1,
-                    definition = new
-                    {
-                        layout = "free",
-                        somethingUnknown = new { nested = true, list = new[] { 1, 2, 3 } },
-                    },
-                }))
+                new { name = "Rich", html }))
             .Content.ReadFromJsonAsync<GridletComponent>();
 
         var reread = await client.GetFromJsonAsync<GridletComponent>($"/gridlet/api/components/{saved!.Id}");
-        var unknown = reread!.Definition.GetProperty("somethingUnknown");
-        Assert.True(unknown.GetProperty("nested").GetBoolean());
-        Assert.Equal(3, unknown.GetProperty("list").GetArrayLength());
+        Assert.Equal(html, reread!.Html);
     }
 
     [Fact]
@@ -168,7 +166,14 @@ public class ComponentEndpointTests
         var meta = await client.GetFromJsonAsync<JsonElement>("/gridlet/api/meta");
         var module = meta.GetProperty("modules")[0];
         Assert.Equal("components", module.GetProperty("name").GetString());
-        Assert.Equal("designer.js", module.GetProperty("scripts")[0].GetString());
+
+        // Order matters: the designer reads and writes documents through the format module from the
+        // moment it loads, so the format module has to be there first.
+        Assert.Equal("format.js", module.GetProperty("scripts")[0].GetString());
+        Assert.Equal("designer.js", module.GetProperty("scripts")[1].GetString());
+
+        var format = await client.GetAsync("/gridlet/assets/modules/components/format.js");
+        Assert.Equal(HttpStatusCode.OK, format.StatusCode);
 
         var script = await client.GetAsync("/gridlet/assets/modules/components/designer.js");
         Assert.Equal(HttpStatusCode.OK, script.StatusCode);

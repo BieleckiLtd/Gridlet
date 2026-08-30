@@ -17,7 +17,9 @@ internal sealed class GridletComponentsAssetProvider : IGridletUiAssetProvider
 
     public string Name => "components";
 
-    public IReadOnlyList<string> Scripts { get; } = ["designer.js"];
+    // format.js first: it defines the component document format, and the designer reads and writes
+    // documents through it from the moment it loads.
+    public IReadOnlyList<string> Scripts { get; } = ["format.js", "designer.js"];
 
     public IReadOnlyList<string> Styles { get; } = ["designer.css"];
 
