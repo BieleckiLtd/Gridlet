@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Text.Json.Serialization;
+
 namespace Gridlet.Models;
 
 /// <summary>Limits applied to a single ad-hoc query execution.</summary>
@@ -40,4 +43,59 @@ public sealed record QueryStreamEvent(
     int? RecordsAffected = null,
     long? DurationMs = null,
     RowIdentityInfo? RowIdentity = null,
-    IReadOnlyList<object?[]>? RowKeys = null);
+    IReadOnlyList<object?[]>? RowKeys = null)
+{
+    /// <summary>
+    /// Exact invariant text for decimal and browser-unsafe integer cells in <see cref="Rows"/>.
+    /// Browsers can use it without changing the ordinary JSON-number representation for other API
+    /// consumers.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string?[]>? ExactValues => ExactNumbers(Rows);
+
+    /// <summary>Per-cell runtime binary markers for providers with value-level storage types.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<bool?[]>? BinaryValues => BinaryNumbers(Rows);
+
+    private static IReadOnlyList<string?[]>? ExactNumbers(IReadOnlyList<object?[]>? rows)
+    {
+        if (rows is null) return null;
+        string?[][]? result = null;
+        for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
+        {
+            var row = rows[rowIndex];
+            for (var columnIndex = 0; columnIndex < row.Length; columnIndex++)
+            {
+                var exactValue = row[columnIndex] switch
+                {
+                    decimal value => value.ToString(CultureInfo.InvariantCulture),
+                    long value when value is > 9_007_199_254_740_991 or < -9_007_199_254_740_991
+                        => value.ToString(CultureInfo.InvariantCulture),
+                    ulong value when value > 9_007_199_254_740_991
+                        => value.ToString(CultureInfo.InvariantCulture),
+                    _ => null,
+                };
+                if (exactValue is null) continue;
+                result ??= rows.Select(candidate => new string?[candidate.Length]).ToArray();
+                result[rowIndex][columnIndex] = exactValue;
+            }
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<bool?[]>? BinaryNumbers(IReadOnlyList<object?[]>? rows)
+    {
+        if (rows is null) return null;
+        bool?[][]? result = null;
+        for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
+        {
+            for (var columnIndex = 0; columnIndex < rows[rowIndex].Length; columnIndex++)
+            {
+                if (rows[rowIndex][columnIndex] is not byte[]) continue;
+                result ??= rows.Select(candidate => new bool?[candidate.Length]).ToArray();
+                result[rowIndex][columnIndex] = true;
+            }
+        }
+        return result;
+    }
+}

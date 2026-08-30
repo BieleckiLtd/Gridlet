@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -263,6 +264,1970 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTestId("er-diagram-open").ClickAsync();
         await Assertions.Expect(page.GetByTestId("er-diagram"))
             .ToContainTextAsync("This database has no visible tables.");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_builds_a_target_dialect_migration_and_opens_it_in_target_context()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Pizzas\",\"type\":\"Table\",\"isInternal\":false}]",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects/dbo/Pizzas/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = """
+                    {
+                      "object":{"schema":"dbo","name":"Pizzas","type":"Table"},
+                      "columns":[
+                        {"name":"Id","dataType":"INTEGER","isNullable":false,"isIdentity":true},
+                        {"name":"TargetOnly","dataType":"TEXT","isNullable":true}
+                      ],
+                      "indexes":[{"name":"PK_Pizzas","isPrimaryKey":true,"isUnique":true,"columns":["Id"]}],
+                      "foreignKeys":[],"checkConstraints":[],"uniqueConstraints":[]
+                    }
+                    """,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-target-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database"))
+            .ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-summary"))
+            .ToContainTextAsync("Main / FakeDb → SQLite / FakeDb");
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-results"))
+            .ToContainTextAsync("dbo.Customers");
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-results"))
+            .ToContainTextAsync("dbo.Pizzas.Name");
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-results"))
+            .ToContainTextAsync("Pizzas.TargetOnly");
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("-- Source: Main / FakeDb", migration);
+        Assert.Contains("-- Target: SQLite / FakeDb", migration);
+        Assert.Contains("CREATE TABLE \"Customers\"", migration);
+        Assert.Contains("ALTER TABLE \"Pizzas\" ADD \"Name\" TEXT NOT NULL DEFAULT ('N/A');", migration);
+        Assert.Contains("-- REVIEW: index IX_Customers_Name on \"Customers\" uses a source-provider "
+            + "collation that is not built into SQLite; filter: [Name] IS NOT NULL.", migration);
+        Assert.Contains("-- RETAINED: target-only column TargetOnly", migration);
+
+        await comparison.GetByTestId("schema-compare-use-query").ClickAsync();
+        await Assertions.Expect(page.Locator(".tab.active .tab-title")).ToHaveTextAsync("Schema migration");
+        await Assertions.Expect(page.Locator(".tab.active").GetByTestId("tab-scope"))
+            .ToHaveTextAsync("SQLite / FakeDb");
+        await Assertions.Expect(ActivePanel(page).GetByTestId("sql-editor"))
+            .ToHaveValueAsync(new Regex("CREATE TABLE \\\"Customers\\\""));
+
+        await page.AddInitScriptAsync("""
+            localStorage.setItem('gridlet.session', JSON.stringify({
+                tabs: [{
+                    kind: 'schema-compare',
+                    source: { connection: 'Main', database: 'FakeDb' },
+                    target: { connection: 'SQLite', database: 'FakeDb' }
+                }],
+                active: 0
+            }));
+            """);
+        await page.ReloadAsync();
+        await Assertions.Expect(page.GetByTestId("schema-compare")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("schema-compare").GetByTestId("schema-target-connection"))
+            .ToHaveValueAsync("SQLite");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_explains_matching_metadata_and_respects_target_permissions()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await Assertions.Expect(comparison.GetByTestId("schema-target-connection"))
+            .ToHaveValueAsync("DdlOnly");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-status"))
+            .ToHaveTextAsync("Schemas match for compared table metadata");
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-results"))
+            .ToContainTextAsync("No table schema differences found.");
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-use-query")).ToHaveCountAsync(0);
+        await Assertions.Expect(comparison.GetByTestId("schema-migration-sql"))
+            .ToHaveValueAsync(new Regex("-- Compared table metadata matches\\."));
+        await comparison.GetByTestId("schema-compare-swap").ClickAsync();
+        await Assertions.Expect(comparison.GetByTestId("schema-source-connection"))
+            .ToHaveValueAsync("DdlOnly");
+        await Assertions.Expect(comparison.GetByTestId("schema-target-connection"))
+            .ToHaveValueAsync("Main");
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-status"))
+            .ToContainTextAsync("Source and target swapped");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_marks_partial_metadata_as_not_compared()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/NoKeys/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 503,
+                ContentType = "application/problem+json",
+                Body = "{\"detail\":\"one table offline\"}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-status"))
+            .ToContainTextAsync("1 unavailable");
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-results"))
+            .ToContainTextAsync("Target metadata unavailable");
+        await Assertions.Expect(comparison.GetByTestId("schema-migration-sql"))
+            .ToHaveValueAsync(new Regex("-- NOT COMPARED: target metadata for dbo\\.NoKeys was unavailable\\."));
+        browserPage.AssertNoUnexpectedErrors("503");
+    }
+
+    [Fact]
+    public async Task Schema_compare_preserves_sql_server_identity_and_temporal_metadata()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Seeded\",\"type\":\"Table\"},"
+                    + "{\"schema\":\"dbo\",\"name\":\"SeededHistory\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "[]",
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Seeded/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = """
+                    {
+                      "object":{"schema":"dbo","name":"Seeded","type":"Table"},
+                      "columns":[
+                        {"name":"Id","dataType":"int","isNullable":false,"isIdentity":true,
+                         "isPrimaryKey":true,"identitySeed":100,"identityIncrement":5},
+                        {"name":"ValidFrom","dataType":"datetime2","isNullable":false,"isHidden":true,
+                         "defaultDefinition":"SYSUTCDATETIME()"},
+                        {"name":"ValidTo","dataType":"datetime2","isNullable":false,"isHidden":true,
+                         "defaultDefinition":"CONVERT(datetime2, '9999-12-31 23:59:59.9999999')"}
+                      ],
+                      "indexes":[{"name":"PK_Seeded","kind":"CLUSTERED","isPrimaryKey":true,
+                                   "isUnique":true,"columns":["Id"]}],
+                      "foreignKeys":[],"checkConstraints":[],"uniqueConstraints":[],
+                      "temporal":{"kind":"systemVersioned","relatedSchema":"dbo",
+                                  "relatedTable":"SeededHistory","periodStartColumn":"ValidFrom",
+                                  "periodEndColumn":"ValidTo","historyRetentionPeriod":6,
+                                  "historyRetentionUnit":"MONTH"}
+                    }
+                    """,
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/SeededHistory/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = """
+                    {
+                      "object":{"schema":"dbo","name":"SeededHistory","type":"Table"},
+                      "columns":[
+                        {"name":"Id","dataType":"int","isNullable":false},
+                        {"name":"ValidFrom","dataType":"datetime2","isNullable":false},
+                        {"name":"ValidTo","dataType":"datetime2","isNullable":false}
+                      ],
+                      "indexes":[],"foreignKeys":[],"checkConstraints":[],"uniqueConstraints":[],
+                      "temporal":{"kind":"historyTable","relatedSchema":"dbo","relatedTable":"Seeded",
+                                  "periodStartColumn":"ValidFrom","periodEndColumn":"ValidTo"}
+                    }
+                    """,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("[Id] int IDENTITY(100, 5) NOT NULL", migration);
+        Assert.Contains("[ValidFrom] datetime2 GENERATED ALWAYS AS ROW START HIDDEN NOT NULL", migration);
+        Assert.Contains("PERIOD FOR SYSTEM_TIME ([ValidFrom], [ValidTo])", migration);
+        Assert.Contains("SYSTEM_VERSIONING = ON (HISTORY_TABLE = [dbo].[SeededHistory], "
+            + "HISTORY_RETENTION_PERIOD = 6 MONTH)", migration);
+        Assert.True(migration.IndexOf("CREATE TABLE [dbo].[SeededHistory]", StringComparison.Ordinal)
+            < migration.IndexOf("CREATE TABLE [dbo].[Seeded]", StringComparison.Ordinal),
+            "The explicit history table must be created before system versioning references it.");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_preserves_composite_keys_instead_of_forcing_sqlite_autoincrement()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Composite\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "[]",
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Composite/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Composite\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false,"
+                    + "\"isIdentity\":true,\"isPrimaryKey\":true,\"identitySeed\":1,"
+                    + "\"identityIncrement\":1},{\"name\":\"TenantId\",\"dataType\":\"int\","
+                    + "\"isNullable\":false,\"isPrimaryKey\":true}],"
+                    + "\"indexes\":[{\"name\":\"PK_Composite\",\"isPrimaryKey\":true,\"isUnique\":true,"
+                    + "\"keyColumns\":[{\"column\":\"Id\",\"ordinal\":1},{\"column\":\"TenantId\","
+                    + "\"ordinal\":2}]}],\"foreignKeys\":[],\"checkConstraints\":[],"
+                    + "\"uniqueConstraints\":[]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-target-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.DoesNotContain("\"Id\" INTEGER PRIMARY KEY AUTOINCREMENT", migration, StringComparison.Ordinal);
+        Assert.Contains("CONSTRAINT \"PK_Composite\" PRIMARY KEY (\"Id\", \"TenantId\")", migration);
+        Assert.Contains("identity dbo.Composite.Id cannot be represented as SQLite AUTOINCREMENT", migration);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_comments_out_temporal_tables_for_a_sqlite_target()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"TemporalOne\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "[]",
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/TemporalOne/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"TemporalOne\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false,"
+                    + "\"isPrimaryKey\":true},{\"name\":\"ValidFrom\",\"dataType\":\"datetime2\","
+                    + "\"isNullable\":false,\"isHidden\":true,\"defaultDefinition\":\"SYSUTCDATETIME()\"},"
+                    + "{\"name\":\"ValidTo\",\"dataType\":\"datetime2\",\"isNullable\":false,"
+                    + "\"isHidden\":true,\"defaultDefinition\":\"CONVERT(datetime2, '9999-12-31')\"}],"
+                    + "\"indexes\":[{\"name\":\"PK_TemporalOne\",\"isPrimaryKey\":true,\"isUnique\":true,"
+                    + "\"columns\":[\"Id\"]}],\"foreignKeys\":[],\"checkConstraints\":[],"
+                    + "\"uniqueConstraints\":[],\"temporal\":{\"kind\":\"systemVersioned\","
+                    + "\"relatedSchema\":\"dbo\",\"relatedTable\":\"TemporalOneHistory\","
+                    + "\"periodStartColumn\":\"ValidFrom\",\"periodEndColumn\":\"ValidTo\"}}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-target-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("temporal configuration and its period defaults are not portable to SQLite", migration);
+        Assert.Contains("-- CREATE TABLE \"TemporalOne\"", migration);
+        Assert.DoesNotContain("\nCREATE TABLE \"TemporalOne\"", migration, StringComparison.Ordinal);
+        Assert.DoesNotContain("\n\"ValidFrom\" NUMERIC NOT NULL DEFAULT SYSUTCDATETIME()", migration,
+            StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_preserves_sqlite_expression_filter_collation_and_direction()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Searchable\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "[]",
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Searchable/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = """
+                    {
+                      "object":{"schema":"dbo","name":"Searchable","type":"Table"},
+                      "columns":[{"name":"Name","dataType":"nvarchar(100)","isNullable":true}],
+                      "indexes":[{
+                        "name":"IX_Searchable_Normalized","kind":"NONCLUSTERED","isUnique":false,
+                        "columns":[],"keyColumns":[{"column":null,"ordinal":1,"isDescending":true,
+                                                     "expression":"lower([Name])","collation":"NOCASE"}],
+                        "filterDefinition":"[Name] IS NOT NULL"
+                      }],
+                      "foreignKeys":[],"checkConstraints":[],
+                      "uniqueConstraints":[{
+                        "name":"UQ_Searchable_Name","columns":[{"column":"Name","ordinal":1,
+                                                                   "isDescending":true,"collation":"NOCASE"}]
+                      }]
+                    }
+                    """,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-target-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("CREATE INDEX \"IX_Searchable_Normalized\" ON \"Searchable\" "
+            + "(lower([Name]) COLLATE NOCASE DESC) WHERE [Name] IS NOT NULL;", migration);
+        Assert.Contains("CREATE UNIQUE INDEX \"UQ_Searchable_Name\" ON \"Searchable\" "
+            + "(\"Name\" COLLATE NOCASE DESC);", migration);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_treats_portable_sqlite_and_sql_server_types_as_equivalent()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string objects = "[{\"schema\":\"dbo\",\"name\":\"Portable\",\"type\":\"Table\"}]";
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = objects }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = objects }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects/dbo/Portable/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Portable\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"INTEGER\",\"isNullable\":false},"
+                    + "{\"name\":\"Name\",\"dataType\":\"TEXT\",\"isNullable\":true}],"
+                    + "\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Portable/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Portable\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false},"
+                    + "{\"name\":\"Name\",\"dataType\":\"nvarchar(100)\",\"isNullable\":true}],"
+                    + "\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-source-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-source-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-status"))
+            .ToHaveTextAsync("Schemas match for compared table metadata");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_preserves_sqlite_table_options_for_a_missing_table()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/SQLite/databases", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"name\":\"FakeDb\",\"isSystem\":false},{\"name\":\"ShadowDb\",\"isSystem\":false}]",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"main\",\"name\":\"StrictOne\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/ShadowDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = "[]" }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects/main/StrictOne/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"main\",\"name\":\"StrictOne\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"INTEGER\",\"isNullable\":false,"
+                    + "\"isPrimaryKey\":true}],\"indexes\":[{\"name\":\"PK_StrictOne\","
+                    + "\"kind\":\"PRIMARY KEY\",\"isUnique\":true,\"isPrimaryKey\":true,"
+                    + "\"columns\":[\"Id\"]}],\"foreignKeys\":[],\"checkConstraints\":[],"
+                    + "\"uniqueConstraints\":[],\"tableOptions\":[\"WITHOUT ROWID\",\"STRICT\"]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-source-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-source-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-target-connection").SelectOptionAsync("SQLite");
+        await comparison.GetByTestId("schema-target-database").SelectOptionAsync("ShadowDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("CREATE TABLE \"StrictOne\"", migration);
+        Assert.Contains(") WITHOUT ROWID, STRICT;", migration);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_comments_out_columns_with_an_unsupported_target_collation()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Collated\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = "[]" }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Collated/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Collated\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Name\",\"dataType\":\"nvarchar(100)\","
+                    + "\"isNullable\":false,\"collation\":\"Latin1_General_CI_AS\"}],"
+                    + "\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-target-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("was not scripted automatically because collation Latin1_General_CI_AS", migration);
+        Assert.Contains("-- CREATE TABLE \"Collated\"", migration);
+        Assert.DoesNotContain("\nCREATE TABLE \"Collated\"", migration);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_blocks_dependent_ddl_when_a_table_create_requires_review()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"main\",\"name\":\"Collated\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "[]",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects/main/Collated/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"main\",\"name\":\"Collated\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"INTEGER\",\"isNullable\":false},"
+                    + "{\"name\":\"ParentId\",\"dataType\":\"INTEGER\",\"isNullable\":true},"
+                    + "{\"name\":\"Name\",\"dataType\":\"TEXT\",\"isNullable\":false,"
+                    + "\"collation\":\"NOCASE\"}],"
+                    + "\"indexes\":[{\"name\":\"IX_Collated_Name\",\"columns\":[\"Name\"]}],"
+                    + "\"foreignKeys\":[{\"name\":\"FK_Collated_Parent\",\"referencedSchema\":\"main\","
+                    + "\"referencedTable\":\"Collated\",\"columns\":[{\"column\":\"ParentId\","
+                    + "\"referencedColumn\":\"Id\"}]}],\"checkConstraints\":[],"
+                    + "\"uniqueConstraints\":[{\"name\":\"UQ_Collated_Name\","
+                    + "\"columns\":[{\"column\":\"Name\",\"ordinal\":1}]}]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-source-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-source-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("-- CREATE TABLE [dbo].[Collated]", migration);
+        Assert.Contains("-- NOT SCRIPTED: 3 dependent index or constraint statements for Collated", migration);
+        Assert.DoesNotContain("\nCREATE INDEX", migration, StringComparison.Ordinal);
+        Assert.DoesNotContain("\nCREATE UNIQUE INDEX", migration, StringComparison.Ordinal);
+        Assert.DoesNotContain("\nALTER TABLE", migration, StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_blocks_foreign_keys_that_reference_a_blocked_table_create()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"main\",\"name\":\"Child\",\"type\":\"Table\"},"
+                    + "{\"schema\":\"main\",\"name\":\"Parent\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "[]",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects/main/Parent/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"main\",\"name\":\"Parent\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"INTEGER\",\"isNullable\":false},"
+                    + "{\"name\":\"Name\",\"dataType\":\"TEXT\",\"isNullable\":false,"
+                    + "\"collation\":\"NOCASE\"}],\"indexes\":[],\"foreignKeys\":[],"
+                    + "\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects/main/Child/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"main\",\"name\":\"Child\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"INTEGER\",\"isNullable\":false},"
+                    + "{\"name\":\"ParentId\",\"dataType\":\"INTEGER\",\"isNullable\":false}],"
+                    + "\"indexes\":[],\"foreignKeys\":[{\"name\":\"FK_Child_Parent\","
+                    + "\"referencedSchema\":\"main\",\"referencedTable\":\"Parent\","
+                    + "\"columns\":[{\"column\":\"ParentId\",\"referencedColumn\":\"Id\"}]}],"
+                    + "\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-source-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-source-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("-- CREATE TABLE [dbo].[Parent]", migration);
+        Assert.Contains("\nCREATE TABLE [dbo].[Child]", migration);
+        Assert.Contains("-- NOT SCRIPTED: foreign key Child.FK_Child_Parent references a table whose CREATE requires review.", migration);
+        Assert.DoesNotContain("ALTER TABLE [dbo].[Child] ADD CONSTRAINT", migration, StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_requires_a_sqlite_rebuild_for_missing_key_and_generated_columns()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string objects = "[{\"schema\":\"dbo\",\"name\":\"Evolving\",\"type\":\"Table\"}]";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = objects,
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = objects,
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Evolving/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Evolving\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Existing\",\"dataType\":\"int\",\"isNullable\":false},"
+                    + "{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false,\"isIdentity\":true,"
+                    + "\"isPrimaryKey\":true},{\"name\":\"Total\",\"dataType\":\"int\","
+                    + "\"isNullable\":true,\"isComputed\":true,\"isPersisted\":true,"
+                    + "\"computedDefinition\":\"[Existing] * 2\"}],"
+                    + "\"indexes\":[{\"name\":\"PK_Evolving\",\"isPrimaryKey\":true,\"isUnique\":true,"
+                    + "\"keyColumns\":[{\"column\":\"Id\",\"ordinal\":1}]}],"
+                    + "\"foreignKeys\":[],\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects/dbo/Evolving/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Evolving\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Existing\",\"dataType\":\"INTEGER\","
+                    + "\"isNullable\":false}],\"indexes\":[],\"foreignKeys\":[],"
+                    + "\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-target-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("adding an identity or primary-key column requires rebuilding the SQLite table", migration);
+        Assert.Contains("adding a generated column requires rebuilding the SQLite table", migration);
+        Assert.DoesNotContain("\nALTER TABLE \"Evolving\" ADD", migration, StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_blocks_objects_that_depend_on_a_reviewed_column_add()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string objects = "[{\"schema\":\"dbo\",\"name\":\"Dependent\",\"type\":\"Table\"}]";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = objects,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = objects,
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Dependent/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Dependent\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"A\",\"dataType\":\"int\",\"isNullable\":false},"
+                    + "{\"name\":\"B\",\"dataType\":\"int\",\"isNullable\":false},"
+                    + "{\"name\":\"Total\",\"dataType\":\"int\",\"isNullable\":true,"
+                    + "\"isComputed\":true,\"computedDefinition\":\"[B] * 2\"}],"
+                    + "\"indexes\":[{\"name\":\"IX_Dependent_B\",\"columns\":[\"B\"]}],"
+                    + "\"foreignKeys\":[{\"name\":\"FK_Dependent_B\",\"referencedSchema\":\"dbo\","
+                    + "\"referencedTable\":\"Dependent\",\"columns\":[{\"column\":\"B\","
+                    + "\"referencedColumn\":\"A\"}]}],\"checkConstraints\":[{"
+                    + "\"name\":\"CK_Dependent_B\",\"definition\":\"[B] > 0\"}],"
+                    + "\"uniqueConstraints\":[{\"name\":\"UQ_Dependent_B\","
+                    + "\"columns\":[{\"column\":\"B\",\"ordinal\":1}]}]}",
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Dependent/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Dependent\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"A\",\"dataType\":\"int\",\"isNullable\":false}],"
+                    + "\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],"
+                    + "\"uniqueConstraints\":[]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("dbo.Dependent.B was not scripted automatically because the column is required and has no default", migration);
+        Assert.Contains("dbo.Dependent.Total was not scripted automatically because the computed expression depends on a column", migration);
+        Assert.Contains("index dbo.Dependent.IX_Dependent_B depends on a column", migration);
+        Assert.Contains("foreign key dbo.Dependent.FK_Dependent_B depends on a column", migration);
+        Assert.Contains("check constraint dbo.Dependent.CK_Dependent_B may depend on a column", migration);
+        Assert.Contains("unique constraint dbo.Dependent.UQ_Dependent_B depends on a column", migration);
+        Assert.DoesNotContain("\nCREATE INDEX [IX_Dependent_B]", migration, StringComparison.Ordinal);
+        Assert.DoesNotContain("\nALTER TABLE [dbo].[Dependent] ADD CONSTRAINT", migration,
+            StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_blocks_foreign_keys_to_a_reviewed_column_on_another_table()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string objects = "[{\"schema\":\"dbo\",\"name\":\"Child\",\"type\":\"Table\"},"
+            + "{\"schema\":\"dbo\",\"name\":\"Parent\",\"type\":\"Table\"}]";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = objects,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = objects,
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Parent/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Parent\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false},"
+                    + "{\"name\":\"Id2\",\"dataType\":\"int\",\"isNullable\":false}],"
+                    + "\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],"
+                    + "\"uniqueConstraints\":[]}",
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Parent/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Parent\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false}],"
+                    + "\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],"
+                    + "\"uniqueConstraints\":[]}",
+            }));
+        const string childColumns = "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\","
+            + "\"isNullable\":false},{\"name\":\"ParentId2\",\"dataType\":\"int\","
+            + "\"isNullable\":true}],\"indexes\":[],";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Child/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Child\",\"type\":\"Table\"},"
+                    + childColumns + "\"foreignKeys\":[{\"name\":\"FK_Child_Parent_Id2\","
+                    + "\"referencedSchema\":\"dbo\",\"referencedTable\":\"Parent\","
+                    + "\"columns\":[{\"column\":\"ParentId2\",\"referencedColumn\":\"Id2\"}]}],"
+                    + "\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Child/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Child\",\"type\":\"Table\"},"
+                    + childColumns + "\"foreignKeys\":[],\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("dbo.Parent.Id2 was not scripted automatically", migration);
+        Assert.Contains("FK_Child_Parent_Id2 references a column whose ADD requires review", migration);
+        Assert.DoesNotContain("ADD CONSTRAINT [FK_Child_Parent_Id2]", migration, StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_blocks_system_versioning_when_history_metadata_is_unavailable()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"CurrentOne\",\"type\":\"Table\"},"
+                    + "{\"schema\":\"dbo\",\"name\":\"HistoryOne\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "[]",
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/HistoryOne/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 503, ContentType = "application/problem+json",
+                Body = "{\"detail\":\"history metadata offline\"}",
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/CurrentOne/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"CurrentOne\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false},"
+                    + "{\"name\":\"ValidFrom\",\"dataType\":\"datetime2\",\"isNullable\":false,"
+                    + "\"isHidden\":true},{\"name\":\"ValidTo\",\"dataType\":\"datetime2\","
+                    + "\"isNullable\":false,\"isHidden\":true}],\"indexes\":[{"
+                    + "\"name\":\"PK_CurrentOne\",\"isPrimaryKey\":true,\"isUnique\":true,"
+                    + "\"columns\":[\"Id\"]}],\"foreignKeys\":[],\"checkConstraints\":[],"
+                    + "\"uniqueConstraints\":[],\"temporal\":{\"kind\":\"systemVersioned\","
+                    + "\"relatedSchema\":\"dbo\",\"relatedTable\":\"HistoryOne\","
+                    + "\"periodStartColumn\":\"ValidFrom\",\"periodEndColumn\":\"ValidTo\"}}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("history table dbo.HistoryOne is unavailable or its CREATE requires review", migration);
+        Assert.Contains("-- CREATE TABLE [dbo].[CurrentOne]", migration);
+        Assert.DoesNotContain("\nCREATE TABLE [dbo].[CurrentOne]", migration, StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors("503");
+    }
+
+    [Fact]
+    public async Task Schema_compare_reviews_same_name_objects_with_different_enforcement_state()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string objects = "[{\"schema\":\"dbo\",\"name\":\"Stateful\",\"type\":\"Table\"}]";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = objects,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = objects,
+            }));
+        const string sourceStructure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Stateful\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"Name\",\"dataType\":\"nvarchar(100)\","
+            + "\"isNullable\":true}],\"indexes\":[{\"name\":\"IX_Stateful_Name\","
+            + "\"columns\":[\"Name\"]}],\"foreignKeys\":[],\"checkConstraints\":[{"
+            + "\"name\":\"CK_Stateful_Name\",\"definition\":\"[Name] <> ''\"}],"
+            + "\"uniqueConstraints\":[{\"name\":\"UQ_Stateful_Name\","
+            + "\"columns\":[{\"column\":\"Name\",\"ordinal\":1}]}]}";
+        var targetStructure = sourceStructure
+            .Replace("\"columns\":[\"Name\"]}", "\"columns\":[\"Name\"],\"isDisabled\":true}")
+            .Replace("\"definition\":\"[Name] <> ''\"}",
+                "\"definition\":\"[Name] <> ''\",\"isTrusted\":false}")
+            .Replace("\"ordinal\":1}]}", "\"ordinal\":1}],\"isDisabled\":true}");
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Stateful/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = sourceStructure,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Stateful/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = targetStructure,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-results"))
+            .ToContainTextAsync("enforcement state differs");
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("no duplicate CREATE was generated", migration);
+        Assert.Contains("no duplicate ADD was generated", migration);
+        Assert.DoesNotContain("\nCREATE INDEX [IX_Stateful_Name]", migration, StringComparison.Ordinal);
+        Assert.DoesNotContain("\nALTER TABLE [dbo].[Stateful] ADD CONSTRAINT", migration,
+            StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_does_not_enforce_disabled_or_untrusted_source_metadata()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Relaxed\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "[]",
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Relaxed/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Relaxed\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false},"
+                    + "{\"name\":\"Name\",\"dataType\":\"nvarchar(100)\",\"isNullable\":true}],"
+                    + "\"indexes\":[{\"name\":\"IX_Relaxed_Name\",\"columns\":[\"Name\"],"
+                    + "\"isDisabled\":true}],\"foreignKeys\":[],\"checkConstraints\":[{"
+                    + "\"name\":\"CK_Relaxed_Name\",\"definition\":\"[Name] <> ''\","
+                    + "\"isDisabled\":true,\"isTrusted\":false}],\"uniqueConstraints\":[{"
+                    + "\"name\":\"UQ_Relaxed_Name\",\"columns\":[{\"column\":\"Name\",\"ordinal\":1}],"
+                    + "\"isDisabled\":true}]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("index IX_Relaxed_Name", migration);
+        Assert.Contains("is disabled on the source", migration);
+        Assert.Contains("check constraint CK_Relaxed_Name", migration);
+        Assert.Contains("unique constraint UQ_Relaxed_Name", migration);
+        Assert.DoesNotContain("CHECK ([Name] <> '')", migration, StringComparison.Ordinal);
+        Assert.DoesNotContain("\nCREATE INDEX [IX_Relaxed_Name]", migration, StringComparison.Ordinal);
+        Assert.DoesNotContain("\nALTER TABLE [dbo].[Relaxed] ADD CONSTRAINT [UQ_Relaxed_Name]", migration,
+            StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_waits_for_connection_databases_before_enabling_compare()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/SQLite/databases", async route =>
+        {
+            await Task.Delay(350);
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"name\":\"ShadowDb\",\"isSystem\":false}]",
+            });
+        });
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        var disabledWhileLoading = await comparison.EvaluateAsync<bool>("""
+            panel => {
+                const connection = panel.querySelector('[data-testid=schema-target-connection]');
+                connection.value = 'SQLite';
+                connection.dispatchEvent(new Event('change', { bubbles: true }));
+                return panel.querySelector('[data-testid=schema-compare-run]').disabled
+                    && panel.querySelector('[data-testid=schema-compare-swap]').disabled
+                    && panel.querySelector('[data-testid=schema-target-database]').disabled;
+            }
+            """);
+        Assert.True(disabledWhileLoading);
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-swap")).ToBeDisabledAsync();
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database")).ToBeDisabledAsync();
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database"))
+            .ToHaveValueAsync("ShadowDb");
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-run")).ToBeEnabledAsync();
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-swap")).ToBeEnabledAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_refuses_ambiguous_schema_names_on_a_schema_less_target()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Customers\",\"type\":\"Table\"},"
+                    + "{\"schema\":\"sales\",\"name\":\"Customers\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = "[]" }));
+        const string structure = "{\"object\":{\"schema\":\"SCHEMA\",\"name\":\"Customers\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\","
+            + "\"isNullable\":false}],\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],"
+            + "\"uniqueConstraints\":[]}";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure.Replace("SCHEMA", "dbo"),
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/sales/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure.Replace("SCHEMA", "sales"),
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-target-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-results"))
+            .ToContainTextAsync("Multiple source schemas map to this name");
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("-- NOT SCRIPTED: dbo.Customers, sales.Customers all map to \"Customers\"", migration);
+        Assert.DoesNotContain("CREATE TABLE \"Customers\"", migration);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_maps_a_schema_less_source_only_to_the_target_default_schema()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"main\",\"name\":\"Customers\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Customers\",\"type\":\"Table\"},"
+                    + "{\"schema\":\"sales\",\"name\":\"Customers\",\"type\":\"Table\"}]",
+            }));
+        const string sourceStructure = "{\"object\":{\"schema\":\"main\",\"name\":\"Customers\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"Id\",\"dataType\":\"INTEGER\","
+            + "\"isNullable\":false}],\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],"
+            + "\"uniqueConstraints\":[]}";
+        const string targetStructure = "{\"object\":{\"schema\":\"SCHEMA\",\"name\":\"Customers\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\","
+            + "\"isNullable\":false}],\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],"
+            + "\"uniqueConstraints\":[]}";
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects/main/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = sourceStructure,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = targetStructure.Replace("SCHEMA", "dbo"),
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/sales/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = targetStructure.Replace("SCHEMA", "sales"),
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-source-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-source-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-results"))
+            .ToContainTextAsync("sales.Customers");
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("-- RETAINED: target-only table sales.Customers.", migration);
+        Assert.DoesNotContain("-- RETAINED: target-only table dbo.Customers.", migration);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_orders_missing_sqlite_tables_before_their_dependants()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Orders\",\"type\":\"Table\"},"
+                    + "{\"schema\":\"dbo\",\"name\":\"Pizzas\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "[]",
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Orders/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Orders\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false},"
+                    + "{\"name\":\"PizzaId\",\"dataType\":\"int\",\"isNullable\":false}],"
+                    + "\"indexes\":[],\"foreignKeys\":[{\"name\":\"FK_Orders_Pizzas\","
+                    + "\"referencedSchema\":\"dbo\",\"referencedTable\":\"Pizzas\","
+                    + "\"columns\":[{\"column\":\"PizzaId\",\"referencedColumn\":\"Id\"}]}],"
+                    + "\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Pizzas/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Pizzas\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false}],"
+                    + "\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-target-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.True(migration.IndexOf("CREATE TABLE \"Pizzas\"", StringComparison.Ordinal)
+            < migration.IndexOf("CREATE TABLE \"Orders\"", StringComparison.Ordinal),
+            "Referenced SQLite tables must be created before their dependants.");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_ignores_included_columns_that_the_target_dialect_cannot_support()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string objects = "[{\"schema\":\"dbo\",\"name\":\"Indexed\",\"type\":\"Table\"}]";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = objects }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = objects }));
+        var sourceStructure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Indexed\",\"type\":\"Table\"},"
+            + "\"columns\":[{\"name\":\"Name\",\"dataType\":\"nvarchar(100)\",\"isNullable\":true},"
+            + "{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false}],"
+            + "\"indexes\":[{\"name\":\"IX_Indexed_Name\",\"kind\":\"NONCLUSTERED\","
+            + "\"isUnique\":false,\"isPrimaryKey\":false,\"columns\":[\"Name\"],"
+            + "\"keyColumns\":[{\"column\":\"Name\",\"ordinal\":1,\"isDescending\":false}],"
+            + "\"includedColumns\":[\"Id\"],\"filterDefinition\":\"[Name] IS NOT NULL\"}],"
+            + "\"foreignKeys\":[],\"checkConstraints\":[],\"uniqueConstraints\":[{"
+            + "\"name\":\"UQ_Indexed_Name\",\"columns\":[{\"column\":\"Name\",\"ordinal\":1,"
+            + "\"isDescending\":false}]}]}";
+        var targetStructure = sourceStructure.Replace("nvarchar(100)", "TEXT").Replace("\"int\"", "\"INTEGER\"")
+            .Replace(",\"includedColumns\":[\"Id\"]", "")
+            .Replace("\"isDescending\":false}", "\"isDescending\":false,\"collation\":\"BINARY\"}");
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Indexed/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = sourceStructure,
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects/dbo/Indexed/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = targetStructure,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-target-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-status"))
+            .ToHaveTextAsync("Schemas match for compared table metadata");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_matches_a_source_unique_constraint_to_a_sqlite_unique_index()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string objects = "[{\"schema\":\"dbo\",\"name\":\"UniqueBridge\",\"type\":\"Table\"}]";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = objects,
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = objects,
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/UniqueBridge/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"UniqueBridge\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Name\",\"dataType\":\"nvarchar(100)\","
+                    + "\"isNullable\":true}],\"indexes\":[],\"foreignKeys\":[],"
+                    + "\"checkConstraints\":[],\"uniqueConstraints\":[{\"name\":\"UQ_UniqueBridge_Name\","
+                    + "\"columns\":[{\"column\":\"Name\",\"ordinal\":1}]}]}",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects/dbo/UniqueBridge/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"UniqueBridge\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Name\",\"dataType\":\"TEXT\",\"isNullable\":true}],"
+                    + "\"indexes\":[{\"name\":\"UQ_UniqueBridge_Name\",\"isUnique\":true,"
+                    + "\"keyColumns\":[{\"column\":\"Name\",\"ordinal\":1,"
+                    + "\"collation\":\"BINARY\"}]}],\"foreignKeys\":[],\"checkConstraints\":[],"
+                    + "\"uniqueConstraints\":[]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-target-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-status"))
+            .ToHaveTextAsync("Schemas match for compared table metadata");
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.DoesNotContain("CREATE UNIQUE INDEX \"UQ_UniqueBridge_Name\"", migration,
+            StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_maps_sqlite_restrict_to_sql_server_no_action()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string sqliteObjects = "[{\"schema\":\"main\",\"name\":\"Child\",\"type\":\"Table\"},"
+            + "{\"schema\":\"main\",\"name\":\"Parent\",\"type\":\"Table\"}]";
+        const string sqlObjects = "[{\"schema\":\"dbo\",\"name\":\"Child\",\"type\":\"Table\"},"
+            + "{\"schema\":\"dbo\",\"name\":\"Parent\",\"type\":\"Table\"}]";
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = sqliteObjects,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = sqlObjects,
+            }));
+        const string sourceParent = "{\"object\":{\"schema\":\"main\",\"name\":\"Parent\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"Id\",\"dataType\":\"INTEGER\","
+            + "\"isNullable\":false}],\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],"
+            + "\"uniqueConstraints\":[]}";
+        const string targetParent = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Parent\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\","
+            + "\"isNullable\":false}],\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],"
+            + "\"uniqueConstraints\":[]}";
+        const string sourceChild = "{\"object\":{\"schema\":\"main\",\"name\":\"Child\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"ParentId\",\"dataType\":\"INTEGER\","
+            + "\"isNullable\":true}],\"indexes\":[],\"foreignKeys\":[{\"name\":\"FK_Child_Parent\","
+            + "\"referencedSchema\":\"main\",\"referencedTable\":\"Parent\",\"onDelete\":\"RESTRICT\","
+            + "\"onUpdate\":\"RESTRICT\",\"columns\":[{\"column\":\"ParentId\","
+            + "\"referencedColumn\":\"Id\"}]}],\"checkConstraints\":[],\"uniqueConstraints\":[]}";
+        const string targetChild = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Child\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"ParentId\",\"dataType\":\"int\","
+            + "\"isNullable\":true}],\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],"
+            + "\"uniqueConstraints\":[]}";
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects/main/Parent/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = sourceParent }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Parent/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = targetParent }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects/main/Child/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = sourceChild }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Child/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "application/json", Body = targetChild }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-source-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-source-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("ON DELETE NO ACTION ON UPDATE NO ACTION", migration);
+        Assert.DoesNotContain("RESTRICT", migration, StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Schema_compare_reports_an_unavailable_snapshot_without_partial_migration_sql()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 503,
+                ContentType = "application/problem+json",
+                Body = "{\"detail\":\"target metadata offline\"}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-status"))
+            .ToHaveTextAsync("Comparison unavailable");
+        await Assertions.Expect(comparison.GetByTestId("schema-compare-results"))
+            .ToContainTextAsync("target metadata offline");
+        await Assertions.Expect(comparison.GetByTestId("schema-migration-sql")).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors("503");
+    }
+
+    [Fact]
+    public async Task Data_compare_matches_identical_rows_and_restores_its_workspace()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        await Assertions.Expect(comparison.GetByTestId("data-target-connection"))
+            .ToHaveValueAsync("DdlOnly");
+        await Assertions.Expect(comparison.GetByTestId("data-target-object"))
+            .ToHaveValueAsync("dbo/customers");
+        await Assertions.Expect(comparison.GetByLabel("Id", new() { Exact = true }))
+            .ToBeCheckedAsync();
+        await Assertions.Expect(comparison.GetByLabel("SysStart", new() { Exact = true }))
+            .ToHaveCountAsync(0);
+        await comparison.GetByTestId("data-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToHaveTextAsync("Rows match within the loaded data");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-summary"))
+            .ToContainTextAsync("2 source rows · 2 target rows");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-results"))
+            .ToContainTextAsync("No row differences found within the loaded data.");
+
+        await page.ReloadAsync();
+        comparison = page.GetByTestId("data-compare");
+        await Assertions.Expect(comparison).ToBeVisibleAsync();
+        await Assertions.Expect(comparison.GetByTestId("data-target-connection"))
+            .ToHaveValueAsync("DdlOnly");
+        await Assertions.Expect(comparison.GetByLabel("Id", new() { Exact = true }))
+            .ToBeCheckedAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Data_compare_reports_changed_and_one_sided_rows_with_column_drift()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string sourceStream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"int"},{"name":"Name","dataType":"nvarchar(100)"},{"name":"Price","dataType":"decimal(18,2)"},{"name":"SourceOnly","dataType":"int"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Customers"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[1,"Ada",1.50,10],[2,"Grace",2.50,20]],"rowKeys":[[1],[2]],"exactValues":[[null,null,"1.50",null],[null,null,"2.50",null]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":2}
+            """;
+        const string targetStream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"INTEGER"},{"name":"Name","dataType":"TEXT"},{"name":"Price","dataType":"REAL"},{"name":"TargetOnly","dataType":"TEXT"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Customers"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[1,"Ada changed",1.5,"x"],[3,"Linus",3.5,"y"]],"rowKeys":[[1],[3]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":true}
+            {"type":"completed","recordsAffected":2}
+            """;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = sourceStream,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = targetStream,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        await comparison.GetByTestId("data-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToContainTextAsync("3 row differences");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToContainTextAsync("partial");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-summary"))
+            .ToContainTextAsync("1 changed");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-summary"))
+            .ToContainTextAsync("1 source only");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-summary"))
+            .ToContainTextAsync("1 target only");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-partial")).ToBeVisibleAsync();
+        await Assertions.Expect(comparison.GetByTestId("data-compare-results"))
+            .ToContainTextAsync("Source-only columns: SourceOnly");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-results"))
+            .ToContainTextAsync("Target-only columns: TargetOnly");
+        await Assertions.Expect(comparison.Locator("tbody tr")).ToHaveCountAsync(3);
+        await comparison.GetByTestId("data-compare-filter").FillAsync("Ada changed");
+        await Assertions.Expect(comparison.Locator("tbody tr")).ToHaveCountAsync(1);
+        await Assertions.Expect(comparison.GetByTestId("export-csv")).ToBeVisibleAsync();
+        await Assertions.Expect(comparison.GetByTestId("export-json")).ToBeVisibleAsync();
+        await Assertions.Expect(comparison.GetByTestId("export-xlsx")).ToBeVisibleAsync();
+        await Assertions.Expect(comparison.GetByTestId("export-parquet")).ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Data_compare_uses_composite_identity_and_surfaces_duplicate_keys()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string structure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Customers\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"TenantId\",\"dataType\":\"int\"},"
+            + "{\"name\":\"Id\",\"dataType\":\"int\"},{\"name\":\"Name\","
+            + "\"dataType\":\"nvarchar(100)\"}],\"indexes\":[],\"foreignKeys\":[],"
+            + "\"checkConstraints\":[],\"uniqueConstraints\":[],\"rowIdentity\":{"
+            + "\"kind\":\"primaryKey\",\"columns\":[\"TenantId\",\"Id\"],\"source\":\"PK_Customers\"}}";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        const string sourceStream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"TenantId"},{"name":"Id"},{"name":"Name"}],"rowIdentity":{"kind":"primaryKey","columns":["TenantId","Id"],"source":"PK_Customers"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[7,1,"One"],[7,1,"Duplicate"]],"rowKeys":[[7,1],[7,1]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":2}
+            """;
+        const string targetStream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"TenantId"},{"name":"Id"},{"name":"Name"}],"rowIdentity":{"kind":"primaryKey","columns":["TenantId","Id"],"source":"PK_Customers"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[7,1,"One"]],"rowKeys":[[7,1]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":1}
+            """;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = sourceStream,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = targetStream,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        await Assertions.Expect(comparison.GetByLabel("TenantId", new() { Exact = true }))
+            .ToBeCheckedAsync();
+        await Assertions.Expect(comparison.GetByLabel("Id", new() { Exact = true }))
+            .ToBeCheckedAsync();
+        await comparison.GetByTestId("data-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("data-compare-summary"))
+            .ToContainTextAsync("1 duplicate");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-results"))
+            .ToContainTextAsync("TenantId = 7, Id = 1");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-results"))
+            .ToContainTextAsync("Duplicate");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Data_compare_requires_an_explicit_key_when_no_row_identity_exists()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string structure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Customers\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"Code\",\"dataType\":\"int\"},"
+            + "{\"name\":\"Name\",\"dataType\":\"nvarchar(100)\"}],\"indexes\":[],"
+            + "\"foreignKeys\":[],\"checkConstraints\":[],\"uniqueConstraints\":[],\"rowIdentity\":null}";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        var codeKey = comparison.GetByLabel("Code", new() { Exact = true });
+        await Assertions.Expect(codeKey).Not.ToBeCheckedAsync();
+        await Assertions.Expect(comparison.GetByTestId("data-compare-run")).ToBeDisabledAsync();
+        await codeKey.CheckAsync();
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToHaveTextAsync("Ready to compare.");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-run")).ToBeEnabledAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Data_compare_sends_the_cap_and_stable_key_sort_to_both_streams()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var compareRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/data/stream", StringComparison.Ordinal)
+                && request.Url.Contains("maxRows=1", StringComparison.Ordinal)
+                && request.Url.Contains("sort=Id", StringComparison.Ordinal)) compareRequests.Add(request.Url);
+        };
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        await comparison.GetByTestId("data-compare-cap").FillAsync("1");
+        await comparison.GetByTestId("data-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToHaveTextAsync("Rows match within the loaded data");
+        Assert.Equal(2, compareRequests.Count);
+        Assert.All(compareRequests, url =>
+        {
+            Assert.Contains("maxRows=1", url, StringComparison.Ordinal);
+            Assert.Contains("sort=Id", url, StringComparison.Ordinal);
+            Assert.Contains("dir=asc", url, StringComparison.Ordinal);
+        });
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Data_compare_uses_streamed_row_keys_without_sorting_by_a_pseudo_column()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string structure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Customers\","
+            + "\"type\":\"Table\"},\"columns\":[{\"name\":\"Name\",\"dataType\":\"TEXT\"}],"
+            + "\"indexes\":[],\"foreignKeys\":[],\"checkConstraints\":[],\"uniqueConstraints\":[],"
+            + "\"rowIdentity\":{\"kind\":\"rowId\",\"columns\":[\"rowid\"],\"source\":\"rowid\"}}";
+        const string stream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Name","dataType":"TEXT"}],"rowIdentity":{"kind":"rowId","columns":["rowid"],"source":"rowid"}}
+            {"type":"rows","resultSetIndex":0,"rows":[["Ada"],["Grace"]],"rowKeys":[[1],[2]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":2}
+            """;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = stream,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = stream,
+            }));
+        var compareRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/data/stream", StringComparison.Ordinal)
+                && request.Url.Contains("maxRows=2000", StringComparison.Ordinal))
+                compareRequests.Add(request.Url);
+        };
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        await Assertions.Expect(comparison.GetByLabel("rowid", new() { Exact = true }))
+            .ToBeCheckedAsync();
+        await comparison.GetByTestId("data-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToHaveTextAsync("Rows match within the loaded data");
+        Assert.Equal(2, compareRequests.Count);
+        Assert.All(compareRequests, url => Assert.DoesNotContain("sort=", url, StringComparison.Ordinal));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Data_compare_aborts_the_sibling_stream_when_one_side_fails()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("""
+            (() => {
+              const originalFetch = window.fetch;
+              window.fetch = (input, init = {}) => {
+                const url = String(input);
+                if (url.includes('/connections/DdlOnly/databases/FakeDb/objects/dbo/Customers/data/stream')
+                    && url.includes('maxRows=1234')) {
+                  return new Promise((resolve, reject) => {
+                    const abort = () => {
+                      window.__dataCompareTargetAborted = true;
+                      reject(new DOMException('Aborted', 'AbortError'));
+                    };
+                    if (init.signal?.aborted) abort();
+                    else init.signal?.addEventListener('abort', abort, { once: true });
+                  });
+                }
+                return originalFetch.call(window, input, init);
+              };
+            })();
+            """);
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+        {
+            if (!route.Request.Url.Contains("maxRows=1234", StringComparison.Ordinal))
+                return route.ContinueAsync();
+            return route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 503, ContentType = "application/json",
+                Body = "{\"error\":\"source comparison offline\"}",
+            });
+        });
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenDataCompareAsync(page);
+        await comparison.GetByTestId("data-compare-cap").FillAsync("1234");
+        await comparison.GetByTestId("data-compare-run").ClickAsync();
+
+        await Assertions.Expect(comparison.GetByTestId("data-compare-status"))
+            .ToHaveTextAsync("Comparison unavailable");
+        await Assertions.Expect(comparison.GetByTestId("data-compare-results"))
+            .ToContainTextAsync("source comparison offline");
+        await page.WaitForFunctionAsync("() => window.__dataCompareTargetAborted === true");
+        browserPage.AssertNoUnexpectedErrors("503");
+    }
+
+    [Fact]
+    public async Task Object_search_finds_definition_text_across_every_connection()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("definitions");
+        await search.GetByTestId("object-search-query").FillAsync("AFTER INSERT");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("3 matches");
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("3 databases · 3 connections");
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(3);
+        await Assertions.Expect(search.GetByText("Main / FakeDb", new() { Exact = false }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(search.GetByText("DdlOnly / FakeDb", new() { Exact = false }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(search.GetByText("SQLite / FakeDb", new() { Exact = false }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-results"))
+            .ToContainTextAsync("dbo.AuditCustomers");
+        await Assertions.Expect(search.GetByTestId("object-search-results"))
+            .ToContainTextAsync("Line 1:");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_name_search_skips_definitions_and_opens_the_original_scope()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var definitionRequests = 0;
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/definition", StringComparison.Ordinal)) definitionRequests++;
+        };
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await Assertions.Expect(search.GetByTestId("object-search-mode"))
+            .ToHaveValueAsync("names");
+        await search.GetByTestId("object-search-query").FillAsync("AccountNumber");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("3 matches");
+        Assert.Equal(0, definitionRequests);
+        await search.Locator("[title*='SQLite / FakeDb']").ClickAsync();
+        await Assertions.Expect(page.Locator(".tab.active").GetByTestId("tab-scope"))
+            .ToHaveTextAsync("SQLite / FakeDb");
+        await Assertions.Expect(page.Locator("#connection-select")).ToHaveValueAsync("Main");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_search_includes_system_databases_only_when_requested()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("names");
+        await search.GetByTestId("object-search-query").FillAsync("dbo.Customers");
+        await search.GetByTestId("object-search-run").ClickAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(3);
+
+        await search.GetByLabel("System databases").CheckAsync();
+        await search.GetByTestId("object-search-run").ClickAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("6 databases · 3 connections");
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(6);
+        await Assertions.Expect(search.GetByText("Main / master", new() { Exact = false }))
+            .ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_search_combined_mode_avoids_redundant_definition_requests()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        var definitionRequests = new ConcurrentBag<string>();
+        await page.RouteAsync("**/definition?*", route =>
+        {
+            definitionRequests.Add(Uri.UnescapeDataString(route.Request.Url));
+            return route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"definition\":\"SELECT 'Customers'\"}",
+            });
+        });
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("all");
+        await search.GetByTestId("object-search-query").FillAsync("Customers");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("definitions");
+        await Assertions.Expect(search.GetByTestId("object-search-run")).ToBeEnabledAsync();
+        Assert.NotEmpty(definitionRequests);
+        Assert.DoesNotContain(definitionRequests, url => url.Contains(
+            "/objects/dbo/Customers/definition", StringComparison.OrdinalIgnoreCase));
+        var namedCustomer = search.GetByTestId("object-search-result")
+            .Filter(new() { HasText = "dbo.Customers" }).First;
+        await Assertions.Expect(namedCustomer).ToContainTextAsync("Table · name");
+        await Assertions.Expect(search.GetByTestId("object-search-result")
+            .Filter(new() { HasText = "definition" }).First).ToBeVisibleAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_search_hides_internal_objects_until_requested_and_keeps_their_badge()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-query").FillAsync("Customers_fts_data");
+        await search.GetByTestId("object-search-run").ClickAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(0);
+
+        await search.GetByLabel("Internal objects").CheckAsync();
+        await search.GetByTestId("object-search-run").ClickAsync();
+        var internalResult = search.GetByTestId("object-search-result").First;
+        await Assertions.Expect(internalResult).ToContainTextAsync("Customers_fts_data");
+        await Assertions.Expect(internalResult.Locator(".badge-I")).ToHaveTextAsync("I");
+        await internalResult.ClickAsync();
+        await Assertions.Expect(page.Locator(".tab.active .badge-I")).ToHaveTextAsync("I");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_search_isolates_connection_failures_and_restores_its_workspace()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var sqliteObjectRequests = 0;
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/connections/SQLite/databases/FakeDb/objects", StringComparison.Ordinal))
+                sqliteObjectRequests++;
+        };
+        await page.RouteAsync("**/connections/SQLite/databases", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 503, ContentType = "application/json",
+                Body = "{\"error\":\"catalog offline\"}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("names");
+        await search.GetByTestId("object-search-query").FillAsync("dbo.Customers");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("2 matches");
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("1 failure");
+        await Assertions.Expect(search.GetByTestId("object-search-results"))
+            .ToContainTextAsync("SQLite: catalog offline");
+        Assert.Equal(0, sqliteObjectRequests);
+
+        await page.ReloadAsync();
+        search = page.GetByTestId("object-search");
+        await Assertions.Expect(search.GetByTestId("object-search-query"))
+            .ToHaveValueAsync("dbo.Customers");
+        await Assertions.Expect(search.GetByTestId("object-search-mode"))
+            .ToHaveValueAsync("names");
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToHaveTextAsync("Search settings restored. Press Search to run.");
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(0);
+        Assert.Equal(0, sqliteObjectRequests);
+
+        var query = search.GetByTestId("object-search-query");
+        await Assertions.Expect(query).ToHaveAttributeAsync("maxlength", "4096");
+        await query.EvaluateAsync("""
+            element => {
+              element.value = 'x'.repeat(4_095) + '😀' + 'not persisted';
+              element.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            """);
+        await page.ReloadAsync();
+        search = page.GetByTestId("object-search");
+        Assert.Equal(new string('x', 4095),
+            await search.GetByTestId("object-search-query").InputValueAsync());
+        Assert.Equal(0, sqliteObjectRequests);
+        browserPage.AssertNoUnexpectedErrors("503");
+    }
+
+    [Fact]
+    public async Task Object_search_caps_definition_requests_and_spreads_them_across_databases()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var definitionRequests = new ConcurrentBag<string>();
+        var ordinaryObjects = JsonSerializer.Serialize(Enumerable.Range(1, 600).Select(index => new
+        {
+            schema = "dbo", name = $"Procedure{index:000}", type = "StoredProcedure",
+            description = (string?)null, isInternal = false,
+        }));
+        var largeCatalog = JsonSerializer.Serialize(Enumerable.Range(1, 130_000).Select(index => new
+        {
+            schema = "dbo", name = $"Procedure{index:000000}", type = "StoredProcedure",
+            description = (string?)null, isInternal = false,
+        }));
+        await page.GotoAsync("/gridlet/");
+        await page.RouteAsync("**/objects", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 200,
+            ContentType = "application/json",
+            Body = route.Request.Url.Contains("/connections/Main/", StringComparison.Ordinal)
+                ? largeCatalog : ordinaryObjects,
+        }));
+        await page.RouteAsync("**/definition?*", route =>
+        {
+            definitionRequests.Add(route.Request.Url);
+            return route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "{\"definition\":\"SELECT 1\"}",
+            });
+        });
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("definitions");
+        await Assertions.Expect(search.GetByTestId("object-search-definition-limit"))
+            .ToHaveValueAsync("500");
+        await search.GetByTestId("object-search-query").FillAsync("not present");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("500 / 131,200 definitions", new() { Timeout = 30_000 });
+        Assert.Equal(500, definitionRequests.Count);
+        var requestsByConnection = definitionRequests.GroupBy(url =>
+                url.Contains("/connections/Main/", StringComparison.Ordinal) ? "Main"
+                    : url.Contains("/connections/DdlOnly/", StringComparison.Ordinal) ? "DdlOnly"
+                    : "SQLite")
+            .ToDictionary(group => group.Key, group => group.Count());
+        Assert.Equal(167, requestsByConnection["DdlOnly"]);
+        Assert.Equal(167, requestsByConnection["Main"]);
+        Assert.Equal(166, requestsByConnection["SQLite"]);
+        await Assertions.Expect(search.GetByTestId("object-search-definition-warning"))
+            .ToContainTextAsync("Increase the Definition limit");
+        await Assertions.Expect(search.GetByTestId("object-search-definition-warning"))
+            .ToHaveClassAsync(new Regex("warning-box"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_search_caps_rendered_results_and_explains_the_truncation()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var manyObjects = JsonSerializer.Serialize(Enumerable.Range(1, 1001).Select(index => new
+        {
+            schema = "dbo", name = $"ProfiledObject{index:0000}", type = "Table",
+            description = (string?)null, isInternal = false,
+        }));
+        await page.GotoAsync("/gridlet/");
+        await page.RouteAsync("**/objects", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 200,
+            ContentType = "application/json",
+            Body = route.Request.Url.Contains("/connections/Main/", StringComparison.Ordinal)
+                ? manyObjects : "[]",
+        }));
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-query").FillAsync("ProfiledObject");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToContainTextAsync("1,001 matches");
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(1000);
+        await Assertions.Expect(search.GetByTestId("object-search-result-warning"))
+            .ToContainTextAsync("Showing the first 1,000 matches");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_search_applies_quoted_terms_as_an_and_and_renders_metadata_as_text()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("window.__objectSearchXss = false;");
+        var objects = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                schema = "dbo", name = "Unsafe<img src=x onerror=window.__objectSearchXss=true>",
+                type = "View", description = "alpha beta gamma <img src=x onerror=window.__objectSearchXss=true>",
+                isInternal = false,
+            },
+            new
+            {
+                schema = "dbo", name = "Partial", type = "View", description = "alpha beta only",
+                isInternal = false,
+            },
+        });
+        await page.GotoAsync("/gridlet/");
+        await page.RouteAsync("**/objects", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 200,
+            ContentType = "application/json",
+            Body = route.Request.Url.Contains("/connections/Main/", StringComparison.Ordinal)
+                ? objects : "[]",
+        }));
+        await page.RouteAsync("**/definition?*", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 200,
+            ContentType = "application/json",
+            Body = route.Request.Url.Contains("/Partial/", StringComparison.Ordinal)
+                ? "{\"definition\":\"alpha beta only\"}"
+                : "{\"definition\":\"SELECT 1;\\nalpha   beta gamma <img src=x onerror=window.__objectSearchXss=true>\"}",
+        }));
+
+        var search = await OpenObjectSearchAsync(page);
+        var query = search.GetByTestId("object-search-query");
+        await query.EvaluateAsync("element => element.value = 'x'.repeat(100_000)");
+        await search.GetByTestId("object-search-run").ClickAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-run")).ToBeEnabledAsync();
+        Assert.Equal(4096, (await query.InputValueAsync()).Length);
+
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("definitions");
+        await search.GetByTestId("object-search-query").FillAsync("\"alpha   beta\" gamma");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(1);
+        await Assertions.Expect(search.GetByTestId("object-search-result").First)
+            .ToContainTextAsync("Unsafe<img src=x onerror=window.__objectSearchXss=true>");
+        await Assertions.Expect(search.GetByTestId("object-search-result").First)
+            .ToContainTextAsync("Line 2:");
+        await Assertions.Expect(search.GetByTestId("object-search-results").Locator("img"))
+            .ToHaveCountAsync(0);
+        Assert.False(await page.EvaluateAsync<bool>("window.__objectSearchXss"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Object_search_cancels_every_pending_definition_request_without_stale_results()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("""
+            (() => {
+              const originalFetch = window.fetch;
+              window.__objectSearchAborts = 0;
+              window.fetch = (input, init = {}) => {
+                const url = String(input);
+                if (url.includes('/definition?')) {
+                  return new Promise((resolve, reject) => {
+                    const abort = () => {
+                      window.__objectSearchAborts++;
+                      reject(new DOMException('Aborted', 'AbortError'));
+                    };
+                    if (init.signal?.aborted) abort();
+                    else init.signal?.addEventListener('abort', abort, { once: true });
+                  });
+                }
+                return originalFetch.call(window, input, init);
+              };
+            })();
+            """);
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("definitions");
+        await search.GetByTestId("object-search-query").FillAsync("CREATE");
+        await search.GetByTestId("object-search-run").ClickAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-cancel")).ToBeVisibleAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-results"))
+            .ToHaveAttributeAsync("aria-busy", "true");
+        await search.GetByTestId("object-search-cancel").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-status"))
+            .ToHaveTextAsync("Search cancelled.");
+        await page.WaitForFunctionAsync("() => window.__objectSearchAborts > 0");
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(0);
+        await Assertions.Expect(search.GetByTestId("object-search-results"))
+            .ToHaveAttributeAsync("aria-busy", "false");
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -1434,8 +3399,6 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.Locator("html")).ToHaveAttributeAsync("data-theme", "light");
         var themeButton = page.Locator("#theme-btn");
         await Assertions.Expect(themeButton).ToHaveAttributeAsync("aria-label", "Switch to dark theme");
-        await Assertions.Expect(page.Locator("#topbar").GetByRole(
-            AriaRole.Button, new() { Name = "More app actions" })).ToBeHiddenAsync();
         Assert.True(await page.EvaluateAsync<bool>("""
             () => {
                 const children = [...document.querySelector('#topbar').children];
@@ -1581,6 +3544,211 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Profiles_a_selected_column_and_exports_the_exact_top_values()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Profile", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Ready.");
+        await Assertions.Expect(panel.GetByTestId("profile-results")).ToBeEmptyAsync();
+        await panel.GetByTestId("profile-run").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profiled 2 rows");
+        await Assertions.Expect(panel.Locator("[data-profile-metric='rows']"))
+            .ToContainTextAsync("2");
+        Assert.DoesNotContain("SysStart",
+            await panel.GetByTestId("profile-column").Locator("option").AllTextContentsAsync());
+
+        await panel.GetByTestId("profile-column").SelectOptionAsync("Status");
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profiled 2 rows");
+        await Assertions.Expect(panel.Locator("[data-profile-metric='null']"))
+            .ToContainTextAsync("1");
+        await Assertions.Expect(panel.Locator("[data-profile-metric='distinct']"))
+            .ToContainTextAsync("1");
+        await Assertions.Expect(panel.Locator(".profile-top").GetByText("NULL", new() { Exact = true }))
+            .ToBeVisibleAsync();
+
+        var jsonDownload = await page.RunAndWaitForDownloadAsync(
+            () => panel.GetByTestId("export-json").ClickAsync());
+        Assert.Equal("Customers-Status-profile.json", jsonDownload.SuggestedFilename);
+        using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
+        Assert.Equal(JsonValueKind.Null, document.RootElement[0].GetProperty("Value").ValueKind);
+        Assert.Equal(1, document.RootElement[0].GetProperty("Count").GetInt32());
+        Assert.Equal("50.0%", document.RootElement[0].GetProperty("Share").GetString());
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Preserves_exact_profile_counts_beyond_javascript_safe_integers()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/objects/dbo/Customers/profile?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = "{\"column\":\"Id\",\"dataType\":\"bigint\","
+                    + "\"totalCount\":\"9007199254740993\",\"nullCount\":\"1\","
+                    + "\"distinctCount\":\"9007199254740992\",\"minimum\":1,\"maximum\":2,"
+                    + "\"topValues\":[{\"value\":1,\"count\":\"9007199254740992\"}]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Profile", Exact = true }).ClickAsync();
+        await panel.GetByTestId("profile-run").ClickAsync();
+
+        await Assertions.Expect(panel.GetByTestId("profile-status"))
+            .ToHaveTextAsync("Profiled 9,007,199,254,740,993 rows");
+        await Assertions.Expect(panel.Locator("[data-profile-metric='non-null']"))
+            .ToContainTextAsync("9,007,199,254,740,992");
+        await Assertions.Expect(panel.Locator("[data-profile-metric='distinct']"))
+            .ToContainTextAsync("9,007,199,254,740,992");
+        await Assertions.Expect(panel.Locator(".profile-top tbody"))
+            .ToContainTextAsync("9,007,199,254,740,992");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Profiles_the_same_filtered_row_scope_as_the_data_grid()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var profileRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/profile?", StringComparison.Ordinal)) profileRequests.Add(request.Url);
+        };
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await panel.GetByTestId("add-filter").ClickAsync();
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Filter rows" });
+        await dialog.GetByLabel("Filter column").SelectOptionAsync("Name");
+        await dialog.GetByLabel("Filter operator").SelectOptionAsync("contains");
+        await dialog.GetByLabel("Filter value").FillAsync("ada");
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Apply", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("filter-chip")).ToBeVisibleAsync();
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Profile", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Ready.");
+        await panel.GetByTestId("profile-use-filters").CheckAsync();
+        await panel.GetByTestId("profile-run").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profiled 1 row");
+        Assert.Contains(profileRequests, url => Uri.UnescapeDataString(url).Contains(
+            """filter=[{"column":"Name","operator":"contains","value":"ada"}]""",
+            StringComparison.Ordinal));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Cancels_a_column_profile_without_leaving_stale_results()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await page.RouteAsync("**/objects/dbo/Customers/profile?*", async route =>
+        {
+            started.TrySetResult();
+            await release.Task;
+            try
+            {
+                await route.FulfillAsync(new()
+                {
+                    Status = 200,
+                    ContentType = "application/json",
+                    Body = "{\"column\":\"Id\",\"dataType\":\"int\",\"totalCount\":2,"
+                        + "\"nullCount\":0,\"distinctCount\":2,\"minimum\":1,\"maximum\":2,"
+                        + "\"topValues\":[]}",
+                });
+            }
+            catch (PlaywrightException)
+            {
+                // The fetch was intentionally aborted before this synthetic response was released.
+            }
+        });
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Profile", Exact = true }).ClickAsync();
+        await panel.GetByTestId("profile-run").ClickAsync();
+        await started.Task;
+        await Assertions.Expect(panel.GetByTestId("profile-cancel")).ToBeVisibleAsync();
+        await panel.GetByTestId("profile-cancel").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profile cancelled.");
+        await Assertions.Expect(panel.GetByTestId("profile-results")).ToBeEmptyAsync();
+        release.TrySetResult();
+        await Assertions.Expect(panel.GetByTestId("profile-results")).ToBeEmptyAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Downloads_the_full_table_even_when_the_browser_retains_one_row()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("localStorage.setItem('gridlet.queryMaxRows', '1')");
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("[title='dbo.Ledger']").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("1 row(s) - safety cap reached", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(panel.GetByTestId("export-csv")).ToHaveTextAsync("Full CSV");
+
+        var csvDownload = await page.RunAndWaitForDownloadAsync(
+            () => panel.GetByTestId("export-csv").ClickAsync());
+        Assert.Equal("Ledger.csv", csvDownload.SuggestedFilename);
+        var csv = await ReadDownloadAsync(csvDownload);
+        Assert.Equal(5, csv.Split("\r\n", StringSplitOptions.RemoveEmptyEntries).Length);
+        Assert.Contains("4,Alan", csv);
+
+        var jsonDownload = await page.RunAndWaitForDownloadAsync(
+            () => panel.GetByTestId("export-json").ClickAsync());
+        Assert.Equal("Ledger.json", jsonDownload.SuggestedFilename);
+        using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
+        Assert.Equal(4, document.RootElement.GetArrayLength());
+        Assert.Equal("Alan", document.RootElement[3].GetProperty("Name").GetString());
+
+        await page.RouteAsync("**/data/export?*", async route =>
+        {
+            if (route.Request.Url.Contains("probe=true", StringComparison.Ordinal))
+            {
+                await route.FulfillAsync(new()
+                {
+                    Status = 400,
+                    ContentType = "application/json",
+                    Body = "{\"error\":\"The export could not be validated.\"}",
+                });
+            }
+            else
+            {
+                await route.ContinueAsync();
+            }
+        });
+        await panel.GetByTestId("export-csv").ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack"))
+            .ToContainTextAsync("Export failed: The export could not be validated.");
+        await page.UnrouteAsync("**/data/export?*");
+
+        await page.Locator("[title='dbo.LedgerHeap']").ClickAsync();
+        panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByTestId("export-csv")).ToHaveTextAsync("CSV");
+        await Assertions.Expect(panel.GetByTestId("export-csv"))
+            .ToHaveAttributeAsync("title", "Download as CSV");
+        browserPage.AssertNoUnexpectedErrors("400");
+    }
+
+    [Fact]
     public async Task Tailors_object_explorer_and_designer_to_provider_capabilities()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -1614,38 +3782,6 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
-    public async Task Shows_database_security_and_manages_object_database_and_server_triggers()
-    {
-        await using var browserPage = await fixture.NewPageAsync();
-        var page = browserPage.Page;
-        await page.GotoAsync("/gridlet/");
-
-        await page.Locator("summary").Filter(new() { HasText = "Administration" }).ClickAsync();
-        await page.GetByTitle("Database users, roles, and permissions").ClickAsync();
-        var panel = ActivePanel(page);
-        await Assertions.Expect(panel.GetByTestId("security-identity")).ToContainTextAsync("app_user");
-        await Assertions.Expect(panel.GetByRole(AriaRole.Cell, new() { Name = "report_reader", Exact = true }).First)
-            .ToBeVisibleAsync();
-        await Assertions.Expect(panel.GetByRole(AriaRole.Cell, new() { Name = "SELECT", Exact = true }).First)
-            .ToBeVisibleAsync();
-
-        await page.GetByTitle("DML, database DDL, and server DDL triggers").ClickAsync();
-        panel = ActivePanel(page);
-        await Assertions.Expect(panel.GetByRole(AriaRole.Cell, new() { Name = "AuditDatabaseDdl", Exact = true }))
-            .ToBeVisibleAsync();
-        await Assertions.Expect(panel.GetByRole(AriaRole.Cell, new() { Name = "AuditLogins", Exact = true }))
-            .ToBeVisibleAsync();
-        await Assertions.Expect(panel.GetByRole(AriaRole.Cell, new() { Name = "CREATE_TABLE", Exact = true }))
-            .ToBeVisibleAsync();
-        await panel.GetByRole(AriaRole.Button, new() { Name = "Enable trigger AuditDatabaseDdl", Exact = true })
-            .ClickAsync();
-        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
-            "Trigger AuditDatabaseDdl enabled.", new() { Exact = true })).ToBeVisibleAsync();
-        Assert.Contains("setTriggerState database..AuditDatabaseDdl enabled=True", fixture.Provider.Calls);
-        browserPage.AssertNoUnexpectedErrors();
-    }
-
-    [Fact]
     public async Task Runs_a_query_and_exports_exact_csv_and_json()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -1669,7 +3805,584 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.Equal("SQL_1-result1.json", jsonDownload.SuggestedFilename);
         using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
         Assert.Equal(42, document.RootElement[0].GetProperty("Answer").GetInt32());
+
+        var excelDownload = await page.RunAndWaitForDownloadAsync(
+            () => page.GetByTestId("export-xlsx").ClickAsync());
+        Assert.Equal("SQL_1-result1.xlsx", excelDownload.SuggestedFilename);
+        var excel = await ReadDownloadBytesAsync(excelDownload);
+        Assert.Equal("PK", System.Text.Encoding.ASCII.GetString(excel, 0, 2));
+
+        var parquetDownload = await page.RunAndWaitForDownloadAsync(
+            () => page.GetByTestId("export-parquet").ClickAsync());
+        Assert.Equal("SQL_1-result1.parquet", parquetDownload.SuggestedFilename);
+        var parquet = await ReadDownloadBytesAsync(parquetDownload);
+        Assert.Equal("PAR1", System.Text.Encoding.ASCII.GetString(parquet, 0, 4));
+        Assert.Equal("PAR1", System.Text.Encoding.ASCII.GetString(parquet, parquet.Length - 4, 4));
+
+        await page.RouteAsync("**/exports/xlsx", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 413,
+            ContentType = "text/plain",
+            Body = "",
+        }));
+        await page.GetByTestId("export-xlsx").ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack")).ToContainTextAsync(
+            "This result set is too large for Excel or Parquet export. Lower the row cap and try again.");
+        browserPage.AssertNoUnexpectedErrors("413 (Payload Too Large)");
+    }
+
+    [Fact]
+    public async Task Csv_export_neutralizes_a_tab_prefixed_spreadsheet_value()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "formula-export");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+
+        var download = await page.RunAndWaitForDownloadAsync(
+            () => page.GetByTestId("export-csv").ClickAsync());
+
+        Assert.Equal("Text\r\n'\t2+3", await ReadDownloadAsync(download));
         browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Copies_loaded_results_as_sql_json_and_markdown()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+        await OpenQueryAsync(page, "copy-formats");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+
+        async Task CopyAsync(string menuItem)
+        {
+            await ActivePanel(page).GetByTestId("copy-results").ClickAsync();
+            await page.GetByRole(AriaRole.Menuitem, new() { Name = menuItem, Exact = true }).ClickAsync();
+        }
+        async Task<string> ReadClipboardAsync() =>
+            (await page.EvaluateAsync<string>("navigator.clipboard.readText()"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        var copyButton = ActivePanel(page).GetByTestId("copy-results");
+        await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-haspopup", "menu");
+        await copyButton.FocusAsync();
+        await copyButton.PressAsync("Enter");
+        await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "true");
+        var keyboardMenu = page.Locator(".context-menu");
+        await Assertions.Expect(keyboardMenu).ToBeVisibleAsync();
+        var copyBounds = await copyButton.BoundingBoxAsync();
+        var menuBounds = await keyboardMenu.BoundingBoxAsync();
+        Assert.InRange(Math.Abs(menuBounds!.X - copyBounds!.X), 0, 2);
+        await keyboardMenu.GetByRole(AriaRole.Menuitem).Last.PressAsync("Tab");
+        await Assertions.Expect(keyboardMenu).ToBeHiddenAsync();
+        await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "false");
+        await copyButton.PressAsync("Enter");
+        keyboardMenu = page.Locator(".context-menu");
+        await keyboardMenu.PressAsync("Escape");
+        await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "false");
+
+        await CopyAsync("Copy as SQL INSERT");
+        await Assertions.Expect(copyButton).ToBeFocusedAsync();
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([Odd]]Name], [Note], [Active], [Missing], [Payload]) VALUES\n" +
+            "    (N'Łódź O''Brien', N'line 1\nline | <2>', 1, NULL, 0x00FF);",
+            await ReadClipboardAsync());
+
+        await CopyAsync("Copy as JSON");
+        using (var json = JsonDocument.Parse(
+            await ReadClipboardAsync()))
+        {
+            var row = Assert.Single(json.RootElement.EnumerateArray());
+            Assert.Equal("Łódź O'Brien", row.GetProperty("Odd]Name").GetString());
+            Assert.Equal("line 1\nline | <2>", row.GetProperty("Note").GetString());
+            Assert.True(row.GetProperty("Active").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, row.GetProperty("Missing").ValueKind);
+            Assert.Equal("AP8=", row.GetProperty("Payload").GetString());
+        }
+
+        await CopyAsync("Copy as Markdown");
+        Assert.Equal(
+            "| Odd]Name | Note | Active | Missing | Payload |\n" +
+            "| --- | --- | --- | --- | --- |\n" +
+            "| Łódź O'Brien | line 1<br>line \\| &lt;2&gt; | true | NULL | AP8= |",
+            await ReadClipboardAsync());
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByRole(
+            AriaRole.Cell, new() { Name = "Grace" })).ToBeVisibleAsync();
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([Id], [Name]) VALUES\n" +
+            "    (1, N'Ada'),\n" +
+            "    (2, N'Grace');",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("many:1001");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        var bulkInsert = await ReadClipboardAsync();
+        var statements = bulkInsert.Split("\n\n", StringSplitOptions.None);
+        Assert.Equal(2, statements.Length);
+        Assert.Equal(1_001, statements[0].Split('\n').Length);
+        Assert.EndsWith("    (999);", statements[0], StringComparison.Ordinal);
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([N]) VALUES\n    (1000);",
+            statements[1]);
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-unnamed-column");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([Column1]) VALUES\n    (1);",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-unsafe-number");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([UnsafeId]) VALUES\n    (9007199254740993);",
+            await ReadClipboardAsync());
+        await CopyAsync("Copy as JSON");
+        using (var unsafeJson = JsonDocument.Parse(await ReadClipboardAsync()))
+        {
+            Assert.Equal("9007199254740993",
+                unsafeJson.RootElement[0].GetProperty("UnsafeId").GetString());
+        }
+        await CopyAsync("Copy as Markdown");
+        Assert.Contains("| 9007199254740993 |", await ReadClipboardAsync(), StringComparison.Ordinal);
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-exponential-decimal");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([TinyAmount]) VALUES\n    (0.00000000000000000001);",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-exact-decimal");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([ExactAmount]) VALUES\n    (123456789012345.6);",
+            await ReadClipboardAsync());
+        await CopyAsync("Copy as JSON");
+        using (var exactJson = JsonDocument.Parse(await ReadClipboardAsync()))
+        {
+            Assert.Equal("123456789012345.6",
+                exactJson.RootElement[0].GetProperty("ExactAmount").GetString());
+        }
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-exact-variant");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([VariantAmount]) VALUES\n    (1.00000000000000000001);",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-large-float");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([ApproximateValue]) VALUES\n    (1e+21);",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-duplicate-columns");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as JSON");
+        using (var duplicateJson = JsonDocument.Parse(await ReadClipboardAsync()))
+        {
+            Assert.Equal(1, duplicateJson.RootElement[0].GetProperty("Value").GetInt32());
+            Assert.Equal(2, duplicateJson.RootElement[0].GetProperty("value_2").GetInt32());
+        }
+        await page.EvaluateAsync("navigator.clipboard.writeText('unchanged')");
+        await CopyAsync("Copy as SQL INSERT");
+        await Assertions.Expect(page.Locator("#toast-stack"))
+            .ToContainTextAsync("duplicate column names");
+        Assert.Equal("unchanged", await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-invalid-binary");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO [TargetTable] ([Payload]) VALUES\n" +
+            "    (N'not-base64!!');",
+            await ReadClipboardAsync());
+
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-formats");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO \"TargetTable\" (\"Odd]Name\", \"Note\", \"Active\", \"Missing\", \"Payload\") VALUES\n" +
+            "    ('Łódź O''Brien', 'line 1\nline | <2>', 1, NULL, X'00FF');",
+            await ReadClipboardAsync());
+
+        await page.Locator("#new-query-btn").ClickAsync();
+        await ActivePanel(page).GetByTestId("sql-editor").FillAsync("copy-dynamic-numeric");
+        await ActivePanel(page).GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await CopyAsync("Copy as SQL INSERT");
+        Assert.Equal(
+            "INSERT INTO \"TargetTable\" (\"Value\") VALUES\n" +
+            "    ('007'),\n" +
+            "    (0.30000000000000004);",
+            await ReadClipboardAsync());
+
+        await page.EvaluateAsync(
+            "Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })");
+        await CopyAsync("Copy as JSON");
+        await Assertions.Expect(page.Locator("#toast-stack"))
+            .ToContainTextAsync("Copy failed - clipboard unavailable.");
+        Assert.DoesNotContain("Cannot read properties", await page.Locator("#toast-stack").InnerTextAsync(),
+            StringComparison.OrdinalIgnoreCase);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Keeps_a_query_job_running_while_another_workspace_tab_is_active()
+    {
+        fixture.Provider.PrepareLongQuery();
+        try
+        {
+            await using var browserPage = await fixture.NewPageAsync();
+            var page = browserPage.Page;
+            await OpenQueryAsync(page, "job-wait");
+
+            await page.GetByTestId("query-run").ClickAsync();
+            await Assertions.Expect(page.GetByTestId("query-status"))
+                .ToContainTextAsync("Running in background");
+
+            await page.GetByTitle("dbo.Customers").ClickAsync();
+            await Assertions.Expect(ActivePanel(page).GetByRole(
+                AriaRole.Cell, new() { Name = "Ada" })).ToBeVisibleAsync();
+
+            fixture.Provider.ReleaseLongQuery();
+            await page.Locator("#tabbar .tab").Filter(new() { HasText = "SQL 1" }).ClickAsync();
+            var queryPanel = ActivePanel(page);
+            await Assertions.Expect(queryPanel.GetByRole(
+                AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+            await Assertions.Expect(queryPanel.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+            browserPage.AssertNoUnexpectedErrors();
+        }
+        finally
+        {
+            fixture.Provider.ReleaseLongQuery();
+        }
+    }
+
+    [Fact]
+    public async Task Reattaches_to_a_running_query_job_after_page_reload()
+    {
+        fixture.Provider.PrepareLongQuery();
+        try
+        {
+            await using var browserPage = await fixture.NewPageAsync();
+            var page = browserPage.Page;
+            await OpenQueryAsync(page, "job-wait");
+
+            await page.GetByTestId("query-run").ClickAsync();
+            await Assertions.Expect(page.GetByTestId("query-status"))
+                .ToContainTextAsync("Running in background");
+
+            await page.ReloadAsync();
+            var queryPanel = ActivePanel(page);
+            await Assertions.Expect(queryPanel.GetByTestId("sql-editor")).ToHaveValueAsync("job-wait");
+            await Assertions.Expect(queryPanel.GetByTestId("query-status"))
+                .ToContainTextAsync("Running in background");
+
+            fixture.Provider.ReleaseLongQuery();
+            await Assertions.Expect(queryPanel.GetByRole(
+                AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+            await Assertions.Expect(queryPanel.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+            browserPage.AssertNoUnexpectedErrors();
+        }
+        finally
+        {
+            fixture.Provider.ReleaseLongQuery();
+        }
+    }
+
+    [Fact]
+    public async Task Retries_a_transient_query_job_poll_failure()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var failedPoll = 0;
+        await page.RouteAsync("**/query/jobs/*", async route =>
+        {
+            if (Interlocked.CompareExchange(ref failedPoll, 1, 0) == 0)
+            {
+                await route.FulfillAsync(new()
+                {
+                    Status = 502,
+                    ContentType = "application/json",
+                    Body = "{\"error\":\"Temporary gateway failure.\"}",
+                });
+            }
+            else
+            {
+                await route.ContinueAsync();
+            }
+        });
+        await OpenQueryAsync(page, "SELECT 42");
+
+        await page.GetByTestId("query-run").ClickAsync();
+        var status = page.GetByTestId("query-status");
+        await Assertions.Expect(status).ToContainTextAsync("Connection interrupted");
+        await page.WaitForTimeoutAsync(150);
+        await Assertions.Expect(status).ToContainTextAsync("Connection interrupted");
+
+        await Assertions.Expect(status).ToHaveTextAsync("1 ms");
+        await Assertions.Expect(page.GetByTestId("query-results").GetByRole(
+            AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+        Assert.Equal(1, failedPoll);
+        browserPage.AssertNoUnexpectedErrors("502");
+    }
+
+    [Fact]
+    public async Task Offers_reattach_after_query_job_poll_retries_are_exhausted()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var failedPolls = 0;
+        await page.RouteAsync("**/query/jobs/*", async route =>
+        {
+            if (Interlocked.Increment(ref failedPolls) <= 4)
+            {
+                await route.FulfillAsync(new()
+                {
+                    Status = 502,
+                    ContentType = "application/json",
+                    Body = "{\"error\":\"Temporary gateway failure.\"}",
+                });
+            }
+            else
+            {
+                await route.ContinueAsync();
+            }
+        });
+        await OpenQueryAsync(page, "SELECT 42");
+        await page.GetByTestId("query-run").ClickAsync();
+
+        var run = page.GetByTestId("query-run");
+        await Assertions.Expect(run).ToHaveTextAsync("Reattach");
+        await Assertions.Expect(run).ToBeEnabledAsync();
+        await run.ClickAsync();
+
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+        await Assertions.Expect(page.GetByTestId("query-results").GetByRole(
+            AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+        Assert.True(failedPolls >= 5);
+        browserPage.AssertNoUnexpectedErrors("502", "502", "502", "502");
+    }
+
+    [Fact]
+    public async Task Offers_reattach_when_a_query_job_poll_is_aborted()
+    {
+        fixture.Provider.PrepareLongQuery();
+        try
+        {
+            await using var browserPage = await fixture.NewPageAsync();
+            var page = browserPage.Page;
+            await OpenQueryAsync(page, "job-wait");
+            await page.EvaluateAsync("""
+                () => {
+                  const originalFetch = window.fetch;
+                  let abortNextJobPoll = true;
+                  window.fetch = (...args) => {
+                    const url = String(args[0]);
+                    if (abortNextJobPoll && /\/query\/jobs\/[^?]+/.test(url)) {
+                      abortNextJobPoll = false;
+                      return Promise.reject(new DOMException('Detached for test', 'AbortError'));
+                    }
+                    return originalFetch(...args);
+                  };
+                }
+                """);
+            await page.GetByTestId("query-run").ClickAsync();
+
+            var run = page.GetByTestId("query-run");
+            await Assertions.Expect(run).ToHaveTextAsync("Reattach");
+            await Assertions.Expect(run).ToBeEnabledAsync();
+            await Assertions.Expect(page.GetByTestId("query-status"))
+                .ToContainTextAsync("Detached");
+            await run.ClickAsync();
+
+            fixture.Provider.ReleaseLongQuery();
+            await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
+            await Assertions.Expect(page.GetByTestId("query-results").GetByRole(
+                AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+            browserPage.AssertNoUnexpectedErrors();
+        }
+        finally
+        {
+            fixture.Provider.ReleaseLongQuery();
+        }
+    }
+
+    [Fact]
+    public async Task Closing_an_aborted_query_job_tab_still_offers_server_cancellation()
+    {
+        fixture.Provider.PrepareLongQuery();
+        try
+        {
+            await using var browserPage = await fixture.NewPageAsync();
+            var page = browserPage.Page;
+            var cancellationsBefore = fixture.Provider.LongQueryCancellations;
+            await OpenQueryAsync(page, "job-wait");
+            await page.EvaluateAsync("""
+                () => {
+                  const originalFetch = window.fetch;
+                  let abortNextJobPoll = true;
+                  window.fetch = (...args) => {
+                    const url = String(args[0]);
+                    if (abortNextJobPoll && /\/query\/jobs\/[^?]+/.test(url)) {
+                      abortNextJobPoll = false;
+                      return Promise.reject(new DOMException('Detached for test', 'AbortError'));
+                    }
+                    return originalFetch(...args);
+                  };
+                }
+                """);
+            await page.GetByTestId("query-run").ClickAsync();
+            await Assertions.Expect(page.GetByTestId("query-run")).ToHaveTextAsync("Reattach");
+
+            await page.Locator("#tabbar .tab.active .tab-close").ClickAsync();
+            var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Query still running" });
+            await Assertions.Expect(dialog).ToBeVisibleAsync();
+            await dialog.GetByRole(AriaRole.Button, new() { Name = "Cancel and close", Exact = true })
+                .ClickAsync();
+
+            await Assertions.Expect(page.Locator("#tabbar .tab")).ToHaveCountAsync(0);
+            for (var attempt = 0;
+                 attempt < 50 && fixture.Provider.LongQueryCancellations == cancellationsBefore;
+                 attempt++)
+            {
+                await Task.Delay(20);
+            }
+
+            Assert.Equal(cancellationsBefore + 1, fixture.Provider.LongQueryCancellations);
+            browserPage.AssertNoUnexpectedErrors();
+        }
+        finally
+        {
+            fixture.Provider.ReleaseLongQuery();
+        }
+    }
+
+    [Fact]
+    public async Task Cancels_a_running_query_job_on_the_server()
+    {
+        fixture.Provider.PrepareLongQuery();
+        try
+        {
+            await using var browserPage = await fixture.NewPageAsync();
+            var page = browserPage.Page;
+            await OpenQueryAsync(page, "job-wait");
+
+            await page.GetByTestId("query-run").ClickAsync();
+            await Assertions.Expect(page.GetByTestId("query-status"))
+                .ToContainTextAsync("Running in background");
+            await page.GetByTestId("query-cancel").ClickAsync();
+
+            await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("Cancelled");
+            await Assertions.Expect(page.GetByTestId("query-results").GetByRole(
+                AriaRole.Cell, new() { Name = "42" })).ToHaveCountAsync(0);
+            Assert.Equal(1, fixture.Provider.LongQueryCancellations);
+            browserPage.AssertNoUnexpectedErrors();
+        }
+        finally
+        {
+            fixture.Provider.ReleaseLongQuery();
+        }
+    }
+
+    [Fact]
+    public async Task Records_a_query_job_that_the_server_cannot_start()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await OpenQueryAsync(page, "SELECT unavailable");
+        await page.RouteAsync("**/query/jobs", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 503,
+                ContentType = "application/json",
+                Body = "{\"error\":\"No query worker is available.\"}",
+            }));
+
+        await page.GetByTestId("query-run").ClickAsync();
+
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("Failed");
+        await Assertions.Expect(page.GetByTestId("query-results").GetByText(
+            "No query worker is available.", new() { Exact = true })).ToBeVisibleAsync();
+        await ClickQueryActionAsync(ActivePanel(page), "query-history");
+        var record = page.GetByRole(AriaRole.Dialog, new() { Name = "Query history" })
+            .GetByTestId("query-history-item");
+        await Assertions.Expect(record).ToHaveCountAsync(1);
+        await Assertions.Expect(record).ToContainTextAsync("SELECT unavailable");
+        await Assertions.Expect(record).ToContainTextAsync("Failed");
+        browserPage.AssertNoUnexpectedErrors("503");
+    }
+
+    [Fact]
+    public async Task Clears_an_expired_query_job_from_the_persisted_tab()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var jobReads = 0;
+        await page.RouteAsync("**/query/jobs", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 202,
+            ContentType = "application/json",
+            Body = "{\"id\":\"expired-job\",\"status\":\"running\"," +
+                "\"startedAt\":\"2026-08-26T00:00:00Z\",\"completedAt\":null," +
+                "\"nextEventIndex\":0,\"eventCount\":0,\"events\":[]}",
+        }));
+        await page.RouteAsync("**/query/jobs/expired-job*", route =>
+        {
+            Interlocked.Increment(ref jobReads);
+            return route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 404,
+                ContentType = "application/json",
+                Body = "{\"error\":\"That query job is no longer available.\"}",
+            });
+        });
+        await page.GotoAsync("/gridlet/");
+        await OpenQueryAsync(page, "SELECT expired");
+        await page.GetByTestId("query-run").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("Query job expired");
+        Assert.Equal(1, jobReads);
+
+        await page.ReloadAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("sql-editor"))
+            .ToHaveValueAsync("SELECT expired");
+        await Assertions.Expect(ActivePanel(page).GetByTestId("query-status")).ToBeEmptyAsync();
+        Assert.Equal(1, jobReads);
+        browserPage.AssertNoUnexpectedErrors("404");
     }
 
     [Fact]
@@ -1923,7 +4636,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         history = page.GetByRole(AriaRole.Dialog, new() { Name = "Query history" });
         await history.GetByRole(AriaRole.Button, new() { Name = "Clear history", Exact = true }).ClickAsync();
         await Assertions.Expect(history.GetByTestId("query-history-empty")).ToBeVisibleAsync();
-        browserPage.AssertNoUnexpectedErrors("400");
+        browserPage.AssertNoUnexpectedErrors();
     }
 
     [Fact]
@@ -2125,248 +4838,6 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
-    public async Task Describes_completions_and_links_to_the_documentation_of_the_dialect()
-    {
-        await using var browserPage = await fixture.NewPageAsync();
-        var page = browserPage.Page;
-        await OpenQueryAsync(page, "SELECT to");
-        var editor = page.GetByTestId("sql-editor");
-
-        await editor.PressAsync("Control+Space");
-        var suggestion = page.Locator(".sql-completions").GetByRole(
-            AriaRole.Button, new() { Name = "TOP", Exact = true });
-        await Assertions.Expect(suggestion).ToBeVisibleAsync();
-        await Assertions.Expect(suggestion).ToHaveAttributeAsync("data-category", "keyword");
-
-        // TO, the word that was typed in full, heads the list, so the panel is pointed at TOP.
-        await suggestion.HoverAsync();
-        var documentation = page.GetByTestId("sql-completion-doc");
-        await Assertions.Expect(documentation).ToContainTextAsync(
-            "Limits the statement to the first n rows or n percent of rows.");
-        var link = documentation.GetByRole(AriaRole.Link);
-        await Assertions.Expect(link).ToHaveAttributeAsync(
-            "href", "https://learn.microsoft.com/en-us/sql/t-sql/queries/top-transact-sql");
-
-        // The link has to survive the editor losing focus, which is what closes the popup. The
-        // documentation site is answered locally so the test never reaches the network.
-        await page.Context.RouteAsync("https://learn.microsoft.com/**", route => route.FulfillAsync(
-            new() { Status = 200, ContentType = "text/html", Body = "<p>docs</p>" }));
-        var opened = page.Context.WaitForPageAsync();
-        await link.ClickAsync();
-        var documentationTab = await opened;
-        await documentationTab.WaitForLoadStateAsync();
-        Assert.Equal(
-            "https://learn.microsoft.com/en-us/sql/t-sql/queries/top-transact-sql",
-            documentationTab.Url);
-        await documentationTab.CloseAsync();
-
-        // Database objects carry their own kind rather than a language category.
-        await editor.FillAsync("SELECT * FROM dbo.Cust");
-        await editor.PressAsync("Control+Space");
-        await Assertions.Expect(page.Locator(".sql-completions").GetByRole(
-            AriaRole.Button, new() { Name = "dbo.Customers", Exact = true }))
-            .ToHaveAttributeAsync("data-category", "table");
-
-        // A table of this database is described nowhere in the dialect documentation, so the row
-        // says what it is and offers no link.
-        await page.Locator(".sql-completions").GetByRole(
-            AriaRole.Button, new() { Name = "dbo.Customers", Exact = true }).HoverAsync();
-        await Assertions.Expect(documentation).ToContainTextAsync("Table in this database.");
-        await Assertions.Expect(documentation.GetByRole(AriaRole.Link)).ToHaveCountAsync(0);
-
-        browserPage.AssertNoUnexpectedErrors();
-    }
-
-    [Fact]
-    public async Task Completes_multi_word_keywords_as_one_item()
-    {
-        await using var browserPage = await fixture.NewPageAsync();
-        var page = browserPage.Page;
-        await OpenQueryAsync(page, "SELECT * FROM dbo.Customers ORD");
-        var editor = page.GetByTestId("sql-editor");
-        var popup = page.Locator(".sql-completions");
-
-        // ORDER is not a clause on its own, so the whole clause name is what is offered, and the
-        // bare word is not in the list at all.
-        await editor.PressAsync("Control+Space");
-        var clause = popup.GetByRole(AriaRole.Button, new() { Name = "ORDER BY", Exact = true });
-        await Assertions.Expect(clause).ToBeVisibleAsync();
-        await Assertions.Expect(clause).ToHaveAttributeAsync("data-category", "keyword");
-        await Assertions.Expect(popup.GetByRole(
-            AriaRole.Button, new() { Name = "ORDER", Exact = true })).ToHaveCountAsync(0);
-
-        // The second word is offered after the first one is typed, and replaces what stands there.
-        await editor.FillAsync("SELECT * FROM dbo.Customers ORDER ");
-        await Assertions.Expect(clause).ToBeVisibleAsync();
-        await clause.ClickAsync();
-        await Assertions.Expect(editor).ToHaveValueAsync("SELECT * FROM dbo.Customers ORDER BY");
-
-        // Half of the second word still finds it.
-        await editor.FillAsync("SELECT * FROM dbo.Customers GROUP B");
-        await Assertions.Expect(popup.GetByRole(
-            AriaRole.Button, new() { Name = "GROUP BY", Exact = true })).ToBeVisibleAsync();
-
-        browserPage.AssertNoUnexpectedErrors();
-    }
-
-    [Fact]
-    public async Task Keeps_a_fully_typed_word_in_the_list_and_holds_its_description()
-    {
-        await using var browserPage = await fixture.NewPageAsync();
-        var page = browserPage.Page;
-        await OpenQueryAsync(page, "SELECT * FROM dbo.Customers WHERE");
-        var editor = page.GetByTestId("sql-editor");
-        var popup = page.Locator(".sql-completions");
-        var documentation = page.GetByTestId("sql-completion-doc");
-
-        // The word is complete, but its description is what the popup is being read for.
-        await editor.PressAsync("Control+Space");
-        var keyword = popup.GetByRole(AriaRole.Button, new() { Name = "WHERE", Exact = true });
-        await Assertions.Expect(keyword).ToBeVisibleAsync();
-
-        // Pointing at a row selects it, so the description survives the pointer leaving the list
-        // on its way to the documentation link.
-        await keyword.HoverAsync();
-        await documentation.HoverAsync();
-        await Assertions.Expect(documentation).ToContainTextAsync("Filters the rows a statement reads or changes.");
-        await Assertions.Expect(keyword).ToHaveClassAsync(new Regex("active"));
-
-        // Accepting a row closes the popup, even though the inserted word still matches itself.
-        await keyword.ClickAsync();
-        await Assertions.Expect(editor).ToHaveValueAsync("SELECT * FROM dbo.Customers WHERE");
-        await Assertions.Expect(popup).ToBeHiddenAsync();
-
-        browserPage.AssertNoUnexpectedErrors();
-    }
-
-    [Fact]
-    public async Task Keeps_suggesting_after_a_space_that_follows_a_clause_keyword()
-    {
-        await using var browserPage = await fixture.NewPageAsync();
-        var page = browserPage.Page;
-        await OpenQueryAsync(page, "SELECT * FROM dbo.Customers ORDER BY");
-        var editor = page.GetByTestId("sql-editor");
-        var popup = page.Locator(".sql-completions");
-
-        // The space after ORDER BY leaves nothing typed to match, but the columns of the source
-        // are still what belongs at the caret, so the popup opens without Ctrl+Space.
-        await editor.PressAsync("End");
-        await editor.PressAsync(" ");
-        await Assertions.Expect(popup.GetByRole(
-            AriaRole.Button, new() { Name = "Name", Exact = true })).ToBeVisibleAsync();
-        // Nothing narrows the keyword list there, so keywords stay out of the popup.
-        await Assertions.Expect(popup.GetByRole(
-            AriaRole.Button, new() { Name = "ORDER", Exact = true })).ToHaveCountAsync(0);
-
-        // A space that follows a complete expression is the end of the suggestions.
-        await editor.FillAsync("SELECT 1 ");
-        await Assertions.Expect(popup).ToBeHiddenAsync();
-
-        browserPage.AssertNoUnexpectedErrors();
-    }
-
-    [Fact]
-    public async Task Suggests_distinct_column_values_in_predicate()
-    {
-        await using var browserPage = await fixture.NewPageAsync();
-        var page = browserPage.Page;
-        await OpenQueryAsync(page, "SELECT * FROM dbo.Orders o WHERE o.Promotion = ");
-        var editor = page.GetByTestId("sql-editor");
-        var popup = page.Locator(".sql-completions");
-
-        await editor.PressAsync("Control+Space");
-        var featured = popup.GetByRole(AriaRole.Button, new() { Name = "'Featured'", Exact = true });
-        await Assertions.Expect(featured).ToBeVisibleAsync();
-        await Assertions.Expect(featured).ToHaveAttributeAsync("data-category", "value");
-        await Assertions.Expect(page.GetByTestId("completion-filter-value")).ToBeEnabledAsync();
-
-        // Choosing a value inserts the quoted literal and closes the popup.
-        await featured.ClickAsync();
-        await Assertions.Expect(editor).ToHaveValueAsync("SELECT * FROM dbo.Orders o WHERE o.Promotion = 'Featured'");
-
-        // Filtering by typed prefix inside the string literal.
-        await editor.FillAsync("SELECT * FROM dbo.Orders o WHERE o.Promotion = 'Fea");
-        await editor.PressAsync("Control+Space");
-        await Assertions.Expect(popup.GetByRole(AriaRole.Button, new() { Name = "'Featured'", Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(popup.GetByRole(AriaRole.Button, new() { Name = "'Weekend'", Exact = true })).ToBeHiddenAsync();
-
-        // IN list – the value that follows the comma is offered as well.
-        await editor.FillAsync("SELECT * FROM dbo.Orders o WHERE o.Promotion IN ('");
-        await editor.PressAsync("Control+Space");
-        await Assertions.Expect(popup.GetByRole(AriaRole.Button, new() { Name = "'Featured'", Exact = true })).ToBeVisibleAsync();
-
-        browserPage.AssertNoUnexpectedErrors();
-    }
-
-    [Fact]
-    public async Task Suggests_numeric_distribution_for_range_predicates()
-    {
-        await using var browserPage = await fixture.NewPageAsync();
-        var page = browserPage.Page;
-        // Numeric range predicate should show a 10-value distribution, not the full distinct set.
-        await OpenQueryAsync(page, "SELECT * FROM dbo.Orders o WHERE o.PizzaId > ");
-        var editor = page.GetByTestId("sql-editor");
-        var popup = page.Locator(".sql-completions");
-
-        await editor.PressAsync("Control+Space");
-        // Distribution samples across the distinct set (1..20) -> 10 values.
-        await Assertions.Expect(popup.GetByRole(AriaRole.Button, new() { Name = "1", Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(popup.GetByRole(AriaRole.Button, new() { Name = "19", Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(popup).ToContainTextAsync("Distribution");
-        await Assertions.Expect(page.GetByTestId("completion-filter-value")).ToBeEnabledAsync();
-
-        // With a typed prefix the distribution narrows to matching values.
-        await editor.FillAsync("SELECT * FROM dbo.Orders o WHERE o.PizzaId > 1");
-        await editor.PressAsync("Control+Space");
-        await Assertions.Expect(popup.GetByRole(AriaRole.Button, new() { Name = "1", Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(popup.GetByRole(AriaRole.Button, new() { Name = "10", Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(popup.GetByRole(AriaRole.Button, new() { Name = "2", Exact = true })).ToBeHiddenAsync();
-
-        // Other range operators behave the same.
-        await editor.FillAsync("SELECT * FROM dbo.Orders o WHERE o.PizzaId <= ");
-        await editor.PressAsync("Control+Space");
-        await Assertions.Expect(popup.GetByRole(AriaRole.Button, new() { Name = "1", Exact = true })).ToBeVisibleAsync();
-
-        browserPage.AssertNoUnexpectedErrors();
-    }
-
-    [Fact]
-    public async Task Filters_completions_by_category_and_remembers_the_choice()
-    {
-        await using var browserPage = await fixture.NewPageAsync();
-        var page = browserPage.Page;
-        await OpenQueryAsync(page, "SELECT da");
-        var editor = page.GetByTestId("sql-editor");
-        var popup = page.Locator(".sql-completions");
-
-        await editor.PressAsync("Control+Space");
-        var keyword = popup.GetByRole(AriaRole.Button, new() { Name = "DATABASE", Exact = true });
-        var function = popup.GetByRole(AriaRole.Button, new() { Name = "DATEADD", Exact = true });
-        await Assertions.Expect(keyword).ToBeVisibleAsync();
-        await Assertions.Expect(function).ToBeVisibleAsync();
-
-        // A category with nothing to show cannot be switched on or off.
-        await Assertions.Expect(page.GetByTestId("completion-filter-object")).ToBeDisabledAsync();
-
-        await page.GetByTestId("completion-filter-keyword").ClickAsync();
-        await Assertions.Expect(keyword).ToBeHiddenAsync();
-        await Assertions.Expect(function).ToBeVisibleAsync();
-
-        // The choice is stored per browser, so it survives a reload of the restored query tab.
-        await page.ReloadAsync();
-        var reopened = page.GetByTestId("sql-editor").Last;
-        await Assertions.Expect(reopened).ToBeVisibleAsync();
-        await reopened.FillAsync("SELECT da");
-        await reopened.PressAsync("Control+Space");
-        await Assertions.Expect(page.GetByTestId("completion-filter-keyword").Last).ToHaveAttributeAsync(
-            "aria-pressed", "false");
-        await Assertions.Expect(page.Locator(".sql-completions").Last.GetByRole(
-            AriaRole.Button, new() { Name = "DATABASE", Exact = true })).ToBeHiddenAsync();
-
-        browserPage.AssertNoUnexpectedErrors();
-    }
-
-    [Fact]
     public async Task Confirms_successful_non_row_query_execution()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -2416,7 +4887,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("Failed");
         await Assertions.Expect(page.GetByTestId("query-run")).ToBeEnabledAsync();
         await Assertions.Expect(page.GetByTestId("query-cancel")).ToBeDisabledAsync();
-        browserPage.AssertNoUnexpectedErrors("400");
+        browserPage.AssertNoUnexpectedErrors();
     }
 
     [Fact]
@@ -2526,6 +4997,376 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Follows_a_foreign_key_value_to_the_referenced_row_and_restores_the_filter()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var targetRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/objects/dbo/Pizzas/data/stream", StringComparison.Ordinal))
+                targetRequests.Add(request.Url);
+        };
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        var follow = orders.GetByTitle("Follow PizzaId=1 to dbo.Pizzas").First;
+        await Assertions.Expect(follow).ToHaveAttributeAsync(
+            "aria-label", "Follow PizzaId=1 to dbo.Pizzas");
+        var foreignKeyCell = follow.Locator("xpath=..");
+        await foreignKeyCell.ClickAsync(new LocatorClickOptions { Position = new() { X = 4, Y = 4 } });
+        var editor = orders.Locator("tr.row-editor");
+        await Assertions.Expect(editor).ToHaveCountAsync(1);
+        await editor.Locator("input").First.PressAsync("Escape");
+        await Assertions.Expect(editor).ToHaveCountAsync(0);
+        follow = orders.GetByTitle("Follow PizzaId=1 to dbo.Pizzas").First;
+        await follow.ClickAsync();
+
+        var pizzas = ActivePanel(page);
+        await Assertions.Expect(pizzas.GetByTestId("filter-chip")).ToContainTextAsync("Id = 1");
+        Assert.Contains(targetRequests, url => Uri.UnescapeDataString(url)
+            .Contains("\"column\":\"Id\",\"operator\":\"equals\",\"value\":\"1\"", StringComparison.Ordinal));
+        await Assertions.Expect(page.Locator("#panels .panel tr.row-editor")).ToHaveCountAsync(0);
+
+        await page.ReloadAsync();
+        pizzas = ActivePanel(page);
+        await Assertions.Expect(page.Locator(".tab.active")).ToContainTextAsync("dbo.Pizzas");
+        await Assertions.Expect(pizzas.GetByTestId("filter-chip")).ToContainTextAsync("Id = 1");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Offers_each_foreign_key_when_one_column_has_multiple_relationships()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string structure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Orders\",\"type\":\"Table\"},"
+            + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\"},{\"name\":\"PizzaId\",\"dataType\":\"int\"}],"
+            + "\"indexes\":[],\"foreignKeys\":["
+            + "{\"name\":\"FK_Orders_Pizzas\",\"referencedSchema\":\"dbo\",\"referencedTable\":\"Pizzas\","
+            + "\"columns\":[{\"column\":\"PizzaId\",\"referencedColumn\":\"Id\"}]},"
+            + "{\"name\":\"FK_Orders_Customers\",\"referencedSchema\":\"dbo\",\"referencedTable\":\"Customers\","
+            + "\"columns\":[{\"column\":\"PizzaId\",\"referencedColumn\":\"Id\"}]}],"
+            + "\"checkConstraints\":[],\"uniqueConstraints\":[],"
+            + "\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]}}";
+        await page.RouteAsync("**/objects/dbo/Orders/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await orders.GetByTitle("Follow PizzaId=1 to 2 referenced tables").First.ClickAsync();
+        var menu = page.Locator(".context-menu");
+        await Assertions.Expect(menu.GetByRole(AriaRole.Menuitem)).ToHaveCountAsync(2);
+        await Assertions.Expect(menu).ToContainTextAsync("FK_Orders_Pizzas → dbo.Pizzas (PizzaId=1)");
+        var customers = menu.GetByRole(AriaRole.Menuitem,
+            new() { Name = "FK_Orders_Customers → dbo.Customers (PizzaId=1)", Exact = true });
+        await customers.ClickAsync();
+
+        var target = ActivePanel(page);
+        await Assertions.Expect(page.Locator(".tab.active")).ToContainTextAsync("dbo.Customers");
+        await Assertions.Expect(target.GetByTestId("filter-chip")).ToContainTextAsync("Id = 1");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Does_not_offer_foreign_key_navigation_for_binary_values()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string stream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataTypeName":"int"},{"name":"PizzaId","dataTypeName":"varbinary"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Orders"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[1,"AQID"]],"rowKeys":[[1]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":1}
+            """;
+        await page.RouteAsync("**/objects/dbo/Orders/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = stream,
+            }));
+
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("1 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(orders.Locator("button.fk-follow")).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Shows_incoming_foreign_keys_for_the_selected_row_and_opens_referencing_rows()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var orderRequests = new List<string>();
+        var structureRequests = 0;
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/objects/dbo/Orders/data/stream", StringComparison.Ordinal))
+                orderRequests.Add(request.Url);
+            if (request.Url.Contains("/structure", StringComparison.Ordinal)) structureRequests++;
+        };
+        // One unrelated metadata failure must not hide relationships found on healthy tables.
+        var customerStructureAttempts = 0;
+        await page.RouteAsync("**/objects/dbo/Customers/structure", route =>
+        {
+            if (Interlocked.Increment(ref customerStructureAttempts) > 1)
+                return route.ContinueAsync();
+            return route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 503, ContentType = "application/json", Body = "{\"error\":\"metadata offline\"}",
+            });
+        });
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Pizzas").ClickAsync();
+        var pizzas = ActivePanel(page);
+        await Assertions.Expect(pizzas.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await pizzas.Locator("tbody tr").First.Locator("td.row-selector").ClickAsync();
+        var incoming = pizzas.GetByTestId("incoming-references");
+        var requestsBeforeInspection = structureRequests;
+        await Assertions.Expect(incoming.GetByTestId("inspect-incoming-references")).ToBeVisibleAsync();
+        Assert.Equal(requestsBeforeInspection, structureRequests);
+        await incoming.GetByTestId("inspect-incoming-references").ClickAsync();
+        await Assertions.Expect(incoming.GetByTestId("incoming-reference")).ToHaveCountAsync(1);
+        await Assertions.Expect(incoming).ToContainTextAsync("dbo.Orders");
+        await Assertions.Expect(incoming).ToContainTextAsync("FK_Orders_Pizzas");
+        await Assertions.Expect(incoming).ToContainTextAsync("dbo.Orders.PizzaId → dbo.Pizzas.Id");
+        await Assertions.Expect(incoming).ToContainTextAsync("1 table could not be inspected");
+        await incoming.GetByTestId("retry-incoming-references").ClickAsync();
+        await Assertions.Expect(incoming.GetByTestId("retry-incoming-references")).ToHaveCountAsync(0);
+        await Assertions.Expect(incoming.GetByTestId("incoming-reference")).ToHaveCountAsync(1);
+        Assert.DoesNotContain("null", await incoming.InnerTextAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, customerStructureAttempts);
+
+        await pizzas.Locator("tbody tr").Nth(1).Locator("td:not(.row-selector)").Last.ClickAsync();
+        await Assertions.Expect(incoming).ToContainTextAsync("Incoming references to Id = 2");
+        await Assertions.Expect(incoming.GetByTestId("inspect-incoming-references")).ToBeVisibleAsync();
+        await Assertions.Expect(incoming.GetByRole(AriaRole.Button,
+            new() { Name = "Open referencing rows", Exact = true })).ToHaveCountAsync(0);
+        await pizzas.Locator("tr.row-editor input").First.PressAsync("Escape");
+        await pizzas.Locator("tbody tr").First.Locator("td.row-selector").ClickAsync();
+        await incoming.GetByTestId("inspect-incoming-references").ClickAsync();
+        await incoming.GetByRole(AriaRole.Button, new() { Name = "Open referencing rows", Exact = true })
+            .ClickAsync();
+
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByTestId("filter-chip")).ToContainTextAsync("PizzaId = 1");
+        Assert.Contains(orderRequests, url => Uri.UnescapeDataString(url)
+            .Contains("\"column\":\"PizzaId\",\"operator\":\"equals\",\"value\":\"1\"", StringComparison.Ordinal));
+        browserPage.AssertNoUnexpectedErrors("503");
+    }
+
+    [Fact]
+    public async Task Refreshing_objects_invalidates_cached_incoming_foreign_keys()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var includeCustomerReference = false;
+        await page.RouteAsync("**/objects/dbo/Customers/structure", route =>
+        {
+            var foreignKeys = includeCustomerReference
+                ? "[{\"name\":\"FK_Customers_FavouritePizza\",\"referencedSchema\":\"dbo\","
+                    + "\"referencedTable\":\"Pizzas\",\"columns\":[{\"column\":\"Id\",\"referencedColumn\":\"Id\"}]}]"
+                : "[]";
+            return route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Customers\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\"}],\"indexes\":[],\"foreignKeys\":" + foreignKeys
+                    + ",\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            });
+        });
+
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Pizzas").ClickAsync();
+        var pizzas = ActivePanel(page);
+        await Assertions.Expect(pizzas.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await pizzas.Locator("tbody tr").First.Locator("td.row-selector").ClickAsync();
+        var incoming = pizzas.GetByTestId("incoming-references");
+        await incoming.GetByTestId("inspect-incoming-references").ClickAsync();
+        await Assertions.Expect(incoming.GetByTestId("incoming-reference")).ToHaveCountAsync(1);
+
+        includeCustomerReference = true;
+        await page.GetByTitle("Reload objects").ClickAsync();
+        await pizzas.Locator("tbody tr").Nth(1).Locator("td.row-selector").ClickAsync();
+        await pizzas.Locator("tbody tr").First.Locator("td.row-selector").ClickAsync();
+        await incoming.GetByTestId("inspect-incoming-references").ClickAsync();
+        await Assertions.Expect(incoming.GetByTestId("incoming-reference")).ToHaveCountAsync(2);
+        await Assertions.Expect(incoming).ToContainTextAsync("FK_Customers_FavouritePizza");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Refreshing_objects_preserves_the_active_table_view_and_row_editor()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await orders.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+        await Assertions.Expect(orders.Locator(".structure")).ToBeVisibleAsync();
+        await page.GetByTitle("Reload objects").ClickAsync();
+        await Assertions.Expect(orders.Locator(".structure")).ToBeVisibleAsync();
+        await Assertions.Expect(orders.GetByRole(AriaRole.Button,
+            new() { Name = "Structure", Exact = true })).ToHaveAttributeAsync("aria-pressed", "true");
+        await Assertions.Expect(orders.Locator(".data-grid-scroll")).ToHaveCountAsync(0);
+
+        await orders.GetByRole(AriaRole.Button, new() { Name = "Data", Exact = true }).ClickAsync();
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await orders.Locator("tbody tr").First.Locator("td:not(.row-selector)").Last.ClickAsync();
+        await Assertions.Expect(orders.Locator("tr.row-editor")).ToHaveCountAsync(1);
+        await page.GetByTitle("Reload objects").ClickAsync();
+        await Assertions.Expect(orders.Locator("tr.row-editor")).ToHaveCountAsync(1);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Refreshing_objects_discards_an_inflight_outgoing_foreign_key_definition()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var attempts = 0;
+        var firstStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await page.RouteAsync("**/objects/dbo/Orders/structure", async route =>
+        {
+            var attempt = Interlocked.Increment(ref attempts);
+            if (attempt == 1)
+            {
+                firstStarted.TrySetResult(true);
+                await Task.WhenAny(releaseFirst.Task, Task.Delay(TimeSpan.FromSeconds(10)));
+            }
+            else
+            {
+                secondStarted.TrySetResult(true);
+            }
+
+            var foreignKeys = attempt == 1
+                ? "[]"
+                : "[{\"name\":\"FK_Orders_Pizzas\",\"referencedSchema\":\"dbo\","
+                    + "\"referencedTable\":\"Pizzas\",\"columns\":[{\"column\":\"PizzaId\",\"referencedColumn\":\"Id\"}]}]";
+            await route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Orders\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\"},{\"name\":\"PizzaId\"},{\"name\":\"Promotion\",\"isNullable\":true}],"
+                    + "\"indexes\":[],\"foreignKeys\":" + foreignKeys
+                    + ",\"checkConstraints\":[],\"uniqueConstraints\":[],"
+                    + "\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]}}",
+            });
+        });
+
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await page.GetByTitle("Reload objects").ClickAsync();
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        releaseFirst.TrySetResult(true);
+
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByTitle("Follow PizzaId=1 to dbo.Pizzas").First)
+            .ToBeVisibleAsync();
+        Assert.True(attempts >= 2);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Incoming_foreign_key_navigation_is_disabled_for_a_null_parent_key()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string stream = """
+            {"type":"resultSet","resultSetIndex":0,"columns":[{"name":"Id","dataType":"int"},{"name":"Name","dataType":"nvarchar(100)"}],"rowIdentity":{"kind":"primaryKey","columns":["Id"],"source":"PK_Pizzas"}}
+            {"type":"rows","resultSetIndex":0,"rows":[[null,"Unkeyed"]],"rowKeys":[[null]]}
+            {"type":"resultSetCompleted","resultSetIndex":0,"truncated":false}
+            {"type":"completed","recordsAffected":1}
+            """;
+        await page.RouteAsync("**/objects/dbo/Pizzas/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = stream,
+            }));
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Pizzas").ClickAsync();
+        var pizzas = ActivePanel(page);
+        await Assertions.Expect(pizzas.GetByText("1 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        await pizzas.Locator("tbody tr").First.Locator("td.row-selector").ClickAsync();
+        var incoming = pizzas.GetByTestId("incoming-references");
+        await incoming.GetByTestId("inspect-incoming-references").ClickAsync();
+        var open = incoming.GetByRole(AriaRole.Button,
+            new() { Name = "Open referencing rows", Exact = true });
+        await Assertions.Expect(open).ToBeDisabledAsync();
+        await Assertions.Expect(open).ToHaveAttributeAsync(
+            "title", "A NULL key value cannot be referenced by a foreign key");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Follows_composite_foreign_keys_only_when_the_complete_key_is_present()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string structure = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Orders\",\"type\":\"Table\"},"
+            + "\"columns\":[{\"name\":\"Id\"},{\"name\":\"PizzaId\"},{\"name\":\"Promotion\",\"isNullable\":true}],"
+            + "\"indexes\":[],\"foreignKeys\":[{\"name\":\"FK_Orders_Pizzas_Composite\","
+            + "\"referencedSchema\":\"dbo\",\"referencedTable\":\"Pizzas\",\"columns\":["
+            + "{\"column\":\"PizzaId\",\"referencedColumn\":\"Id\"},{\"column\":\"Promotion\",\"referencedColumn\":\"Name\"}]}],"
+            + "\"checkConstraints\":[],\"uniqueConstraints\":[],\"rowIdentity\":{\"kind\":\"primaryKey\",\"columns\":[\"Id\"]}}";
+        await page.RouteAsync("**/objects/dbo/Orders/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = structure,
+            }));
+        var targetRequests = new List<string>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/objects/dbo/Pizzas/data/stream", StringComparison.Ordinal))
+                targetRequests.Add(request.Url);
+        };
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var orders = ActivePanel(page);
+        await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+
+        var follow = orders.GetByTitle("Follow PizzaId=1, Promotion=Featured to dbo.Pizzas").First;
+        await Assertions.Expect(follow).ToHaveAttributeAsync(
+            "aria-label", "Follow PizzaId=1, Promotion=Featured to dbo.Pizzas");
+        await follow.ClickAsync();
+        var pizzas = ActivePanel(page);
+        await Assertions.Expect(pizzas.GetByTestId("filter-chip")).ToHaveCountAsync(2);
+        await Assertions.Expect(pizzas.GetByTestId("filter-bar")).ToContainTextAsync("Id = 1");
+        await Assertions.Expect(pizzas.GetByTestId("filter-bar")).ToContainTextAsync("Name = Featured");
+        Assert.Contains(targetRequests, url =>
+        {
+            var decoded = Uri.UnescapeDataString(url);
+            return decoded.Contains("\"column\":\"Id\",\"operator\":\"equals\",\"value\":\"1\"", StringComparison.Ordinal)
+                && decoded.Contains("\"column\":\"Name\",\"operator\":\"equals\",\"value\":\"Featured\"", StringComparison.Ordinal);
+        });
+
+        await page.Locator(".tab").Filter(new() { HasText = "dbo.Orders" }).ClickAsync();
+        orders = ActivePanel(page);
+        await Assertions.Expect(orders.Locator("tbody tr").Nth(1).Locator("button.fk-follow"))
+            .ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Enables_friendly_foreign_key_display_and_searches_when_editing()
     {
         const string settingUrl =
@@ -2538,8 +5379,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GotoAsync("/gridlet/");
         await page.GetByTitle("dbo.Orders").ClickAsync();
         var panel = ActivePanel(page);
-        await Assertions.Expect(panel.Locator("tbody td:not(.row-selector)")
-            .Filter(new() { HasTextRegex = new Regex("^1$") }).First).ToBeVisibleAsync();
+        var rawForeignKey = panel.Locator("tbody td.foreign-key-cell").First;
+        await Assertions.Expect(rawForeignKey).ToBeVisibleAsync();
+        Assert.Equal("1", await rawForeignKey.EvaluateAsync<string>(
+            "cell => cell.firstChild?.firstChild?.textContent || ''"));
+        Assert.Equal("relative", await rawForeignKey.Locator(".foreign-key-content").EvaluateAsync<string>(
+            "element => getComputedStyle(element).position"));
 
         await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
         var foreignKeyRow = panel.Locator("tr").Filter(new() { HasText = "FK_Orders_Pizzas" });
@@ -2549,26 +5394,29 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await dialog.GetByRole(AriaRole.Button, new() { Name = "Show value", Exact = true }).ClickAsync();
 
         await panel.GetByRole(AriaRole.Button, new() { Name = "Data", Exact = true }).ClickAsync();
-        var margherita = panel.GetByRole(AriaRole.Cell, new() { Name = "1 Margherita", Exact = true });
+        var margherita = panel.Locator("td.foreign-key-cell")
+            .Filter(new() { HasText = "Margherita" }).First;
         await Assertions.Expect(margherita).ToBeVisibleAsync();
         var keyColor = await margherita.Locator("span").First.EvaluateAsync<string>(
             "element => getComputedStyle(element).color");
         var labelColor = await margherita.Locator(".fk-value-label").EvaluateAsync<string>(
             "element => getComputedStyle(element).color");
         Assert.NotEqual(keyColor, labelColor);
-        var broken = panel.GetByRole(AriaRole.Cell, new() { Name = "4 #REF!", Exact = true });
+        var broken = panel.Locator("td.foreign-key-cell").Filter(new() { HasText = "#REF!" }).First;
         await Assertions.Expect(broken).ToBeVisibleAsync();
         Assert.Equal("italic", await broken.Locator(".fk-value-label").EvaluateAsync<string>(
             "element => getComputedStyle(element).fontStyle"));
-        await Assertions.Expect(panel.GetByRole(AriaRole.Cell, new() { Name = "99 Missing reference", Exact = true }))
+        await Assertions.Expect(panel.Locator("td.foreign-key-cell")
+            .Filter(new() { HasText = "Missing reference" }).First)
             .ToBeVisibleAsync();
 
-        var editCell = panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(1);
-        await editCell.ClickAsync();
+        // The small arrow follows the key; the rest of the same cell must still open its editor.
+        await margherita.ClickAsync(new LocatorClickOptions { Position = new() { X = 4, Y = 4 } });
         await Assertions.Expect(panel.Locator("tr.row-editor")).ToHaveCountAsync(1);
         browserPage.AssertNoUnexpectedErrors();
         var pizza = panel.GetByLabel("PizzaId", new() { Exact = true });
         await Assertions.Expect(pizza).ToHaveValueAsync("1 Margherita");
+        await pizza.FocusAsync();
         var allValues = panel.GetByRole(AriaRole.Option, new() { Name = "1 Margherita", Exact = true });
         await Assertions.Expect(allValues).ToBeVisibleAsync();
         await Assertions.Expect(panel.GetByLabel("Show choices for PizzaId")).ToHaveCountAsync(0);
@@ -2629,7 +5477,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         var updatesBeforeDirectKeyEdit = fixture.Provider.Calls.Count(call =>
             call.StartsWith("update dbo.Orders", StringComparison.Ordinal));
-        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(1).ClickAsync();
+        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(0).ClickAsync();
         var directKeyPizza = panel.GetByLabel("PizzaId", new() { Exact = true });
         await directKeyPizza.FillAsync("3");
         await Assertions.Expect(panel.GetByRole(AriaRole.Option, new() { Name = "3 Hawaiian", Exact = true }))
@@ -2645,7 +5493,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         var updatesBeforeInvalidEdit = fixture.Provider.Calls.Count(call =>
             call.StartsWith("update dbo.Orders", StringComparison.Ordinal));
-        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(1).ClickAsync();
+        await panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(0).ClickAsync();
         var invalidPizza = panel.GetByLabel("PizzaId", new() { Exact = true });
         await invalidPizza.FillAsync("not-a-key");
         await invalidPizza.PressAsync("Control+Enter");
@@ -2881,6 +5729,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             "CREATE TRIGGER AuditCustomers AFTER INSERT ON Customers BEGIN SELECT 2; END;";
         await panel.GetByTestId("sql-editor").FillAsync(definition);
         await panel.GetByRole(AriaRole.Button, new() { Name = "Execute", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText(
+            "AuditCustomers updated.", new() { Exact = true })).ToBeVisibleAsync();
 
         Assert.Equal(
             "BEGIN IMMEDIATE;\nDROP TRIGGER IF EXISTS [dbo].[AuditCustomers];\n" + definition + "\nCOMMIT;",
@@ -3371,6 +6221,40 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    private static async Task<ILocator> OpenSchemaCompareAsync(IPage page)
+    {
+        await Assertions.Expect(page.Locator("#database-select")).ToHaveValueAsync("FakeDb");
+        await page.GetByTestId("schema-compare-open").ClickAsync();
+        var comparison = page.GetByTestId("schema-compare");
+        await Assertions.Expect(comparison).ToBeVisibleAsync();
+        return comparison;
+    }
+
+    private static async Task<ILocator> OpenDataCompareAsync(IPage page)
+    {
+        await Assertions.Expect(page.Locator("#database-select")).ToHaveValueAsync("FakeDb");
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var table = ActivePanel(page);
+        await Assertions.Expect(table.GetByTestId("data-compare-open")).ToBeVisibleAsync();
+        await table.GetByTestId("data-compare-open").ClickAsync();
+        var comparison = page.GetByTestId("data-compare");
+        await Assertions.Expect(comparison).ToBeVisibleAsync();
+        await Assertions.Expect(comparison.GetByTestId("data-target-database"))
+            .ToHaveValueAsync("FakeDb");
+        await Assertions.Expect(comparison.GetByTestId("data-target-object"))
+            .ToHaveValueAsync("dbo/customers");
+        return comparison;
+    }
+
+    private static async Task<ILocator> OpenObjectSearchAsync(IPage page)
+    {
+        await page.GetByTestId("object-search-open").ClickAsync();
+        var search = page.GetByTestId("object-search");
+        await Assertions.Expect(search).ToBeVisibleAsync();
+        await Assertions.Expect(search.GetByTestId("object-search-query")).ToBeFocusedAsync();
+        return search;
+    }
+
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
 
     private static async Task ClickQueryActionAsync(ILocator panel, string testId)
@@ -3668,5 +6552,13 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await using var stream = await download.CreateReadStreamAsync();
         using var reader = new StreamReader(stream);
         return await reader.ReadToEndAsync();
+    }
+
+    private static async Task<byte[]> ReadDownloadBytesAsync(IDownload download)
+    {
+        await using var stream = await download.CreateReadStreamAsync();
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer);
+        return buffer.ToArray();
     }
 }

@@ -1,5 +1,8 @@
+using System.Globalization;
 using Gridlet.Abstractions;
 using Gridlet.Models;
+using Microsoft.Data.SqlClient;
+using System.Data;
 
 namespace Gridlet.SqlServer;
 
@@ -164,6 +167,162 @@ public sealed class SqlServerTableDataService : ITableDataService
             columns, rows, request.Page, request.PageSize, totalRows,
             keyOrdinals is null ? null : rowIdentity,
             rowKeys);
+    }
+
+    public async Task<ColumnProfile> GetColumnProfileAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        ColumnProfileRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var qualifiedName = SqlServerIdentifier.QuoteQualified(schema, name);
+        await using var connection = await SqlServerConnectionFactory.OpenUnpooledAsync(
+            context, cancellationToken);
+        string? columnName = null;
+        string? dataType = null;
+        string? systemType = null;
+        var objectExists = false;
+        var filterColumnNames = new List<string>();
+        await using (var metadata = connection.CreateCommand())
+        {
+            metadata.CommandText =
+                "SELECT c.name, TYPE_NAME(c.user_type_id), TYPE_NAME(c.system_type_id), " +
+                "CONVERT(int, ISNULL(COLUMNPROPERTY(c.object_id, c.name, 'IsHidden'), 0)) " +
+                "FROM sys.columns c WHERE c.object_id = OBJECT_ID(@object) ORDER BY c.column_id;";
+            metadata.Parameters.AddWithValue("@object", qualifiedName);
+            await using var reader = await metadata.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                objectExists = true;
+                var candidateName = reader.GetString(0);
+                var isHidden = reader.GetInt32(3) != 0;
+                filterColumnNames.Add(candidateName);
+                if (!string.Equals(candidateName, request.Column, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                columnName = candidateName;
+                dataType = reader.IsDBNull(1) ? null : reader.GetString(1);
+                systemType = reader.IsDBNull(2) ? dataType : reader.GetString(2);
+                if (isHidden)
+                {
+                    throw new GridletValidationException(
+                        $"Hidden column '{columnName}' is not available in table data.");
+                }
+            }
+
+            if (!objectExists)
+            {
+                throw new GridletObjectNotFoundException(qualifiedName);
+            }
+            if (columnName is null)
+            {
+                throw new GridletValidationException(
+                    $"Profile column '{request.Column}' does not exist on {qualifiedName}.");
+            }
+            if (string.IsNullOrWhiteSpace(dataType))
+            {
+                throw new GridletValidationException(
+                    $"The type of profile column '{columnName}' could not be determined.");
+            }
+        }
+
+        var (canGroup, canRange) = SqlServerSqlBuilder.GetProfileCapabilities(systemType);
+        var filter = SqlServerSqlBuilder.BuildFilterClause(request.Filters, filterColumnNames);
+        var profileTransaction = await BeginProfileTransactionAsync(connection, cancellationToken);
+        await using var transaction = profileTransaction.Transaction;
+
+        await using var aggregate = connection.CreateCommand();
+        aggregate.Transaction = transaction;
+        aggregate.CommandText = SqlServerSqlBuilder.BuildProfileAggregateSql(
+            schema, name, columnName, filter.Clause, canGroup, canRange);
+        AddFilterParameters(aggregate, filter.Parameters);
+        long totalCount;
+        long nonNullCount;
+        long? distinctCount;
+        object? minimum;
+        object? maximum;
+        await using (var reader = await aggregate.ExecuteReaderAsync(cancellationToken))
+        {
+            await reader.ReadAsync(cancellationToken);
+            totalCount = reader.GetInt64(0);
+            nonNullCount = reader.GetInt64(1);
+            distinctCount = reader.IsDBNull(2) ? null : reader.GetInt64(2);
+            minimum = SqlServerValues.Materialize(reader.GetValue(3));
+            maximum = SqlServerValues.Materialize(reader.GetValue(4));
+        }
+
+        var topValues = new List<ColumnProfileValue>();
+        if (canGroup && profileTransaction.HasConsistentSnapshot)
+        {
+            await using var top = connection.CreateCommand();
+            top.Transaction = transaction;
+            top.CommandText = SqlServerSqlBuilder.BuildProfileTopValuesSql(
+                schema, name, columnName, filter.Clause);
+            top.Parameters.AddWithValue("@topValues", Math.Clamp(request.TopValues, 1, 50));
+            AddFilterParameters(top, filter.Parameters);
+            await using (var reader = await top.ExecuteReaderAsync(cancellationToken))
+            {
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    topValues.Add(new ColumnProfileValue(
+                        SqlServerValues.Materialize(reader.GetValue(0)), reader.GetInt64(1)));
+                }
+            }
+        }
+        await transaction.CommitAsync(cancellationToken);
+
+        var limitations = new List<string>();
+        if (!canGroup)
+        {
+            limitations.Add(
+                $"The {dataType} type cannot be grouped; distinct count, range, and top values are unavailable.");
+        }
+        else
+        {
+            if (!canRange)
+            {
+                limitations.Add($"The {dataType} type does not support MIN/MAX; range is unavailable.");
+            }
+            if (!profileTransaction.HasConsistentSnapshot)
+            {
+                limitations.Add(
+                    "Top values require snapshot isolation to remain consistent with the aggregate profile; " +
+                    "enable ALLOW_SNAPSHOT_ISOLATION for this database to include them.");
+            }
+        }
+        var limitation = limitations.Count == 0 ? null : string.Join(" ", limitations);
+        return new ColumnProfile(
+            columnName,
+            dataType,
+            totalCount,
+            totalCount - nonNullCount,
+            distinctCount,
+            minimum,
+            maximum,
+            topValues,
+            limitation);
+    }
+
+    private static async Task<(SqlTransaction Transaction, bool HasConsistentSnapshot)>
+        BeginProfileTransactionAsync(
+        SqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var snapshotStatus = connection.CreateCommand();
+        snapshotStatus.CommandText =
+            "SELECT snapshot_isolation_state FROM sys.databases WHERE database_id = DB_ID();";
+        var state = Convert.ToInt32(
+            await snapshotStatus.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
+        // Snapshot gives both profile statements one non-blocking database view when enabled.
+        // Read committed is the safe fallback for databases that have not opted into snapshot
+        // isolation; unlike serializable, it cannot hold range locks across two full scans.
+        var isolation = state == 1 ? IsolationLevel.Snapshot : IsolationLevel.ReadCommitted;
+        var transaction = (SqlTransaction)await connection.BeginTransactionAsync(
+            isolation, cancellationToken);
+        return (transaction, state == 1);
     }
 
     private static void AddFilterParameters(

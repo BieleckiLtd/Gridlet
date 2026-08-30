@@ -4,14 +4,9 @@
     {
       "name": "demo",
       "runtimeExecutable": "dotnet",
-      "runtimeArgs": [
-        "run",
-        "--project",
-        "samples/Gridlet.Demo/Gridlet.Demo.csproj",
-        "--no-launch-profile"
-      ],
+      "runtimeArgs": ["run", "--project", "samples/Gridlet.Demo/Gridlet.Demo.csproj", "--no-launch-profile", "--urls", "http://localhost:5088"],
       "port": 5088,
-      "autoPort": true
+      "url": "http://localhost:5088"
     }
   ]
 }

@@ -5,13 +5,6 @@ using Gridlet.AgentFramework;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// A second copy of the demo, such as a preview started by a coding agent, is given the port
-// to bind in PORT so it does not collide with a copy that is already running.
-if (Environment.GetEnvironmentVariable("PORT") is { Length: > 0 } assignedPort)
-{
-    builder.WebHost.UseUrls($"http://localhost:{assignedPort}");
-}
-
 builder.Services.AddAuthorizationPolicies();
 
 var gridlet = builder.Services

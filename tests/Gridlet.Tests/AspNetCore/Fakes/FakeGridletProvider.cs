@@ -23,6 +23,32 @@ public sealed class FakeGridletProvider :
 
     public string? LastQuerySql { get; private set; }
 
+    private TaskCompletionSource longQueryRelease = NewLongQuerySignal();
+    private TaskCompletionSource completedQueryRelease = NewLongQuerySignal();
+    private int longQueryCancellations;
+
+    public int LongQueryCancellations => Volatile.Read(ref longQueryCancellations);
+
+    public void PrepareLongQuery()
+    {
+        longQueryRelease.TrySetResult();
+        longQueryRelease = NewLongQuerySignal();
+        Volatile.Write(ref longQueryCancellations, 0);
+    }
+
+    public void ReleaseLongQuery() => longQueryRelease.TrySetResult();
+
+    public void PrepareCompletedQueryRace()
+    {
+        completedQueryRelease.TrySetResult();
+        completedQueryRelease = NewLongQuerySignal();
+    }
+
+    public void ReleaseCompletedQueryRace() => completedQueryRelease.TrySetResult();
+
+    private static TaskCompletionSource NewLongQuerySignal()
+        => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public IReadOnlyDictionary<string, object?>? LastWriteValues { get; private set; }
 
     public TableImport? LastImport { get; private set; }
@@ -361,16 +387,78 @@ public sealed class FakeGridletProvider :
     /// <summary>The filters the most recent page request carried, so their parsing can be asserted.</summary>
     public IReadOnlyList<TableDataFilter>? LastDataFilters { get; private set; }
 
+    /// <summary>The most recent complete page request, including sort and paging details.</summary>
+    public TableDataRequest? LastDataRequest { get; private set; }
+
     /// <summary>Every page asked for, in order, so a caller's paging can be asserted.</summary>
     public List<(int Page, int PageSize)> DataPageRequests { get; } = [];
+
+    /// <summary>When set, simulates a provider failure after an export has begun streaming.</summary>
+    public int? FailDataPage { get; set; }
+
+    /// <summary>When set, changes the reported schema after streaming has begun.</summary>
+    public int? ChangeExportColumnsPage { get; set; }
 
     public Task<TableDataPage> GetPageAsync(
         GridletConnectionContext context, string schema, string name, TableDataRequest request,
         CancellationToken cancellationToken = default)
     {
+        LastDataRequest = request;
         LastDataFilters = request.Filters;
         DataPageRequests.Add((request.Page, request.PageSize));
-        return GetPageCore(name, request);
+        if (request.Page == FailDataPage)
+        {
+            return Task.FromException<TableDataPage>(
+                new InvalidOperationException("SECRET_EXPORT_PAGE_FAILURE"));
+        }
+        return ChangedColumnsPageAsync(name, request);
+    }
+
+    private async Task<TableDataPage> ChangedColumnsPageAsync(string name, TableDataRequest request)
+    {
+        var page = await GetPageCore(name, request);
+        return request.Page == ChangeExportColumnsPage
+            ? page with
+            {
+                Columns =
+                [
+                    new ResultColumn("Name", "nvarchar(100)"),
+                    new ResultColumn("Id", "int"),
+                    ..page.Columns.Skip(2),
+                ],
+            }
+            : page;
+    }
+
+    public Task<ColumnProfile> GetColumnProfileAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        ColumnProfileRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        Calls.Add($"profile {schema}.{name}.{request.Column} top({request.TopValues}) filters({request.Filters?.Count ?? 0})");
+        var filtered = request.Filters is { Count: > 0 };
+        return Task.FromResult(request.Column.ToLowerInvariant() switch
+        {
+            "status" => new ColumnProfile(
+                "Status", "int", filtered ? 1 : 2, filtered ? 0 : 1, 1, 1, 1,
+                filtered
+                    ? [new ColumnProfileValue(1, 1)]
+                    : [new ColumnProfileValue(null, 1), new ColumnProfileValue(1, 1)]),
+            "name" => new ColumnProfile(
+                "Name", "nvarchar(100)", filtered ? 1 : 2, 0, filtered ? 1 : 2,
+                "Ada", filtered ? "Ada" : "Grace",
+                filtered
+                    ? [new ColumnProfileValue("Ada", 1)]
+                    : [new ColumnProfileValue("Ada", 1), new ColumnProfileValue("Grace", 1)]),
+            _ => new ColumnProfile(
+                "Id", "int", filtered ? 1 : 2, 0, filtered ? 1 : 2,
+                1, filtered ? 1 : 2,
+                filtered
+                    ? [new ColumnProfileValue(1, 1)]
+                    : [new ColumnProfileValue(1, 1), new ColumnProfileValue(2, 1)]),
+        });
     }
 
     /// <summary>
@@ -397,23 +485,65 @@ public sealed class FakeGridletProvider :
             request.Page,
             request.PageSize,
             TotalRows: all.Length,
-            RowIdentity: name == "LedgerHeap"
+            RowIdentity: name is "LedgerHeap" or "ClampedUnderreportedLedgerHeap"
                 ? null
-                : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]));
+                : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+            RowKeys: name is "LedgerHeap" or "ClampedUnderreportedLedgerHeap"
+                ? null
+                : taken.Select(row => new object?[] { row[0] }).ToArray());
     }
 
     private static Task<TableDataPage> GetPageCore(string name, TableDataRequest request)
     {
-        if (name is "Ledger" or "LedgerHeap")
+        if (name is "Ledger" or "LedgerHeap" or "UnderreportedLedger" or "ClampedLedger"
+            or "ClampedUnderreportedLedgerHeap" or "RepeatingLedger")
         {
-            return Task.FromResult(LedgerPage(name, request));
+            var effectiveRequest = name is "ClampedLedger" or "ClampedUnderreportedLedgerHeap"
+                ? request with { PageSize = 2 }
+                : name == "RepeatingLedger" ? request with { Page = 1 } : request;
+            var page = LedgerPage(name, effectiveRequest);
+            return Task.FromResult(name is "UnderreportedLedger" or "ClampedUnderreportedLedgerHeap"
+                ? page with { TotalRows = 1 }
+                : page);
         }
 
         return GetFixedPage(name, request);
     }
 
     private static Task<TableDataPage> GetFixedPage(string name, TableDataRequest request)
-        => Task.FromResult(name == "Orders"
+        => Task.FromResult(name == "ExactNumbersTable"
+            ? new TableDataPage(
+                [new ResultColumn("Amount", "decimal(38,20)"), new ResultColumn("Payload", "sql_variant")],
+                [[1.00000000000000000001m, new byte[] { 0, 255 }]],
+                request.Page, request.PageSize, TotalRows: 1)
+            : name == "NegativeTotalExport"
+            ? new TableDataPage(
+                [new ResultColumn("Value", "int")],
+                [[1]], request.Page, request.PageSize, TotalRows: -1)
+            : name == "IncompleteRowKeysExport"
+            ? new TableDataPage(
+                [new ResultColumn("Id", "int")],
+                [[1], [2]], request.Page, request.PageSize, TotalRows: 2,
+                RowIdentity: new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
+                RowKeys: [[1]])
+            : name == "UnserializableExport"
+            ? new TableDataPage(
+                [new ResultColumn("Value", "object")],
+                [[new CircularValue()]], request.Page, request.PageSize, TotalRows: 1)
+            : name == "DuplicateColumns"
+            ? new TableDataPage(
+                [new ResultColumn("Value", "int"), new ResultColumn("value", "int")],
+                [[1, 2]], request.Page, request.PageSize, TotalRows: 1)
+            : name == "ExportCases"
+            ? new TableDataPage(
+                [new ResultColumn("Text", "nvarchar(max)"), new ResultColumn("Binary", "varbinary(max)"),
+                    new ResultColumn("When", "datetime2"), new ResultColumn("Nullable", "int"),
+                    new ResultColumn("Formula", "nvarchar(max)"),
+                    new ResultColumn("TabFormula", "nvarchar(max)")],
+                [["a,\"b\r\nc", new byte[] { 0, 255 },
+                    new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc), null, "=2+3", "\t2+3"]],
+                request.Page, request.PageSize, TotalRows: 1)
+            : name == "Orders"
             ? new TableDataPage(
                 [new ResultColumn("Id", "int"), new ResultColumn("PizzaId", "int"),
                     new ResultColumn("Promotion", "nvarchar(100)")],
@@ -448,6 +578,11 @@ public sealed class FakeGridletProvider :
                 TotalRows: 2,
                 RowIdentity: name == "NoKeys" ? null : new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]),
                 RowKeys: name == "NoKeys" ? null : [[1], [2]]));
+
+    private sealed class CircularValue
+    {
+        public CircularValue Self => this;
+    }
 
     // ---- execution plans ----
 
@@ -578,8 +713,9 @@ public sealed class FakeGridletProvider :
 
     /// <summary>
     /// Streams a single-row result set. Recognised sentinels: <c>boom</c> fails before any event is
-    /// emitted (clean status code), and <c>stream-boom</c> fails after a row has streamed (in-body
-    /// error marker). Records the query options so cap behaviour can be asserted.
+    /// emitted, <c>stream-boom</c> fails after a row has streamed, and <c>formula-export</c>
+    /// supplies a spreadsheet-sensitive string. Records the query options so cap behaviour can be
+    /// asserted.
     /// </summary>
     public async IAsyncEnumerable<QueryStreamEvent> StreamAsync(
         GridletConnectionContext context, string sql, QueryRequestOptions options,
@@ -599,12 +735,187 @@ public sealed class FakeGridletProvider :
             throw new InvalidOperationException("SECRET_PUBLISHED_SENTINEL");
         }
 
+        if (sql == "many-messages")
+        {
+            yield return new QueryStreamEvent("started");
+            for (var index = 0; index < 50; index++)
+            {
+                yield return new QueryStreamEvent("message", Message: $"message {index}");
+            }
+            yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "oversized-message")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("message", Message: new string('x', 128 * 1024));
+            yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            yield break;
+        }
+
         await Task.Yield();
+
+        if (sql == "job-wait")
+        {
+            var release = longQueryRelease;
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0, [new ResultColumn("Answer", "int")]);
+            try
+            {
+                await release.Task.WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                Interlocked.Increment(ref longQueryCancellations);
+                throw;
+            }
+            yield return new QueryStreamEvent("rows", 0, Rows: [[42]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "job-completed-wait")
+        {
+            var release = completedQueryRelease;
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            await release.Task.WaitAsync(cancellationToken);
+            yield break;
+        }
 
         if (sql == "no-results")
         {
             yield return new QueryStreamEvent("started");
             yield return new QueryStreamEvent("completed", RecordsAffected: 0, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "formula-export")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent(
+                "resultSet", 0, [new ResultColumn("Text", "nvarchar(max)")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [["\t2+3"]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-formats")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+            [
+                new ResultColumn("Odd]Name", "nvarchar(100)"),
+                new ResultColumn("Note", "nvarchar(max)"),
+                new ResultColumn("Active", "bit"),
+                new ResultColumn("Missing", "int"),
+                new ResultColumn("Payload", string.Empty),
+            ]);
+            yield return new QueryStreamEvent("rows", 0,
+                Rows: [["Łódź O'Brien", "line 1\nline | <2>", true, null, new byte[] { 0, 255 }]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-unsafe-number")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("UnsafeId", "bigint")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[9_007_199_254_740_993L]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-exact-decimal")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("ExactAmount", "decimal(18, 1)")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[123_456_789_012_345.6m]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-exact-variant")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("VariantAmount", "sql_variant")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[1.00000000000000000001m]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-dynamic-numeric")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("Value", "NUMERIC")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [["007"], [0.30000000000000004d]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-exponential-decimal")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("TinyAmount", "decimal(38, 20)")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[0.00000000000000000001m]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-large-float")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("ApproximateValue", "float")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[1e21]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-unnamed-column")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0, [new ResultColumn("", "int")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[1]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-duplicate-columns")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("Value", "int"), new ResultColumn("value", "int")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [[1, 2]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
+            yield break;
+        }
+
+        if (sql == "copy-invalid-binary")
+        {
+            yield return new QueryStreamEvent("started");
+            yield return new QueryStreamEvent("resultSet", 0,
+                [new ResultColumn("Payload", "varbinary(max)")]);
+            yield return new QueryStreamEvent("rows", 0, Rows: [["not-base64!!"]]);
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
+            yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
             yield break;
         }
 
@@ -630,6 +941,7 @@ public sealed class FakeGridletProvider :
                 yield return new QueryStreamEvent("rows", 0, Rows: batch.ToArray());
             }
 
+            yield return new QueryStreamEvent("resultSetCompleted", 0, Truncated: false);
             yield return new QueryStreamEvent("completed", RecordsAffected: -1, DurationMs: 1);
             yield break;
         }
