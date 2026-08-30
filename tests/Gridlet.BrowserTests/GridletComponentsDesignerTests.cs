@@ -134,6 +134,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         object? componentEvents = null,
         IEnumerable<object>? modules = null,
         bool isolated = false,
+        bool resizable = false,
         string css = "",
         string? source = null)
     {
@@ -150,6 +151,11 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         if (isolated)
         {
             attributes.Add("data-isolated");
+        }
+
+        if (resizable)
+        {
+            attributes.Add("data-resizable");
         }
 
         foreach (var (key, value) in Values(componentBind))
@@ -336,6 +342,876 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         browserPage.AssertNoUnexpectedErrors();
     }
+
+    /// <summary>
+    /// Both edges of an axis linked is a control that stretches: with each edge told where to be,
+    /// the only thing left to give is the size between them. Set the way it is meant to be set,
+    /// by dragging the handles, and read back out of the coordinates the Layout rows edit.
+    /// </summary>
+    [Fact]
+    public async Task Stretches_a_control_whose_two_side_edges_are_both_linked()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Anchored component",
+        [
+            Control("button1", "button", props: new { text = "Save" }, x: 24, y: 10, w: 120, h: 24),
+            // 24 in from the component's left edge and 30 in from its right, so the gaps the drags
+            // preserve are the margins the layout already has.
+            Control("grid1", "grid", props: new { columns = "Id" }, x: 24, y: 200, w: 666, h: 100),
+        ]);
+
+        await ShowAnchorHandlesAsync(page, "grid1");
+        await DragAsync(page, page.GetByTestId("anchor-handle-left"), await EdgeCentreAsync(page, "frame", "left"));
+        await ShowAnchorHandlesAsync(page, "grid1");
+        await DragAsync(page, page.GetByTestId("anchor-handle-right"), await EdgeCentreAsync(page, "frame", "right"));
+        await ShowAnchorHandlesAsync(page, "grid1");
+        await DragAsync(page, page.GetByTestId("anchor-handle-top"), await EdgeCentreAsync(page, "button1", "bottom"));
+
+        // A link has no store of its own: it is the formula, in the property that was there.
+        await OpenPanelTabAsync(page, "Appearance");
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("=24");
+        await Assertions.Expect(page.GetByTestId("edge-right"))
+            .ToHaveValueAsync("=component.width - 30");
+        await Assertions.Expect(page.GetByTestId("edge-top")).ToHaveValueAsync("=button1.bottom + 166");
+
+        // Nothing moved on the way: linking an edge keeps the gap the control already had.
+        Assert.Equal(24, await OffsetAsync(page, "grid1", "left"), 0);
+        Assert.Equal(666, await OffsetAsync(page, "grid1", "width"), 0);
+        Assert.Equal(200, await OffsetAsync(page, "grid1", "top"), 0);
+
+        // The component made wider, which is the whole point: the left edge stays where it was put,
+        // the right edge keeps its 30px, and the control between them stretches.
+        await page.Locator(".gfd-canvas").ClickAsync(new LocatorClickOptions { Position = new Position { X = 5, Y = 440 } });
+        await page.GetByTestId("expr-width").FillAsync("900");
+
+        Assert.Equal(24, await OffsetAsync(page, "grid1", "left"), 0);
+        Assert.Equal(846, await OffsetAsync(page, "grid1", "width"), 0);
+        Assert.Equal(200, await OffsetAsync(page, "grid1", "top"), 0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Anchoring on the canvas: an edge handle dragged onto an edge of something else, which is
+    /// the way anchoring is meant to be done. The dimension it leaves behind carries the offset and
+    /// the way to take the anchor off again.
+    /// </summary>
+    [Fact]
+    public async Task Drags_an_anchor_from_one_edge_onto_another()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Dragged anchor component",
+        [
+            Control("button1", "button", props: new { text = "Save" }, x: 24, y: 10, w: 120, h: 24),
+            Control("grid1", "grid", props: new { columns = "Id" }, x: 24, y: 200, w: 300, h: 100),
+        ]);
+
+        await ShowAnchorHandlesAsync(page, "grid1");
+
+        // The top edge onto the button's bottom edge. The control does not move: the gap it already
+        // had becomes the offset.
+        await DragAsync(page, page.GetByTestId("anchor-handle-top"), await EdgeCentreAsync(page, "button1", "bottom"));
+
+        await Assertions.Expect(page.GetByTestId("anchor-offset-top")).ToHaveValueAsync("166");
+        Assert.Equal(200, await OffsetAsync(page, "grid1", "top"), 0);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+        await Assertions.Expect(page.GetByTestId("edge-top")).ToHaveValueAsync("=button1.bottom + 166");
+
+        // The dimension is where the anchor is edited and where it is taken off.
+        await page.GetByTestId("anchor-offset-top").FillAsync("20");
+        await page.GetByTestId("anchor-offset-top").PressAsync("Enter");
+        Assert.Equal(54, await OffsetAsync(page, "grid1", "top"), 0);
+
+        // The dimension's controls appear under the pointer, so reaching them is two moves: onto the
+        // dimension, then onto the control it just revealed. That is what a hand does with a mouse.
+        await page.Locator(".gfd-dim-hit")
+            .Filter(new LocatorFilterOptions { Has = page.GetByTestId("anchor-release-top") })
+            .HoverAsync();
+        await page.GetByTestId("anchor-release-top").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("edge-top")).ToHaveValueAsync("54");
+        Assert.Equal(54, await OffsetAsync(page, "grid1", "top"), 0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// One anchor on an axis moves the control; the second one stretches it. A control whose right
+    /// edge follows the component's and whose left edge follows nothing slides along when the
+    /// component is resized, carrying the width it had.
+    /// </summary>
+    [Fact]
+    public async Task Moves_a_control_whose_far_edge_alone_is_anchored()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Sliding component",
+            [Control("pager1", "pager", x: 500, y: 400, w: 180, h: 24)]);
+
+        // 720 - 40 - 180: the right edge 40px in from the component's, nothing holding the left.
+        await ShowAnchorHandlesAsync(page, "pager1");
+        await DragAsync(page, page.GetByTestId("anchor-handle-right"), await EdgeCentreAsync(page, "frame", "right"));
+
+        await OpenPanelTabAsync(page, "Appearance");
+        // The link is on the right edge, so that is the row it reads out of.
+        await Assertions.Expect(page.GetByTestId("edge-right"))
+            .ToHaveValueAsync("=component.width - 40");
+        Assert.Equal(500, await OffsetAsync(page, "pager1", "left"), 0);
+        Assert.Equal(180, await OffsetAsync(page, "pager1", "width"), 0);
+
+        await page.Locator(".gfd-canvas").ClickAsync(new LocatorClickOptions { Position = new Position { X = 5, Y = 440 } });
+        await page.GetByTestId("expr-width").FillAsync("900");
+
+        // It travelled with the edge it follows and kept its size, which is what anchoring one
+        // edge of an axis means.
+        Assert.Equal(680, await OffsetAsync(page, "pager1", "left"), 0);
+        Assert.Equal(180, await OffsetAsync(page, "pager1", "width"), 0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Reading an anchor back out of the formula it was written as, and what happens to the
+    /// formula when the anchor is taken off again.
+    /// </summary>
+    [Fact]
+    public async Task Reads_an_anchor_back_and_leaves_a_number_behind_when_it_is_removed()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Unanchored component",
+        [
+            Control("grid1", "grid", props: new { columns = "Id" },
+                bind: new { w = "=component.width - 30 - self.x" }, x: 24, y: 200, w: 300, h: 100),
+        ]);
+
+        await Canvas(page, "grid1").ClickAsync();
+
+        // A formula written by hand that says what a link says is drawn as that link. The left
+        // edge is a plain number, which is not a link: it says where the edge is, not what it
+        // follows, so it has no dimension of its own.
+        await Assertions.Expect(page.GetByTestId("anchor-offset-right")).ToHaveValueAsync("-30");
+        await Assertions.Expect(page.GetByTestId("anchor-release-right"))
+            .ToHaveAttributeAsync("title", "Right edge linked to component. Click to unlink.");
+        await Assertions.Expect(page.GetByTestId("anchor-release-left")).ToHaveCountAsync(0);
+        Assert.Equal(666, await OffsetAsync(page, "grid1", "width"), 0);
+
+        // Unlinking leaves the width it had, so nothing moves.
+        await UnlinkAsync(page, "right");
+        await OpenPanelTabAsync(page, "Appearance");
+        await Assertions.Expect(page.GetByTestId("expr-w")).ToHaveValueAsync("666");
+        Assert.Equal(666, await OffsetAsync(page, "grid1", "width"), 0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A handle is a thing to drag. Pressing one and letting go without moving must not anchor the
+    /// edge to whatever happens to be within reach of it — and the frame's own edge is within
+    /// reach of any control sitting near it.
+    /// </summary>
+    [Fact]
+    public async Task Leaves_an_edge_alone_when_its_handle_is_only_clicked()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Clicked handle component",
+            [Control("grid1", "grid", props: new { columns = "Id" }, x: 24, y: 200, w: 300, h: 100)]);
+
+        await ShowAnchorHandlesAsync(page, "grid1");
+
+        // 24px from the frame's left edge, which is well inside the distance a drop would take.
+        await page.GetByTestId("anchor-handle-left").ClickAsync();
+
+        await Assertions.Expect(page.GetByTestId("anchor-release-left")).ToHaveCountAsync(0);
+        await OpenPanelTabAsync(page, "Appearance");
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("24");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A size formula of somebody's own says nothing about where the far edge is measured from, so
+    /// it must not hide an anchor that lives in the position instead. An anchor the panel cannot
+    /// show is an anchor nobody can take off again.
+    /// </summary>
+    [Fact]
+    public async Task Reads_a_far_anchor_beside_a_size_formula_of_its_own()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Custom width component",
+        [
+            // A square, which is the documented use of self.h, beside the anchor the designer
+            // writes for a right edge with nothing holding the left.
+            Control("grid1", "grid", props: new { columns = "Id" },
+                bind: new { w = "=self.h", x = "=component.width - 40 - self.w" },
+                x: 500, y: 200, w: 120, h: 120),
+        ]);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("anchor-offset-right")).ToHaveValueAsync("-40");
+
+        // And it can be taken off again, which is the part that was unreachable.
+        await UnlinkAsync(page, "right");
+        await OpenPanelTabAsync(page, "Appearance");
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("560");
+        await Assertions.Expect(page.GetByTestId("expr-w")).ToHaveValueAsync("=self.h");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The strip that reveals a dimension's controls takes presses, so it must not reach back over
+    /// the control the dimension measures: a control that cannot be pressed cannot be moved.
+    /// </summary>
+    [Fact]
+    public async Task Keeps_a_dimension_off_the_control_it_measures()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Tight dimension component",
+        [
+            Control("button1", "button", props: new { text = "Save" }, x: 24, y: 10, w: 120, h: 24),
+            // Seven pixels from the frame's right edge, which is shorter than the smallest strip,
+            // and a top edge aligned exactly with the button's, which measures nothing at all.
+            Control("pager1", "pager",
+                bind: new { x = "=component.width - 7 - self.w", y = "=button1.top" },
+                x: 533, y: 10, w: 180, h: 30),
+        ]);
+
+        await Canvas(page, "pager1").ClickAsync();
+
+        var covering = await page.EvaluateAsync<string>(
+            "() => {"
+            + " const box = document.querySelector('[data-control-box=\"pager1\"]').getBoundingClientRect();"
+            + " return [...document.querySelectorAll('.gfd-dim-hit')].filter(strip => {"
+            + "   const r = strip.getBoundingClientRect();"
+            + "   return r.left < box.right && box.left < r.right"
+            + "     && r.top < box.bottom && box.top < r.bottom;"
+            + " }).map(strip => strip.className).join(', ');"
+            + "}");
+        Assert.True(covering.Length == 0,
+            "A dimension's strip covers the control it measures: " + covering);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Auto-anchor, which is what the switch above the canvas turns on: a control dragged until
+    /// one of its edges lands on another edge stays linked to it, and is let go of again by being
+    /// pulled clear. Snapping is what finds the edge, so the switch means nothing without it.
+    /// </summary>
+    [Fact]
+    public async Task Links_an_edge_a_drag_lands_on_and_lets_go_when_pulled_clear()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Auto anchor component",
+        [
+            Control("button1", "button", props: new { text = "Save" }, x: 300, y: 40, w: 120, h: 24),
+            Control("grid1", "grid", props: new { columns = "Id" }, x: 40, y: 200, w: 200, h: 80),
+        ]);
+
+        await page.GetByTestId("component-autoanchor").ClickAsync();
+
+        // The Layout rows, which are there whether a coordinate is a formula or a number. The
+        // Settings page lists only the ones that are formulas, so a row would come and go with
+        // the link and the test would be reading its own subject.
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+
+        // Dragged so the grid's left edge comes within reach of the button's, but not onto it.
+        await DragByAsync(page, Canvas(page, "grid1"), 256, 0);
+
+        // It finished the last few pixels itself and stayed linked to what it landed on.
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("=button1.left");
+        Assert.Equal(300, await OffsetAsync(page, "grid1", "left"), 0);
+
+        // Pulled clear of the button altogether, the link goes with it and the grid is a plain
+        // coordinate again. Clear of it on both sides: landing on the button's other edge would
+        // be landing on an edge, which is the same gesture over again.
+        await DragByAsync(page, Canvas(page, "grid1"), 160, 0);
+        await Assertions.Expect(page.GetByTestId("edge-left")).Not.ToHaveValueAsync("=button1.left");
+        await Assertions.Expect(page.GetByTestId("anchor-release-left")).ToHaveCountAsync(0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Snapping stays available whatever the grid is doing, because half of what it lands on is
+    /// the other controls and they are there either way. Auto-anchor is the one that needs it,
+    /// because with nothing landing there is nothing to remember.
+    /// </summary>
+    [Fact]
+    public async Task Keeps_snapping_available_with_the_grid_hidden()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Switch component",
+            [Control("grid1", "grid", props: new { columns = "Id" }, x: 40, y: 200, w: 200, h: 80)]);
+
+        var snap = page.GetByTestId("component-snap");
+        var autoAnchor = page.GetByTestId("component-autoanchor");
+
+        await page.GetByTestId("component-grid").ClickAsync();
+        await Assertions.Expect(snap).ToBeEnabledAsync();
+        await Assertions.Expect(snap).ToHaveClassAsync(new Regex("active"));
+        await Assertions.Expect(autoAnchor).ToBeEnabledAsync();
+
+        await snap.ClickAsync();
+        await Assertions.Expect(autoAnchor).ToBeDisabledAsync();
+        await Assertions.Expect(autoAnchor).ToHaveAttributeAsync("title", "Auto-anchor needs snapping, which is off");
+
+        await snap.ClickAsync();
+        await Assertions.Expect(autoAnchor).ToBeEnabledAsync();
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Snapping onto an edge and remembering that landing are two things. With auto-anchor off a
+    /// drag still lines up on its neighbour, and leaves no rule behind.
+    /// </summary>
+    [Fact]
+    public async Task Snaps_onto_an_edge_without_linking_when_auto_anchor_is_off()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Snap only component",
+        [
+            Control("button1", "button", props: new { text = "Save" }, x: 300, y: 40, w: 120, h: 24),
+            Control("grid1", "grid", props: new { columns = "Id" }, x: 40, y: 200, w: 200, h: 80),
+        ]);
+
+        // Auto-anchor left off, and the grid hidden so nothing rounds the drag but the edge.
+        await page.GetByTestId("component-grid").ClickAsync();
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+
+        await DragByAsync(page, Canvas(page, "grid1"), 257, 0);
+
+        // It finished the last three pixels onto the button's edge, and that is all it did.
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("300");
+        await Assertions.Expect(page.GetByTestId("anchor-release-left")).ToHaveCountAsync(0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// And it is not only the switch that stays available: with the grid hidden a drag still lands
+    /// on another control's edge and stays linked to it, while landing on nothing keeps the exact
+    /// place it was let go.
+    /// </summary>
+    [Fact]
+    public async Task Snaps_to_another_control_with_the_grid_hidden()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Gridless snap component",
+        [
+            Control("button1", "button", props: new { text = "Save" }, x: 300, y: 40, w: 120, h: 24),
+            Control("grid1", "grid", props: new { columns = "Id" }, x: 40, y: 200, w: 200, h: 80),
+        ]);
+
+        await page.GetByTestId("component-autoanchor").ClickAsync();
+        await page.GetByTestId("component-grid").ClickAsync();
+
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+
+        // 40 + 257 is 297, three short of the button's left edge and inside the reach of it.
+        await DragByAsync(page, Canvas(page, "grid1"), 257, 0);
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("=button1.left");
+        Assert.Equal(300, await OffsetAsync(page, "grid1", "left"), 0);
+
+        // Pulled clear of it, and with no grid to round to it keeps the exact distance it was
+        // dragged rather than the nearest multiple of eight.
+        await DragByAsync(page, Canvas(page, "grid1"), 157, 0);
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("457");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// And it is not only the switch: with the grid hidden a drag lands where it was let go rather
+    /// than on a line nobody can see.
+    /// </summary>
+    [Fact]
+    public async Task Stops_snapping_a_drag_once_the_grid_is_hidden()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Unsnapped component",
+            [Control("grid1", "grid", props: new { columns = "Id" }, x: 40, y: 200, w: 200, h: 80)]);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+
+        // 13 is not a multiple of 8, so with the grid up the drag is held to 16.
+        await DragByAsync(page, Canvas(page, "grid1"), 13, 0);
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("56");
+
+        await page.GetByTestId("component-grid").ClickAsync();
+        await DragByAsync(page, Canvas(page, "grid1"), 13, 0);
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("69");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A press on a control that is already selected and goes nowhere turns its handles over:
+    /// the ones that size it, and the ones that say what its edges follow.
+    /// </summary>
+    [Fact]
+    public async Task Turns_the_handles_over_on_a_second_click()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Handle component",
+            [Control("grid1", "grid", props: new { columns = "Id" }, x: 40, y: 200, w: 200, h: 80)]);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-handle").First).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("anchor-handle-left")).ToHaveCountAsync(0);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("anchor-handle-left")).ToBeVisibleAsync();
+        await Assertions.Expect(page.Locator(".gfd-handle")).ToHaveCountAsync(0);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-handle").First).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("anchor-handle-left")).ToHaveCountAsync(0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Every edge a drag off this handle could land on, read off the dots it puts out while the
+    /// button is still down. The drag is then let go over nothing, which links nothing.
+    /// </summary>
+    private static async Task<string[]> OfferedTargetsAsync(IPage page, string name, string edge)
+    {
+        await ShowAnchorHandlesAsync(page, name);
+        var handle = await page.GetByTestId($"anchor-handle-{edge}").BoundingBoxAsync()
+            ?? throw new InvalidOperationException("The handle is not on the canvas.");
+        await page.Mouse.MoveAsync(handle.X + handle.Width / 2, handle.Y + handle.Height / 2);
+        await page.Mouse.DownAsync();
+        var offered = await page.EvaluateAsync<string[]>(
+            "() => [...document.querySelectorAll('.gfd-anchor-target')]"
+            + ".map(dot => dot.dataset.target + ':' + dot.dataset.edge)");
+        await page.Mouse.UpAsync();
+        return offered;
+    }
+
+    /// <summary>
+    /// Takes a link off from its own dimension, which is two moves: onto the dimension, then onto
+    /// the control it reveals. That is what a hand does with a mouse.
+    /// </summary>
+    private static async Task UnlinkAsync(IPage page, string edge)
+    {
+        await page.Locator(".gfd-dim-hit")
+            .Filter(new LocatorFilterOptions { Has = page.GetByTestId($"anchor-release-{edge}") })
+            .HoverAsync();
+        await page.GetByTestId($"anchor-release-{edge}").ClickAsync();
+    }
+
+    /// <summary>A press, a move and a release, from the middle of whatever is being dragged.</summary>
+    private static async Task DragByAsync(IPage page, ILocator from, float dx, float dy)
+    {
+        var box = await from.BoundingBoxAsync()
+            ?? throw new InvalidOperationException("There is nothing there to drag.");
+        var x = box.X + box.Width / 2;
+        var y = box.Y + box.Height / 2;
+        await page.Mouse.MoveAsync(x, y);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(x + dx, y + dy, new MouseMoveOptions { Steps = 8 });
+        await page.Mouse.UpAsync();
+    }
+
+    /// <summary>
+    /// Links are a dependency graph, and a control is never offered what already follows it. A
+    /// follower's edges move with the drag, so snapping onto one would move the control, which
+    /// moves the follower, which moves the edge again: the control shakes instead of settling.
+    /// </summary>
+    [Fact]
+    public async Task Never_links_a_control_to_something_that_follows_it()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Chained component",
+        [
+            Control("grid1", "grid", props: new { columns = "Id" }, x: 40, y: 200, w: 200, h: 80),
+            // Directly downstream of the grid, and then one more step downstream of that, so the
+            // indirect case is covered as well as the direct one.
+            Control("button1", "button", props: new { text = "Save" },
+                bind: new { x = "=grid1.right + 16" }, x: 256, y: 200, w: 120, h: 24),
+            Control("label1", "label", props: new { text = "After" },
+                bind: new { x = "=button1.right + 16" }, x: 392, y: 200, w: 80, h: 24),
+        ]);
+
+        await page.GetByTestId("component-autoanchor").ClickAsync();
+
+        // Neither the control that follows the grid nor the one that follows that one is on offer.
+        var offered = await OfferedTargetsAsync(page, "grid1", "left");
+        Assert.DoesNotContain("button1:left", offered);
+        Assert.DoesNotContain("button1:right", offered);
+        Assert.DoesNotContain("label1:left", offered);
+        Assert.DoesNotContain("label1:right", offered);
+        Assert.Contains("frame:left", offered);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+
+        // Dragged far enough to pass right under both of them. Nothing latches on, and the grid
+        // ends up exactly where the drag asked for rather than somewhere it settled into.
+        await DragByAsync(page, Canvas(page, "grid1"), 96, 0);
+
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("136");
+        Assert.Equal(136, await OffsetAsync(page, "grid1", "left"), 0);
+
+        // And the two that follow it kept up, which is the part that has to keep working.
+        Assert.Equal(352, await OffsetAsync(page, "button1", "left"), 0);
+        Assert.Equal(488, await OffsetAsync(page, "label1", "left"), 0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Every edge reads out of its own row. A link on the right edge with nothing holding the left
+    /// is stored in the position, and printing that under "Left" said the left edge was linked when
+    /// it was the right one: the rows read the edges, not the properties that carry them.
+    /// </summary>
+    [Fact]
+    public async Task Shows_the_right_and_bottom_edges_beside_the_four_that_store_them()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Edge row component",
+        [
+            Control("grid1", "grid", props: new { columns = "Id" }, x: 40, y: 100, w: 200, h: 80),
+            // Its right edge already follows the component's, written the way the designer writes
+            // a link with nothing holding the left edge.
+            Control("pager1", "pager", bind: new { x = "=component.width - 40 - self.w" },
+                x: 500, y: 400, w: 180, h: 24),
+        ]);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+
+        // 40 + 200 and 100 + 80, worked out rather than stored.
+        await Assertions.Expect(page.GetByTestId("edge-right")).ToHaveValueAsync("240");
+        await Assertions.Expect(page.GetByTestId("edge-bottom")).ToHaveValueAsync("180");
+
+        // Setting one resizes, because the width is what is free to give.
+        await page.GetByTestId("edge-right").FillAsync("300");
+        await page.GetByTestId("edge-right").PressAsync("Tab");
+        await Assertions.Expect(page.GetByTestId("expr-w")).ToHaveValueAsync("260");
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("40");
+        Assert.Equal(300, await OffsetAsync(page, "grid1", "left") + await OffsetAsync(page, "grid1", "width"), 0);
+
+        // A linked edge is a number like any other, and setting it moves the edge along whatever it
+        // follows instead of cutting it loose: the offset changes, the link does not.
+        await Canvas(page, "pager1").ClickAsync();
+        // The right edge is the linked one, so it is the row that says what it follows. The bottom
+        // edge is a number, because nothing holds it.
+        await Assertions.Expect(page.GetByTestId("edge-right"))
+            .ToHaveValueAsync("=component.width - 40");
+        await Assertions.Expect(page.GetByTestId("edge-bottom")).ToHaveValueAsync("424");
+
+        await page.GetByTestId("edge-right").FillAsync("700");
+        await page.GetByTestId("edge-right").PressAsync("Tab");
+        await Assertions.Expect(page.GetByTestId("edge-right"))
+            .ToHaveValueAsync("=component.width - 20");
+        // The left edge did not move, so the width is what took the 20.
+        Assert.Equal(500, await OffsetAsync(page, "pager1", "left"), 0);
+        Assert.Equal(200, await OffsetAsync(page, "pager1", "width"), 0);
+
+        // And it is marked the way every other row a formula decides is marked, so a glance down
+        // the panel says which edges are being decided for it.
+        await Assertions.Expect(page.Locator(".gfd-row.bound")
+            .Filter(new LocatorFilterOptions { Has = page.GetByTestId("edge-right") }))
+            .ToHaveCountAsync(1);
+        await Assertions.Expect(page.Locator(".gfd-row.bound")
+            .Filter(new LocatorFilterOptions { Has = page.GetByTestId("edge-bottom") }))
+            .ToHaveCountAsync(0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Eight handles, one per side and one per corner, because a resize moves an edge and every
+    /// edge has to be reachable. Moving a left edge is a different act from changing a width, and
+    /// with only the three that were here it could not be asked for.
+    /// </summary>
+    [Fact]
+    public async Task Offers_a_resize_handle_on_every_side_and_corner()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Handle count component",
+            [Control("grid1", "grid", props: new { columns = "Id" }, x: 200, y: 200, w: 200, h: 80)]);
+
+        await Canvas(page, "grid1").ClickAsync();
+
+        foreach (var handle in new[] { "nw", "n", "ne", "e", "se", "s", "sw", "w" })
+        {
+            await Assertions.Expect(page.Locator($".gfd-handle-{handle}")).ToBeVisibleAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A handle moves the edge it is on and leaves the opposite one where it was. The west handle
+    /// moves the left edge, which is what no handle could do before.
+    /// </summary>
+    [Fact]
+    public async Task Moves_only_the_edge_the_handle_is_on()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Edge resize component",
+            [Control("grid1", "grid", props: new { columns = "Id" }, x: 200, y: 200, w: 200, h: 80)]);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await Canvas(page, "grid1").ClickAsync();
+        await Canvas(page, "grid1").ClickAsync();
+
+        // The right edge out by 40. The left edge does not move, so the width takes it.
+        await DragByAsync(page, page.Locator(".gfd-handle-e"), 40, 0);
+        Assert.Equal(200, await OffsetAsync(page, "grid1", "left"), 0);
+        Assert.Equal(240, await OffsetAsync(page, "grid1", "width"), 0);
+
+        // The left edge in by 40. The right edge does not move, so the width takes it again.
+        await DragByAsync(page, page.Locator(".gfd-handle-w"), 40, 0);
+        Assert.Equal(240, await OffsetAsync(page, "grid1", "left"), 0);
+        Assert.Equal(200, await OffsetAsync(page, "grid1", "width"), 0);
+
+        // And the same on the other axis, from the top.
+        await DragByAsync(page, page.Locator(".gfd-handle-n"), 0, 24);
+        Assert.Equal(224, await OffsetAsync(page, "grid1", "top"), 0);
+        Assert.Equal(56, await OffsetAsync(page, "grid1", "height"), 0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Dragging an edge that follows something changes what it is measured from rather than being
+    /// refused. The link survives the drag, and the opposite edge still does not move.
+    /// </summary>
+    [Fact]
+    public async Task Resizes_a_linked_edge_by_moving_it_along_what_it_follows()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Linked resize component",
+        [
+            // Its right edge follows the component's, with nothing holding the left, so the whole
+            // control slides when the component is resized.
+            Control("grid1", "grid", props: new { columns = "Id" },
+                bind: new { x = "=component.width - 40 - self.w" }, x: 480, y: 200, w: 200, h: 80),
+        ]);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await Canvas(page, "grid1").ClickAsync();
+        await Canvas(page, "grid1").ClickAsync();
+
+        // 720 - 40 is 680, so the right edge starts there and the left at 480.
+        Assert.Equal(480, await OffsetAsync(page, "grid1", "left"), 0);
+
+        await DragByAsync(page, page.Locator(".gfd-handle-e"), -24, 0);
+
+        // The link is still a link, the offset moved, and the left edge stayed put.
+        await OpenPanelTabAsync(page, "Appearance");
+        await Assertions.Expect(page.GetByTestId("edge-right"))
+            .ToHaveValueAsync("=component.width - 64");
+        Assert.Equal(480, await OffsetAsync(page, "grid1", "left"), 0);
+        Assert.Equal(176, await OffsetAsync(page, "grid1", "width"), 0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The panel is the readout for what the canvas is doing, so it follows a drag rather than
+    /// waiting for it to finish. Read while the button is still down, which is the only moment
+    /// that distinguishes following from catching up.
+    /// </summary>
+    [Fact]
+    public async Task Follows_a_drag_in_the_panel_while_it_is_happening()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Live panel component",
+            [Control("grid1", "grid", props: new { columns = "Id" }, x: 40, y: 200, w: 200, h: 80)]);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("40");
+
+        var box = await Canvas(page, "grid1").BoundingBoxAsync()
+            ?? throw new InvalidOperationException("The grid is not on the canvas.");
+        await page.Mouse.MoveAsync(box.X + box.Width / 2, box.Y + box.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(box.X + box.Width / 2 + 80, box.Y + box.Height / 2, new MouseMoveOptions { Steps = 8 });
+
+        // Still held down, and the panel already says where the control is.
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("120");
+        await Assertions.Expect(page.GetByTestId("edge-right")).ToHaveValueAsync("320");
+
+        await page.Mouse.UpAsync();
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("120");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The same while resizing, and on the row that is not being dragged: moving the right edge
+    /// changes the width as it goes, and the left edge stays where it was throughout.
+    /// </summary>
+    [Fact]
+    public async Task Follows_a_resize_in_the_panel_while_it_is_happening()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Live resize component",
+            [Control("grid1", "grid", props: new { columns = "Id" }, x: 40, y: 200, w: 200, h: 80)]);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+
+        var handle = await page.Locator(".gfd-handle-e").BoundingBoxAsync()
+            ?? throw new InvalidOperationException("The east handle is not on the canvas.");
+        await page.Mouse.MoveAsync(handle.X + handle.Width / 2, handle.Y + handle.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(handle.X + handle.Width / 2 + 40, handle.Y + handle.Height / 2, new MouseMoveOptions { Steps = 8 });
+
+        await Assertions.Expect(page.GetByTestId("expr-w")).ToHaveValueAsync("240");
+        await Assertions.Expect(page.GetByTestId("edge-right")).ToHaveValueAsync("280");
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("40");
+
+        await page.Mouse.UpAsync();
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Snapping lands the edge being dragged on the grid, not the corner the control happens to
+    /// start at. A control whose position is off the grid is the case someone turns snapping on to
+    /// get out of, and measuring every edge from the corner leaves the far edge off it too.
+    /// </summary>
+    [Fact]
+    public async Task Snaps_the_edge_being_dragged_rather_than_the_corner()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Off grid component",
+            // 5 and 203 are both off the grid, so the right edge starts on 208 and the left does not.
+            [Control("grid1", "grid", props: new { columns = "Id" }, x: 5, y: 200, w: 203, h: 80)]);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+
+        // Six to the right of 208 is 214, and the nearest grid line to that is 216.
+        await DragByAsync(page, page.Locator(".gfd-handle-e"), 6, 0);
+        await Assertions.Expect(page.GetByTestId("edge-right")).ToHaveValueAsync("216");
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("5");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A resize stopped by the canvas edge or by the smallest size stops the edge being dragged.
+    /// Holding the position and the size back separately lets one of them take the whole distance
+    /// while the other stops, which walks the opposite edge across the canvas.
+    /// </summary>
+    [Fact]
+    public async Task Holds_the_opposite_edge_still_when_a_resize_is_stopped()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Clamped resize component",
+            [Control("grid1", "grid", props: new { columns = "Id" }, x: 16, y: 200, w: 96, h: 80)]);
+
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+
+        // Dragged well past the left of the canvas. The left edge stops at zero and the right edge
+        // stays on 112, rather than being pushed out by everything the left edge could not take.
+        await DragByAsync(page, page.Locator(".gfd-handle-w"), -80, 0);
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("0");
+        await Assertions.Expect(page.GetByTestId("edge-right")).ToHaveValueAsync("112");
+
+        // And the other way: dragged past the right edge, the left stops one grid step short of it
+        // and the right edge has still not moved.
+        await DragByAsync(page, page.Locator(".gfd-handle-w"), 200, 0);
+        await Assertions.Expect(page.GetByTestId("edge-right")).ToHaveValueAsync("112");
+        await Assertions.Expect(page.GetByTestId("edge-left")).ToHaveValueAsync("104");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A component the person filling it in can resize, which the browser does through the grip
+    /// CSS puts in its corner rather than through anything the designer is told about. What is
+    /// anchored to the component's own edges has to follow that too, or Preview would show a
+    /// layout that only holds together at the size it was drawn.
+    /// </summary>
+    [Fact]
+    public async Task Follows_the_component_s_edges_when_preview_is_resized()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Resizable component",
+        [
+            // Anchored the way the designer writes it: the right edge 40px in from the
+            // component's, with nothing holding the left, so the pager travels rather than grows.
+            Control("pager1", "pager", bind: new { x = "=component.width - 40 - self.w" },
+                x: 500, y: 400, w: 180, h: 24),
+        ], resizable: true);
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(Box(page, "pager1")).ToHaveCSSAsync("left", "500px");
+
+        // The grip's own doing, which is an inline size on the canvas and no event at all.
+        await page.Locator(".gfd-canvas").EvaluateAsync("element => { element.style.width = '900px'; }");
+
+        // 900 - 40 - 180. It travelled with the edge it follows and kept the width it had.
+        await Assertions.Expect(Box(page, "pager1")).ToHaveCSSAsync("left", "680px");
+        await Assertions.Expect(Box(page, "pager1")).ToHaveCSSAsync("width", "180px");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Selects a control and turns its handles over to the anchor ones, which is a click to select
+    /// and a second click on the same control. The dimensions are drawn either way; the handles
+    /// that put a link on are the ones behind the second click.
+    /// </summary>
+    private static async Task ShowAnchorHandlesAsync(IPage page, string name)
+    {
+        await Canvas(page, name).ClickAsync();
+        await Canvas(page, name).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("anchor-handle-left")).ToBeVisibleAsync();
+    }
+
+    /// <summary>The middle of one edge of a control, in page coordinates, which is where an anchor
+    /// handle sits and what an anchor drag aims at.</summary>
+    private static async Task<(float X, float Y)> EdgeCentreAsync(IPage page, string name, string edge)
+    {
+        var of = name == "frame" ? page.Locator(".gfd-canvas") : Box(page, name);
+        var box = await of.BoundingBoxAsync()
+            ?? throw new InvalidOperationException($"{name} is not on the canvas.");
+        return edge switch
+        {
+            "left" => (box.X, box.Y + box.Height / 2),
+            "right" => (box.X + box.Width, box.Y + box.Height / 2),
+            "top" => (box.X + box.Width / 2, box.Y),
+            _ => (box.X + box.Width / 2, box.Y + box.Height),
+        };
+    }
+
+    /// <summary>
+    /// A press, a move and a release. The move is in two steps because the designer only treats a
+    /// drag as a drag once the pointer has actually gone somewhere.
+    /// </summary>
+    private static async Task DragAsync(IPage page, ILocator from, (float X, float Y) to)
+    {
+        var box = await from.BoundingBoxAsync()
+            ?? throw new InvalidOperationException("The handle is not on the canvas.");
+        await page.Mouse.MoveAsync(box.X + box.Width / 2, box.Y + box.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(to.X, to.Y, new MouseMoveOptions { Steps = 6 });
+        await page.Mouse.UpAsync();
+    }
+
+    /// <summary>
+    /// Where a control's box sits inside the component, in the component's own pixels — read off
+    /// the box rather than out of the document, so it is what the designer actually drew.
+    /// </summary>
+    private static Task<double> OffsetAsync(IPage page, string name, string edge) =>
+        Box(page, name).EvaluateAsync<double>(
+            $"element => parseFloat(getComputedStyle(element).{edge})");
 
     /// <summary>
     /// A module's exports are the component's functions. Nothing registers them: writing

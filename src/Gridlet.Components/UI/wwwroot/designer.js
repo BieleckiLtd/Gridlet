@@ -52,6 +52,27 @@
       'M10 16a2 2 0 1 0 4 0a2 2 0 0 0 -4 0', 'M12 4v10', 'M12 18v2',
       'M16 7a2 2 0 1 0 4 0a2 2 0 0 0 -4 0', 'M18 4v1', 'M18 9v11',
     ].map(iconPath).join(''),
+    // A chain link, the same link with a link being added to it, and the same link broken. What
+    // an anchored edge is, what the switch that makes them offers, and what the button on a
+    // dimension does.
+    link: [
+      'M9 15l6 -6',
+      'M11 6l.463 -.536a5 5 0 0 1 7.071 7.072l-.534 .464',
+      'M13 18l-.397 .534a5.068 5.068 0 0 1 -7.127 0a4.972 4.972 0 0 1 0 -7.071l.524 -.463',
+    ].map(iconPath).join(''),
+    'link-plus': [
+      'M9 15l6 -6',
+      'M11 6l.463 -.536a5 5 0 0 1 7.072 0a4.993 4.993 0 0 1 -.001 7.072',
+      'M12.603 18.534a5.07 5.07 0 0 1 -7.127 0a4.972 4.972 0 0 1 0 -7.071l.524 -.463',
+      'M16 19h6', 'M19 16v6',
+    ].map(iconPath).join(''),
+    unlink: [
+      'M17 22v-2',
+      'M9 15l6 -6',
+      'M11 6l.463 -.536a5 5 0 0 1 7.071 7.072l-.534 .464',
+      'M13 18l-.397 .534a5.068 5.068 0 0 1 -7.127 0a4.972 4.972 0 0 1 0 -7.071l.524 -.463',
+      'M20 17h2', 'M2 7h2', 'M7 2v2',
+    ].map(iconPath).join(''),
     contrast: [
       'M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0', 'M12 17a5 5 0 0 0 0 -10v10',
     ].map(iconPath).join(''),
@@ -1699,8 +1720,23 @@ export default class ${CLASS_NAME(name)} {
   // and never travel to whoever opens the component next.
   let showGrid = readStored('gridlet.components.grid', '1') !== '0';
   let snapToGrid = readStored('gridlet.components.snap', '1') !== '0';
+  // Whether an edge that snaps to another edge stays linked to it. Snapping is what finds the
+  // edge; this decides whether landing on one is remembered. It therefore means nothing with
+  // snapping off, and the switch says so by being unavailable rather than by doing nothing.
+  let autoAnchor = readStored('gridlet.components.autoanchor', '0') !== '0';
+  // Snapping is one switch over two things a drag can land on: the grid, and the edges of the
+  // other controls. Only the first of them can disappear. Holding a drag to lines nobody can see
+  // is the layout moving in steps for no reason anyone watching could name, so hiding the grid
+  // stops the rounding; the controls are on the canvas either way, so landing on their edges goes
+  // on regardless. The switch itself never goes away, because half of what it does never does.
+  //
+  // Auto-anchor is the separate question of whether a landing is remembered as a rule, so it is
+  // the one thing here that needs snapping to be happening at all.
+  const gridSnapping = () => snapToGrid && showGrid;
+  const edgeSnapping = () => snapToGrid;
+  const autoAnchoring = () => autoAnchor && snapToGrid;
 
-  const snap = (value) => (snapToGrid ? Math.round(value / GRID) * GRID : Math.round(value));
+  const snap = (value) => (gridSnapping() ? Math.round(value / GRID) * GRID : Math.round(value));
 
   // ---- designer tab -----------------------------------------------------------
 
@@ -1740,6 +1776,11 @@ export default class ${CLASS_NAME(name)} {
       // values from; edits made there are pushed to the rest, and geometry works on the box the
       // whole selection occupies.
       selection: [],
+      // What the handles on a selected control are for. Clicking a control that is already
+      // selected turns them over: size it, or say what its edges follow. Two jobs want two sets
+      // of handles in the same eight places, and a click is what a hand reaches for rather than a
+      // switch somewhere else on the screen.
+      handles: 'resize',
       // Design lays the component out; Preview runs it as the person filling it in will see it. The
       // same renderer draws both, so preview cannot drift from what was designed.
       mode: 'design',
@@ -1750,6 +1791,12 @@ export default class ${CLASS_NAME(name)} {
       columns: [],
       rows: [],
       rowIndex: 0,
+      // What the component is actually being drawn at, when that is not what the document says.
+      // A resizable component in Preview is resized by the browser's own grip, which writes an
+      // inline size onto the canvas and tells nobody: without this, `component.width` would keep
+      // answering the number the document was saved with and everything anchored to the
+      // component's far edges would sit where it was rather than where the edge now is.
+      livingSize: null,
       // Data was a page of its own and is now part of Settings, so a browser that remembers it
       // opens the page its contents moved to rather than nothing at all.
       tab: TABS.some((page) => page.id === readStored('gridlet.components.tab', 'settings'))
@@ -2236,6 +2283,8 @@ export default class ${CLASS_NAME(name)} {
 
         const key = rest[0].toLowerCase();
         const size = (name) => {
+          const living = model.livingSize?.[name];
+          if (typeof living === 'number') return living;
           const value = resolve(component, name);
           return isError(value) ? value : asNumber(value);
         };
@@ -2300,8 +2349,8 @@ export default class ${CLASS_NAME(name)} {
           colours[theme][slot] = asText(resolve(component, key));
         }
         return {
-          width: shaped(component, 'width', 'number'),
-          height: shaped(component, 'height', 'number'),
+          width: model.livingSize?.width ?? shaped(component, 'width', 'number'),
+          height: model.livingSize?.height ?? shaped(component, 'height', 'number'),
           colors: colours,
           classes: asText(resolve(component, 'classes')),
           elementId: asText(resolve(component, 'elementId')),
@@ -2350,7 +2399,44 @@ export default class ${CLASS_NAME(name)} {
         : model.doc.showScrollbars ? 'auto' : 'hidden';
       canvas.style.resize = model.mode === 'preview' && model.doc.resizable ? 'both' : '';
       canvas.replaceChildren(...model.doc.controls.map(renderControl));
+      // Last, and measured off what was just drawn: a dimension is only true of the layout it was
+      // taken from, so it is read back out of the canvas rather than worked out beside it.
+      renderAnchorOverlay();
     }
+
+    // ---- the size the component is actually at ----
+    // A resizable component in Preview is resized by the browser, through the grip CSS `resize`
+    // puts in its corner. That writes an inline size onto the canvas and raises no event anybody
+    // has subscribed to, so nothing that reads `component.width` would ever hear about it and a
+    // control anchored to the component's right edge would sit still while the edge moved away
+    // from it. Watching the element is how the formulas are told.
+    //
+    // It cannot loop: the sheet this produces only sets the variable the inline size overrides, so
+    // redrawing never changes the size that was observed. Whole pixels for the same reason — a
+    // grip dragged slowly reports fractions, and a redraw per hundredth of a pixel is a redraw
+    // nobody asked for.
+    const watchCanvasSize = () => {
+      if (typeof ResizeObserver !== 'function') return null;
+      let pending = 0;
+      const observer = new ResizeObserver(() => {
+        if (model.mode !== 'preview') return;
+        // The whole box, which is what the document's own width means: everything here is
+        // border-box, so the number the panel shows and the number measured are the same number.
+        const width = canvas.offsetWidth;
+        const height = canvas.offsetHeight;
+        if (!width && !height) return;
+        if (model.livingSize?.width === width && model.livingSize?.height === height) return;
+        model.livingSize = { width, height };
+        // Out of the observer's own pass rather than inside it: redrawing where the browser is
+        // still measuring is what earns the loop warning, even when the redraw settles.
+        cancelAnimationFrame(pending);
+        pending = requestAnimationFrame(() => renderCanvas());
+      });
+      observer.observe(canvas);
+      return observer;
+    };
+
+    const canvasSizeWatch = watchCanvasSize();
 
     const currentRow = () => model.rows[model.rowIndex] || null;
 
@@ -2429,8 +2515,8 @@ export default class ${CLASS_NAME(name)} {
 
       // Handles resize one control. With several selected the size fields on the Appearance page
       // are the way to resize them, so the handles stay out of a drag that would be ambiguous.
-      if (selected && model.selection.length === 1) {
-        for (const handle of ['e', 's', 'se']) {
+      if (selected && model.selection.length === 1 && model.handles === 'resize') {
+        for (const handle of ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']) {
           element.append(h('div', { class: 'gfd-handle gfd-handle-' + handle, 'data-handle': handle }));
         }
       }
@@ -2467,6 +2553,9 @@ export default class ${CLASS_NAME(name)} {
     // `add` toggles one control in or out of the selection instead of replacing it, which is what
     // a modifier-click asks for. Selecting nothing selects the component.
     function select(id, add = false) {
+      // A different control is a fresh start: arriving at one already in anchor mode, with no
+      // resize handles, reads as a component that has lost them.
+      if (!add && !isSelected(id)) model.handles = 'resize';
       if (id === null) model.selection = [];
       else if (!add) model.selection = [id];
       else if (isSelected(id)) model.selection = model.selection.filter((other) => other !== id);
@@ -2507,7 +2596,7 @@ export default class ${CLASS_NAME(name)} {
         button.classList.toggle('active', active);
         button.setAttribute('aria-selected', String(active));
       }
-      propertyBody.replaceChildren(referenceList(), ...(control
+      propertyBody.replaceChildren(...(control
         ? controlEditors(control, model.tab)
         : componentEditors(model.tab)).filter(Boolean));
       if (pendingFocus) {
@@ -2834,28 +2923,13 @@ export default class ${CLASS_NAME(name)} {
       ? `data.${column}`
       : `data[${JSON.stringify(column)}]`;
 
-    // What an expression can name, offered as the input's own completion list. It costs one
-    // element and no keyboard handling, and it is rebuilt from the document every time the panel
-    // is drawn, so it can never offer a control that has been renamed away.
-    const REFERENCE_LIST = 'gfd-refs-' + newId();
-
-    function referenceList() {
-      // The whole row and the whole result come first: they are the ones nobody guesses are there.
-      const references = ['data', 'json(data, 2)', 'json(component.rows, 2)', ...model.columns.map(dataReference)];
-      walk(model.doc.controls, (control) => {
-        if (!control.name) return;
-        for (const key of ['x', 'y', 'w', 'h', 'right', 'bottom', 'tip']) {
-          references.push(`${control.name}.${key}`);
-        }
-        for (const property of CATALOGUE[control.type].properties) {
-          references.push(`${control.name}.${property.key}`);
-        }
-      });
-      references.push('component.width', 'component.height', 'component.rowCount', 'component.row',
-        'self.w', 'self.h', 'self.x', 'self.y');
-      return h('datalist', { id: REFERENCE_LIST },
-        references.map((value) => h('option', { value })));
-    }
+    // The boxes used to carry a datalist of every name a formula can use. It only ever worked on
+    // an empty box: a browser filters such a list by everything already in the field, and a field
+    // holding `=component.width - 39` matches nothing, so the arrow it drew opened an empty popup.
+    // An affordance that says "there is a list here" and then shows nothing is worse than none, so
+    // it is gone. What would replace it is a completion popup of the designer's own, of the kind
+    // the stylesheet and module editors already use, filtering on the word being typed rather than
+    // on the whole line. The names it would offer are the ones the help dialog lists.
 
     // Which row's expression box to put the cursor in once the panel has been redrawn. Binding a
     // property is a request to write one, so the box opens ready to type in.
@@ -2923,6 +2997,20 @@ export default class ${CLASS_NAME(name)} {
       return escapeText(asText(literal));
     };
 
+    // A box that follows the document while something else is changing it. Dragging a control is
+    // the case that matters: the panel is the readout for what the canvas is doing, and a readout
+    // that waits for the drag to finish is a readout you have to stop to consult. It goes on the
+    // same list that marks a box in error, so it is refreshed rather than rebuilt, and it leaves
+    // the box that has the cursor alone because that one is being typed into.
+    function liveValue(input, read) {
+      const refresh = () => {
+        if (document.activeElement === input) return;
+        const next = read();
+        if (input.value !== next) input.value = next;
+      };
+      expressionChecks.push(refresh);
+    }
+
     // A box that fails is marked and carries the reason. The canvas shows the code; there is only
     // room here for the sentence behind it.
     function watchProperty(target, key, input) {
@@ -2943,7 +3031,6 @@ export default class ${CLASS_NAME(name)} {
         type: 'text',
         spellcheck: 'false',
         autocomplete: 'off',
-        list: REFERENCE_LIST,
         placeholder: '=doSomething(data.Id)',
         title: hint,
         'data-event-key': name,
@@ -2984,13 +3071,13 @@ export default class ${CLASS_NAME(name)} {
         inputmode: kind === 'number' ? 'decimal' : null,
         spellcheck: 'false',
         autocomplete: 'off',
-        list: REFERENCE_LIST,
         placeholder: options.placeholder || null,
         'data-bind-key': key,
         'data-testid': 'expr-' + key,
         oninput: (event) => writeProperty(target, key, event.target.value, options),
       });
       input.value = storedText(target, key, kind);
+      liveValue(input, () => storedText(target, key, kind));
       watchProperty(target, key, input);
       return input;
     }
@@ -3061,7 +3148,6 @@ export default class ${CLASS_NAME(name)} {
         type: 'text',
         spellcheck: 'false',
         autocomplete: 'off',
-        list: REFERENCE_LIST,
         placeholder: 'default',
         'data-bind-key': key,
         'data-testid': 'colour-' + key,
@@ -3176,6 +3262,133 @@ export default class ${CLASS_NAME(name)} {
           colourSlot(target, dark, `${hint} on a dark theme`)))),
     ];
 
+    // ---- the four edges, as rows ----
+    // One row per edge, each showing what decides that edge and nothing else.
+    //
+    // This is not the same as showing the properties. A link on the right edge with nothing
+    // holding the left is stored in the position, because moving the control is how the right
+    // edge is made to follow something. Printing the position under the word "Left" then says the
+    // left edge was linked, when the person linked the right one: the row is a sentence about the
+    // right edge printed under the wrong name. The rows below read the edges rather than the two
+    // properties that happen to carry them, so each one says what its own edge is doing.
+    //
+    // Left and Top move the control, keeping its size, because that is what a position is for.
+    // Right and Bottom move their own edge and leave the opposite one alone, because that is what
+    // an edge is for, and it is what dragging the matching handle does.
+    function edgeRow(control, edge) {
+      const axis = axisFor(edge);
+      const isNear = edge === axis.near;
+      // Read afresh every time rather than once, because a drag is changing all of it while the
+      // panel is on screen and a row is only worth reading if it is telling the truth now.
+      const held = () => {
+        const now = readAnchors(control, axis);
+        const link = isNear ? now.near : now.far;
+        return { now, link, linked: link && link !== 'custom' };
+      };
+      // A formula of somebody's own in the position decides the near edge, so it belongs to the
+      // near row. Nothing of the sort can belong to the far row: a formula the panel cannot read
+      // is not a statement about the far edge, it is a statement about whatever it was written in.
+      const ownFormula = () => {
+        const { now } = held();
+        return isNear && now.near === 'custom' ? control.bind[axis.pos] : null;
+      };
+      const edgeAt = () => {
+        const view = pass.viewOf(control);
+        return Math.round(isNear ? view[axis.pos] : view[axis.pos] + view[axis.size]);
+      };
+      const showing = () => {
+        const { link, linked: following } = held();
+        if (following) {
+          return '=' + anchorTerm(anchorRef(control, link.target, link.targetEdge), link.offset);
+        }
+        return ownFormula() || String(edgeAt());
+      };
+
+      const state = held().now;
+      const link = held().link;
+      const linked = held().linked;
+      const own = ownFormula();
+      const holder = linked && !isNear && state.farIn === 'size' ? axis.size : axis.pos;
+
+      const hint = isNear
+        ? `Where the ${edge} edge sits. Setting it moves the control and keeps its size.`
+        : `Where the ${edge} edge sits. Setting it moves that edge and leaves the ${axis.near} `
+          + 'edge alone, the same as dragging its handle.';
+
+      // Moving the whole control on this axis, by whichever of the three things holds it.
+      const move = (delta) => {
+        if (!delta) return;
+        if (linked && isNear) {
+          setAnchor(control, edge, { ...link, offset: link.offset + delta });
+          return;
+        }
+        if (!isBound(control, axis.pos)) {
+          control[axis.pos] = Math.max(0, Math.round(asNumber(control[axis.pos]) + delta));
+        } else if (state.far && state.far !== 'custom' && state.farIn === 'pos') {
+          // The position is the far edge's, so the far edge is what carries the control along.
+          setAnchor(control, axis.far, { ...state.far, offset: state.far.offset + delta });
+          return;
+        }
+        renderCanvas();
+        renderProperties();
+        markDirty();
+      };
+
+      const input = h('input', {
+        type: 'text',
+        class: 'gfd-expr gfd-number',
+        inputmode: 'decimal',
+        spellcheck: 'false',
+        autocomplete: 'off',
+        'data-testid': 'edge-' + edge,
+        title: hint,
+        onchange: (event) => {
+          const typed = event.target.value.trim();
+          if (isFormula(typed)) {
+            const term = parseAnchorTerm(formulaBody(typed).trim());
+            const named = term && anchorTargetOf(control, term.ref, axis);
+            if (named) {
+              setAnchor(control, edge, { target: named.target, targetEdge: named.targetEdge, offset: term.offset });
+              return;
+            }
+            // Not a link this panel can read. The near edge is the position, so a formula of
+            // somebody's own can live there; the far edge has no property of its own to put one in.
+            if (isNear && !isBound(control, axis.size)) {
+              writeProperty(control, axis.pos, typed, { kind: 'number' });
+              return;
+            }
+            renderProperties();
+            return;
+          }
+          const wanted = Math.round(asNumber(unescapeText(typed)));
+          const from = edgeAt();
+          if (isNear) move(wanted - from);
+          else {
+            resizeEdge(control, edge, wanted - from, axisState(control, axis));
+            renderCanvas();
+            renderProperties();
+            markDirty();
+          }
+        },
+      });
+      input.value = showing();
+      liveValue(input, showing);
+      watchProperty(control, holder, input);
+
+      // Marked the way every other row a formula decides is marked. What decides an edge lives in
+      // the position or the size rather than in a property of the row's own, so the class is put
+      // on rather than worked out from a key, but what it says is the same thing. It is kept up
+      // with the value, because a drag can link an edge and the mark is half of what a row says.
+      const element = row(control, null, ANCHOR_LABELS[edge], () => input, { hint });
+      const mark = () => {
+        const { linked: following } = held();
+        element.classList.toggle('bound', Boolean(following || ownFormula()));
+      };
+      expressionChecks.push(mark);
+      mark();
+      return element;
+    }
+
     // Aligning against the component is the everyday designer action that coordinates make tedious.
     // Each button sets one axis and leaves the other alone. With several controls selected it is
     // the box around them that gets aligned and they all travel together, so the arrangement
@@ -3214,30 +3427,813 @@ export default class ${CLASS_NAME(name)} {
         button('⤓', 'Align bottom', 'y', 'end')));
     }
 
+    // ---- anchoring an edge to something else ----
+    // A coordinate says where an edge is. An anchor says what it is measured from: an edge of the
+    // frame the control sits in, or an edge of another control beside it.
+    //
+    // Anchor one edge of an axis and the control moves to keep up with it, carrying its size. It
+    // is the second anchor on the same axis that makes a control stretch: with both edges told
+    // where to be, the only thing left to give is the size between them. That is how a grid keeps
+    // a 30px margin on the right when the component is made wider, and it is why anchoring only
+    // the right edge slides a control along instead.
+    //
+    // An anchor is not a second place where geometry lives. It is written as the formula it means,
+    // into the same x, y, w and h the Layout rows edit, and read back out of that formula. So the
+    // canvas, Preview and the saved document know nothing about anchors; an anchor someone
+    // replaces by hand keeps working; and a formula written by hand that says what an anchor says
+    // is drawn as that anchor.
+    //
+    // The offset is signed and reads the way a CAD dimension does: the edge sits at
+    // `target edge + offset`. A right edge 30px inside the frame's right is therefore -30, which
+    // is the number the dimension line puts on screen.
+
+    const EDGES = ['left', 'right', 'top', 'bottom'];
+    const AXIS_OF = { left: 'x', right: 'x', top: 'y', bottom: 'y' };
+
+    const ANCHOR_AXES = {
+      x: {
+        axis: 'x', pos: 'x', size: 'w', selfPos: 'self.x', selfSize: 'self.w',
+        near: 'left', far: 'right', extent: 'width',
+        // `<something> - self.w` places the far edge by moving the control; `- self.x` places it by
+        // stretching the control. Which one an anchor used is which of the two it is read back from.
+        fromPos: /^(.*?)\s*-\s*self\.w\s*$/i,
+        fromSize: /^(.*?)\s*-\s*self\.x\s*$/i,
+      },
+      y: {
+        axis: 'y', pos: 'y', size: 'h', selfPos: 'self.y', selfSize: 'self.h',
+        near: 'top', far: 'bottom', extent: 'height',
+        fromPos: /^(.*?)\s*-\s*self\.h\s*$/i,
+        fromSize: /^(.*?)\s*-\s*self\.y\s*$/i,
+      },
+    };
+
+    const axisFor = (edge) => ANCHOR_AXES[AXIS_OF[edge]];
+
+    // The frame a control is placed in, and what else shares that frame. A control inside a
+    // container is placed in the container's own coordinates, so its far edge is the container's
+    // width rather than the component's, and the controls it can be anchored to are the ones
+    // sharing that container. Anything else would be a formula about one space written in another.
+    function frameOf(control) {
+      let parent = null;
+      walk(model.doc.controls, (candidate, container) => {
+        if (candidate.id === control.id) parent = container;
+      });
+      return {
+        parent,
+        title: parent ? (parent.name || 'container') : 'component',
+        // An unnamed container has no spelling a formula could use, so its far edges are not on offer.
+        usable: !parent || Boolean(parent.name),
+        siblings: (parent ? parent.controls : model.doc.controls)
+          .filter((candidate) => candidate !== control && candidate.name),
+      };
+    }
+
+    // How an edge of a target is written in a formula. The frame's near edges are zero, because a
+    // control's coordinates are already measured from them.
+    function anchorRef(control, target, edge) {
+      const axis = axisFor(edge);
+      if (target !== 'frame') return `${target}.${edge}`;
+      if (edge === axis.near) return '0';
+      const { parent } = frameOf(control);
+      return parent ? `${parent.name}.${axis.size}` : `component.${axis.extent}`;
+    }
+
+    // And back again, so a formula can say which target and edge it names.
+    function anchorTargetOf(control, ref, axis) {
+      if (ref === '0') return { target: 'frame', targetEdge: axis.near };
+      const { parent } = frameOf(control);
+      const far = parent ? `${parent.name}.${axis.size}` : `component.${axis.extent}`;
+      if (ref.toLowerCase() === far.toLowerCase()) return { target: 'frame', targetEdge: axis.far };
+      const [name, edge = ''] = ref.split('.');
+      if (!EDGES.includes(edge.toLowerCase()) || AXIS_OF[edge.toLowerCase()] !== axis.axis) return null;
+      return { target: name, targetEdge: edge.toLowerCase() };
+    }
+
+    // `ref + n`, written the way someone would write it: the bare reference when the offset is
+    // zero, and a plain number when there is no reference to add it to.
+    function anchorTerm(ref, offset) {
+      const at = Math.round(offset);
+      if (ref === '0') return String(at);
+      if (!at) return ref;
+      return `${ref} ${at < 0 ? '-' : '+'} ${Math.abs(at)}`;
+    }
+
+    const ANCHOR_TERM = new RegExp('^\\s*(?:'
+      + '([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?)\\s*(?:([+-])\\s*(\\d+(?:\\.\\d+)?)\\s*)?'
+      + '|(-?\\d+(?:\\.\\d+)?)\\s*)$');
+
+    function parseAnchorTerm(text) {
+      const match = ANCHOR_TERM.exec(text);
+      if (!match) return null;
+      if (match[4] !== undefined) return { ref: '0', offset: Number(match[4]) };
+      return {
+        ref: match[1],
+        offset: match[3] === undefined ? 0 : (match[2] === '-' ? -1 : 1) * Number(match[3]),
+      };
+    }
+
+    // What the two bindings on one axis add up to. `near` and `far` are each an anchor, `'custom'`
+    // for a formula this designer did not write, or null for an edge nothing holds. `farIn` says
+    // which property the far anchor is living in, so moving it out leaves a number behind.
+    function readAnchors(control, axis) {
+      const posText = isFormula(control.bind?.[axis.pos])
+        ? formulaBody(control.bind[axis.pos]).trim() : null;
+      const sizeText = isFormula(control.bind?.[axis.size])
+        ? formulaBody(control.bind[axis.size]).trim() : null;
+
+      const asAnchor = (term) => {
+        if (!term) return null;
+        const named = anchorTargetOf(control, term.ref, axis);
+        return named ? { ...named, offset: term.offset } : null;
+      };
+
+      let far = null;
+      let farIn = null;
+      if (sizeText) {
+        const stretched = axis.fromSize.exec(sizeText);
+        far = asAnchor(stretched ? parseAnchorTerm(stretched[1]) : null) || 'custom';
+        if (far !== 'custom') farIn = 'size';
+      }
+
+      // A plain coordinate is not an anchor: it says where an edge is, not what it follows. The
+      // difference is the whole of what anchoring the far edge does — with the near edge anchored
+      // the control stretches to reach, and with nothing holding it the control moves.
+      let near = null;
+      if (posText) {
+        // `far` may already be 'custom' because the size holds a formula this designer did not
+        // write. That says nothing about the position, and it must not stop a far anchor being
+        // read out of it: an anchor nobody can see is an anchor nobody can take off either.
+        const anchoredFar = far && far !== 'custom';
+        const moved = anchoredFar ? null : axis.fromPos.exec(posText);
+        const movedAnchor = asAnchor(moved ? parseAnchorTerm(moved[1]) : null);
+        if (movedAnchor) { far = movedAnchor; farIn = 'pos'; }
+        else near = asAnchor(parseAnchorTerm(posText)) || 'custom';
+      }
+
+      return { near, far, farIn };
+    }
+
+    // Every anchor a control carries, by the edge it holds. What the canvas draws dimensions for.
+    function anchorsOf(control) {
+      const found = {};
+      for (const axis of Object.values(ANCHOR_AXES)) {
+        const state = readAnchors(control, axis);
+        if (state.near && state.near !== 'custom') found[axis.near] = state.near;
+        if (state.far && state.far !== 'custom') found[axis.far] = state.far;
+      }
+      return found;
+    }
+
+    // Writing the pair back out. Only what changed is touched: a width formula of somebody's own
+    // survives an anchor being put on the left edge, and an anchor that moves between the two
+    // properties leaves the one it left holding the size or position it last had, so nothing jumps.
+    function applyAnchors(control, axis, previous, next, options = {}) {
+      const view = pass.viewOf(control);
+      const bind = (control.bind ??= {});
+      const { near, far } = next;
+      const anchored = far && far !== 'custom';
+
+      const holdPos = () => {
+        delete bind[axis.pos];
+        control[axis.pos] = Math.max(0, Math.round(view[axis.pos]));
+      };
+      const holdSize = () => {
+        delete bind[axis.size];
+        control[axis.size] = Math.max(GRID, Math.round(view[axis.size]));
+      };
+      const term = (anchor) =>
+        anchorTerm(anchorRef(control, anchor.target, anchor.targetEdge), anchor.offset);
+
+      if (far !== 'custom') {
+        if (previous.farIn === 'size') holdSize();
+        else if (previous.farIn === 'pos') holdPos();
+        if (anchored) {
+          // With the near edge held by something, the far edge is reached by stretching. With
+          // nothing holding it, the control keeps its size and moves instead.
+          if (near === null) bind[axis.pos] = `=${term(far)} - ${axis.selfSize}`;
+          else bind[axis.size] = `=${term(far)} - ${axis.selfPos}`;
+        }
+      }
+
+      if (near !== 'custom' && !(anchored && near === null)) {
+        if (!near) holdPos();
+        else bind[axis.pos] = '=' + term(near);
+      }
+
+      // A drag does this many times a second and redraws once at the end of each move, so it asks
+      // for the write without the three things that normally follow one.
+      if (options.quiet) return;
+      renderCanvas();
+      renderProperties();
+      markDirty();
+    }
+
+    // Links a drag made by landing on an edge, rather than links somebody dragged a handle onto.
+    // They are provisional: pulling the control away from what it landed on takes the link off
+    // again, which is what makes snapping onto an edge safe to do by accident. Session-only,
+    // because a link that survives a save is one whoever saved it meant to keep.
+    const autoLinks = new Set();
+    const autoKey = (control, edge) => `${control.id}:${edge}`;
+
+    // Setting or clearing one edge, which is all any of the gestures actually do.
+    function setAnchor(control, edge, anchor, options = {}) {
+      // Only a link a drag landed on is provisional. Anything else said so deliberately, so
+      // setting one by hand over a provisional one is what makes it permanent.
+      if (anchor && options.auto) autoLinks.add(autoKey(control, edge));
+      else autoLinks.delete(autoKey(control, edge));
+
+      const axis = axisFor(edge);
+      const previous = readAnchors(control, axis);
+      const side = edge === axis.near ? 'near' : 'far';
+      applyAnchors(control, axis, previous, { ...previous, [side]: anchor }, options);
+    }
+
+    // ---- auto-anchor ----
+    // How near an edge has to come before a drag lands on it, and how far it then has to be
+    // pulled to be considered off it again. The gap between the two is what makes an edge feel
+    // magnetic rather than sticky: it takes hold at a distance a hand would call touching, and
+    // lets go at one a hand would call leaving.
+    const EDGE_REACH = GRID;
+    const EDGE_ESCAPE = 18;
+
+    // A link the drag landed on, given up once the control has been pulled clear of it. Worked out
+    // from where the drag wants the control rather than from where it is, because a linked edge is
+    // not the drag's to move until the link has gone.
+    function releaseAutoLinks(control, wanted) {
+      for (const [edge, anchor] of Object.entries(anchorsOf(control))) {
+        if (!autoLinks.has(autoKey(control, edge))) continue;
+        const axis = axisFor(edge);
+        const at = edgeValue(control, anchor.target, anchor.targetEdge) + anchor.offset;
+        const asked = edge === axis.near
+          ? wanted[axis.axis]
+          : wanted[axis.axis] + asNumber(control[axis.size]);
+        if (Math.abs(asked - at) <= EDGE_ESCAPE) continue;
+        setAnchor(control, edge, null, { quiet: true });
+      }
+    }
+
+    // And the other half: an axis nothing holds, landing on an edge within reach of it. The
+    // control is moved the last few pixels onto the edge, which is snapping and all that snapping
+    // is. Whether the landing is then remembered as a rule is auto-anchor's question, and it is
+    // asked here rather than around the whole thing: someone who wants a drag to line up on the
+    // edges of its neighbours does not necessarily want every line-up written into the document.
+    function takeEdgeSnaps(control) {
+      for (const axis of Object.values(ANCHOR_AXES)) {
+        if (isBound(control, axis.pos) || isBound(control, axis.size)) continue;
+        const at = {
+          [axis.near]: asNumber(control[axis.pos]),
+          [axis.far]: asNumber(control[axis.pos]) + asNumber(control[axis.size]),
+        };
+        let best = null;
+        for (const target of anchorTargets(control)) {
+          for (const targetEdge of EDGES) {
+            if (AXIS_OF[targetEdge] !== axis.axis) continue;
+            const line = edgeValue(control, target, targetEdge);
+            for (const edge of [axis.near, axis.far]) {
+              const away = Math.abs(line - at[edge]);
+              if (away > EDGE_REACH || (best && away >= best.away)) continue;
+              best = { edge, target, targetEdge, away, shift: line - at[edge] };
+            }
+          }
+        }
+        if (!best) continue;
+        control[axis.pos] = Math.max(0, Math.round(asNumber(control[axis.pos]) + best.shift));
+        if (!autoAnchor) continue;
+        setAnchor(control, best.edge,
+          { target: best.target, targetEdge: best.targetEdge, offset: 0 },
+          { quiet: true, auto: true });
+      }
+    }
+
+    // ---- resizing an edge ----
+    // A resize handle moves the edge it is on and leaves the opposite one alone. That is the whole
+    // rule, and it holds whether or not the edge follows something: a linked edge is dragged by
+    // changing what it is measured from, so the link survives the drag rather than blocking it.
+    //
+    // Which of the stored properties has to give depends on what already holds them, and there are
+    // only four states an axis can be in. Writing it as "move the edge, then let the position and
+    // the size take what is left" covers all four, because a property a formula already decides
+    // refuses the write and the formula does the work instead:
+    //
+    //   nothing linked        pos and size are numbers and both take the change
+    //   near linked           the near link moves, and the size gives so the far edge stays
+    //   far linked, moving    the position follows the far edge, so the size gives
+    //   far and near linked   both edges are decided, and the size between them follows
+    //
+    // `from` is the axis as it stood when the drag began, so a drag is always the whole distance
+    // from where it started rather than a step added to the last frame.
+    function resizeEdge(control, edge, delta, from) {
+      const axis = axisFor(edge);
+      const holding = edge === axis.near ? from.near : from.far;
+      if (holding && holding !== 'custom') {
+        setAnchor(control, edge, { ...holding, offset: holding.offset + delta }, { quiet: true });
+      }
+      if (edge === axis.near) {
+        // The edge being moved is what gets held back, and the position and the size are both
+        // worked out from where it ended up. Clamping the two separately lets one of them take the
+        // whole distance while the other stops, which walks the opposite edge across the canvas:
+        // dragging a left edge past zero would push the right edge along with it.
+        const opposite = from.pos + from.size;
+        const held = Math.min(Math.max(0, from.pos + delta), opposite - GRID);
+        if (!isBound(control, axis.pos)) control[axis.pos] = Math.round(held);
+        if (!isBound(control, axis.size)) {
+          control[axis.size] = Math.max(GRID, Math.round(opposite - held));
+        }
+      } else if (!isBound(control, axis.size)) {
+        control[axis.size] = Math.max(GRID, Math.round(from.size + delta));
+      }
+    }
+
+    // The axis as it stands, which is what a resize is measured from for its whole length.
+    function axisState(control, axis) {
+      const { near, far } = readAnchors(control, axis);
+      return {
+        near,
+        far,
+        pos: asNumber(control[axis.pos]),
+        size: asNumber(control[axis.size]),
+      };
+    }
+
+    // Where an edge of a target is now, in the coordinates the control is placed in. This is what
+    // turns a drop into an offset, so nothing moves the moment it is anchored.
+    function edgeValue(control, target, edge) {
+      const axis = axisFor(edge);
+      if (target === 'frame') {
+        if (edge === axis.near) return 0;
+        const { parent } = frameOf(control);
+        if (parent) return pass.viewOf(parent)[axis.size];
+        const component = pass.componentView();
+        return axis.axis === 'x' ? component.width : component.height;
+      }
+      let found = null;
+      walk(model.doc.controls, (candidate) => {
+        if ((candidate.name || '').toLowerCase() === String(target).toLowerCase()) found = candidate;
+      });
+      if (!found) return 0;
+      const view = pass.viewOf(found);
+      return edge === axis.near ? view[axis.pos] : view[axis.pos] + view[axis.size];
+    }
+
+    const controlEdgeValue = (view, edge) => {
+      const axis = axisFor(edge);
+      return edge === axis.near ? view[axis.pos] : view[axis.pos] + view[axis.size];
+    };
+
+    // What a control may be anchored to. Links are a dependency graph, and a control may only be
+    // linked to something above it in that graph: never to what already follows it, directly or
+    // through a chain of others.
+    //
+    // This is not only about #CIRC!. A control being dragged carries its followers with it, so a
+    // follower's edges are moving too — and an edge that moves with the drag is an edge the drag
+    // can chase. Snapping onto one moves the control, which moves the follower, which moves the
+    // edge again: the control shakes instead of settling. Leaving descendants out of the targets
+    // is what stops that, and the followers still keep up because they are the ones following.
+    function anchorTargets(control) {
+      const { siblings, usable } = frameOf(control);
+
+      // By name, and including the control itself: a link that names the control is exactly the
+      // one that has to be recognised, and looking it up among the others would never find it.
+      const byName = new Map();
+      for (const candidate of [control, ...siblings]) {
+        if (candidate.name) byName.set(candidate.name.toLowerCase(), candidate);
+      }
+      const links = new Map(siblings.map((sibling) => [sibling.id, anchorsOf(sibling)]));
+
+      // Everything downstream of the control, gathered a step at a time until a pass adds nobody.
+      const following = new Set([control.id]);
+      for (let growing = true; growing;) {
+        growing = false;
+        for (const sibling of siblings) {
+          if (following.has(sibling.id)) continue;
+          const leans = Object.values(links.get(sibling.id)).some((anchor) => {
+            if (anchor.target === 'frame') return false;
+            const target = byName.get(String(anchor.target).toLowerCase());
+            return Boolean(target) && following.has(target.id);
+          });
+          if (!leans) continue;
+          following.add(sibling.id);
+          growing = true;
+        }
+      }
+
+      return [
+        ...(usable ? ['frame'] : []),
+        ...siblings.filter((sibling) => !following.has(sibling.id)).map((sibling) => sibling.name),
+      ];
+    }
+
+    // What a link is called where one is talked about. The frame has no name of its own that
+    // would mean anything in a sentence, so it is called what it is.
+    const ANCHOR_LABELS = { left: 'Left', right: 'Right', top: 'Top', bottom: 'Bottom' };
+
+    const anchorName = (control, target) =>
+      (target === 'frame' ? frameOf(control).title : target);
+
+    // ---- anchors on the canvas ----
+    // Anchoring is a drawing act, so it is done on the drawing. With Anchors on, the one selected
+    // control grows a handle in the middle of each edge; drag one onto an edge of the frame or of
+    // another control and that edge is anchored to it. Every anchor in force is drawn as a CAD
+    // dimension — a witness line, arrows both ways and the offset — which is how the layout is
+    // read as well as how an anchor is retyped or taken off.
+
+    const SVG = 'http://www.w3.org/2000/svg';
+
+    function svgNode(name, attributes) {
+      const node = document.createElementNS(SVG, name);
+      for (const [key, value] of Object.entries(attributes)) {
+        if (value !== null && value !== undefined) node.setAttribute(key, String(value));
+      }
+      return node;
+    }
+
+    // How near the pointer has to get to an edge before dropping on it counts.
+    const ANCHOR_REACH = 44;
+
+    function renderAnchorOverlay() {
+      if (model.mode !== 'design') return;
+      const chosen = selectedControls();
+      if (chosen.length !== 1) return;
+      const control = chosen[0];
+      const box = canvas.querySelector(`[data-id="${control.id}"]`);
+      if (isLocked(control) || !box) return;
+
+      const lines = svgNode('svg', { class: 'gfd-anchor-lines' });
+      const layer = h('div', { class: 'gfd-anchor-layer' });
+      canvas.append(lines, layer);
+
+      // Everything is drawn in the canvas's own pixels, read off the elements rather than worked
+      // out from coordinates: a control inside a container is placed in the container's space, and
+      // a drawing has to be in one space or its lines would not meet the edges they measure.
+      const frame = frameOf(control);
+      const elementFor = (target) => {
+        if (target !== 'frame') return canvas.querySelector(`[data-control-box="${quoted(target)}"]`);
+        return frame.parent
+          ? canvas.querySelector(`[data-id="${frame.parent.id}"] > .gfd-container`)
+          : canvas;
+      };
+
+      // Where the overlay's own coordinates start. The layers are `inset: 0` inside the canvas,
+      // so they begin at its padding box, while a bounding rect is measured to its border box.
+      // The canvas has a border, so measuring against the wrong one of the two puts every handle
+      // and every dimension a pixel out from the edge it is drawn on.
+      const bounds = canvas.getBoundingClientRect();
+      const surface = {
+        left: bounds.left + canvas.clientLeft,
+        top: bounds.top + canvas.clientTop,
+      };
+      const rectOf = (element) => {
+        const box = element.getBoundingClientRect();
+        return {
+          left: box.left - surface.left,
+          right: box.right - surface.left,
+          top: box.top - surface.top,
+          bottom: box.bottom - surface.top,
+        };
+      };
+
+      const pointOn = (rect, edge) => ({
+        x: edge === 'left' ? rect.left : edge === 'right' ? rect.right : (rect.left + rect.right) / 2,
+        y: edge === 'top' ? rect.top : edge === 'bottom' ? rect.bottom : (rect.top + rect.bottom) / 2,
+      });
+
+      const edgePoint = (target, edge) => {
+        const element = elementFor(target);
+        return element ? pointOn(rectOf(element), edge) : null;
+      };
+
+      const selfPoint = (edge) => pointOn(rectOf(box), edge);
+
+      const line = (x1, y1, x2, y2, options = {}) => {
+        const node = svgNode('line', {
+          x1, y1, x2, y2,
+          class: options.class || 'gfd-dim-line',
+          'stroke-dasharray': options.dash || null,
+        });
+        lines.append(node);
+        return node;
+      };
+
+      // An arrowhead, drawn as a triangle rather than an SVG marker so it keeps its size whatever
+      // the line it sits on does.
+      const arrow = (x, y, dx, dy) => {
+        const size = 6;
+        const wing = 3.2;
+        const length = Math.hypot(dx, dy) || 1;
+        const ux = dx / length;
+        const uy = dy / length;
+        const bx = x - ux * size;
+        const by = y - uy * size;
+        lines.append(svgNode('polygon', {
+          class: 'gfd-dim-arrow',
+          points: `${x},${y} ${bx - uy * wing},${by + ux * wing} ${bx + uy * wing},${by - ux * wing}`,
+        }));
+      };
+
+      // One anchor, as a dimension: the measured line between the two edges with an arrowhead at
+      // each end, and a witness line out of the target's edge to meet it.
+      function drawDimension(edge, anchor) {
+        const from = selfPoint(edge);
+        const to = edgePoint(anchor.target, anchor.targetEdge);
+        if (!to) return null;
+        const over = 7;
+
+        if (AXIS_OF[edge] === 'x') {
+          const y = from.y;
+          line(from.x, y, to.x, y, { dash: '5 4' });
+          line(to.x, to.y, to.x, y + (y >= to.y ? over : -over), { class: 'gfd-dim-witness' });
+          const towards = to.x >= from.x ? 1 : -1;
+          arrow(from.x, y, towards, 0);
+          arrow(to.x, y, -towards, 0);
+          return { axis: 'x', from: from.x, to: to.x, across: y };
+        }
+
+        const x = from.x;
+        line(x, from.y, x, to.y, { dash: '5 4' });
+        line(to.x, to.y, x + (x >= to.x ? over : -over), to.y, { class: 'gfd-dim-witness' });
+        const towards = to.y >= from.y ? 1 : -1;
+        arrow(x, from.y, 0, towards);
+        arrow(x, to.y, 0, -towards);
+        return { axis: 'y', from: from.y, to: to.y, across: x };
+      }
+
+      // The offset, and the way off. Both sit on the dimension itself and stay out of the way
+      // until the pointer is on it, so a layout with six anchors is still a layout you can see.
+      function drawDimensionControl(edge, anchor, span) {
+        const hit = h('div', { class: 'gfd-dim-hit gfd-dim-' + span.axis });
+        // Never so short there is nothing to put the pointer on: two edges aligned to each other
+        // measure zero, and that is still a dimension somebody has to be able to reach. The room
+        // that needs is taken outwards, away from the control the dimension starts on — a strip
+        // reaching into it would be a band of the control that could no longer be pressed, and
+        // which way is "into it" is decided by which edge this is, not by where the target sits.
+        const outwards = edge === axisFor(edge).near ? -1 : 1;
+        const low = Math.min(span.from, span.to);
+        const high = Math.max(span.from, span.to);
+        const length = Math.max(40, high - low + 16);
+        const near = outwards < 0 ? high - length : low;
+        if (span.axis === 'x') {
+          Object.assign(hit.style,
+            { left: `${near}px`, top: `${span.across}px`, width: `${length}px` });
+        } else {
+          Object.assign(hit.style,
+            { left: `${span.across}px`, top: `${near}px`, height: `${length}px` });
+        }
+
+        const named = anchorName(control, anchor.target);
+
+        // A chain link rather than a cross, because the button is not about deleting a row of the
+        // panel: it says this edge is linked to something. Under the pointer it becomes the broken
+        // link, which is the whole sentence — linked, and about to be unlinked.
+        const release = h('button', {
+          type: 'button',
+          class: 'gfd-dim-release',
+          title: `${ANCHOR_LABELS[edge]} edge linked to ${named}. Click to unlink.`,
+          'aria-label': `Unlink the ${edge} edge`,
+          'data-testid': `anchor-release-${edge}`,
+          onpointerdown: (event) => event.stopPropagation(),
+          onclick: () => setAnchor(control, edge, null),
+        },
+          svgIcon(ICONS.link, 'gfd-dim-icon shut'),
+          svgIcon(ICONS.unlink, 'gfd-dim-icon open'));
+
+        // The box is as wide as the number in it, so a dimension carries no empty field around the
+        // drawing.
+        const size = (input) => {
+          input.style.width = `calc(${Math.max(2, String(input.value || 0).length)}ch + 10px)`;
+        };
+
+        const offset = h('input', {
+          type: 'text',
+          inputmode: 'numeric',
+          class: 'gfd-dim-offset',
+          title: `Distance from the ${anchor.targetEdge} of ${named}, in pixels`,
+          'data-testid': `anchor-offset-${edge}`,
+          onpointerdown: (event) => event.stopPropagation(),
+          oninput: (event) => size(event.target),
+          onchange: (event) => {
+            const typed = Number(event.target.value);
+            setAnchor(control, edge,
+              { ...anchor, offset: Number.isFinite(typed) ? Math.round(typed) : 0 });
+          },
+        });
+        offset.value = String(Math.round(anchor.offset));
+        size(offset);
+
+        // Named for what it is rather than `control`, which in this file means the thing being
+        // anchored: the two closures above call setAnchor with one of them.
+        const readout = h('div', { class: 'gfd-dim-control' }, release, offset);
+        hit.append(readout);
+
+        // The control sits clear of the dimension, so that the anchor handle the line runs into
+        // stays visible under it. That leaves a gap between the line that reveals the control and
+        // the control itself, so the reveal is held open for a moment rather than ending the
+        // instant the pointer leaves the line: long enough to cross the gap, short enough not to
+        // leave controls lying about the drawing.
+        let inside = 0;
+        let closing = null;
+        const opened = () => {
+          inside += 1;
+          clearTimeout(closing);
+          hit.classList.add('open');
+        };
+        const left = () => {
+          inside -= 1;
+          clearTimeout(closing);
+          closing = setTimeout(() => { if (inside <= 0) hit.classList.remove('open'); }, 220);
+        };
+        for (const zone of [hit, readout]) {
+          zone.addEventListener('pointerenter', opened);
+          zone.addEventListener('pointerleave', left);
+        }
+
+        // Pressing the dimension is not pressing the canvas: without this the press behind it
+        // starts a selection band across the layout being measured.
+        hit.addEventListener('pointerdown', (event) => event.stopPropagation());
+        layer.append(hit);
+      }
+
+      const anchors = anchorsOf(control);
+      for (const [edge, anchor] of Object.entries(anchors)) {
+        const span = drawDimension(edge, anchor);
+        if (span) drawDimensionControl(edge, anchor, span);
+      }
+
+      // ---- dragging an anchor on ----
+
+      function startAnchorDrag(event, edge) {
+        event.preventDefault();
+        event.stopPropagation();
+        const axis = AXIS_OF[edge];
+        const start = selfPoint(edge);
+        const band = line(start.x, start.y, start.x, start.y, { class: 'gfd-anchor-band' });
+
+        // Where the anchor could land: the same axis only, because an edge measured against one at
+        // right angles to it would not be a distance anybody could read.
+        const spots = [];
+        for (const target of anchorTargets(control)) {
+          const element = elementFor(target);
+          if (!element) continue;
+          const rect = rectOf(element);
+          for (const targetEdge of EDGES) {
+            if (AXIS_OF[targetEdge] !== axis) continue;
+            const at = pointOn(rect, targetEdge);
+            // Named for what it stands for, so what a drag is being offered can be read off the
+            // canvas rather than inferred from where the dots landed.
+            const dot = h('div', {
+              class: 'gfd-anchor-target',
+              'data-target': target,
+              'data-edge': targetEdge,
+            });
+            dot.style.left = `${at.x}px`;
+            dot.style.top = `${at.y}px`;
+            layer.append(dot);
+            spots.push({ target, targetEdge, at, rect, dot });
+          }
+        }
+
+        // The whole edge is the target, not the dot on it. Dropping on the middle of the
+        // component's right edge would mean dragging to the middle of the component, so what
+        // counts is being near the line: how far the pointer is from it along the axis being
+        // measured, and whether it is beside the target at all across the other one.
+        let candidate = null;
+        const nearest = (clientX, clientY) => {
+          const along = (axis === 'x' ? clientX - surface.left : clientY - surface.top);
+          const across = (axis === 'x' ? clientY - surface.top : clientX - surface.left);
+          let best = null;
+          let score = Infinity;
+          for (const spot of spots) {
+            const line = axis === 'x' ? spot.at.x : spot.at.y;
+            const gap = Math.abs(line - along);
+            if (gap > ANCHOR_REACH) continue;
+            const from = axis === 'x' ? spot.rect.top : spot.rect.left;
+            const to = axis === 'x' ? spot.rect.bottom : spot.rect.right;
+            const past = Math.max(from - across, across - to, 0);
+            if (past > ANCHOR_REACH) continue;
+            const how = gap + past / 2;
+            if (how < score) { score = how; best = spot; }
+          }
+          return best;
+        };
+
+        // The edge itself, drawn while the pointer is near it. A dot says where a target is; this
+        // says which one is about to be taken, which is the thing worth being sure of.
+        const guide = line(0, 0, 0, 0, { class: 'gfd-anchor-edge' });
+        const showGuide = () => {
+          if (!candidate) { guide.setAttribute('stroke-opacity', '0'); return; }
+          guide.setAttribute('stroke-opacity', '1');
+          const { rect, at } = candidate;
+          if (axis === 'x') {
+            guide.setAttribute('x1', String(at.x));
+            guide.setAttribute('x2', String(at.x));
+            guide.setAttribute('y1', String(rect.top));
+            guide.setAttribute('y2', String(rect.bottom));
+          } else {
+            guide.setAttribute('y1', String(at.y));
+            guide.setAttribute('y2', String(at.y));
+            guide.setAttribute('x1', String(rect.left));
+            guide.setAttribute('x2', String(rect.right));
+          }
+        };
+        showGuide();
+
+        // A handle is a thing to drag, not a thing to click. Anchoring on a bare press would
+        // anchor whatever happened to be within reach of the handle — and the frame's own edge is
+        // within reach of any control near it — so a press that goes nowhere is not a drop.
+        let moved = false;
+
+        const onMove = (moveEvent) => {
+          if (moveEvent.buttons === 0) { onUp(moveEvent); return; }
+          if (!moved
+            && Math.abs(moveEvent.clientX - event.clientX)
+              + Math.abs(moveEvent.clientY - event.clientY) < 3) return;
+          moved = true;
+          band.setAttribute('x2', String(moveEvent.clientX - surface.left));
+          band.setAttribute('y2', String(moveEvent.clientY - surface.top));
+          candidate = nearest(moveEvent.clientX, moveEvent.clientY);
+          for (const spot of spots) spot.dot.classList.toggle('hot', spot === candidate);
+          showGuide();
+        };
+
+        const onUp = (upEvent) => {
+          canvas.removeEventListener('pointermove', onMove);
+          canvas.removeEventListener('pointerup', onUp);
+          canvas.removeEventListener('pointercancel', onUp);
+          canvas.removeEventListener('lostpointercapture', onUp);
+          const drop = moved && (candidate || nearest(upEvent.clientX, upEvent.clientY));
+          // Let go of an anchor over nothing — or without having gone anywhere — and nothing
+          // happens, which is how a drag started by accident is called off.
+          if (!drop) { renderCanvas(); return; }
+          // The offset is whatever gap the control already has, so anchoring does not move it.
+          const now = controlEdgeValue(pass.viewOf(control), edge);
+          setAnchor(control, edge, {
+            target: drop.target,
+            targetEdge: drop.targetEdge,
+            offset: Math.round(now - edgeValue(control, drop.target, drop.targetEdge)),
+          });
+        };
+
+        capturePointer(event);
+        canvas.addEventListener('pointermove', onMove);
+        canvas.addEventListener('pointerup', onUp);
+        canvas.addEventListener('pointercancel', onUp);
+        canvas.addEventListener('lostpointercapture', onUp);
+      }
+
+      // The dimensions are drawn whichever handles are out, because they are how the layout is
+      // read rather than something to operate. The handles that put a link on are the other half
+      // of the resize handles, so only one of the two pairs is on the control at a time.
+      if (model.handles !== 'anchor') return;
+
+      for (const edge of EDGES) {
+        const at = selfPoint(edge);
+        const anchor = anchors[edge];
+        const named = anchor && anchorName(control, anchor.target);
+        const handle = h('div', {
+          class: 'gfd-anchor-handle' + (anchor ? ' held' : ''),
+          'data-edge': edge,
+          'data-testid': 'anchor-handle-' + edge,
+          title: anchor
+            ? `${ANCHOR_LABELS[edge]} edge linked to ${named}. Drag to link it to something else.`
+            : `Drag onto another edge to link the ${edge} edge to it.`,
+          onpointerdown: (event) => startAnchorDrag(event, edge),
+        });
+        handle.style.left = `${at.x}px`;
+        handle.style.top = `${at.y}px`;
+        layer.append(handle);
+      }
+    }
+
     // The box around everything selected, edited as one. Left and Top move the group; Width and
     // Height scale it, keeping the parts in proportion. Each is a plain row with no ƒ, because an
     // expression belongs to a property of a control and this box is not one.
     function groupGeometryRows() {
-      const box = selectionBox();
+      // Read at the moment it is wanted rather than once, so the four numbers follow a drag
+      // instead of waiting for it to finish.
+      const side = (key) => () => Math.round(selectionBox()?.[key] ?? 0);
+
       // On change rather than on every keystroke: half-typed numbers are still numbers, and
       // scaling a group to 1px on the way to 120 would flatten it before you finished typing.
-      const field = (label, value, hint, apply) => row(null, null, label, () => h('input', {
-        type: 'number',
-        class: 'gfd-number',
-        value,
-        'data-testid': 'group-' + label.toLowerCase(),
-        onchange: (event) => apply(Number(event.target.value) || 0),
-      }), { hint });
+      const field = (label, read, hint, apply) => row(null, null, label, () => {
+        const input = h('input', {
+          type: 'number',
+          class: 'gfd-number',
+          'data-testid': 'group-' + label.toLowerCase(),
+          onchange: (event) => apply(Number(event.target.value) || 0, read()),
+        });
+        input.value = String(read());
+        liveValue(input, () => String(read()));
+        return input;
+      }, { hint });
 
       return [
-        field('Left', box.x, 'The left edge of everything selected — moves them together',
-          (next) => moveSelection(next - box.x, 0)),
-        field('Top', box.y, 'The top edge of everything selected — moves them together',
-          (next) => moveSelection(0, next - box.y)),
-        field('Width', box.w, 'The width of the whole selection — scales it',
-          (next) => box.w > 0 && scaleSelection(next / box.w, 1)),
-        field('Height', box.h, 'The height of the whole selection — scales it',
-          (next) => box.h > 0 && scaleSelection(1, next / box.h)),
+        field('Left', side('x'), 'The left edge of everything selected — moves them together',
+          (next, from) => moveSelection(next - from, 0)),
+        field('Top', side('y'), 'The top edge of everything selected — moves them together',
+          (next, from) => moveSelection(0, next - from)),
+        field('Width', side('w'), 'The width of the whole selection — scales it',
+          (next, from) => from > 0 && scaleSelection(next / from, 1)),
+        field('Height', side('h'), 'The height of the whole selection — scales it',
+          (next, from) => from > 0 && scaleSelection(1, next / from)),
       ];
     }
 
@@ -3549,8 +4545,12 @@ export default class ${CLASS_NAME(name)} {
         return [
           heading(group ? 'Selection' : 'Layout'),
           ...(group ? groupGeometryRows() : [
-            row(control, 'x', 'Left', numberEditor(control, 'x')),
-            row(control, 'y', 'Top', numberEditor(control, 'y')),
+            // The four edges first, in the order the handles are named, then the size between
+            // them. Every one of the six says what it is: no row carries another row's business.
+            edgeRow(control, 'left'),
+            edgeRow(control, 'top'),
+            edgeRow(control, 'right'),
+            edgeRow(control, 'bottom'),
             row(control, 'w', 'Width', numberEditor(control, 'w')),
             row(control, 'h', 'Height', numberEditor(control, 'h')),
           ]),
@@ -4349,7 +5349,8 @@ export default class ${CLASS_NAME(name)} {
       const startY = event.clientY;
       const moving = handle ? [control] : movable();
       const start = new Map(moving.map((c) => [c.id, { x: c.x, y: c.y }]));
-      const size = { w: control.w, h: control.h };
+      // Both axes as they stand, so every frame of a resize is measured from where the drag began.
+      const axes = { x: axisState(control, ANCHOR_AXES.x), y: axisState(control, ANCHOR_AXES.y) };
       const mode = handle ? handle.dataset.handle : 'move';
       let moved = false;
 
@@ -4377,14 +5378,36 @@ export default class ${CLASS_NAME(name)} {
           // instead of each part landing on the grid separately.
           const shiftX = snap(dx);
           const shiftY = snap(dy);
+          // Snapping onto edges works on one control. A group dragged together is an arrangement
+          // being moved, not an edge being placed, and pulling every part of it onto whatever it
+          // passed would be an answer to a question nobody asked.
+          const alone = moving.length === 1 && edgeSnapping() ? moving[0] : null;
+          if (alone && autoAnchoring()) {
+            const from = start.get(alone.id);
+            releaseAutoLinks(alone, { x: from.x + shiftX, y: from.y + shiftY });
+          }
           for (const target of moving) {
             const from = start.get(target.id);
             if (!isBound(target, 'x')) target.x = Math.max(0, from.x + shiftX);
             if (!isBound(target, 'y')) target.y = Math.max(0, from.y + shiftY);
           }
+          if (alone) takeEdgeSnaps(alone);
         } else {
-          if (mode.includes('e') && !isBound(control, 'w')) control.w = Math.max(GRID, snap(size.w + dx));
-          if (mode.includes('s') && !isBound(control, 'h')) control.h = Math.max(GRID, snap(size.h + dy));
+          // One call per edge the handle is on, so a corner is its two sides and nothing else.
+          // The snapping is worked out per edge and against that edge's own position, because the
+          // edge being dragged is the one that has to land on the grid. Measuring every edge from
+          // the control's corner puts the far edge back off the grid whenever the corner is off
+          // it, which is exactly the case someone turns snapping on to get out of.
+          const along = (axis, from, edge, by) => {
+            const at = edge === axis.near ? from.pos : from.pos + from.size;
+            return snap(at + by) - at;
+          };
+          const x = ANCHOR_AXES.x;
+          const y = ANCHOR_AXES.y;
+          if (mode.includes('w')) resizeEdge(control, 'left', along(x, axes.x, 'left', dx), axes.x);
+          if (mode.includes('e')) resizeEdge(control, 'right', along(x, axes.x, 'right', dx), axes.x);
+          if (mode.includes('n')) resizeEdge(control, 'top', along(y, axes.y, 'top', dy), axes.y);
+          if (mode.includes('s')) resizeEdge(control, 'bottom', along(y, axes.y, 'bottom', dy), axes.y);
         }
         renderCanvas();
       };
@@ -4397,6 +5420,11 @@ export default class ${CLASS_NAME(name)} {
         if (moved) {
           markDirty();
           renderProperties();
+        } else if (mode === 'move' && model.selection.length === 1) {
+          // A press on a control already selected that went nowhere is not a move. It is the
+          // click that turns its handles over: size it, or say what its edges follow.
+          model.handles = model.handles === 'resize' ? 'anchor' : 'resize';
+          renderCanvas();
         }
         moved = false;
       };
@@ -4451,9 +5479,10 @@ export default class ${CLASS_NAME(name)} {
     });
 
     // ---- palette ----
-    // The catalogue lives in the tab's own toolbar rather than in a sidebar, so the canvas keeps
-    // the full width of the workspace. Each entry can be dragged to a spot or clicked to drop one
-    // in the middle, which is also what makes the catalogue reachable without a pointer drag.
+    // The catalogue is a bar along the bottom of the workspace rather than a sidebar or a second
+    // toolbar row, so the canvas keeps the full width and the toolbar above it stays about the
+    // component as a whole. Each entry can be dragged to a spot or clicked to drop one in the
+    // middle, which is also what makes the catalogue reachable without a pointer drag.
 
     const palette = h('div', { class: 'gfd-palette' },
       ...Object.entries(CATALOGUE).filter(([, spec]) => !spec.retired).map(([type, spec]) => {
@@ -4490,6 +5519,9 @@ export default class ${CLASS_NAME(name)} {
           html: FORMAT.toHtml(model.doc, model.name.trim()),
         });
         model.id = savedComponent.id;
+        // Saving is keeping. A link the drag landed on has been written to the document now, so
+        // it stops being provisional and a later nudge no longer quietly takes it off again.
+        autoLinks.clear();
         tab.hasUnsavedDefinition = false;
         tab.title = savedComponent.name;
         refreshTabs();
@@ -4518,19 +5550,25 @@ export default class ${CLASS_NAME(name)} {
     // A component ends up on a host page whose theme it does not control, so the theme here is a way of
     // checking the work in both, not something stored in the document. Auto follows the workspace.
 
+    // One button that cycles rather than three that sit side by side, and the workspace's own switch
+    // rather than a second design for the same question. Following the workspace is still one of the
+    // three answers; it is simply the one the cycle starts on.
+
     const THEMES = [
-      { id: 'auto', label: 'Follow the workspace theme', icon: ICONS.contrast },
-      { id: 'light', label: 'Light', icon: ICONS.sun },
-      { id: 'dark', label: 'Dark', icon: ICONS.moon },
+      { id: 'auto', state: 'follows the workspace', choice: 'the workspace theme', icon: ICONS.contrast },
+      { id: 'light', state: 'light', choice: 'light', icon: ICONS.sun },
+      { id: 'dark', state: 'dark', choice: 'dark', icon: ICONS.moon },
     ];
 
-    const themeButtons = new Map(THEMES.map((definition) => [definition.id, h('button', {
-      class: 'view-btn gfd-theme-btn',
-      title: definition.label,
-      'aria-label': definition.label,
-      'data-testid': 'component-theme-' + definition.id,
-      onclick: () => setTheme(definition.id, true),
-    }, svgIcon(definition.icon, 'gfd-tab-icon'))]));
+    const themeButton = h('button', {
+      class: 'ghost theme-switch gfd-theme-switch',
+      type: 'button',
+      'data-testid': 'component-theme',
+      onclick: () => {
+        const at = THEMES.findIndex((definition) => definition.id === model.theme);
+        setTheme(THEMES[(at + 1) % THEMES.length].id, true);
+      },
+    });
 
     function setTheme(theme, remember) {
       model.theme = theme;
@@ -4538,10 +5576,16 @@ export default class ${CLASS_NAME(name)} {
       // into the component without the workspace around it changing.
       if (theme === 'auto') delete surface.dataset.theme;
       else surface.dataset.theme = theme;
-      for (const [id, button] of themeButtons) {
-        button.classList.toggle('active', id === theme);
-        button.setAttribute('aria-pressed', String(id === theme));
-      }
+      const at = Math.max(0, THEMES.findIndex((definition) => definition.id === theme));
+      const current = THEMES[at];
+      const next = THEMES[(at + 1) % THEMES.length];
+      // The icon says which of the three the component is on; the tooltip says what a click does,
+      // because a cycle is not something an icon can state on its own.
+      themeButton.replaceChildren(svgIcon(current.icon, 'gfd-theme-icon'));
+      const label = `Component theme: ${current.state} — click for ${next.choice}`;
+      themeButton.title = label;
+      themeButton.setAttribute('aria-label', label);
+      themeButton.dataset.themeMode = theme;
       if (remember) {
         try { localStorage.setItem('gridlet.components.theme', theme); } catch { /* unavailable */ }
         // The panel marks the colour column this theme shows, so it is redrawn with the component.
@@ -4549,10 +5593,12 @@ export default class ${CLASS_NAME(name)} {
       }
     }
 
-    // ---- grid switches ----
-    // Two switches rather than one, because they answer different questions. The lines are about
-    // reading the layout; the snapping is about what a drag is allowed to produce. Turning the
-    // lines off while snapping stays on is a legitimate thing to want, and so is the reverse.
+    // ---- canvas switches ----
+    // Three switches answering three questions. The grid is what there is to see. The magnet is
+    // whether a drag lands on things, which means the grid while it is drawn and the edges of the
+    // other controls always. Auto-anchor is whether a landing on an edge is remembered as a rule,
+    // so it is the only one that needs another: with nothing landing there is nothing to remember,
+    // and the switch says which one it is waiting on rather than sitting lit and doing nothing.
 
     const GRID_SWITCHES = [
       {
@@ -4565,11 +5611,21 @@ export default class ${CLASS_NAME(name)} {
       },
       {
         id: 'snap',
-        label: 'Snap to the placement grid',
+        label: 'Snap to the grid and to the edges of the other controls',
         get: () => snapToGrid,
         set: (on) => { snapToGrid = on; },
         key: 'gridlet.components.snap',
         icon: ICONS.magnet,
+      },
+      {
+        id: 'autoanchor',
+        label: 'Auto-anchor: an edge that snaps to another stays linked to it',
+        idle: 'Auto-anchor needs snapping, which is off',
+        get: () => autoAnchor,
+        set: (on) => { autoAnchor = on; },
+        needs: () => snapToGrid,
+        key: 'gridlet.components.autoanchor',
+        icon: ICONS['link-plus'],
       },
     ];
 
@@ -4587,14 +5643,33 @@ export default class ${CLASS_NAME(name)} {
           button.classList.toggle('active', on);
           button.setAttribute('aria-pressed', String(on));
           try { localStorage.setItem(definition.key, on ? '1' : '0'); } catch { /* unavailable */ }
+          syncSwitches();
           renderCanvas();
         },
       }, svgIcon(definition.icon, 'gfd-tab-icon'));
       return button;
     });
 
+    // A switch that depends on another says so by being unavailable, and says which one in its
+    // tooltip. Run after any of them changes, so turning snapping off takes auto-anchor with it
+    // rather than leaving a lit button that does nothing.
+    function syncSwitches() {
+      GRID_SWITCHES.forEach((definition, at) => {
+        if (!definition.needs) return;
+        const ready = definition.needs();
+        const button = gridButtons[at];
+        button.disabled = ready ? null : true;
+        const label = ready ? definition.label : definition.idle;
+        button.title = label;
+        button.setAttribute('aria-label', label);
+        button.classList.toggle('active', ready && definition.get());
+      });
+    }
+
+    syncSwitches();
+
     const gridSwitcher = h('div',
-      { class: 'view-switcher', role: 'group', 'aria-label': 'Placement grid' }, ...gridButtons);
+      { class: 'view-switcher', role: 'group', 'aria-label': 'Canvas' }, ...gridButtons);
 
     // ---- view switcher ----
 
@@ -5357,6 +6432,14 @@ export default class ${CLASS_NAME(name)} {
       surface.hidden = mode === 'code';
       if (mode === 'code') showDocument();
 
+      // The grip leaves an inline size behind. It belongs to the run that was happening, not to
+      // the component, so both it and the size the formulas were reading go when Preview does.
+      if (mode !== 'preview') {
+        model.livingSize = null;
+        canvas.style.width = '';
+        canvas.style.height = '';
+      }
+
       palette.hidden = mode !== 'design';
       // Both switches are about drawing the component. Anywhere but Design there is no grid to show
       // and nothing to snap, so offering them would be offering a control that does nothing.
@@ -5653,12 +6736,12 @@ export default class ${CLASS_NAME(name)} {
         h('div', { class: 'viewbar gfd-viewbar' },
           saveButton,
           h('div', { class: 'view-switcher', role: 'group', 'aria-label': 'Component view' }, ...viewButtons.values()),
-          h('div', { class: 'view-switcher', role: 'group', 'aria-label': 'Component theme' }, ...themeButtons.values()),
-          gridSwitcher,
-          palette),
+          themeButton,
+          gridSwitcher),
         recordBar,
         surface,
-        codePane),
+        codePane,
+        palette),
       rail);
 
     panel.append(defaultStyle, generatedStyle, customStyle, designer);
@@ -5676,6 +6759,7 @@ export default class ${CLASS_NAME(name)} {
     openComponents.add(running);
     tab.onClose = () => {
       themeWatcher.disconnect();
+      canvasSizeWatch?.disconnect();
       runningComponents.delete(running);
       openComponents.delete(running);
       // The stylesheet tabs edit this document, so they close with the component they belong to.

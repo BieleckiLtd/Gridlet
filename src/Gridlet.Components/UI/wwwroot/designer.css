@@ -365,7 +365,7 @@
   padding: 3px 0;
 }
 
-/* The theme switcher is icon-only, so it does not need the text switcher's min-width. */
+/* The grid switches are icon-only, so they do not need the text switcher's min-width. */
 .gfd-theme-btn { min-width: 0; padding: 5px 9px; }
 
 .gfd-tab-icon svg {
@@ -438,14 +438,38 @@
 /* Preview hands the whole width to the component: the property sheet is a design-time tool. */
 .gfd-designer.previewing .gfd-properties { display: none; }
 
-/* The control catalogue sits in the tab's toolbar. It wraps rather than scrolls, so a narrow
-   workspace pushes the catalogue onto a second row instead of hiding half of it. */
+/* The control catalogue is a bar along the bottom of the canvas: the toolbar above acts on the
+   component that is already drawn, and the catalogue is where a new one comes from. It wraps rather
+   than scrolls, so a narrow workspace pushes the catalogue onto a second row instead of hiding half
+   of it, growing upwards from the bottom edge. */
 .gfd-viewbar { flex-wrap: wrap; }
 
 .gfd-palette {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   gap: 4px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+/* display on the class would otherwise beat the attribute, and the catalogue belongs to Design. */
+.gfd-palette[hidden] { display: none; }
+
+/* The component's theme is the workspace's own switch: the same button, the same icon weight, and
+   the same place in the toolbar. Only the tooltip differs, because this one cycles through three. */
+.gfd-theme-switch { flex: 0 0 auto; }
+
+.gfd-theme-icon svg {
+  display: block;
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 /* A group marker, not a title: it separates rows without taking a row's worth of space. */
@@ -521,11 +545,17 @@
   background: var(--panel);
   border: 1px solid var(--border);
   box-shadow: 0 2px 12px var(--shadow);
-  /* The 8px placement grid is visible so snapping is predictable rather than mysterious. */
-  background-image:
-    linear-gradient(to right, color-mix(in srgb, var(--border) 45%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in srgb, var(--border) 45%, transparent) 1px, transparent 1px);
+  /* The 8px placement grid is visible so snapping is predictable rather than mysterious. A dot
+     where the lines would cross rather than the lines themselves: the crossings are where a drag
+     can actually land, and ruling the whole surface to show them puts far more ink on the canvas
+     than the component drawn on it. Offset by half a tile so the dot sits on the crossing rather
+     than in the middle of the square. */
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--border) 70%, transparent) 1px,
+    transparent 1px);
   background-size: 8px 8px;
+  background-position: -4px -4px;
   outline: none;
 }
 
@@ -592,12 +622,210 @@
   height: 8px;
   background: var(--accent);
   border: 1px solid var(--panel);
-  z-index: 2;
+  /* Above the anchor overlay. A dimension for an edge is drawn along that edge and takes presses,
+     so it lands on top of the very handle that edge is resized by; the handle has to win, because
+     decoration must never be in front of the thing it describes. */
+  z-index: 8;
 }
 
+/* One per side and one per corner, because a resize is an edge being moved and every edge has to
+   be reachable. Without the west and north handles there is no way to move a left or a top edge
+   by dragging, and moving one is a different act from changing the width. */
+.gfd-handle-nw { left: -5px; top: -5px; cursor: nwse-resize; }
+.gfd-handle-n { left: calc(50% - 4px); top: -5px; cursor: ns-resize; }
+.gfd-handle-ne { right: -5px; top: -5px; cursor: nesw-resize; }
 .gfd-handle-e { right: -5px; top: calc(50% - 4px); cursor: ew-resize; }
-.gfd-handle-s { bottom: -5px; left: calc(50% - 4px); cursor: ns-resize; }
 .gfd-handle-se { right: -5px; bottom: -5px; cursor: nwse-resize; }
+.gfd-handle-s { bottom: -5px; left: calc(50% - 4px); cursor: ns-resize; }
+.gfd-handle-sw { left: -5px; bottom: -5px; cursor: nesw-resize; }
+.gfd-handle-w { left: -5px; top: calc(50% - 4px); cursor: ew-resize; }
+
+/* ---- anchors on the canvas ----
+   Drawing-office chrome, laid over the component rather than in it: dimensions that say what
+   every anchored edge is measured from, a handle per edge to drag a new one on, and the edges
+   that are open to it while a drag is in the air. All of it is scaffolding, so it takes no
+   pointer events except on the few pieces that are meant to be grabbed or typed into. */
+
+.gfd-anchor-lines,
+.gfd-anchor-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.gfd-anchor-lines { z-index: 5; width: 100%; height: 100%; overflow: visible; }
+.gfd-anchor-layer { z-index: 6; }
+
+.gfd-dim-line,
+.gfd-dim-witness { stroke: var(--accent); stroke-width: 1.2; }
+.gfd-dim-arrow { fill: var(--accent); }
+
+/* The line that follows the pointer out of a handle while an anchor is being dragged on. */
+.gfd-anchor-band {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
+/* The edge about to be taken, drawn along its whole length. The dots say where the targets are;
+   this says which one a release would land on. */
+.gfd-anchor-edge {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 4 3;
+}
+
+/* One per edge of the selected control. A circle rather than a square, so it is never mistaken
+   for the resize handles it sits between. */
+.gfd-anchor-handle {
+  position: absolute;
+  width: 15px;
+  height: 15px;
+  transform: translate(-50%, -50%);
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  background: var(--panel);
+  pointer-events: auto;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.gfd-anchor-handle::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* An edge that is already anchored: filled in, so a glance says which of the four are held. */
+.gfd-anchor-handle.held { background: var(--accent); }
+.gfd-anchor-handle.held::after { background: var(--panel); }
+
+/* Where an anchor can land, shown only while one is being dragged. The one under the pointer
+   grows and fills, so letting go is never a guess. */
+.gfd-anchor-target {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  border: 2px dashed var(--muted);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.gfd-anchor-target.hot {
+  width: 32px;
+  height: 32px;
+  border-style: solid;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* The offset and the way off, sitting on the dimension itself. They stay invisible until the
+   pointer is on that dimension, so a layout with six anchors is still a layout you can see. */
+.gfd-dim-hit {
+  position: absolute;
+  pointer-events: auto;
+}
+
+/* Only the line itself. The control it reveals sits outside this, and the reveal is held open
+   long enough to reach it — see the pointer bookkeeping beside it. Keeping the strip narrow is
+   what stops a dimension becoming a band of canvas that cannot be pressed through. */
+.gfd-dim-hit.gfd-dim-x { height: 24px; transform: translateY(-50%); }
+.gfd-dim-hit.gfd-dim-y { width: 24px; transform: translateX(-50%); }
+
+.gfd-dim-control {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 1px 2px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.08s;
+}
+
+/* Clear of the dimension rather than on it, and clear of the anchor handle the line runs into:
+   a 6px dimension has its handle at both ends of it, so the control has to step aside rather than
+   sit between them. Which way it steps depends on which way the dimension runs. */
+.gfd-dim-hit.gfd-dim-x .gfd-dim-control { transform: translate(-50%, -50%) translateY(-26px); }
+.gfd-dim-hit.gfd-dim-y .gfd-dim-control { transform: translate(-50%, -50%) translateX(38px); }
+
+/* The canvas turns pointer events off for every real input it draws, so that clicking a text box
+   selects the control rather than typing into the component. These two are the designer's own
+   chrome rather than part of the component, so they are named back in — and only while the
+   dimension they belong to is the one under the pointer. */
+.gfd-dim-hit.open .gfd-dim-control,
+.gfd-dim-hit:focus-within .gfd-dim-control,
+.gfd-dim-hit.open .gfd-dim-control > *,
+.gfd-dim-hit:focus-within .gfd-dim-control > * { opacity: 1; pointer-events: auto; }
+
+.gfd-dim-release {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 0;
+}
+
+.gfd-dim-release:hover { color: var(--accent); }
+
+/* A chain link and a broken one in the same place: linked while the anchor is holding, broken
+   under the pointer, so the button says what a click will do rather than only what it is. */
+.gfd-dim-icon {
+  position: absolute;
+  inset: 1px;
+  width: 14px;
+  height: 14px;
+}
+
+/* An icon is an outline, not a shape. Without this the paths take the default fill and the
+   link arrives as a solid blob, which is what an SVG with no styling looks like. */
+.gfd-dim-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gfd-dim-release .open,
+.gfd-dim-release:hover .shut,
+.gfd-dim-release:focus-visible .shut { opacity: 0; }
+
+.gfd-dim-release:hover .open,
+.gfd-dim-release:focus-visible .open { opacity: 1; }
+
+.gfd-dim-offset {
+  height: 16px;
+  min-width: 26px;
+  max-width: 42px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: right;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
 
 /* ---- control appearance ----
    Deliberately plain: a control should look like what it will render as, not like a designer
@@ -893,6 +1121,7 @@
 }
 
 .gfd-align-btn:hover:not(:disabled) { border-color: var(--accent-dim); }
+
 
 /* Names you can click instead of type: the source's columns, offered where a value is chosen. */
 .gfd-chips {
