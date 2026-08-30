@@ -105,4 +105,18 @@ public sealed class SchemaModelsTests
         Assert.NotNull(tableDefinitionConstructor);
         Assert.NotNull(capabilitiesConstructor);
     }
+
+    [Fact]
+    public void Pre_administration_capability_constructor_shape_remains_available()
+    {
+        var constructor = typeof(GridletProviderCapabilities).GetConstructor(
+        [
+            typeof(string), typeof(bool), typeof(bool), typeof(bool), typeof(bool), typeof(bool),
+            typeof(bool), typeof(IReadOnlyList<string>), typeof(string), typeof(string), typeof(string),
+            typeof(bool), typeof(bool), typeof(bool), typeof(bool), typeof(bool),
+            typeof(IReadOnlyList<string>), typeof(bool), typeof(bool), typeof(bool),
+        ]);
+
+        Assert.NotNull(constructor);
+    }
 }

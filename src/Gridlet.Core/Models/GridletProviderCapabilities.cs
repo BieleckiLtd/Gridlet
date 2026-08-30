@@ -24,8 +24,40 @@ public sealed record GridletProviderCapabilities(
     IReadOnlyList<string>? SupportedTableOptions = null,
     bool SupportsSequences = false,
     bool SupportsImport = false,
-    bool SupportsDefaultConstraints = false)
+    bool SupportsDefaultConstraints = false,
+    bool SupportsSecurityOverview = false,
+    bool SupportsTriggerManagement = false)
 {
+    /// <summary>Creates the previous twenty-field capability shape without relying on optional-parameter ABI.</summary>
+    public GridletProviderCapabilities(
+        string defaultSchema,
+        bool supportsSchemas,
+        bool supportsViews,
+        bool supportsStoredProcedures,
+        bool supportsFunctions,
+        bool supportsTriggers,
+        bool supportsClusteredPrimaryKeys,
+        IReadOnlyList<string> suggestedDataTypes,
+        string selectExample,
+        string createTriggerExample,
+        string objectEditMode,
+        bool supportsCheckConstraints,
+        bool supportsUniqueConstraints,
+        bool supportsIndexes,
+        bool supportsSessions,
+        bool supportsQueryPlans,
+        IReadOnlyList<string>? supportedTableOptions,
+        bool supportsSequences,
+        bool supportsImport,
+        bool supportsDefaultConstraints)
+        : this(defaultSchema, supportsSchemas, supportsViews, supportsStoredProcedures,
+            supportsFunctions, supportsTriggers, supportsClusteredPrimaryKeys, suggestedDataTypes,
+            selectExample, createTriggerExample, objectEditMode, supportsCheckConstraints,
+            supportsUniqueConstraints, supportsIndexes, supportsSessions, supportsQueryPlans,
+            supportedTableOptions, supportsSequences, supportsImport, supportsDefaultConstraints, false, false)
+    {
+    }
+
     /// <summary>Creates the previous nineteen-field capability shape without relying on optional-parameter ABI.</summary>
     public GridletProviderCapabilities(
         string defaultSchema,

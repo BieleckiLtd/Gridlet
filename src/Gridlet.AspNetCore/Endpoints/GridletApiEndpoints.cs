@@ -57,9 +57,13 @@ internal static partial class GridletApiEndpoints
         api.MapGet("/connections/{connection}/databases", GetDatabases);
         api.MapGet("/connections/{connection}/databases/{database}/objects", GetObjects);
         api.MapGet("/connections/{connection}/databases/{database}/schemas", GetSchemas);
+        api.MapGet("/connections/{connection}/databases/{database}/security", GetSecurityOverview);
+        api.MapGet("/connections/{connection}/databases/{database}/triggers", GetTriggers);
+        api.MapPost("/connections/{connection}/databases/{database}/triggers/state", SetTriggerState);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data", GetObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data/stream", StreamObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/structure", GetObjectStructure);
+        api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns/{column}/distinct-values", GetDistinctColumnValues);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", SaveForeignKeyDisplay);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", DeleteForeignKeyDisplay);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}/lookup", LookupForeignKeyDisplay);
@@ -219,6 +223,51 @@ internal static partial class GridletApiEndpoints
             var resolved = resolver.Resolve(connection, database);
             return Results.Ok(await resolved.Provider.Schema.GetSchemasAsync(resolved.Context, cancellationToken));
         });
+
+    private static Task<IResult> GetSecurityOverview(
+        string connection,
+        string database,
+        IGridletConnectionResolver resolver,
+        CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            var provider = resolved.Provider as IDatabaseSecurityProvider
+                ?? throw new GridletValidationException(
+                    $"Provider '{resolved.Provider.ProviderName}' does not expose database security metadata.");
+            return Results.Ok(await provider.GetSecurityOverviewAsync(resolved.Context, cancellationToken));
+        });
+
+    private static Task<IResult> GetTriggers(
+        string connection,
+        string database,
+        IGridletConnectionResolver resolver,
+        CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            var provider = resolved.Provider as ITriggerManagementProvider
+                ?? throw new GridletValidationException(
+                    $"Provider '{resolved.Provider.ProviderName}' does not expose trigger management.");
+            return Results.Ok(await provider.GetTriggersAsync(resolved.Context, cancellationToken));
+        });
+
+    private static Task<IResult> SetTriggerState(
+        string connection,
+        string database,
+        TriggerStateDesign body,
+        IGridletConnectionResolver resolver,
+        IGridletAuditSink audit,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+        => Ddl(connection, database, $"{body.Scope}.{body.Name}",
+            body.Enabled ? "ddl.enableTrigger" : "ddl.disableTrigger",
+            resolver, audit, httpContext,
+            (resolved, ct) => (resolved.Provider as ITriggerManagementProvider
+                ?? throw new GridletValidationException(
+                    $"Provider '{resolved.Provider.ProviderName}' does not expose trigger management."))
+                .SetTriggerEnabledAsync(resolved.Context, body, ct),
+            cancellationToken);
 
     private static Task<IResult> GetObjectData(
         string connection,
@@ -499,6 +548,37 @@ internal static partial class GridletApiEndpoints
                 resolved.Context, relationship.ReferencedSchema, relationship.ReferencedTable,
                 pair.ReferencedColumn, label.Name, keys, body.Search, 50, cancellationToken);
             return Results.Ok(new ForeignKeyLookupResponse(items));
+        });
+
+    private static Task<IResult> GetDistinctColumnValues(
+        string connection, string database, string schema, string name, string column,
+        string? search, int? limit,
+        IGridletConnectionResolver resolver,
+        CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            if (resolved.Provider is not IColumnDistinctValuesProvider distinctProvider)
+            {
+                throw new GridletValidationException(
+                    $"Provider '{resolved.Provider.ProviderName}' does not support distinct value lookups.");
+            }
+
+            // Validate column name early for a clean 400.
+            if (string.IsNullOrWhiteSpace(column))
+            {
+                throw new GridletValidationException("A column name is required.");
+            }
+
+            if (column.Length > 128)
+            {
+                throw new GridletValidationException("The column name is too long.");
+            }
+
+            var capped = Math.Clamp(limit ?? 20, 1, 50);
+            var values = await distinctProvider.GetDistinctColumnValuesAsync(
+                resolved.Context, schema, name, column, search, capped, cancellationToken);
+            return Results.Ok(new ColumnDistinctValuesResponse(values));
         });
 
     private static ForeignKeyInfo FindSingleColumnForeignKey(TableDefinition definition, string name)

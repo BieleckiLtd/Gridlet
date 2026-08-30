@@ -302,6 +302,32 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Administration_endpoints_expose_security_and_manage_all_trigger_scopes()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        const string database = "/gridlet/api/connections/Main/databases/FakeDb";
+
+        var security = await client.GetStringAsync($"{database}/security");
+        var triggers = await client.GetStringAsync($"{database}/triggers");
+        var changed = await client.PostAsJsonAsync($"{database}/triggers/state", new
+        {
+            name = "AuditDatabaseDdl",
+            scope = "database",
+            enabled = true,
+        });
+
+        Assert.Contains("\"currentUser\":\"app_user\"", security);
+        Assert.Contains("\"role\":\"report_reader\"", security);
+        Assert.Contains("\"permission\":\"SELECT\"", security);
+        Assert.Contains("\"name\":\"AuditDatabaseDdl\"", triggers);
+        Assert.Contains("\"scope\":\"server\"", triggers);
+        Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        Assert.Contains("setTriggerState database..AuditDatabaseDdl enabled=True", fake.Calls);
+    }
+
+    [Fact]
     public async Task Data_stream_returns_progressive_events()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();

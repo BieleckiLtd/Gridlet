@@ -176,6 +176,8 @@ public sealed record ForeignKeyLookupRequest(List<JsonElement>? Keys, string? Se
 
 public sealed record ForeignKeyLookupResponse(IReadOnlyList<ForeignKeyLookupItem> Items);
 
+public sealed record ColumnDistinctValuesResponse(IReadOnlyList<object?> Values);
+
 /// <summary>Body for scripting an object.</summary>
 /// <param name="Include">Any of <c>drop</c>, <c>create</c> and <c>data</c>; defaults to create.</param>
 /// <param name="MaxRows">How many rows to script, clamped to the server's query row limit.</param>

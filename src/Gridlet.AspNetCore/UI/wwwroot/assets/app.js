@@ -41,6 +41,12 @@
     lock: ['M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-6', 'M11 16a1 1 0 1 0 2 0a1 1 0 0 0 -2 0', 'M8 11v-4a4 4 0 1 1 8 0v4'],
     microphone: ['M9 5a3 3 0 0 1 3 -3a3 3 0 0 1 3 3v5a3 3 0 0 1 -3 3a3 3 0 0 1 -3 -3l0 -5', 'M5 10a7 7 0 0 0 14 0', 'M8 21l8 0', 'M12 17l0 4'],
     plus: ['M12 5l0 14', 'M5 12l14 0'],
+    // Completion categories. The popup shows these instead of spelling the category out.
+    'completion-keyword': ['M7 8l-4 4l4 4', 'M17 8l4 4l-4 4'],
+    'completion-function': ['M3 19a2 2 0 0 0 2 2c2 0 2 -4 3 -9s1 -9 3 -9a2 2 0 0 1 2 2', 'M5 12h6'],
+    'completion-object': ['M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2z', 'M3 10h18', 'M10 3v18'],
+    'completion-column': ['M4 6h5.5', 'M4 10h5.5', 'M4 14h5.5', 'M4 18h5.5', 'M14.5 6h5.5', 'M14.5 10h5.5', 'M14.5 14h5.5', 'M14.5 18h5.5'],
+    'completion-value': ['M4 8h16', 'M4 12h16', 'M4 16h16', 'M8 8v8', 'M12 8v8'],
     // Not from the set. The sharing control wears its mark inside the shield rather than beside
     // it, and this narrower shield leaves room for one. Tabler's own shield is rounder and puts
     // its mark outside the shape, which reads as a shield with a speck next to it at this size.
@@ -545,6 +551,9 @@
       objects: () => `${dbBase()}/objects`,
       schemas: () => `${dbBase()}/schemas`,
       schema: (s) => `${dbBase()}/schemas/${enc(s)}`,
+      security: () => `${dbBase()}/security`,
+      triggers: () => `${dbBase()}/triggers`,
+      triggerState: () => `${dbBase()}/triggers/state`,
       data: (s, n, q) => `${objBase(s, n)}/data?${q}`,
       dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
       structure: (s, n) => `${objBase(s, n)}/structure`,
@@ -581,6 +590,13 @@
       foreignKeyDisplay: (s, n, fk) => `${objBase(s, n)}/foreign-key-displays/${enc(fk)}`,
       foreignKeyLookup: (s, n, fk) => `${objBase(s, n)}/foreign-key-displays/${enc(fk)}/lookup`,
       constraint: (s, n, constraint) => `${objBase(s, n)}/constraints/${enc(constraint)}`,
+      distinctValues: (s, n, col, search, limit) => {
+        const params = new URLSearchParams();
+        if (search) params.set('search', search);
+        if (limit) params.set('limit', String(limit));
+        const qs = params.toString();
+        return `${objBase(s, n)}/columns/${enc(col)}/distinct-values${qs ? `?${qs}` : ''}`;
+      },
       dropObject: (s, n, type) => `${objBase(s, n)}?type=${enc(type)}`,
       renameObject: (s, n, type) => `${objBase(s, n)}/rename?type=${enc(type)}`,
       renameIndex: (s, n, index) => `${objBase(s, n)}/indexes/${enc(index)}/rename`,
@@ -721,6 +737,7 @@
     objectEditMode: 'Alter', supportsCheckConstraints: false,
     supportsUniqueConstraints: false, supportsIndexes: false, supportsSequences: false,
     supportsImport: false, supportsDefaultConstraints: false,
+    supportsSecurityOverview: false, supportsTriggerManagement: false,
   };
   const capabilitiesFor = (scope) => connectionFor(scope).capabilities || DEFAULT_CAPABILITIES;
   const currentCapabilities = () => capabilitiesFor(state);
@@ -741,6 +758,63 @@
   const SQL_KEYWORDS = (`ADD ALL ALTER AND ANY AS ASC AUTHORIZATION BACKUP BEGIN BETWEEN BREAK BROWSE BULK BY CASCADE CASE CHECK CHECKPOINT CLOSE CLUSTERED COALESCE COLLATE COLUMN COMMIT COMPUTE CONSTRAINT CONTAINS CONTINUE CONVERT CREATE CROSS CURRENT CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER CURSOR DATABASE DBCC DEALLOCATE DECLARE DEFAULT DELETE DENY DESC DISK DISTINCT DISTRIBUTED DOUBLE DROP DUMP ELSE END ERRLVL ESCAPE EXCEPT EXEC EXECUTE EXISTS EXIT EXTERNAL FETCH FILE FILLFACTOR FOR FOREIGN FREETEXT FROM FULL FUNCTION GOTO GRANT GROUP HAVING HOLDLOCK IDENTITY IDENTITYCOL IF IN INDEX INNER INSERT INTERSECT INTO IS JOIN KEY KILL LEFT LIKE LINENO LOAD MERGE NATIONAL NOCHECK NONCLUSTERED NOT NULL NULLIF OF OFF OFFSETS ON OPEN OPENDATASOURCE OPENQUERY OPENROWSET OPENXML OPTION OR ORDER OUTER OVER PERCENT PIVOT PLAN PRECISION PRIMARY PRINT PROC PROCEDURE PUBLIC RAISERROR READ READTEXT RECONFIGURE REFERENCES REPLICATION RESTORE RESTRICT RETURN REVERT REVOKE RIGHT ROLLBACK ROWCOUNT ROWGUIDCOL RULE SAVE SCHEMA SECURITYAUDIT SELECT SEMANTICKEYPHRASETABLE SEMANTICSIMILARITYDETAILSTABLE SEMANTICSIMILARITYTABLE SESSION_USER SET SETUSER SHUTDOWN SOME STATISTICS SYSTEM_USER TABLE TABLESAMPLE TEXTSIZE THEN TO TOP TRAN TRANSACTION TRIGGER TRUNCATE TRY_CONVERT TSEQUAL UNION UNIQUE UNPIVOT UPDATE UPDATETEXT USE USER VALUES VARYING VIEW WAITFOR WHEN WHERE WHILE WITH WITHIN GROUP WRITETEXT`).split(/\s+/);
   const SQL_FUNCTIONS = (`ABS AVG CAST CONCAT COUNT DATEADD DATEDIFF DATENAME DATEPART FORMAT GETDATE ISNULL LEN LOWER LTRIM MAX MIN NEWID OBJECT_ID REPLACE ROUND RTRIM SCOPE_IDENTITY STRING_AGG SUBSTRING SUM SYSDATETIME UPPER`).split(/\s+/);
 
+  // sql-docs.js carries the per-dialect keyword and function lists together with their
+  // descriptions. It is a plain script, so it is absent in unit tests and in any host that
+  // trims the asset; every use falls back to the combined lists above.
+  const sqlDocs = () => window.GridletSqlDocs || null;
+  const sqlProviderName = (scope = state) => connectionFor(scope).providerName || '';
+  const sqlDocLookup = (scope, value) => sqlDocs()?.lookup(sqlProviderName(scope), value) || null;
+  const dialectKeywords = (scope) => sqlDocs()?.keywords(sqlProviderName(scope)) || SQL_KEYWORDS;
+  const dialectFunctions = (scope) => sqlDocs()?.functions(sqlProviderName(scope)) || SQL_FUNCTIONS;
+
+  // Completion rows carry the category they belong to, which drives the badge on the row, the
+  // heading of the documentation panel, and the filter chips. Categories that describe the
+  // language come from sql-docs.js; the rest are worked out from the connected database.
+  const COMPLETION_OBJECT_CATEGORIES = {
+    Table: 'table', View: 'view', StoredProcedure: 'routine', Function: 'routine', UserDefinedType: 'type',
+  };
+  const COMPLETION_FILTERS = [
+    { id: 'keyword', label: 'Keywords and operators', categories: ['keyword', 'operator'] },
+    { id: 'function', label: 'Functions', categories: ['function', 'aggregate', 'window'] },
+    { id: 'object', label: 'Tables, views, and routines', categories: ['table', 'view', 'routine', 'type', 'schema'] },
+    { id: 'column', label: 'Columns and parameters', categories: ['column', 'join', 'parameter', 'identifier'] },
+    { id: 'value', label: 'Distinct column values', categories: ['value'] },
+  ];
+  const COMPLETION_FILTER_KEY = 'gridlet.completionFilters.v2';
+
+  // Keywords, operators, and functions belong to the dialect; everything else belongs to the
+  // database the user is browsing.
+  const LANGUAGE_COMPLETION_CATEGORIES = ['keyword', 'operator', 'function', 'aggregate', 'window'];
+  const isLanguageCompletion = (category) => LANGUAGE_COMPLETION_CATEGORIES.includes(category);
+
+  function completionFilterOf(category) {
+    return COMPLETION_FILTERS.find((filter) => filter.categories.includes(category)) || null;
+  }
+
+  function readCompletionFilters() {
+    let stored = null;
+    try { stored = JSON.parse(localStorage.getItem(COMPLETION_FILTER_KEY) || 'null'); } catch { /* unavailable */ }
+    const known = Array.isArray(stored) ? stored.filter((id) => COMPLETION_FILTERS.some((f) => f.id === id)) : [];
+    return new Set(known.length ? known : COMPLETION_FILTERS.map((filter) => filter.id));
+  }
+
+  function writeCompletionFilters(enabled) {
+    try { localStorage.setItem(COMPLETION_FILTER_KEY, JSON.stringify([...enabled])); } catch { /* unavailable */ }
+  }
+
+  function classifyCompletion(value, scope, fromContext) {
+    if (value.startsWith('@')) return 'parameter';
+    if (value.endsWith('.')) return 'schema';
+    if (/\s=\s/.test(value)) return 'join';
+    const object = objectsFor(scope).find((candidate) => [candidate.name, `${candidate.schema}.${candidate.name}`,
+      `[${candidate.schema.replaceAll(']', ']]')}].[${candidate.name.replaceAll(']', ']]')}]`]
+      .some((name) => name.toLowerCase() === value.toLowerCase()));
+    if (object) return COMPLETION_OBJECT_CATEGORIES[object.type] || 'table';
+    const documented = sqlDocLookup(scope, value);
+    if (documented) return documented.category;
+    return fromContext ? 'column' : 'identifier';
+  }
+
   function sqlSuggestions(scope = state) {
     const known = objectsFor(scope);
     const objects = known.flatMap((o) => [
@@ -749,7 +823,7 @@
       o.name,
     ]);
     const schemas = known.map((o) => o.schema + '.');
-    return [...new Set([...objects, ...schemas, ...SQL_KEYWORDS, ...SQL_FUNCTIONS])];
+    return [...new Set([...objects, ...schemas, ...dialectKeywords(scope), ...dialectFunctions(scope)])];
   }
 
   const unquoteSqlIdentifier = (value) => {
@@ -847,6 +921,276 @@
       }
     }
     return suggestions;
+  }
+
+  // ---- value completion (WHERE col = 'value') --------------------------------
+  // Heuristics: a predicate value is offered only when the column can be resolved to a
+  // table the statement reads, and its distinct set looks worthwhile. Check constraints
+  // that list the allowed values are preferred over a data scan; when no constraint is
+  // present a DISTINCT query is issued with a prefix filter.
+
+  const isTextLikeType = (dataType) => {
+    if (!dataType) return true;
+    return /char|text|nchar|nvarchar|varchar|enum|xml|json|uniqueidentifier|guid/i.test(dataType);
+  };
+  const isDateType = (dataType, columnName = '') => {
+    if (dataType && /date|time/i.test(dataType)) return true;
+    if (columnName && /date|time|atutc|created|updated/i.test(columnName)) return true;
+    return false;
+  };
+  const isNumericType = (dataType) => {
+    if (!dataType) return false;
+    return /^(int|bigint|smallint|tinyint|decimal|numeric|float|real|money|double|number|boolean|bit)/i.test(dataType.trim());
+  };
+
+  const escapeSqlString = (value) => String(value).replaceAll("'", "''");
+
+  const valuesFromCheckConstraints = (structure, columnName) => {
+    const values = [];
+    if (!structure || !structure.checkConstraints) return values;
+    const escaped = columnName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const colTest = new RegExp(`(?:\\[${escaped.replace(/\]/g, '')}\\]|"${escaped}"|\`${escaped}\`|\\b${escaped}\\b)`, 'i');
+    for (const cc of structure.checkConstraints) {
+      const def = cc.definition || '';
+      if (!def || !colTest.test(def)) continue;
+      for (const match of def.matchAll(/\bIN\s*\(\s*([^)]+?)\s*\)/gi)) {
+        const inside = match[1];
+        // Prefer quoted string literals; fall back to bare tokens for numeric enums.
+        const quoted = [...inside.matchAll(/N?'((?:''|[^'])*)'/g)].map(m => m[1].replace(/''/g, "'"));
+        if (quoted.length) {
+          values.push(...quoted);
+        } else {
+          const bare = inside.split(',').map(s => s.trim()).filter(Boolean);
+          values.push(...bare);
+        }
+      }
+    }
+    return [...new Set(values)];
+  };
+
+  const formatValueForCompletion = (rawValue, dataType) => {
+    if (rawValue === null || rawValue === undefined) return 'NULL';
+    // Numeric and boolean values are inserted without quotes; everything else is a string literal.
+    if (typeof rawValue === 'number' || typeof rawValue === 'boolean') return String(rawValue);
+    // The provider returns materialised CLR values; treat any non-string as string.
+    const str = String(rawValue);
+    if (!isTextLikeType(dataType) && /^-?\d+(\.\d+)?$/.test(str)) return str;
+    if (/^(true|false)$/i.test(str) && /^(bit|boolean)/i.test(dataType || '')) return str.toLowerCase();
+    return `'${escapeSqlString(str)}'`;
+  };
+
+  function detectValueCompletionContext(beforeCaret) {
+    // Normalise trailing whitespace after an operator that expects a value: "WHERE x = " or "WHERE x IN ("
+    // The detection runs on the raw statement prefix, so an open string like "'pla" is still visible.
+    const b = beforeCaret;
+    // IN (...) context: the caret is inside the parentheses that follow an IN.
+    // Find the last IN that opens a list and is not yet closed.
+    let lastIn = -1, lastInEnd = -1;
+    for (const m of b.matchAll(/\bIN\s*\(/gi)) {
+      lastIn = m.index;
+      lastInEnd = m.index + m[0].length;
+    }
+    if (lastIn >= 0) {
+      const after = b.slice(lastInEnd);
+      if (!after.includes(')')) {
+        // Inside an IN list. Column is the identifier before IN.
+        const beforeIn = b.slice(0, lastIn);
+        const colMatch = beforeIn.match(/((?:\[[^\]]+\]|"[^"]+"|`[^`]+`|[A-Za-z_][\w$#@]*)(?:\s*\.\s*(?:\[[^\]]+\]|"[^"]+"|`[^`]+`|[A-Za-z_][\w$#@]*))*)\s*(?:NOT\s+)?\s*$/i);
+        if (colMatch) {
+          const colExpr = colMatch[1].trim();
+          const afterParen = after;
+          // Prefix is after the last comma or the opening paren.
+          const lastComma = afterParen.lastIndexOf(',');
+          const segment = lastComma >= 0 ? afterParen.slice(lastComma + 1) : afterParen;
+          const trimmed = segment.trimStart();
+          const qMatchIn = trimmed.match(/^N?'/);
+          let prefix = '', hasOpeningQuote = false, nPrefix = false;
+          if (qMatchIn) {
+            hasOpeningQuote = true;
+            nPrefix = trimmed.startsWith("N'");
+            const rest = trimmed.slice(qMatchIn[0].length);
+            // Inside IN the value is open when there is no closing ' before the caret.
+            let closing = -1;
+            for (let i = 0; i < rest.length; i++) {
+              if (rest[i] === "'") {
+                if (rest[i + 1] === "'") { i++; continue; }
+                closing = i;
+                break;
+              }
+            }
+            if (closing >= 0) {
+              // The quoted value before the caret is already closed (e.g. "'Placed'"); the caret is after it,
+              // so it is not inside a value that needs completing. Let the next segment handle fresh input.
+              // For IN this means the current element is complete; offer nothing until a new element starts.
+              return null;
+            }
+            prefix = rest;
+            // Keep the original raw length for replacement, but use unescaped for filtering.
+            prefix = prefix.replace(/''/g, "'");
+          } else {
+            // Unquoted prefix (numeric) or empty after comma.
+            const m2 = trimmed.match(/^([^\s,']*)/);
+            prefix = m2 ? m2[1] : '';
+          }
+          // How many characters before the caret belong to the value being typed.
+          // For the open quoted case the raw length includes the opening quote.
+          const rawPrefixLen = hasOpeningQuote ? trimmed.slice(qMatchIn[0].length).length : prefix.length;
+          const replaces = hasOpeningQuote ? (nPrefix ? 2 : 1) + rawPrefixLen : prefix.length;
+          // For IN the closing ) is not yet typed, so we are definitely in a value position.
+          // When the current element is still open (or empty) we can suggest the next values.
+          return { columnExpr: colExpr, prefix, hasOpeningQuote, replaces, isInList: true, operator: 'IN' };
+        }
+      }
+    }
+    // Comparison context: col = 'prefix , col <> 'prefix , col LIKE 'prefix etc.
+    // Find the last comparison in the statement – e.g. "WHERE a = 'x' AND b = 'y" should use b.
+    // A tolerant identifier pattern is used here; the column is later resolved against the
+    // loaded structures, so an over-match is harmless and an under-match would hide values.
+    let lastCmp = null;
+    const cmpPattern = /([A-Za-z0-9_\[\]"\.`$#@]+(?:\s*\.\s*[A-Za-z0-9_\[\]"\.`$#@]+)*)\s*(=|<>|!=|<=|>=|<|>|\bLIKE\b|\bILIKE\b)/gi;
+    for (const m of b.matchAll(cmpPattern)) {
+      lastCmp = m;
+    }
+    if (lastCmp) {
+      const colExpr = lastCmp[1].trim();
+      const operator = lastCmp[2];
+      const afterOp = b.slice(lastCmp.index + lastCmp[0].length);
+      const trimmedAfter = afterOp.trimStart();
+      let prefix = '', hasOpeningQuote = false, replaces = 0;
+      const qMatch = trimmedAfter.match(/^N?'/);
+      if (qMatch) {
+        hasOpeningQuote = true;
+        const rest = trimmedAfter.slice(qMatch[0].length);
+        // Value inside quotes runs until next ' or end (unclosed). An escaped '' counts as part of value.
+        let endIdx = rest.length;
+        let closed = false;
+        for (let i = 0; i < rest.length; i++) {
+          if (rest[i] === "'") {
+            if (rest[i + 1] === "'") { i++; continue; }
+            endIdx = i;
+            closed = true;
+            break;
+          }
+        }
+        if (closed) {
+          // The literal before the caret is already closed (e.g. "'Placed'"); the caret sits after it.
+          // That predicate is complete, so there is no value prefix to complete.
+          return null;
+        }
+        const rawPrefix = rest.slice(0, endIdx);
+        prefix = rawPrefix.replace(/''/g, "'");
+        replaces = qMatch[0].length + rawPrefix.length;
+      } else {
+        const m2 = trimmedAfter.match(/^([^\s,;)]*)/);
+        prefix = m2 ? m2[1] : '';
+        // If user typed a partial unquoted string like pla, that's the prefix.
+        replaces = prefix.length;
+        hasOpeningQuote = false;
+      }
+      // Only treat this as a value context if the operator is the last comparison in the clause.
+      return { columnExpr: colExpr, prefix, hasOpeningQuote, replaces, isInList: false, operator };
+    }
+    return null;
+  }
+
+  function resolveValueColumn(sources, loaded, columnExpr) {
+    const parts = [];
+    const partRe = /(?:\[[^\]]+\]|"[^"]+"|`[^`]+`|[A-Za-z_][\w$#@]*)/g;
+    let m;
+    while ((m = partRe.exec(columnExpr))) parts.push(unquoteSqlIdentifier(m[0]));
+    if (!parts.length) return null;
+    let colName, qualifier;
+    if (parts.length >= 2) {
+      qualifier = parts[parts.length - 2];
+      colName = parts[parts.length - 1];
+    } else {
+      colName = parts[0];
+    }
+    if (qualifier) {
+      const source = loaded.find(s => s.alias.toLowerCase() === qualifier.toLowerCase()
+        || s.object.name.toLowerCase() === qualifier.toLowerCase());
+      if (!source) return null;
+      const columnInfo = (source.structure.columns || []).find(c => c.name.toLowerCase() === colName.toLowerCase());
+      if (!columnInfo) return null;
+      return { source, columnInfo };
+    }
+    // Unqualified: find which source owns the column. Single source is the common case.
+    const candidates = loaded.filter(s => (s.structure.columns || []).some(c => c.name.toLowerCase() === colName.toLowerCase()));
+    if (!candidates.length) return null;
+    // Prefer the only candidate, otherwise the first (ambiguous). Could combine, but one is less surprising.
+    const source = candidates.length === 1 ? candidates[0]
+      : candidates.find(s => s.alias.toLowerCase() === colName.toLowerCase()) || candidates[0];
+    const columnInfo = (source.structure.columns || []).find(c => c.name.toLowerCase() === colName.toLowerCase());
+    return columnInfo ? { source, columnInfo } : null;
+  }
+
+  async function valueCompletionSuggestions(sql, caret, scope) {
+    const statement = currentSqlStatement(sql, caret);
+    const ctx = detectValueCompletionContext(statement.beforeCaret);
+    if (!ctx) return null;
+    const sources = sqlSources(statement.sql, scope);
+    if (!sources.length) return null;
+    let loaded;
+    try { loaded = await Promise.all(sources.map(s => loadCompletionStructure(s, scope))); }
+    catch { return null; }
+    const resolved = resolveValueColumn(sources, loaded, ctx.columnExpr);
+    if (!resolved) return null;
+    const { source, columnInfo } = resolved;
+    // Skip columns where distinct values would never be useful.
+    if (columnInfo.isPrimaryKey) return null;
+    if (columnInfo.isIdentity && !isTextLikeType(columnInfo.dataType)) return null;
+
+    // Check constraints give the authoritative allowed set without touching data.
+    let rawValues = valuesFromCheckConstraints(source.structure, columnInfo.name);
+    let sourceLabel = 'Allowed values';
+    if (rawValues.length) {
+      if (ctx.prefix) {
+        const low = ctx.prefix.toLowerCase();
+        rawValues = rawValues.filter(v => String(v).toLowerCase().startsWith(low));
+      }
+      rawValues = rawValues.slice(0, 20);
+    } else {
+      // No constraint set: ask the server for distinct values. Only do this when it plausibly helps.
+      // Text-like columns are always worth a round-trip; for numeric/date we show a 10-value
+      // distribution when the predicate is a range (>, >=, <, <=) so the user can pick a
+      // threshold without guessing. High-cardinality identity keys are skipped above.
+      const isRangeOp = ['>', '>=', '<', '<='].includes(ctx.operator);
+      const isDate = isDateType(columnInfo.dataType, columnInfo.name);
+      const isNumeric = isNumericType(columnInfo.dataType);
+      const isNumericOrDate = isNumeric || isDate;
+      const isText = isTextLikeType(columnInfo.dataType) && !isDate;
+      if (!isText) {
+        if (!ctx.prefix && !(isRangeOp && isNumericOrDate)) return null;
+      }
+      const limit = isRangeOp && isNumericOrDate ? 10 : 20;
+      try {
+        const resp = await api(urlsFor(scope).distinctValues(source.object.schema, source.object.name, columnInfo.name, ctx.prefix || '', limit));
+        rawValues = resp.values || [];
+      } catch {
+        return null;
+      }
+      if (!rawValues.length) return null;
+      sourceLabel = isRangeOp && isNumericOrDate ? 'Distribution' : 'Distinct values';
+    }
+    if (!rawValues.length) return null;
+    const formatted = rawValues.map(v => {
+      const formattedValue = formatValueForCompletion(v, columnInfo.dataType);
+      // When the user has already typed an opening quote, the completion should insert the
+      // same quoted literal and replace the opening quote plus the typed prefix. Otherwise it
+      // replaces just the typed prefix (which may be empty after " = ").
+      return { raw: v, formatted: formattedValue };
+    });
+    // Build match objects compatible with the normal completion pipeline.
+    const matches = formatted.map(({ formatted: value }) => ({
+      value,
+      category: 'value',
+      doc: { summary: `${sourceLabel} for ${source.displayAlias}.${columnInfo.name}.` , dialect: '', url: '' },
+      // For value completions the popup's documentation link would mislead.
+      replaces: ctx.replaces,
+      _valueRaw: value,
+    }));
+    // Preserve the context so the caller can decide replacement length.
+    return { matches, ctx, source, columnInfo };
   }
 
   async function contextualSqlSuggestions(sql, caret, prefix, scope = state) {
@@ -1239,6 +1583,30 @@
     return lines.join('\n');
   }
 
+  // Places where a space still leaves an obvious next token: after a clause keyword, a comma, or an
+  // opening parenthesis in a list.
+  const SQL_COMPLETION_OPENERS = /(?:\b(?:FROM|JOIN|ON|INTO|UPDATE|SELECT|WHERE|HAVING|SET|BY|AND|OR|VALUES|EXEC|EXECUTE)\s+|,\s*)$/i;
+  const sqlOpensCompletion = (before) => SQL_COMPLETION_OPENERS.test(before);
+
+  // A multi-word keyword such as ORDER BY completes as one item, so the caret may sit inside a
+  // phrase whose first words are already typed. These are the runs of words that end at the caret,
+  // longest first, so a suggestion can replace what was typed of the phrase rather than sit beside
+  // it. The last word alone is left out: that is the plain prefix.
+  function sqlCompletionPhrasePrefixes(value, caret) {
+    const line = value.slice(0, caret).split('\n').pop();
+    const found = line.match(/(?:[A-Za-z_][\w$#@]*[ \t])+(?:[A-Za-z_][\w$#@]*)?$/);
+    if (!found) return [];
+    const phrase = found[0];
+    const starts = [];
+    for (let i = 0; i < phrase.length; i++) {
+      if ((i === 0 || /[ \t]/.test(phrase[i - 1])) && /[A-Za-z_]/.test(phrase[i])) starts.push(i);
+    }
+    // A phrase that ends in a space has no last word to leave out.
+    const usable = /[ \t]$/.test(phrase) ? starts : starts.slice(0, -1);
+    // No keyword of either dialect is longer than three words.
+    return usable.slice(-3).map((start) => phrase.slice(start));
+  }
+
   function sqlCompletionPrefix(value, caret) {
     const before = value.slice(0, caret);
     const found = before.match(/(?:@@?[A-Za-z_][\w$#@]*|\[?[A-Za-z_][\w$#@]*\]?\.(?:\[?[A-Za-z_][\w$#@]*\]?)?|\[?[A-Za-z_][\w$#@]*\]?)$/);
@@ -1270,14 +1638,21 @@
       'aria-label': options.label || 'SQL editor',
       readonly: options.readOnly ? '' : null,
     });
-    const completion = h('div', { class: 'sql-completions', hidden: '' });
+    const completionChips = h('div', { class: 'sql-completion-filters', role: 'group', 'aria-label': 'Completion categories' });
+    const completionList = h('div', { class: 'sql-completion-list' });
+    const completionDoc = h('aside', {
+      class: 'sql-completion-doc', 'data-testid': 'sql-completion-doc', 'aria-live': 'polite',
+    });
+    const completion = h('div', { class: 'sql-completions', hidden: '' },
+      completionChips, h('div', { class: 'sql-completion-body' }, completionList, completionDoc));
     const diagnostic = h('div', { class: 'sql-diagnostic muted' });
     const surface = h('div', { class: 'sql-surface' }, lines, highlight, input, completion);
     const editor = h('div', {
       class: `sql-editor${options.readOnly ? ' read-only' : ''}`,
       'data-editor-language': 'sql',
     }, surface, diagnostic);
-    let matches = [], selected = 0, completionRequest = 0;
+    let matches = [], visibleMatches = [], selected = 0, completionRequest = 0;
+    let completionFilters = readCompletionFilters();
 
     const refresh = () => {
       highlight.innerHTML = highlightSql(input.value);
@@ -1288,11 +1663,129 @@
       diagnostic.className = 'sql-diagnostic sql-invalid';
       diagnostic.hidden = !problem;
     };
-    const hideCompletion = () => { completion.hidden = true; matches = []; };
+    const hideCompletion = () => {
+      completion.hidden = true; matches = []; visibleMatches = [];
+      surface.classList.remove('completing');
+      editor.classList.remove('completing');
+    };
+
+    // The documentation panel describes whatever the pointer is over, and falls back to the
+    // keyboard selection when the pointer is elsewhere. Language items quote the official
+    // documentation in one sentence and link to it; database objects describe themselves.
+    const describeCompletion = (match) => {
+      if (!match) {
+        completionDoc.replaceChildren(h('p', { class: 'muted', text: 'Point at a suggestion to read what it does.' }));
+        return;
+      }
+      const indexUrl = sqlDocs()?.indexUrl(sqlProviderName(scope)) || null;
+      const parts = [h('div', { class: 'sql-completion-doc-name', text: match.value })];
+      const link = (url, text) => h('a', {
+        class: 'sql-completion-doc-link', href: url, target: '_blank', rel: 'noopener noreferrer', text,
+        // The editor loses focus the moment the pointer goes down, which closes the popup before
+        // a plain click can land. Keeping focus in the textarea and opening the tab here instead
+        // makes the link work wherever the popup is.
+        onmousedown: (e) => { e.preventDefault(); window.open(url, '_blank', 'noopener'); },
+      });
+      if (match.doc) {
+        parts.push(h('p', { class: 'sql-completion-doc-text', text: match.doc.summary }));
+        if (match.doc.url) parts.push(link(match.doc.url, `${match.doc.dialect} documentation ↗`));
+      } else {
+        parts.push(h('p', { class: 'sql-completion-doc-text muted', text: completionFallbackText(match) }));
+        // Only language items get the reference link. A table or column of this database is not
+        // described anywhere in the dialect documentation, so the link would lead nowhere useful.
+        if (indexUrl && isLanguageCompletion(match.category)) parts.push(link(indexUrl, 'Language reference ↗'));
+      }
+      completionDoc.replaceChildren(...parts);
+    };
+
+    const completionFallbackText = (match) => {
+      switch (match.category) {
+        case 'table': return 'Table in this database.';
+        case 'view': return 'View in this database.';
+        case 'routine': return 'Stored routine in this database.';
+        case 'type': return 'User defined type in this database.';
+        case 'schema': return 'Schema in this database.';
+        case 'column': return 'Column of a table this statement reads.';
+        case 'join': return 'Join condition suggested from a foreign key.';
+        case 'parameter': return 'Parameter of the routine being executed.';
+        case 'value': return match.doc?.summary || 'Distinct value in this column.';
+        default: return 'No description is available for this item.';
+      }
+    };
+
+    const renderCompletionChips = () => {
+      completionChips.replaceChildren(...COMPLETION_FILTERS.map((filter) => {
+        const count = matches.filter((match) => completionFilterOf(match.category) === filter).length;
+        const on = completionFilters.has(filter.id);
+        const label = `${on ? 'Hide' : 'Show'} ${filter.label.toLowerCase()}`;
+        return h('button', {
+          type: 'button', class: `sql-completion-chip${on ? ' active' : ''}`,
+          'data-testid': `completion-filter-${filter.id}`,
+          'aria-pressed': on ? 'true' : 'false',
+          // A category with nothing to show cannot be toggled, so it reads as unavailable.
+          disabled: count ? null : '',
+          title: count ? label : `No ${filter.label.toLowerCase()} match what you typed`,
+          'aria-label': label,
+          onmousedown: (e) => e.preventDefault(),
+          onclick: () => {
+            if (!count) return;
+            if (completionFilters.has(filter.id)) completionFilters.delete(filter.id);
+            else completionFilters.add(filter.id);
+            if (!completionFilters.size) completionFilters = new Set(COMPLETION_FILTERS.map((x) => x.id));
+            writeCompletionFilters(completionFilters);
+            renderCompletionRows();
+            positionCompletion();
+            input.focus();
+          },
+        }, icon(`completion-${filter.id}`));
+      }));
+    };
+
+    const select = (index) => {
+      selected = index;
+      [...completionList.children].forEach((row, i) => row.classList.toggle('active', i === selected));
+      describeCompletion(visibleMatches[selected]);
+    };
+
+    const renderCompletionRows = () => {
+      visibleMatches = matches.filter((match) => {
+        const filter = completionFilterOf(match.category);
+        return !filter || completionFilters.has(filter.id);
+      });
+      if (selected >= visibleMatches.length) selected = 0;
+      renderCompletionChips();
+      if (!visibleMatches.length) {
+        completionList.replaceChildren(h('p', { class: 'sql-completion-empty muted', text: 'No matches in the categories you are showing.' }));
+        describeCompletion(null);
+        return;
+      }
+      completionList.replaceChildren(...visibleMatches.map((match, index) => {
+        const filter = completionFilterOf(match.category);
+        return h('button', {
+          type: 'button', class: `sql-completion-row${index === selected ? ' active' : ''}`,
+          // The accessible name stays the bare value so the row reads as the text it inserts.
+          'aria-label': match.value, 'data-category': match.category,
+          onmousedown: (e) => { e.preventDefault(); insert(match.value, match.replaces); },
+          // Pointing at a row moves the selection there. The description then survives the pointer
+          // travelling to the documentation panel, and the link inside it can be reached.
+          onmouseenter: () => { select(index); },
+        },
+        h('span', { class: 'sql-completion-mark', title: match.category }, filter ? icon(`completion-${filter.id}`) : null),
+        h('span', { class: 'sql-completion-value', text: match.value }));
+      }));
+      describeCompletion(visibleMatches[selected]);
+    };
     // The popup follows the caret instead of sitting at the bottom of the surface, so it never
     // covers the line being typed. It flips above the caret and shrinks when space runs out.
+    // A short editor would leave room for two rows, so while the popup is open the editor stops
+    // clipping and the popup measures itself against the surrounding panel instead.
+    const completionBounds = () => (editor.closest('.panel, .modal-body, .inline-editor') || surface).getBoundingClientRect();
     const positionCompletion = () => {
       if (completion.hidden) return;
+      const bounds = completionBounds();
+      const surfaceRect = surface.getBoundingClientRect();
+      // In a narrow editor the documentation panel cannot sit beside the list, so it moves below it.
+      completion.classList.toggle('stacked', bounds.width < 560);
       const style = getComputedStyle(input);
       const lineHeight = parseFloat(style.lineHeight) || 20;
       const tabSize = parseInt(style.tabSize, 10) || 4;
@@ -1303,52 +1796,110 @@
       const caretLeft = parseFloat(style.paddingLeft) + column * sqlCharWidth(style.font) - input.scrollLeft;
       const caretTop = parseFloat(style.paddingTop) + (rows.length - 1) * lineHeight - input.scrollTop;
       const margin = 6, gap = 2;
-      const below = surface.clientHeight - (caretTop + lineHeight) - margin - gap;
-      const above = caretTop - margin - gap;
-      const flip = below < Math.min(above, 120);
-      completion.style.maxHeight = `${Math.max(48, Math.min(210, flip ? above : below))}px`;
+      // Space either side of the caret line, measured inside the panel rather than the editor box.
+      const below = bounds.bottom - (surfaceRect.top + caretTop + lineHeight) - margin - gap;
+      const above = (surfaceRect.top + caretTop) - bounds.top - margin - gap;
+      const flip = below < Math.min(above, 160);
+      completion.style.maxHeight = `${Math.max(96, Math.min(340, flip ? above : below))}px`;
+      const minTop = bounds.top - surfaceRect.top + margin;
       completion.style.top = flip
-        ? `${Math.max(margin, caretTop - gap - completion.offsetHeight)}px`
+        ? `${Math.max(minTop, caretTop - gap - completion.offsetHeight)}px`
         : `${caretTop + lineHeight + gap}px`;
-      const maxLeft = Math.max(margin, surface.clientWidth - completion.offsetWidth - margin);
-      completion.style.left = `${Math.max(margin, Math.min(caretLeft, maxLeft))}px`;
+      const minLeft = bounds.left - surfaceRect.left + margin;
+      const maxLeft = Math.max(minLeft, bounds.right - surfaceRect.left - completion.offsetWidth - margin);
+      completion.style.left = `${Math.max(minLeft, Math.min(caretLeft, maxLeft))}px`;
     };
     const complete = async (force = false) => {
       const request = ++completionRequest;
+      // Value completion (WHERE col = 'value') is attempted first. It applies even with no
+      // typed prefix – e.g. "WHERE Status = " should list the distinct values immediately –
+      // and when it claims the caret the normal column/keyword popup would be noise.
+      let valueResult = null;
+      try { valueResult = await valueCompletionSuggestions(input.value, input.selectionStart, scope); }
+      catch { valueResult = null; }
+      if (request !== completionRequest) return;
+      if (valueResult && valueResult.matches && valueResult.matches.length) {
+        matches = valueResult.matches;
+        selected = 0;
+        renderCompletionRows();
+        completion.hidden = false;
+        surface.classList.add('completing');
+        editor.classList.add('completing');
+        positionCompletion();
+        return;
+      }
+      // If the caret is in a predicate value position but no distinct set looks worthwhile,
+      // keep the popup closed unless the user explicitly asked (Ctrl+Space). Showing columns
+      // or keywords after "WHERE col = " is not what was asked for.
+      if (valueResult && valueResult.ctx && !force) { hideCompletion(); return; }
+
       const prefix = sqlCompletionPrefix(input.value, input.selectionStart);
-      if (!force && prefix.length < 2) { hideCompletion(); return; }
-      const contextual = await contextualSqlSuggestions(input.value, input.selectionStart, prefix, scope);
+      const phrases = sqlCompletionPhrasePrefixes(input.value, input.selectionStart);
+      const starts = (value, typed) => typed && value.toLowerCase().startsWith(typed.toLowerCase());
+      // A multi-word keyword is offered from its first word on, so ORDER BY is still reachable
+      // after ORDER and the space that follows it.
+      const continued = sqlSuggestions(scope).filter((x) => phrases.some((phrase) => starts(x, phrase)));
+      // A space does not have to end the suggestions. After a clause keyword or a comma the editor
+      // still knows what belongs at the caret, so it keeps offering the context-aware items there.
+      // The full keyword list stays out of that popup, because nothing has been typed to narrow it.
+      const opening = !prefix && sqlOpensCompletion(input.value.slice(0, input.selectionStart));
+      if (!force && !opening && !continued.length && prefix.length < 2) { hideCompletion(); return; }
+      // One letter is not enough to search the whole database, but it is enough to finish a phrase.
+      const narrow = force || prefix.length >= 2;
+      const contextual = narrow || opening
+        ? await contextualSqlSuggestions(input.value, input.selectionStart, prefix, scope)
+        : [];
       if (request !== completionRequest || prefix !== sqlCompletionPrefix(input.value, input.selectionStart)) return;
-      matches = [...contextual, ...sqlSuggestions(scope).filter((x) => x.toLowerCase().startsWith(prefix.toLowerCase()))]
-        .filter((x, i, all) => x.toLowerCase() !== prefix.toLowerCase() && all.findIndex((y) => y.toLowerCase() === x.toLowerCase()) === i)
-        .slice(0, 20);
+      const contextualSet = new Set(contextual.map((value) => value.toLowerCase()));
+      // What a suggestion replaces: the longest phrase it continues, or the word at the caret.
+      const replaced = (value) => phrases.find((phrase) => starts(value, phrase))
+        ?? (starts(value, prefix) ? prefix : null);
+      const language = narrow
+        ? sqlSuggestions(scope).filter((x) => replaced(x) !== null)
+        : continued;
+      matches = [...contextual, ...language]
+        // An exact match keeps its row: the word may be complete, but its description is what the
+        // popup is being read for. Only duplicates are dropped.
+        .filter((x, i, all) => all.findIndex((y) => y.toLowerCase() === x.toLowerCase()) === i)
+        .slice(0, 20)
+        .map((value) => ({
+          value,
+          category: classifyCompletion(value, scope, contextualSet.has(value.toLowerCase())),
+          doc: sqlDocLookup(scope, value),
+          replaces: (replaced(value) || '').length,
+        }));
       selected = 0;
       if (!matches.length) { hideCompletion(); return; }
-      completion.replaceChildren(...matches.map((x, i) => h('button', {
-        type: 'button', class: i === selected ? 'active' : '', text: x,
-        onmousedown: (e) => { e.preventDefault(); insert(x, prefix.length); },
-      })));
+      renderCompletionRows();
       completion.hidden = false;
+      surface.classList.add('completing');
+      editor.classList.add('completing');
       positionCompletion();
     };
     const insert = (value, prefixLength = 0) => {
       const start = input.selectionStart - prefixLength, end = input.selectionEnd;
       input.setRangeText(value, start, end, 'end');
       input.dispatchEvent(new Event('input', { bubbles: true }));
+      // The input event above starts a completion for the text just inserted. Retiring the request
+      // discards it, so accepting a suggestion closes the popup instead of reopening it.
+      completionRequest++;
       hideCompletion(); input.focus();
     };
     input.addEventListener('input', () => { refresh(); if (!options.readOnly) complete(); });
     input.addEventListener('scroll', () => { highlight.scrollTop = input.scrollTop; highlight.scrollLeft = input.scrollLeft; lines.scrollTop = input.scrollTop; positionCompletion(); });
     input.addEventListener('blur', () => setTimeout(hideCompletion, 120));
+    completionList.addEventListener('mouseleave', () => describeCompletion(visibleMatches[selected]));
     input.addEventListener('keydown', (e) => {
       if (options.readOnly) return;
       if (e.ctrlKey && e.key === ' ') { e.preventDefault(); complete(true); return; }
-      if (!completion.hidden && ['ArrowDown', 'ArrowUp'].includes(e.key)) {
-        e.preventDefault(); selected = (selected + (e.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length;
-        [...completion.children].forEach((x, i) => x.classList.toggle('active', i === selected));
-      } else if (!completion.hidden && (e.key === 'Enter' || e.key === 'Tab')
+      if (!completion.hidden && visibleMatches.length && ['ArrowDown', 'ArrowUp'].includes(e.key)) {
+        e.preventDefault();
+        select((selected + (e.key === 'ArrowDown' ? 1 : visibleMatches.length - 1)) % visibleMatches.length);
+        completionList.children[selected]?.scrollIntoView({ block: 'nearest' });
+      } else if (!completion.hidden && visibleMatches.length && (e.key === 'Enter' || e.key === 'Tab')
         && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        e.preventDefault(); insert(matches[selected], sqlCompletionPrefix(input.value, input.selectionStart).length);
+        e.preventDefault();
+        insert(visibleMatches[selected].value, visibleMatches[selected].replaces);
       } else if (e.key === 'Escape') hideCompletion();
       else if (e.key === 'Tab') { e.preventDefault(); insert('    '); }
     });
@@ -1468,21 +2019,10 @@
   });
 
   registerTabRestorer('diagram', (descriptor) => openDiagramTab(descriptor.scope));
-  registerTabRestorer('schema-compare', (descriptor) =>
-    openSchemaCompareTab(descriptor.source, descriptor.target));
-  registerTabRestorer('data-compare', async (descriptor) => {
-    const objects = await objectsForScope(descriptor.source);
-    const object = objects.find((candidate) =>
-      candidate.type === 'Table'
-      && candidate.schema === descriptor.sourceObject?.schema
-      && candidate.name === descriptor.sourceObject?.name);
-    if (object) {
-      openDataCompareTab(descriptor.source, object, descriptor.target,
-        descriptor.keyColumns, descriptor.maxRows);
-    }
-  });
 
   registerTabRestorer('apis', () => openApisTab());
+  registerTabRestorer('security', (descriptor) => openSecurityTab(descriptor.scope));
+  registerTabRestorer('trigger-management', (descriptor) => openTriggerManagementTab(descriptor.scope));
 
   // ---- modules ----------------------------------------------------------------
   // Optional packages (installed by the host) ship their own scripts and styles. The server
@@ -1656,9 +2196,8 @@
     await loadModules();
 
     navigationOverflow = setupOverflowToolbar($('#topbar'), [
-      $('#version'), $('#about-btn'), $('#apis-btn'), $('#schema-compare-btn'), $('#ask-btn'),
-      $('#theme-btn'), $('#refresh-btn'), $('.connection-pickers'), $('#new-query-btn'), $('#diagram-btn'),
-      ...moduleActions,
+      $('#version'), $('#about-btn'), $('#apis-btn'), $('#ask-btn'), $('#theme-btn'), $('#refresh-btn'),
+      $('.connection-pickers'), $('#new-query-btn'), $('#diagram-btn'), ...moduleActions,
     ], 'More app actions');
 
     $('#version').textContent = 'v' + state.meta.version;
@@ -1691,7 +2230,6 @@
     $('#refresh-btn').addEventListener('click', () => loadObjects());
     $('#ask-btn').addEventListener('click', () => openAgentTab());
     $('#diagram-btn').addEventListener('click', () => openDiagramTab());
-    $('#schema-compare-btn').addEventListener('click', () => openSchemaCompareTab());
     $('#new-query-btn').addEventListener('click', () => openQueryTab());
     $('#apis-btn').addEventListener('click', () => openApisTab());
     $('#about-btn').addEventListener('click', showAbout);
@@ -1702,7 +2240,6 @@
     $('#sidebar').addEventListener('contextmenu', (event) => showContextMenu(event, [
       { label: 'Query', action: () => openQueryTab() },
       { label: 'ER diagram', action: () => openDiagramTab() },
-      { label: 'Compare schemas', action: () => openSchemaCompareTab() },
       { label: 'Refresh objects', action: () => loadObjects() },
       ...(currentConn().allowDdl ? [
         { separator: true },
@@ -1934,6 +2471,68 @@
     return area;
   }
 
+  // Splitter between two stacked result grids. Dragging (or ArrowUp/Down) moves the boundary
+  // between the adjacent panels only; every panel is pinned to its current height first so the
+  // other panels keep their size.
+  function resultSetGrip(above, below, container) {
+    const grip = h('div', {
+      class: 'result-set-grip', role: 'separator',
+      'aria-label': 'Resize result grid', 'aria-orientation': 'horizontal', tabindex: '0',
+    });
+    const minPanelHeight = 96;
+    const pinAllPanels = () => {
+      for (const panel of container.querySelectorAll(':scope > .result-set')) {
+        panel.style.flex = `0 0 ${panel.getBoundingClientRect().height}px`;
+      }
+    };
+    // Virtualized grids size their render window from the container height, so they need a
+    // re-render once that height changes; non-virtualized grids are unaffected.
+    const rerenderVirtualGrids = () => {
+      for (const scroll of container.querySelectorAll(':scope > .result-set > .grid-scroll')) {
+        scroll.dispatchEvent(new Event('scroll'));
+      }
+    };
+    const applyDelta = (startAbove, startBelow, delta) => {
+      const bound = Math.min(Math.max(delta, minPanelHeight - startBelow), startAbove - minPanelHeight);
+      above.style.flex = `0 0 ${startAbove + bound}px`;
+      below.style.flex = `0 0 ${startBelow - bound}px`;
+    };
+    grip.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      grip.setPointerCapture(event.pointerId);
+      grip.classList.add('dragging');
+      document.body.style.cursor = 'row-resize';
+      pinAllPanels();
+      const startY = event.clientY;
+      const startAbove = above.getBoundingClientRect().height;
+      const startBelow = below.getBoundingClientRect().height;
+      const move = (moveEvent) => {
+        applyDelta(startAbove, startBelow, moveEvent.clientY - startY);
+        rerenderVirtualGrids();
+      };
+      const stop = () => {
+        grip.removeEventListener('pointermove', move);
+        grip.removeEventListener('pointerup', stop);
+        grip.removeEventListener('pointercancel', stop);
+        grip.classList.remove('dragging');
+        document.body.style.cursor = '';
+        rerenderVirtualGrids();
+      };
+      grip.addEventListener('pointermove', move);
+      grip.addEventListener('pointerup', stop);
+      grip.addEventListener('pointercancel', stop);
+    });
+    grip.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      event.preventDefault();
+      pinAllPanels();
+      applyDelta(above.getBoundingClientRect().height, below.getBoundingClientRect().height,
+        event.key === 'ArrowUp' ? -24 : 24);
+      rerenderVirtualGrids();
+    });
+    return grip;
+  }
+
   // ---- sidebar tree ------------------------------------------------------------
 
   const SECTIONS = [
@@ -1998,7 +2597,29 @@
           },
             h('span', { class: 'badge badge-S', text: 'S' }),
             h('span', { class: 'item-name', text: s.name }),
-            h('span', { class: 'schema-owner', text: s.owner })))), !!filter));
+          h('span', { class: 'schema-owner', text: s.owner })))), !!filter));
+    }
+
+    const administration = [];
+    if (capabilities.supportsSecurityOverview && (!filter || 'security users roles permissions'.includes(filter))) {
+      administration.push(h('button', {
+        class: 'tree-item', title: 'Database users, roles, and permissions',
+        onclick: () => openSecurityTab(),
+      }, h('span', { class: 'badge badge-U', text: 'U' }),
+      h('span', { class: 'item-name', text: 'Security' })));
+    }
+    if (capabilities.supportsTriggerManagement && (!filter || 'all triggers ddl server database'.includes(filter))) {
+      administration.push(h('button', {
+        class: 'tree-item', title: 'DML, database DDL, and server DDL triggers',
+        onclick: () => openTriggerManagementTab(),
+      }, h('span', { class: 'badge badge-R', text: 'R' }),
+      h('span', { class: 'item-name', text: 'All triggers' })));
+    }
+    if (administration.length) {
+      const summary = h('summary', {}, 'Administration ',
+        h('span', { class: 'count', text: String(administration.length) }));
+      tree.append(treeSection('administration', false, summary,
+        h('div', { class: 'items' }, administration), !!filter));
     }
 
     for (const [label, types, badge, capability] of SECTIONS) {
@@ -2101,6 +2722,109 @@
       await loadObjects();
       toast(`Schema ${schema.name} deleted.`, false);
     }, 'Delete schema');
+  }
+
+  function administrationTable(title, headers, rows) {
+    return h('section', {}, h('h3', { text: title }),
+      rows.length
+        ? h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
+          h('thead', {}, h('tr', {}, headers.map((header) => h('th', { text: header })))),
+          h('tbody', {}, rows)))
+        : h('p', { class: 'muted', text: 'None visible to the current database identity.' }));
+  }
+
+  function openSecurityTab(scope = scopeOf()) {
+    const key = `security:${scopeKey(scope)}`;
+    const existing = state.tabs.find((tab) => tab.key === key);
+    if (existing) { setActiveTab(existing.id); return; }
+    const body = h('div', { class: 'panel-body' }, h('div', { class: 'loading', text: 'Loading…' }));
+    const tab = {
+      id: state.nextTabId++, key, scope, badge: 'U', title: 'Security',
+      panel: h('div', { class: 'panel' },
+        h('div', { class: 'viewbar' }, h('h2', { text: 'Database security' })), body),
+      loaded: false, load: async () => {
+        try {
+          const security = await api(urlsFor(scope).security());
+          const identity = h('div', { class: 'temporal-info', 'data-testid': 'security-identity' },
+            h('strong', { text: security.currentUser || 'Unknown database user' }),
+            h('span', { text: `Login: ${security.login || 'unknown'}` }),
+            security.originalLogin && security.originalLogin !== security.login
+              ? h('span', { text: `Original login: ${security.originalLogin}` }) : null);
+          body.replaceChildren(identity,
+            administrationTable('Effective permissions', ['Scope', 'Permission'],
+              (security.effectivePermissions || []).map((permission) => h('tr', {},
+                h('td', { text: permission.scope }), h('td', { text: permission.permission })))),
+            administrationTable('Users and roles', ['Name', 'Type', 'Authentication', 'Default schema', 'Flags'],
+              (security.principals || []).map((principal) => h('tr', {},
+                h('td', { text: principal.name }), h('td', { text: principal.type }),
+                h('td', { text: principal.authenticationType || '' }),
+                h('td', { text: principal.defaultSchema || '' }),
+                h('td', { text: [principal.isFixedRole ? 'fixed role' : '', principal.isSystem ? 'system' : '']
+                  .filter(Boolean).join(', ') })))),
+            administrationTable('Role memberships', ['Role', 'Member'],
+              (security.roleMemberships || []).map((membership) => h('tr', {},
+                h('td', { text: membership.role }), h('td', { text: membership.member })))),
+            administrationTable('Explicit permissions', ['Grantee', 'State', 'Permission', 'Scope', 'Securable', 'Grantor'],
+              (security.explicitPermissions || []).map((permission) => h('tr', {},
+                h('td', { text: permission.grantee }), h('td', { text: permission.state }),
+                h('td', { text: permission.permission }), h('td', { text: permission.scope }),
+                h('td', { class: 'mono', text: permission.securable || '' }),
+                h('td', { text: permission.grantor })))));
+        } catch (err) { body.replaceChildren(errorBox(err.message)); }
+      },
+      restore: { kind: 'security', scope },
+    };
+    addTab(tab);
+  }
+
+  function openTriggerManagementTab(scope = scopeOf()) {
+    const key = `trigger-management:${scopeKey(scope)}`;
+    const existing = state.tabs.find((tab) => tab.key === key);
+    if (existing) { setActiveTab(existing.id); return; }
+    const body = h('div', { class: 'panel-body' }, h('div', { class: 'loading', text: 'Loading…' }));
+    const tab = {
+      id: state.nextTabId++, key, scope, badge: 'R', title: 'All triggers',
+      panel: h('div', { class: 'panel' },
+        h('div', { class: 'viewbar' }, h('h2', { text: 'Trigger management' })), body),
+      loaded: false, load: async () => {
+        const render = async () => {
+          try {
+            const triggers = await api(urlsFor(scope).triggers());
+            const rows = triggers.map((trigger) => {
+              const target = trigger.scope === 'object'
+                ? `${trigger.parentSchema}.${trigger.parentName}`
+                : trigger.scope === 'database' ? scope.database : 'all server';
+              const toggle = connectionFor(scope).allowDdl ? h('button', {
+                class: 'mini-btn',
+                text: trigger.isDisabled ? 'Enable' : 'Disable',
+                'aria-label': `${trigger.isDisabled ? 'Enable' : 'Disable'} trigger ${trigger.name}`,
+                onclick: async () => {
+                  try {
+                    await post(urlsFor(scope).triggerState(), {
+                      name: trigger.name, scope: trigger.scope, enabled: trigger.isDisabled,
+                      schema: trigger.schema, parentSchema: trigger.parentSchema, parentName: trigger.parentName,
+                    });
+                    toast(`Trigger ${trigger.name} ${trigger.isDisabled ? 'enabled' : 'disabled'}.`, false);
+                    await render();
+                  } catch (err) { toast(err.message); }
+                },
+              }) : null;
+              const definition = trigger.definition ? h('details', {},
+                h('summary', { text: 'Show SQL' }), h('pre', { class: 'mono', text: trigger.definition })) : null;
+              return h('tr', {}, h('td', { text: trigger.name }), h('td', { text: trigger.scope }),
+                h('td', { class: 'mono', text: target }), h('td', { text: (trigger.events || []).join(', ') }),
+                h('td', { text: trigger.isDisabled ? 'Disabled' : 'Enabled' }), h('td', {}, definition),
+                h('td', { class: 'cell-actions' }, toggle));
+            });
+            body.replaceChildren(administrationTable('DML and DDL triggers',
+              ['Name', 'Scope', 'Target', 'Events', 'State', 'Definition', ''], rows));
+          } catch (err) { body.replaceChildren(errorBox(err.message)); }
+        };
+        await render();
+      },
+      restore: { kind: 'trigger-management', scope },
+    };
+    addTab(tab);
   }
 
   function openSequenceDialog() {
@@ -2402,9 +3126,6 @@
     const items = [{ label: 'Open', action: () => openObjectTab(o) }];
     if (o.type === 'Table' || o.type === 'View') {
       items.push({ label: 'Query data', action: () => openQueryTab(objectQuerySql(o), displayName(o)) });
-    }
-    if (o.type === 'Table' && !o.isInternal && !isVirtualObject(o)) {
-      items.push({ label: 'Compare data…', action: () => openDataCompareTab(scopeOf(), o) });
     }
     if (isRoutine(o) && currentConn().allowSqlExecution) {
       items.push({ label: 'Execute…', action: () => openRoutineExecuteDialog(o) });
@@ -2773,1736 +3494,6 @@
 
     filter.addEventListener('input', render);
     render();
-  }
-
-  // ---- schema comparison ------------------------------------------------------
-
-  const comparisonTableKey = (object, objectScope, targetScope) => {
-    const targetCapabilities = capabilitiesFor(targetScope);
-    const schema = targetCapabilities.supportsSchemas
-      ? (capabilitiesFor(objectScope).supportsSchemas
-        ? object.schema : targetCapabilities.defaultSchema)
-      : '';
-    return `${schema || ''}\u0000${object.name}`.toLowerCase();
-  };
-
-  const comparisonColumns = (definition) => {
-    const periodColumns = new Set([
-      definition.temporal?.periodStartColumn,
-      definition.temporal?.periodEndColumn,
-    ].filter(Boolean).map((name) => name.toLowerCase()));
-    return (definition.columns || []).filter((column) =>
-      !column.isHidden || periodColumns.has(column.name.toLowerCase()));
-  };
-
-  const migrationIsSqlite = (scope) =>
-    String(connectionFor(scope).providerName || '').toLowerCase().includes('sqlite');
-
-  const migrationReferentialAction = (action, targetScope) => {
-    const normalized = String(action || 'NO_ACTION').toUpperCase().replaceAll('_', ' ');
-    return !migrationIsSqlite(targetScope) && normalized === 'RESTRICT' ? 'NO ACTION' : normalized;
-  };
-
-  const migrationQuote = (name, scope) => migrationIsSqlite(scope)
-    ? `"${String(name).replaceAll('"', '""')}"`
-    : `[${String(name).replaceAll(']', ']]')}]`;
-
-  function migrationObject(object, sourceScope, targetScope) {
-    const sourceCapabilities = capabilitiesFor(sourceScope);
-    const targetCapabilities = capabilitiesFor(targetScope);
-    return {
-      schema: targetCapabilities.supportsSchemas
-        ? (sourceCapabilities.supportsSchemas ? object.schema : targetCapabilities.defaultSchema)
-        : object.schema,
-      name: object.name,
-    };
-  }
-
-  function migrationName(object, sourceScope, targetScope) {
-    const mapped = migrationObject(object, sourceScope, targetScope);
-    return capabilitiesFor(targetScope).supportsSchemas
-      ? `${migrationQuote(mapped.schema, targetScope)}.${migrationQuote(mapped.name, targetScope)}`
-      : migrationQuote(mapped.name, targetScope);
-  }
-
-  function migrationType(dataType, targetScope) {
-    const type = String(dataType || '').trim();
-    const upper = type.toUpperCase().replace(/\s+/g, ' ');
-    if (migrationIsSqlite(targetScope)) {
-      if (upper.includes('INT')) return 'INTEGER';
-      if (/CHAR|CLOB|TEXT/.test(upper)) return 'TEXT';
-      if (/BLOB|BINARY|IMAGE/.test(upper) || !upper) return 'BLOB';
-      if (/REAL|FLOA|DOUB/.test(upper)) return 'REAL';
-      return 'NUMERIC';
-    }
-    if (upper === 'INTEGER') return 'bigint';
-    if (upper === 'TEXT') return 'nvarchar(max)';
-    if (upper === 'BLOB') return 'varbinary(max)';
-    if (upper === 'REAL') return 'float';
-    if (upper === 'NUMERIC') return 'decimal(38, 10)';
-    return type || 'nvarchar(max)';
-  }
-
-  function comparisonPortableType(dataType) {
-    const upper = String(dataType || '').trim().toUpperCase();
-    if (/\b(?:TINYINT|SMALLINT|INT|BIGINT|INTEGER)\b/.test(upper)) return 'integer';
-    if (/CHAR|CLOB|TEXT|XML|JSON/.test(upper)) return 'text';
-    if (/BLOB|BINARY|IMAGE|VARBINARY/.test(upper)) return 'blob';
-    if (/REAL|FLOA|DOUB/.test(upper)) return 'real';
-    return 'numeric';
-  }
-
-  const migrationSameProvider = (sourceScope, targetScope) =>
-    String(connectionFor(sourceScope).providerName).toLowerCase()
-      === String(connectionFor(targetScope).providerName).toLowerCase();
-
-  function migrationColumnCollationIssue(column, sourceScope, targetScope) {
-    if (!column.collation || migrationSameProvider(sourceScope, targetScope)) return null;
-    if (migrationIsSqlite(targetScope)
-      && ['BINARY', 'NOCASE', 'RTRIM'].includes(String(column.collation).toUpperCase())) return null;
-    return `collation ${column.collation} is not portable to ${connectionFor(targetScope).providerName}`;
-  }
-
-  const migrationCommentSql = (sql) => String(sql).split('\n').map((line) => `-- ${line}`).join('\n');
-
-  const comparisonText = (value) => String(value || '')
-    .trim().replace(/\s+/g, ' ').replace(/^\((.*)\)$/s, '$1').toLowerCase();
-
-  function comparisonColumnFingerprint(column, columnScope, otherScope) {
-    const sameProvider = String(connectionFor(columnScope).providerName).toLowerCase()
-      === String(connectionFor(otherScope).providerName).toLowerCase();
-    return [
-      sameProvider
-        ? comparisonText(column.dataType)
-        : comparisonPortableType(column.dataType),
-      Boolean(column.isNullable),
-      Boolean(column.isIdentity),
-      column.isIdentity ? Number(column.identitySeed ?? 1) : '',
-      column.isIdentity ? Number(column.identityIncrement ?? 1) : '',
-      Boolean(column.isComputed),
-      Boolean(column.isPersisted),
-      sameProvider ? comparisonText(column.collation) : '',
-      comparisonText(column.defaultDefinition),
-      comparisonText(column.computedDefinition || column.generatedExpression),
-    ].join('|');
-  }
-
-  const orderedIndexKeys = (value) => value.keyColumns?.length
-    ? [...value.keyColumns].sort((a, b) => a.ordinal - b.ordinal)
-    : (value.columns || []).map((column, index) => ({ column, ordinal: index + 1 }));
-
-  const migrationIndexColumns = (index) => orderedIndexKeys(index)
-    .map((key) => key.column).filter(Boolean).map(String);
-
-  function migrationIndexTerm(key, targetScope) {
-    let term = key.expression || (key.column ? migrationQuote(key.column, targetScope) : '(expression)');
-    if (key.collation) term += ` COLLATE ${key.collation}`;
-    if (key.isDescending) term += ' DESC';
-    return term;
-  }
-
-  const migrationIndexTerms = (value, targetScope) => orderedIndexKeys(value)
-    .map((key) => migrationIndexTerm(key, targetScope));
-
-  const migrationPrimaryKeyTerms = (index, targetScope) => orderedIndexKeys(index)
-    .map((key) => `${key.column ? migrationQuote(key.column, targetScope) : key.expression || '(expression)'}`
-      + `${migrationIsSqlite(targetScope) && key.collation ? ` COLLATE ${key.collation}` : ''}`
-      + `${key.isDescending ? ' DESC' : ''}`);
-
-  function migrationUnsupportedKeyReason(value, targetScope) {
-    const keys = orderedIndexKeys(value);
-    if (!migrationIsSqlite(targetScope) && keys.some((key) => key.expression || key.collation)) {
-      return 'uses an expression or per-key collation that cannot be emitted safely for SQL Server';
-    }
-    if (migrationIsSqlite(targetScope) && keys.some((key) => key.collation
-      && !['BINARY', 'NOCASE', 'RTRIM'].includes(String(key.collation).toUpperCase()))) {
-      return 'uses a source-provider collation that is not built into SQLite';
-    }
-    return null;
-  }
-
-  const comparisonIndexColumns = (index) => migrationIndexColumns(index)
-    .map((name) => name.toLowerCase());
-
-  const comparisonIndexFingerprint = (index, indexScope, otherScope) => {
-    const sameProvider = !indexScope || !otherScope
-      || String(connectionFor(indexScope).providerName).toLowerCase()
-        === String(connectionFor(otherScope).providerName).toLowerCase();
-    return [
-    Boolean(index.isPrimaryKey), Boolean(index.isUnique), Boolean(index.isDisabled),
-    orderedIndexKeys(index).map((key) => [
-      comparisonText(key.column), comparisonText(key.expression),
-      Boolean(key.isDescending), sameProvider ? comparisonText(key.collation) : '',
-    ].join(':')).join(','),
-    sameProvider
-      ? (index.includedColumns || []).map((name) => String(name).toLowerCase()).sort().join(',')
-      : '',
-    comparisonText(index.filterDefinition),
-    ].join('|');
-  };
-
-  const comparisonForeignKeyFingerprint = (foreignKey, sourceScope, targetScope) => {
-    const targetObject = migrationObject({
-      schema: foreignKey.referencedSchema, name: foreignKey.referencedTable,
-    }, sourceScope, targetScope);
-    return [
-      capabilitiesFor(targetScope).supportsSchemas ? targetObject.schema.toLowerCase() : '',
-      targetObject.name.toLowerCase(),
-      (foreignKey.columns || []).map((pair) =>
-        `${String(pair.column).toLowerCase()}:${String(pair.referencedColumn).toLowerCase()}`).join(','),
-      migrationReferentialAction(foreignKey.onDelete, targetScope),
-      migrationReferentialAction(foreignKey.onUpdate, targetScope),
-    ].join('|');
-  };
-
-  function migrationColumn(column, targetScope, sourceScope = targetScope,
-    sqliteAutoincrementColumn = null) {
-    const name = migrationQuote(column.name, targetScope);
-    if (column.isComputed) {
-      const expression = String(column.computedDefinition || column.generatedExpression || '').trim();
-      return migrationIsSqlite(targetScope)
-        ? `${name} GENERATED ALWAYS AS (${expression || '/* expression */'}) `
-          + `${column.isPersisted ? 'STORED' : 'VIRTUAL'}`
-        : `${name} AS (${expression || '/* expression */'})${column.isPersisted ? ' PERSISTED' : ''}`;
-    }
-    const type = migrationType(column.dataType, targetScope);
-    const seed = Number(column.identitySeed ?? 1);
-    const increment = Number(column.identityIncrement ?? 1);
-    if (migrationIsSqlite(targetScope) && column.isIdentity
-      && column.name.toLowerCase() === sqliteAutoincrementColumn?.toLowerCase()
-      && type === 'INTEGER' && seed === 1 && increment === 1) {
-      return `${name} INTEGER PRIMARY KEY AUTOINCREMENT`;
-    }
-    let sql = `${name} ${type}`;
-    if (column.collation && !migrationColumnCollationIssue(column, sourceScope, targetScope)) {
-      sql += ` COLLATE ${column.collation}`;
-    }
-    if (!migrationIsSqlite(targetScope) && column.isIdentity) {
-      sql += ` IDENTITY(${seed}, ${increment})`;
-    }
-    sql += column.isNullable ? ' NULL' : ' NOT NULL';
-    if (column.defaultDefinition) sql += ` DEFAULT ${String(column.defaultDefinition).trim()}`;
-    return sql;
-  }
-
-  function migrationPrimaryKey(definition) {
-    return (definition.indexes || []).find((index) => index.isPrimaryKey) || null;
-  }
-
-  function migrationSqliteAutoincrementColumn(definition, targetScope) {
-    if (!migrationIsSqlite(targetScope)) return null;
-    const keys = orderedIndexKeys(migrationPrimaryKey(definition) || {});
-    if (keys.length !== 1 || !keys[0].column) return null;
-    const column = comparisonColumns(definition).find((candidate) =>
-      candidate.name.toLowerCase() === keys[0].column.toLowerCase());
-    if (!column?.isIdentity || migrationType(column.dataType, targetScope) !== 'INTEGER'
-      || Number(column.identitySeed ?? 1) !== 1 || Number(column.identityIncrement ?? 1) !== 1) return null;
-    return column.name;
-  }
-
-  function migrationCreateTable(definition, sourceScope, targetScope) {
-    const tableName = migrationName(definition.object, sourceScope, targetScope);
-    const temporal = !migrationIsSqlite(targetScope)
-      && definition.temporal?.kind === 'systemVersioned' ? definition.temporal : null;
-    const primaryKey = migrationPrimaryKey(definition);
-    const sqliteAutoincrementColumn = migrationSqliteAutoincrementColumn(definition, targetScope);
-    const body = comparisonColumns(definition).map((column) => {
-      const role = column.name.toLowerCase() === temporal?.periodStartColumn?.toLowerCase()
-        ? 'START'
-        : column.name.toLowerCase() === temporal?.periodEndColumn?.toLowerCase() ? 'END' : null;
-      if (!role) {
-        return `  ${migrationColumn(
-          column, targetScope, sourceScope, sqliteAutoincrementColumn)}`;
-      }
-      let sql = `${migrationQuote(column.name, targetScope)} ${migrationType(column.dataType, targetScope)}`
-        + ` GENERATED ALWAYS AS ROW ${role}${column.isHidden ? ' HIDDEN' : ''}`
-        + `${column.isNullable ? ' NULL' : ' NOT NULL'}`;
-      if (column.defaultDefinition) sql += ` DEFAULT ${String(column.defaultDefinition).trim()}`;
-      return `  ${sql}`;
-    });
-    if (primaryKey && !sqliteAutoincrementColumn) {
-      const columns = migrationPrimaryKeyTerms(primaryKey, targetScope).join(', ');
-      body.push(`  CONSTRAINT ${migrationQuote(primaryKey.name || `PK_${definition.object.name}`, targetScope)} `
-        + `PRIMARY KEY (${columns})`);
-    }
-    for (const constraint of (definition.checkConstraints || [])
-      .filter((item) => !item.isDisabled && item.isTrusted !== false)) {
-      const prefix = constraint.name
-        ? `CONSTRAINT ${migrationQuote(constraint.name, targetScope)} ` : '';
-      body.push(`  ${prefix}CHECK (${constraint.definition})`);
-    }
-    if (migrationIsSqlite(targetScope)) {
-      for (const foreignKey of definition.foreignKeys || []) {
-        const sourceColumns = (foreignKey.columns || [])
-          .map((pair) => migrationQuote(pair.column, targetScope)).join(', ');
-        const targetColumns = (foreignKey.columns || [])
-          .map((pair) => migrationQuote(pair.referencedColumn, targetScope)).join(', ');
-        const referenced = migrationName({
-          schema: foreignKey.referencedSchema, name: foreignKey.referencedTable,
-        }, sourceScope, targetScope);
-        const name = foreignKey.name
-          ? `CONSTRAINT ${migrationQuote(foreignKey.name, targetScope)} ` : '';
-        body.push(`  ${name}FOREIGN KEY (${sourceColumns}) REFERENCES ${referenced} (${targetColumns}) `
-          + `ON DELETE ${migrationReferentialAction(foreignKey.onDelete, targetScope)} `
-          + `ON UPDATE ${migrationReferentialAction(foreignKey.onUpdate, targetScope)}`);
-      }
-    }
-    if (temporal?.periodStartColumn && temporal.periodEndColumn) {
-      body.push(`  PERIOD FOR SYSTEM_TIME (${migrationQuote(temporal.periodStartColumn, targetScope)}, `
-        + `${migrationQuote(temporal.periodEndColumn, targetScope)})`);
-    }
-    let suffix = '';
-    if (migrationIsSqlite(sourceScope) && migrationIsSqlite(targetScope)) {
-      const options = (definition.tableOptions || [])
-        .map((option) => String(option).trim().toUpperCase())
-        .filter((option) => ['STRICT', 'WITHOUT ROWID'].includes(option));
-      if (options.length) suffix = ` ${options.join(', ')}`;
-    } else if (temporal) {
-      const options = [];
-      if (temporal.relatedSchema && temporal.relatedTable) {
-        options.push(`HISTORY_TABLE = ${migrationName({
-          schema: temporal.relatedSchema, name: temporal.relatedTable,
-        }, sourceScope, targetScope)}`);
-      }
-      if (temporal.historyRetentionPeriod >= 0 && temporal.historyRetentionUnit) {
-        options.push(`HISTORY_RETENTION_PERIOD = ${temporal.historyRetentionPeriod} `
-          + `${String(temporal.historyRetentionUnit).toUpperCase()}`);
-      }
-      suffix = ` WITH (SYSTEM_VERSIONING = ON${options.length ? ` (${options.join(', ')})` : ''})`;
-    }
-    return `CREATE TABLE ${tableName} (\n${body.join(',\n')}\n)${suffix};`;
-  }
-
-  function migrationCreateIndex(index, object, sourceScope, targetScope) {
-    const unsupported = migrationUnsupportedKeyReason(index, targetScope);
-    if (unsupported) {
-      return `-- REVIEW: index ${index.name} on ${migrationName(object, sourceScope, targetScope)} `
-        + `${unsupported}; filter: ${index.filterDefinition || '(none)'}.`;
-    }
-    if (index.isDisabled) {
-      return `-- REVIEW: index ${index.name} on ${migrationName(object, sourceScope, targetScope)} `
-        + 'is disabled on the source and was not created as an enforced target index.';
-    }
-    const columns = migrationIndexTerms(index, targetScope).join(', ');
-    const included = !migrationIsSqlite(targetScope) && index.includedColumns?.length
-      ? ` INCLUDE (${index.includedColumns.map((column) => migrationQuote(column, targetScope)).join(', ')})`
-      : '';
-    const filter = index.filterDefinition ? ` WHERE ${index.filterDefinition}` : '';
-    return `CREATE ${index.isUnique ? 'UNIQUE ' : ''}INDEX `
-      + `${migrationQuote(index.name || `IX_${object.name}`, targetScope)} `
-      + `ON ${migrationName(object, sourceScope, targetScope)} (${columns})${included}${filter};`;
-  }
-
-  function migrationAddForeignKey(foreignKey, object, sourceScope, targetScope) {
-    const sourceColumns = (foreignKey.columns || [])
-      .map((pair) => migrationQuote(pair.column, targetScope)).join(', ');
-    const targetColumns = (foreignKey.columns || [])
-      .map((pair) => migrationQuote(pair.referencedColumn, targetScope)).join(', ');
-    const referenced = migrationName({
-      schema: foreignKey.referencedSchema, name: foreignKey.referencedTable,
-    }, sourceScope, targetScope);
-    if (migrationIsSqlite(targetScope)) {
-      return `-- REVIEW: SQLite requires rebuilding ${migrationName(object, sourceScope, targetScope)} `
-        + `to add foreign key ${foreignKey.name} (${sourceColumns}) REFERENCES ${referenced} (${targetColumns}).`;
-    }
-    const onDelete = migrationReferentialAction(foreignKey.onDelete, targetScope);
-    const onUpdate = migrationReferentialAction(foreignKey.onUpdate, targetScope);
-    return `ALTER TABLE ${migrationName(object, sourceScope, targetScope)} ADD CONSTRAINT `
-      + `${migrationQuote(foreignKey.name, targetScope)} FOREIGN KEY (${sourceColumns}) `
-      + `REFERENCES ${referenced} (${targetColumns}) ON DELETE ${onDelete} ON UPDATE ${onUpdate};`;
-  }
-
-  const comparisonCheckFingerprint = (constraint) => [
-    comparisonText(constraint.definition), Boolean(constraint.isDisabled),
-    constraint.isTrusted !== false,
-  ].join('|');
-
-  const comparisonUniqueColumns = (constraint) => orderedIndexKeys({ keyColumns: constraint.columns || [] })
-    .map((key) => comparisonText(key.column || key.expression));
-
-  const comparisonUniqueFingerprint = (constraint, constraintScope, otherScope) => {
-    const sameProvider = !constraintScope || !otherScope
-      || String(connectionFor(constraintScope).providerName).toLowerCase()
-        === String(connectionFor(otherScope).providerName).toLowerCase();
-    return [Boolean(constraint.isDisabled),
-    orderedIndexKeys({ keyColumns: constraint.columns || [] }).map((key) => [
-      comparisonText(key.column), comparisonText(key.expression),
-      Boolean(key.isDescending), sameProvider ? comparisonText(key.collation) : '',
-    ].join(':')).join(','),
-    ].join('|');
-  };
-
-  const comparisonUniqueAsIndexFingerprint = (constraint, constraintScope, otherScope) =>
-    comparisonIndexFingerprint({
-      isPrimaryKey: false,
-      isUnique: true,
-      isDisabled: constraint.isDisabled,
-      keyColumns: constraint.columns || [],
-      includedColumns: [],
-      filterDefinition: null,
-    }, constraintScope, otherScope);
-
-  function migrationAddCheck(constraint, object, sourceScope, targetScope) {
-    if (constraint.isDisabled || constraint.isTrusted === false) {
-      return `-- REVIEW: check constraint ${constraint.name || comparisonText(constraint.definition)} on `
-        + `${migrationName(object, sourceScope, targetScope)} is `
-        + `${constraint.isDisabled ? 'disabled' : 'not trusted'} on the source and was not enforced on the target.`;
-    }
-    if (migrationIsSqlite(targetScope)) {
-      return `-- REVIEW: SQLite requires rebuilding ${migrationName(object, sourceScope, targetScope)} `
-        + `to add check constraint ${constraint.name || comparisonCheckFingerprint(constraint)}.`;
-    }
-    const name = constraint.name
-      ? `CONSTRAINT ${migrationQuote(constraint.name, targetScope)} ` : '';
-    return `ALTER TABLE ${migrationName(object, sourceScope, targetScope)} ADD ${name}`
-      + `CHECK (${constraint.definition});`;
-  }
-
-  function migrationAddUnique(constraint, object, sourceScope, targetScope) {
-    if (constraint.isDisabled) {
-      return `-- REVIEW: unique constraint ${constraint.name || '(unnamed)'} on `
-        + `${migrationName(object, sourceScope, targetScope)} is disabled on the source `
-        + 'and was not created as an enforced target constraint.';
-    }
-    const keys = orderedIndexKeys({ keyColumns: constraint.columns || [] });
-    const unsupported = migrationUnsupportedKeyReason({ keyColumns: keys }, targetScope);
-    if (unsupported) {
-      return `-- REVIEW: unique constraint ${constraint.name || '(unnamed)'} on `
-        + `${migrationName(object, sourceScope, targetScope)} ${unsupported}.`;
-    }
-    const columns = keys.map((key) => migrationIndexTerm(key, targetScope)).join(', ');
-    const name = constraint.name || `UQ_${object.name}_${comparisonUniqueColumns(constraint).join('_')}`;
-    return migrationIsSqlite(targetScope)
-      ? `CREATE UNIQUE INDEX ${migrationQuote(name, targetScope)} `
-        + `ON ${migrationName(object, sourceScope, targetScope)} (${columns});`
-      : `ALTER TABLE ${migrationName(object, sourceScope, targetScope)} ADD CONSTRAINT `
-        + `${migrationQuote(name, targetScope)} UNIQUE (${columns});`;
-  }
-
-  async function loadSchemaSnapshot(scope) {
-    const objects = (await api(urlsFor(scope).objects()))
-      .filter((object) => object.type === 'Table' && !object.isInternal && !isVirtualObject(object))
-      .sort((a, b) => displayName(a, scope).localeCompare(displayName(b, scope)));
-    const definitions = new Array(objects.length);
-    const failures = [];
-    let next = 0;
-    const worker = async () => {
-      while (next < objects.length) {
-        const index = next++;
-        const object = objects[index];
-        try {
-          definitions[index] = await api(urlsFor(scope).structure(object.schema, object.name));
-        } catch (err) {
-          failures.push({ object, message: err.message });
-          definitions[index] = { object, unavailable: true, columns: [], indexes: [], foreignKeys: [] };
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(6, objects.length) }, worker));
-    return { scope, definitions, failures };
-  }
-
-  function comparisonCreationOrder(definitions, sourceScope, targetScope) {
-    const byKey = new Map(definitions.map((definition) => [
-      comparisonTableKey(definition.object, sourceScope, targetScope), definition,
-    ]));
-    const visiting = new Set();
-    const visited = new Set();
-    const ordered = [];
-    const visit = (definition) => {
-      if (visited.has(definition)) return;
-      if (visiting.has(definition)) return;
-      visiting.add(definition);
-      for (const foreignKey of definition.foreignKeys || []) {
-        const dependency = byKey.get(comparisonTableKey({
-          schema: foreignKey.referencedSchema,
-          name: foreignKey.referencedTable,
-        }, sourceScope, targetScope));
-        if (dependency) visit(dependency);
-      }
-      visiting.delete(definition);
-      visited.add(definition);
-      ordered.push(definition);
-    };
-    definitions.forEach(visit);
-    return ordered;
-  }
-
-  function compareSchemaSnapshots(source, target) {
-    const changes = [];
-    const scripts = { createHistory: [], create: [], alter: [], index: [], foreignKey: [], review: [] };
-    const targetByKey = new Map(target.definitions.map((definition) => [
-      comparisonTableKey(definition.object, target.scope, target.scope), definition,
-    ]));
-    const sourceDefinitions = comparisonCreationOrder(source.definitions, source.scope, target.scope);
-    const sourceGroups = new Map();
-    for (const definition of sourceDefinitions) {
-      const key = comparisonTableKey(definition.object, source.scope, target.scope);
-      if (!sourceGroups.has(key)) sourceGroups.set(key, []);
-      sourceGroups.get(key).push(definition);
-    }
-    const collidingKeys = new Set([...sourceGroups.entries()]
-      .filter(([, definitions]) => definitions.length > 1)
-      .map(([key]) => key));
-    const foreignKeyTargetKey = (foreignKey) => comparisonTableKey({
-      schema: foreignKey.referencedSchema,
-      name: foreignKey.referencedTable,
-    }, source.scope, target.scope);
-    const createCollationIssues = (definition) => comparisonColumns(definition)
-      .map((column) => migrationColumnCollationIssue(column, source.scope, target.scope))
-      .filter(Boolean);
-    const createBlockingIssues = (definition) => [
-      ...createCollationIssues(definition),
-      ...(migrationIsSqlite(target.scope) && definition.temporal
-        ? ['temporal configuration and its period defaults are not portable to SQLite'] : []),
-      ...(migrationPrimaryKey(definition)?.isDisabled
-        ? ['the source primary key is disabled and cannot be recreated safely as enforced'] : []),
-    ];
-    const missingColumnReviewReason = (column, definition) => {
-      const columnKey = column.name.toLowerCase();
-      const primaryColumns = new Set(comparisonIndexColumns(migrationPrimaryKey(definition) || {}));
-      const periodColumns = new Set([
-        definition.temporal?.periodStartColumn,
-        definition.temporal?.periodEndColumn,
-      ].filter(Boolean).map((name) => name.toLowerCase()));
-      if (migrationIsSqlite(target.scope)
-        && (primaryColumns.has(columnKey) || column.isIdentity || column.isComputed
-          || periodColumns.has(columnKey))) {
-        if (periodColumns.has(columnKey)) {
-          return 'a temporal period column and its default cannot be preserved on SQLite';
-        }
-        return (column.isComputed ? 'adding a generated column' : 'adding an identity or primary-key column')
-          + ' requires rebuilding the SQLite table';
-      }
-      const collationIssue = migrationColumnCollationIssue(column, source.scope, target.scope);
-      if (collationIssue) return collationIssue;
-      if (!column.isNullable && !column.defaultDefinition && !column.isComputed) {
-        return 'the column is required and has no default; backfill existing rows first';
-      }
-      return null;
-    };
-    const blockedColumnsByTable = new Map();
-    for (const definition of sourceDefinitions) {
-      const key = comparisonTableKey(definition.object, source.scope, target.scope);
-      const targetDefinition = targetByKey.get(key);
-      if (!targetDefinition || definition.unavailable || targetDefinition.unavailable) continue;
-      const targetColumnNames = new Set(comparisonColumns(targetDefinition)
-        .map((column) => column.name.toLowerCase()));
-      const blocked = new Set(comparisonColumns(definition)
-        .filter((column) => !targetColumnNames.has(column.name.toLowerCase())
-          && missingColumnReviewReason(column, definition))
-        .map((column) => column.name.toLowerCase()));
-      let computedAdded;
-      do {
-        computedAdded = false;
-        for (const column of comparisonColumns(definition)) {
-          const columnKey = column.name.toLowerCase();
-          if (!column.isComputed || targetColumnNames.has(columnKey) || blocked.has(columnKey)) continue;
-          const expression = comparisonText(column.computedDefinition || column.generatedExpression);
-          if (expression && [...blocked].some((name) => {
-            const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            return expression.includes(`[${name.replaceAll(']', ']]')}]`)
-              || expression.includes(`"${name.replaceAll('"', '""')}"`)
-              || new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`, 'i').test(expression);
-          })) {
-            blocked.add(columnKey);
-            computedAdded = true;
-          }
-        }
-      } while (computedAdded);
-      if (blocked.size) blockedColumnsByTable.set(key, blocked);
-    }
-    const foreignKeyReferencesBlockedColumn = (foreignKey) => {
-      const blocked = blockedColumnsByTable.get(foreignKeyTargetKey(foreignKey));
-      return Boolean(blocked && (foreignKey.columns || []).some((pair) =>
-        blocked.has(String(pair.referencedColumn).toLowerCase())));
-    };
-    const sourceByKey = new Map(sourceDefinitions.map((definition) => [
-      comparisonTableKey(definition.object, source.scope, target.scope), definition,
-    ]));
-    const blockedCreateKeys = new Set(collidingKeys);
-    for (const definition of sourceDefinitions) {
-      const key = comparisonTableKey(definition.object, source.scope, target.scope);
-      if (!targetByKey.has(key) && (definition.unavailable || createBlockingIssues(definition).length)) {
-        blockedCreateKeys.add(key);
-      }
-    }
-    if (migrationIsSqlite(target.scope)) {
-      let added;
-      do {
-        added = false;
-        for (const definition of sourceDefinitions) {
-          const key = comparisonTableKey(definition.object, source.scope, target.scope);
-          if (!targetByKey.has(key) && !blockedCreateKeys.has(key)
-            && (definition.foreignKeys || []).some((foreignKey) =>
-              blockedCreateKeys.has(foreignKeyTargetKey(foreignKey))
-              || foreignKeyReferencesBlockedColumn(foreignKey))) {
-            blockedCreateKeys.add(key);
-            added = true;
-          }
-        }
-      } while (added);
-    }
-    const temporalHistoryIssue = (definition) => {
-      if (definition.temporal?.kind !== 'systemVersioned'
-        || !definition.temporal.relatedTable || migrationIsSqlite(target.scope)) return null;
-      const relatedKey = comparisonTableKey({
-        schema: definition.temporal.relatedSchema,
-        name: definition.temporal.relatedTable,
-      }, source.scope, target.scope);
-      const targetHistory = targetByKey.get(relatedKey);
-      if (targetHistory && !targetHistory.unavailable) return null;
-      const sourceHistory = sourceByKey.get(relatedKey);
-      if (!sourceHistory || sourceHistory.unavailable || blockedCreateKeys.has(relatedKey)) {
-        return `history table ${definition.temporal.relatedSchema}.`
-          + `${definition.temporal.relatedTable} is unavailable or its CREATE requires review`;
-      }
-      return null;
-    };
-    let temporalAdded;
-    do {
-      temporalAdded = false;
-      for (const definition of sourceDefinitions) {
-        const key = comparisonTableKey(definition.object, source.scope, target.scope);
-        if (!targetByKey.has(key) && !blockedCreateKeys.has(key) && temporalHistoryIssue(definition)) {
-          blockedCreateKeys.add(key);
-          temporalAdded = true;
-        }
-      }
-    } while (temporalAdded);
-    const reportedCollisions = new Set();
-    const sourceKeys = new Set();
-    const addChange = (status, object, detail) => changes.push({ status, object, detail });
-
-    for (const sourceDefinition of sourceDefinitions) {
-      const key = comparisonTableKey(sourceDefinition.object, source.scope, target.scope);
-      sourceKeys.add(key);
-      const targetDefinition = targetByKey.get(key);
-      const objectName = displayName(sourceDefinition.object, source.scope);
-      if (collidingKeys.has(key)) {
-        addChange('unavailable', objectName,
-          'Multiple source schemas map to this name on the schema-less target');
-        if (!reportedCollisions.has(key)) {
-          const names = sourceGroups.get(key).map((definition) =>
-            displayName(definition.object, source.scope)).join(', ');
-          scripts.review.push(`-- NOT SCRIPTED: ${names} all map to `
-            + `${migrationQuote(sourceDefinition.object.name, target.scope)} on the schema-less target.`);
-          reportedCollisions.add(key);
-        }
-        continue;
-      }
-      if (sourceDefinition.unavailable) {
-        addChange('unavailable', objectName, 'Source metadata unavailable');
-        scripts.review.push(`-- NOT COMPARED: source metadata for ${objectName} was unavailable.`);
-        continue;
-      }
-      if (!targetDefinition) {
-        addChange('missing', objectName, 'Table is missing from target');
-        const createSql = migrationCreateTable(sourceDefinition, source.scope, target.scope);
-        const blockingIssues = createBlockingIssues(sourceDefinition);
-        const blockedReferences = (sourceDefinition.foreignKeys || [])
-          .filter((foreignKey) => blockedCreateKeys.has(foreignKeyTargetKey(foreignKey))
-            || foreignKeyReferencesBlockedColumn(foreignKey));
-        const createIssues = [...new Set([
-          ...blockingIssues,
-          ...[temporalHistoryIssue(sourceDefinition)].filter(Boolean),
-          ...(migrationIsSqlite(target.scope) && blockedReferences.length
-            ? ['one or more foreign keys reference a table whose CREATE requires review'] : []),
-        ])];
-        const safeCreateSql = createIssues.length
-          ? `-- REVIEW: ${objectName} was not scripted automatically because ${createIssues.join('; ')}.\n`
-            + migrationCommentSql(createSql)
-          : createSql;
-        const createBucket = sourceDefinition.temporal?.kind === 'historyTable'
-          && !migrationIsSqlite(target.scope) ? scripts.createHistory : scripts.create;
-        createBucket.push(safeCreateSql);
-        for (const constraint of (sourceDefinition.checkConstraints || [])
-          .filter((item) => item.isDisabled || item.isTrusted === false)) {
-          scripts.review.push(migrationAddCheck(
-            constraint, sourceDefinition.object, source.scope, target.scope));
-        }
-        if (createIssues.length) {
-          const dependentCount = (sourceDefinition.indexes || []).filter((item) => !item.isPrimaryKey).length
-            + (sourceDefinition.uniqueConstraints || []).length
-            + (!migrationIsSqlite(target.scope) ? (sourceDefinition.foreignKeys || []).length : 0);
-          if (dependentCount) {
-            scripts.review.push(`-- NOT SCRIPTED: ${dependentCount} dependent index or constraint `
-              + `statement${dependentCount === 1 ? '' : 's'} for ${objectName}; create the table first.`);
-          }
-        } else {
-          for (const index of (sourceDefinition.indexes || []).filter((item) => !item.isPrimaryKey)) {
-            scripts.index.push(migrationCreateIndex(
-              index, sourceDefinition.object, source.scope, target.scope));
-          }
-          for (const constraint of sourceDefinition.uniqueConstraints || []) {
-            scripts.index.push(migrationAddUnique(
-              constraint, sourceDefinition.object, source.scope, target.scope));
-          }
-          if (!migrationIsSqlite(target.scope)) {
-            for (const foreignKey of sourceDefinition.foreignKeys || []) {
-              if (foreignKeyReferencesBlockedColumn(foreignKey)) {
-                scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.`
-                  + `${foreignKey.name || '(unnamed)'} references a column whose ADD requires review.`);
-              } else if (blockedCreateKeys.has(foreignKeyTargetKey(foreignKey))) {
-                scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.`
-                  + `${foreignKey.name || '(unnamed)'} references a table whose CREATE requires review.`);
-              } else {
-                scripts.foreignKey.push(migrationAddForeignKey(
-                  foreignKey, sourceDefinition.object, source.scope, target.scope));
-              }
-            }
-          }
-        }
-        if (sourceDefinition.temporal && migrationIsSqlite(target.scope)) {
-          scripts.review.push(`-- REVIEW: temporal configuration for ${objectName} cannot be `
-            + 'preserved on a SQLite target.');
-        }
-        if ((sourceDefinition.tableOptions || []).length
-          && !(migrationIsSqlite(source.scope) && migrationIsSqlite(target.scope))) {
-          scripts.review.push(`-- REVIEW: source table options for ${objectName} are provider-specific `
-            + 'and were not added to the target CREATE TABLE.');
-        }
-        const sqliteAutoincrementColumn = migrationSqliteAutoincrementColumn(
-          sourceDefinition, target.scope);
-        for (const column of comparisonColumns(sourceDefinition).filter((item) => item.isIdentity)) {
-          if (migrationIsSqlite(target.scope)
-            && column.name.toLowerCase() !== sqliteAutoincrementColumn?.toLowerCase()) {
-            scripts.review.push(`-- REVIEW: identity ${objectName}.${column.name} cannot be represented `
-              + 'as SQLite AUTOINCREMENT; the CREATE TABLE preserves its key but not its generator.');
-          }
-        }
-        continue;
-      }
-      if (targetDefinition.unavailable) {
-        addChange('unavailable', objectName, 'Target metadata unavailable');
-        scripts.review.push(`-- NOT COMPARED: target metadata for ${objectName} was unavailable.`);
-        continue;
-      }
-
-      const targetColumns = new Map(comparisonColumns(targetDefinition)
-        .map((column) => [column.name.toLowerCase(), column]));
-      const blockedColumnKeys = blockedColumnsByTable.get(key) || new Set();
-      const sourceColumnNames = new Set();
-      for (const column of comparisonColumns(sourceDefinition)) {
-        const columnKey = column.name.toLowerCase();
-        sourceColumnNames.add(columnKey);
-        const targetColumn = targetColumns.get(columnKey);
-        const display = `${objectName}.${column.name}`;
-        if (!targetColumn) {
-          addChange('missing', display, 'Column is missing from target');
-          const statement = `ALTER TABLE ${migrationName(sourceDefinition.object, source.scope, target.scope)} `
-            + `ADD ${migrationColumn(column, target.scope, source.scope)};`;
-          const reviewReason = missingColumnReviewReason(column, sourceDefinition);
-          const computedDependencyReason = column.isComputed && blockedColumnKeys.has(columnKey)
-            ? 'the computed expression depends on a column whose ADD requires review'
-            : null;
-          if (reviewReason || computedDependencyReason) {
-            scripts.alter.push(`-- REVIEW: ${display} was not scripted automatically because `
-              + `${reviewReason || computedDependencyReason}.\n-- ${statement}`);
-          } else {
-            scripts.alter.push(statement);
-          }
-        } else if (comparisonColumnFingerprint(column, source.scope, target.scope)
-          !== comparisonColumnFingerprint(targetColumn, target.scope, source.scope)) {
-          addChange('different', display,
-            `${column.dataType}${column.isNullable ? ' NULL' : ' NOT NULL'} → target `
-            + `${targetColumn.dataType}${targetColumn.isNullable ? ' NULL' : ' NOT NULL'}`);
-          scripts.review.push(`-- REVIEW: ${display} differs. Source expects `
-            + `${migrationColumn(column, target.scope, source.scope)}; target alteration is provider-specific.`);
-        }
-      }
-      for (const column of comparisonColumns(targetDefinition)) {
-        if (!sourceColumnNames.has(column.name.toLowerCase())) {
-          addChange('extra', `${displayName(targetDefinition.object, target.scope)}.${column.name}`,
-            'Column exists only in target; no DROP generated');
-          scripts.review.push(`-- RETAINED: target-only column ${column.name} on `
-            + `${migrationName(sourceDefinition.object, source.scope, target.scope)}.`);
-        }
-      }
-
-      const sourcePrimary = migrationPrimaryKey(sourceDefinition);
-      const targetPrimary = migrationPrimaryKey(targetDefinition);
-      if (comparisonIndexFingerprint(sourcePrimary || {}, source.scope, target.scope)
-        !== comparisonIndexFingerprint(targetPrimary || {}, target.scope, source.scope)) {
-        addChange('different', objectName, 'Primary key differs; review before rebuilding or altering it');
-        scripts.review.push(`-- REVIEW: primary key on ${migrationName(
-          sourceDefinition.object, source.scope, target.scope)} differs.`);
-      }
-
-      const targetIndexes = new Set((targetDefinition.indexes || [])
-        .filter((index) => !index.isPrimaryKey)
-        .map((index) => comparisonIndexFingerprint(index, target.scope, source.scope)));
-      const targetIndexesByName = new Map((targetDefinition.indexes || [])
-        .filter((index) => !index.isPrimaryKey && index.name)
-        .map((index) => [index.name.toLowerCase(), index]));
-      const targetUniqueObjectsByName = new Map((targetDefinition.uniqueConstraints || [])
-        .filter((constraint) => constraint.name)
-        .map((constraint) => [constraint.name.toLowerCase(), constraint]));
-      const targetUniqueAsIndexes = new Set((targetDefinition.uniqueConstraints || [])
-        .map((constraint) => comparisonUniqueAsIndexFingerprint(
-          constraint, target.scope, source.scope)));
-      const sourceUniqueAsIndexes = new Set((sourceDefinition.uniqueConstraints || [])
-        .map((constraint) => comparisonUniqueAsIndexFingerprint(
-          constraint, source.scope, target.scope)));
-      const sourceIndexes = new Set();
-      const sourceIndexNames = new Set();
-      const keyUsesBlockedColumn = (key) => key.column
-        ? blockedColumnKeys.has(String(key.column).toLowerCase())
-        : Boolean(key.expression && blockedColumnKeys.size);
-      const indexUsesBlockedColumn = (index) => orderedIndexKeys(index).some(keyUsesBlockedColumn)
-        || (index.includedColumns || []).some((column) =>
-          blockedColumnKeys.has(String(column).toLowerCase()));
-      for (const index of (sourceDefinition.indexes || []).filter((item) => !item.isPrimaryKey)) {
-        const fingerprint = comparisonIndexFingerprint(index, source.scope, target.scope);
-        sourceIndexes.add(fingerprint);
-        sourceIndexNames.add(index.name.toLowerCase());
-        if (!targetIndexes.has(fingerprint)
-          && !(index.isUnique && targetUniqueAsIndexes.has(fingerprint))) {
-          const sameName = targetIndexesByName.get(index.name.toLowerCase())
-            || targetUniqueObjectsByName.get(index.name.toLowerCase());
-          if (sameName) {
-            addChange('different', `${objectName}.${index.name}`,
-              'Index exists on target but its definition or enforcement state differs');
-            scripts.review.push(`-- REVIEW: index ${objectName}.${index.name} already exists on the target `
-              + 'with a different definition or enforcement state; no duplicate CREATE was generated.');
-          } else if (indexUsesBlockedColumn(index)) {
-            addChange('missing', `${objectName}.${index.name}`, 'Index is missing from target');
-            scripts.review.push(`-- NOT SCRIPTED: index ${objectName}.${index.name} depends on a column `
-              + 'whose ADD requires review.');
-          } else {
-            addChange('missing', `${objectName}.${index.name}`, 'Index is missing from target');
-            scripts.index.push(migrationCreateIndex(
-              index, sourceDefinition.object, source.scope, target.scope));
-          }
-        }
-      }
-      for (const index of (targetDefinition.indexes || []).filter((item) => !item.isPrimaryKey)) {
-        if (!sourceIndexNames.has(index.name.toLowerCase())
-          && !sourceIndexes.has(comparisonIndexFingerprint(index, target.scope, source.scope))
-          && !sourceUniqueAsIndexes.has(comparisonIndexFingerprint(
-            index, target.scope, source.scope))) {
-          addChange('extra', `${displayName(targetDefinition.object, target.scope)}.${index.name}`,
-            'Index exists only in target; no DROP generated');
-        }
-      }
-
-      const targetForeignKeys = new Set((targetDefinition.foreignKeys || [])
-        .map((foreignKey) => comparisonForeignKeyFingerprint(foreignKey, target.scope, target.scope)));
-      const sourceForeignKeys = new Set();
-      for (const foreignKey of sourceDefinition.foreignKeys || []) {
-        const fingerprint = comparisonForeignKeyFingerprint(foreignKey, source.scope, target.scope);
-        sourceForeignKeys.add(fingerprint);
-        if (!targetForeignKeys.has(fingerprint)) {
-          addChange('missing', `${objectName}.${foreignKey.name}`, 'Foreign key is missing from target');
-          const blockedSourceColumn = (foreignKey.columns || []).some((pair) =>
-            blockedColumnKeys.has(String(pair.column).toLowerCase()));
-          if (blockedSourceColumn) {
-            scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.`
-              + `${foreignKey.name || '(unnamed)'} depends on a column whose ADD requires review.`);
-          } else if (foreignKeyReferencesBlockedColumn(foreignKey)) {
-            scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.`
-              + `${foreignKey.name || '(unnamed)'} references a column whose ADD requires review.`);
-          } else if (blockedCreateKeys.has(foreignKeyTargetKey(foreignKey))) {
-            scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.`
-              + `${foreignKey.name || '(unnamed)'} references a table whose CREATE requires review.`);
-          } else {
-            scripts.foreignKey.push(migrationAddForeignKey(
-              foreignKey, sourceDefinition.object, source.scope, target.scope));
-          }
-        }
-      }
-      for (const foreignKey of targetDefinition.foreignKeys || []) {
-        if (!sourceForeignKeys.has(comparisonForeignKeyFingerprint(
-          foreignKey, target.scope, target.scope))) {
-          addChange('extra', `${displayName(targetDefinition.object, target.scope)}.${foreignKey.name}`,
-            'Foreign key exists only in target; no DROP generated');
-        }
-      }
-
-      const targetChecks = new Set((targetDefinition.checkConstraints || [])
-        .map(comparisonCheckFingerprint));
-      const targetChecksByName = new Map((targetDefinition.checkConstraints || [])
-        .filter((constraint) => constraint.name)
-        .map((constraint) => [constraint.name.toLowerCase(), constraint]));
-      const sourceChecks = new Set();
-      const sourceCheckNames = new Set();
-      for (const constraint of sourceDefinition.checkConstraints || []) {
-        const fingerprint = comparisonCheckFingerprint(constraint);
-        sourceChecks.add(fingerprint);
-        if (constraint.name) sourceCheckNames.add(constraint.name.toLowerCase());
-        if (!targetChecks.has(fingerprint)) {
-          const sameName = constraint.name
-            ? targetChecksByName.get(constraint.name.toLowerCase()) : null;
-          if (sameName) {
-            addChange('different', `${objectName}.${constraint.name}`,
-              'Check constraint exists on target but its definition or enforcement state differs');
-            scripts.review.push(`-- REVIEW: check constraint ${objectName}.${constraint.name} already exists `
-              + 'on the target with a different definition or enforcement state; no duplicate ADD was generated.');
-          } else if (blockedColumnKeys.size) {
-            addChange('missing', `${objectName}.${constraint.name || 'CHECK'}`,
-              'Check constraint is missing from target');
-            scripts.review.push(`-- NOT SCRIPTED: check constraint ${objectName}.`
-              + `${constraint.name || '(unnamed)'} may depend on a column whose ADD requires review.`);
-          } else {
-            addChange('missing', `${objectName}.${constraint.name || 'CHECK'}`,
-              'Check constraint is missing from target');
-            scripts.alter.push(migrationAddCheck(
-              constraint, sourceDefinition.object, source.scope, target.scope));
-          }
-        }
-      }
-      for (const constraint of targetDefinition.checkConstraints || []) {
-        if (!(constraint.name && sourceCheckNames.has(constraint.name.toLowerCase()))
-          && !sourceChecks.has(comparisonCheckFingerprint(constraint))) {
-          addChange('extra', `${displayName(targetDefinition.object, target.scope)}.${constraint.name || 'CHECK'}`,
-            'Check constraint exists only in target; no DROP generated');
-        }
-      }
-
-      const targetUniques = new Set((targetDefinition.uniqueConstraints || [])
-        .map((constraint) => comparisonUniqueFingerprint(
-          constraint, target.scope, source.scope)));
-      const sourceUniques = new Set();
-      const sourceUniqueNames = new Set();
-      for (const constraint of sourceDefinition.uniqueConstraints || []) {
-        const fingerprint = comparisonUniqueFingerprint(constraint, source.scope, target.scope);
-        sourceUniques.add(fingerprint);
-        if (constraint.name) sourceUniqueNames.add(constraint.name.toLowerCase());
-        const indexFingerprint = comparisonUniqueAsIndexFingerprint(
-          constraint, source.scope, target.scope);
-        if (!targetUniques.has(fingerprint) && !targetIndexes.has(indexFingerprint)) {
-          const sameName = constraint.name
-            ? targetUniqueObjectsByName.get(constraint.name.toLowerCase())
-              || targetIndexesByName.get(constraint.name.toLowerCase()) : null;
-          if (sameName) {
-            addChange('different', `${objectName}.${constraint.name}`,
-              'Unique constraint exists on target but its definition or enforcement state differs');
-            scripts.review.push(`-- REVIEW: unique constraint ${objectName}.${constraint.name} already exists `
-              + 'on the target with a different definition or enforcement state; no duplicate ADD was generated.');
-          } else if (orderedIndexKeys({ keyColumns: constraint.columns || [] }).some(keyUsesBlockedColumn)) {
-            addChange('missing', `${objectName}.${constraint.name || 'UNIQUE'}`,
-              'Unique constraint is missing from target');
-            scripts.review.push(`-- NOT SCRIPTED: unique constraint ${objectName}.`
-              + `${constraint.name || '(unnamed)'} depends on a column whose ADD requires review.`);
-          } else {
-            addChange('missing', `${objectName}.${constraint.name || 'UNIQUE'}`,
-              'Unique constraint is missing from target');
-            scripts.index.push(migrationAddUnique(
-              constraint, sourceDefinition.object, source.scope, target.scope));
-          }
-        }
-      }
-      for (const constraint of targetDefinition.uniqueConstraints || []) {
-        const indexFingerprint = comparisonUniqueAsIndexFingerprint(
-          constraint, target.scope, source.scope);
-        if (!(constraint.name && sourceUniqueNames.has(constraint.name.toLowerCase()))
-          && !sourceUniques.has(comparisonUniqueFingerprint(
-          constraint, target.scope, source.scope))
-          && !sourceIndexes.has(indexFingerprint)) {
-          addChange('extra', `${displayName(targetDefinition.object, target.scope)}.${constraint.name || 'UNIQUE'}`,
-            'Unique constraint exists only in target; no DROP generated');
-        }
-      }
-
-      const sourceOptions = [...(sourceDefinition.tableOptions || [])]
-        .map(comparisonText).filter(Boolean).sort();
-      const targetOptions = [...(targetDefinition.tableOptions || [])]
-        .map(comparisonText).filter(Boolean).sort();
-      const sourceTemporal = sourceDefinition.temporal
-        ? JSON.stringify(sourceDefinition.temporal) : '';
-      const targetTemporal = targetDefinition.temporal
-        ? JSON.stringify(targetDefinition.temporal) : '';
-      if (sourceOptions.join('|') !== targetOptions.join('|') || sourceTemporal !== targetTemporal) {
-        addChange('different', objectName, 'Table options or temporal configuration differ');
-        scripts.review.push(`-- REVIEW: table options or temporal configuration on `
-          + `${migrationName(sourceDefinition.object, source.scope, target.scope)} differ.`);
-      }
-    }
-
-    for (const targetDefinition of target.definitions) {
-      const key = comparisonTableKey(targetDefinition.object, target.scope, target.scope);
-      if (sourceKeys.has(key)) continue;
-      addChange('extra', displayName(targetDefinition.object, target.scope),
-        'Table exists only in target; no DROP generated');
-      scripts.review.push(`-- RETAINED: target-only table ${displayName(targetDefinition.object, target.scope)}.`);
-    }
-
-    const header = [
-      '-- Gridlet schema migration preview',
-      `-- Source: ${scopeTitle(source.scope)}`,
-      `-- Target: ${scopeTitle(target.scope)}`,
-      '-- Review this script before execution. Gridlet never drops target-only schema automatically.',
-    ];
-    const sections = [
-      ['Create temporal history tables', scripts.createHistory],
-      ['Create missing tables', scripts.create],
-      ['Add missing columns', scripts.alter],
-      ['Create missing indexes', scripts.index],
-      ['Add missing foreign keys', scripts.foreignKey],
-      ['Manual review', scripts.review],
-    ].filter(([, statements]) => statements.length)
-      .flatMap(([title, statements]) => [`\n-- ${title}`, ...statements.map((sql) => `\n${sql}`)]);
-    if (!sections.length) sections.push('\n-- Compared table metadata matches.');
-    return { changes, script: [...header, ...sections].join('\n') };
-  }
-
-  function openSchemaCompareTab(source = scopeOf(), target = null) {
-    const otherConnection = state.meta?.connections.find((connection) => connection.name !== source.connection);
-    const initialTarget = target || {
-      connection: otherConnection?.name || source.connection,
-      database: source.database,
-    };
-    const key = `schema-compare:${scopeKey(source)}:${scopeKey(initialTarget)}`;
-    const existing = state.tabs.find((candidate) => candidate.key === key);
-    if (existing) {
-      setActiveTab(existing.id);
-      return;
-    }
-    const panel = h('div', { class: 'panel schema-compare-panel', 'data-testid': 'schema-compare' });
-    const tab = {
-      id: state.nextTabId++, key, scope: source, source, target: initialTarget,
-      badge: 'Δ', badgeClass: 'badge-compare', title: 'Schema compare', panel, loaded: false,
-      load: () => loadSchemaCompareTab(tab),
-      restore: () => ({ kind: 'schema-compare', source: tab.source, target: tab.target }),
-    };
-    addTab(tab);
-  }
-
-  async function loadSchemaCompareTab(tab) {
-    const connections = state.meta?.connections || [];
-    const sourceConnection = h('select', { 'aria-label': 'Source connection', 'data-testid': 'schema-source-connection' },
-      connections.map((connection) => h('option', { value: connection.name, text: connection.name })));
-    const sourceDatabase = h('select', { 'aria-label': 'Source database', 'data-testid': 'schema-source-database' });
-    const targetConnection = h('select', { 'aria-label': 'Target connection', 'data-testid': 'schema-target-connection' },
-      connections.map((connection) => h('option', { value: connection.name, text: connection.name })));
-    const targetDatabase = h('select', { 'aria-label': 'Target database', 'data-testid': 'schema-target-database' });
-    sourceConnection.value = tab.source.connection;
-    targetConnection.value = tab.target.connection;
-    const compareButton = h('button', {
-      class: 'primary', text: 'Compare schemas', 'data-testid': 'schema-compare-run',
-    });
-    const swapButton = h('button', {
-      text: '⇄ Swap', title: 'Swap source and target', 'data-testid': 'schema-compare-swap',
-    });
-    const status = h('span', {
-      class: 'muted schema-compare-status', role: 'status', 'aria-live': 'polite',
-      'data-testid': 'schema-compare-status', text: 'Choose two databases, then compare.',
-    });
-    const results = h('div', { class: 'schema-compare-results', 'data-testid': 'schema-compare-results' });
-    const controls = h('div', { class: 'viewbar schema-compare-toolbar' },
-      h('label', {}, h('span', { text: 'Source' }), sourceConnection),
-      sourceDatabase,
-      h('span', { class: 'schema-compare-arrow', text: '→', 'aria-hidden': 'true' }),
-      h('label', {}, h('span', { text: 'Target' }), targetConnection),
-      targetDatabase, swapButton, compareButton, status);
-    tab.panel.replaceChildren(controls, results);
-
-    const databaseRequests = new WeakMap();
-    const loadingDatabases = new WeakSet();
-    let databaseLoads = 0;
-    let comparisonRunning = false;
-    const updateCompareControls = () => {
-      compareButton.disabled = comparisonRunning || databaseLoads > 0;
-      swapButton.disabled = comparisonRunning || databaseLoads > 0;
-      sourceConnection.disabled = comparisonRunning;
-      targetConnection.disabled = comparisonRunning;
-      sourceDatabase.disabled = comparisonRunning || loadingDatabases.has(sourceDatabase);
-      targetDatabase.disabled = comparisonRunning || loadingDatabases.has(targetDatabase);
-    };
-    const populateDatabases = async (connectionSelect, databaseSelect, preferred) => {
-      const request = (databaseRequests.get(databaseSelect) || 0) + 1;
-      databaseRequests.set(databaseSelect, request);
-      databaseLoads += 1;
-      loadingDatabases.add(databaseSelect);
-      updateCompareControls();
-      let databases;
-      try {
-        databases = await api(urls.databases(connectionSelect.value));
-      } catch (err) {
-        if (request === databaseRequests.get(databaseSelect)) {
-          status.textContent = `Database list unavailable: ${err.message}`;
-          databaseSelect.replaceChildren();
-        }
-        return;
-      } finally {
-        databaseLoads -= 1;
-        if (request === databaseRequests.get(databaseSelect)) loadingDatabases.delete(databaseSelect);
-        updateCompareControls();
-      }
-      if (request !== databaseRequests.get(databaseSelect)) return;
-      const available = databases.filter((database) => !database.isSystem);
-      databaseSelect.replaceChildren(...available.map((database) =>
-        h('option', { value: database.name, text: database.name })));
-      if (available.some((database) => database.name === preferred)) databaseSelect.value = preferred;
-    };
-
-    await Promise.all([
-      populateDatabases(sourceConnection, sourceDatabase, tab.source.database),
-      populateDatabases(targetConnection, targetDatabase, tab.target.database),
-    ]);
-
-    sourceConnection.addEventListener('change', async () => {
-      await populateDatabases(sourceConnection, sourceDatabase, null);
-      results.replaceChildren();
-    });
-    targetConnection.addEventListener('change', async () => {
-      await populateDatabases(targetConnection, targetDatabase, null);
-      results.replaceChildren();
-    });
-    swapButton.addEventListener('click', async () => {
-      const source = { connection: sourceConnection.value, database: sourceDatabase.value };
-      const target = { connection: targetConnection.value, database: targetDatabase.value };
-      sourceConnection.value = target.connection;
-      targetConnection.value = source.connection;
-      await Promise.all([
-        populateDatabases(sourceConnection, sourceDatabase, target.database),
-        populateDatabases(targetConnection, targetDatabase, source.database),
-      ]);
-      results.replaceChildren();
-      status.textContent = 'Source and target swapped. Compare to refresh the preview.';
-    });
-
-    let comparisonRequest = 0;
-    compareButton.addEventListener('click', async () => {
-      if (databaseLoads > 0 || comparisonRunning) return;
-      const request = ++comparisonRequest;
-      const sourceScope = { connection: sourceConnection.value, database: sourceDatabase.value };
-      const targetScope = { connection: targetConnection.value, database: targetDatabase.value };
-      if (!sourceScope.database || !targetScope.database) {
-        status.textContent = 'Choose both databases.';
-        return;
-      }
-      tab.source = sourceScope;
-      tab.target = targetScope;
-      tab.scope = sourceScope;
-      comparisonRunning = true;
-      updateCompareControls();
-      status.textContent = `Comparing ${scopeTitle(sourceScope)} with ${scopeTitle(targetScope)}…`;
-      results.replaceChildren(h('div', { class: 'loading', text: 'Loading schema metadata…' }));
-      try {
-        const [sourceSnapshot, targetSnapshot] = await Promise.all([
-          loadSchemaSnapshot(sourceScope), loadSchemaSnapshot(targetScope),
-        ]);
-        if (request !== comparisonRequest) return;
-        const comparison = compareSchemaSnapshots(sourceSnapshot, targetSnapshot);
-        const counts = comparison.changes.reduce((all, change) => {
-          all[change.status] = (all[change.status] || 0) + 1;
-          return all;
-        }, {});
-        const failures = sourceSnapshot.failures.length + targetSnapshot.failures.length;
-        status.textContent = comparison.changes.length
-          ? `${comparison.changes.length} difference${comparison.changes.length === 1 ? '' : 's'}`
-            + (failures ? ` · ${failures} unavailable` : '')
-          : 'Schemas match for compared table metadata';
-        const summary = h('div', { class: 'schema-compare-summary', 'data-testid': 'schema-compare-summary' },
-          h('strong', { text: `${scopeTitle(sourceScope)} → ${scopeTitle(targetScope)}` }),
-          h('span', { class: 'muted', text: `${sourceSnapshot.definitions.length} source tables · `
-            + `${targetSnapshot.definitions.length} target tables` }),
-          ...['missing', 'different', 'extra', 'unavailable'].filter((name) => counts[name])
-            .map((name) => h('span', {
-              class: `schema-change-count ${name}`, text: `${counts[name]} ${name}`,
-            })));
-        const changeTable = comparison.changes.length ? h('div', { class: 'grid-scroll schema-change-grid' },
-          h('table', { class: 'data-grid' },
-            h('thead', {}, h('tr', {},
-              h('th', { text: 'Change' }), h('th', { text: 'Object' }), h('th', { text: 'Detail' }))),
-            h('tbody', {}, comparison.changes.map((change) => h('tr', {},
-              h('td', {}, h('span', {
-                class: `schema-change ${change.status}`, text: change.status,
-              })),
-              h('td', { class: 'mono', text: change.object }),
-              h('td', { text: change.detail }))))))
-          : h('div', { class: 'empty-message', text: 'No table schema differences found.' });
-        const editor = createSqlEditor(comparison.script, '', {
-          readOnly: true, label: 'Migration SQL preview', testId: 'schema-migration-sql', scope: targetScope,
-        });
-        const copyButton = h('button', {
-          text: 'Copy migration SQL', 'data-testid': 'schema-compare-copy',
-          onclick: async () => {
-            try {
-              await navigator.clipboard.writeText(comparison.script);
-              toast('Migration SQL copied.', false);
-            } catch { toast('Copy failed - clipboard unavailable.'); }
-          },
-        });
-        const targetConnectionInfo = connectionFor(targetScope);
-        const useButton = targetConnectionInfo.allowSqlExecution && targetConnectionInfo.allowDdl
-          ? h('button', {
-            class: 'primary', text: 'Open in target query', 'data-testid': 'schema-compare-use-query',
-            onclick: () => openQueryTab(comparison.script, 'Schema migration', targetScope),
-          }) : null;
-        results.replaceChildren(summary, changeTable,
-          h('section', { class: 'schema-migration-preview' },
-            h('div', { class: 'section-heading' },
-              h('div', {}, h('h3', { text: 'Migration preview' }),
-                h('p', { class: 'muted', text: 'Target-dialect SQL; destructive target-only changes remain comments.' })),
-              h('div', { class: 'inline-form' }, copyButton, useButton)),
-            editor));
-        renderTabBar();
-        saveSession();
-      } catch (err) {
-        if (request !== comparisonRequest) return;
-        status.textContent = 'Comparison unavailable';
-        results.replaceChildren(errorBox(err.message));
-      } finally {
-        if (request === comparisonRequest) {
-          comparisonRunning = false;
-          updateCompareControls();
-        }
-      }
-    });
-  }
-
-  // ---- row-level data comparison ---------------------------------------------
-
-  const dataCompareObjectKey = (object) =>
-    `${encodeURIComponent(object.schema || '')}/${encodeURIComponent(object.name)}`.toLowerCase();
-
-  function openDataCompareTab(source, sourceObject, target = null, keyColumns = null, maxRows = null) {
-    const otherConnection = state.meta?.connections.find((connection) => connection.name !== source.connection);
-    const initialTarget = target || {
-      connection: otherConnection?.name || source.connection,
-      database: source.database,
-      schema: sourceObject.schema,
-      name: sourceObject.name,
-    };
-    const key = `data-compare:${scopeKey(source)}:${dataCompareObjectKey(sourceObject)}:${scopeKey(initialTarget)}`;
-    const existing = state.tabs.find((candidate) => candidate.key === key);
-    if (existing) {
-      setActiveTab(existing.id);
-      return;
-    }
-    const panel = h('div', { class: 'panel data-compare-panel', 'data-testid': 'data-compare' });
-    const tab = {
-      id: state.nextTabId++, key, scope: source, source, sourceObject,
-      target: initialTarget, keyColumns: keyColumns || [], maxRows,
-      badge: '≠', badgeClass: 'badge-compare', title: `Data compare: ${sourceObject.name}`,
-      panel, loaded: false, load: () => loadDataCompareTab(tab),
-      restore: () => ({
-        kind: 'data-compare', source: tab.source,
-        sourceObject: {
-          schema: tab.sourceObject.schema, name: tab.sourceObject.name, type: tab.sourceObject.type,
-        },
-        target: tab.target, keyColumns: tab.keyColumns, maxRows: tab.maxRows,
-      }),
-    };
-    addTab(tab);
-  }
-
-  async function loadDataCompareRows(scope, object, sortColumn, maxRows, signal) {
-    const snapshot = {
-      scope, object, columns: [], rows: [], rowKeys: [], rowIdentity: null,
-      truncated: false, completed: false,
-    };
-    const params = new URLSearchParams({ maxRows: String(maxRows) });
-    if (sortColumn) {
-      params.set('sort', sortColumn);
-      params.set('dir', 'asc');
-    }
-    await streamNdjson(urlsFor(scope).dataStream(object.schema, object.name, params), { signal }, (event) => {
-      if (event.type === 'resultSet') {
-        snapshot.columns = event.columns || [];
-        snapshot.rowIdentity = event.rowIdentity || null;
-      } else if (event.type === 'rows') {
-        snapshot.rows.push(...(event.rows || []));
-        const keys = event.rowKeys || [];
-        for (let index = 0; index < (event.rows || []).length; index++) {
-          snapshot.rowKeys.push(keys[index] || null);
-        }
-      } else if (event.type === 'resultSetCompleted') {
-        snapshot.truncated = Boolean(event.truncated);
-      } else if (event.type === 'completed') {
-        snapshot.completed = true;
-      } else if (event.type === 'error') {
-        throw new Error(event.message || 'Data loading failed.');
-      }
-    });
-    if (!snapshot.completed) throw new Error('Data loading ended before the server reported completion.');
-    return snapshot;
-  }
-
-  function dataCompareStableValue(value) {
-    if (Array.isArray(value)) return value.map(dataCompareStableValue);
-    if (value && typeof value === 'object') {
-      return Object.fromEntries(Object.keys(value).sort()
-        .map((key) => [key, dataCompareStableValue(value[key])]));
-    }
-    return value;
-  }
-
-  const dataCompareValueToken = (value) => JSON.stringify([
-    value === null ? 'null' : typeof value,
-    dataCompareStableValue(value),
-  ]);
-
-  const dataCompareValueText = (value) => {
-    if (value === null || value === undefined) return 'NULL';
-    if (typeof value === 'object') return JSON.stringify(dataCompareStableValue(value));
-    return String(value);
-  };
-
-  function dataCompareColumnValue(snapshot, rowIndex, columnName) {
-    const columnIndex = snapshot.columns.findIndex((column) =>
-      column.name.toLowerCase() === columnName.toLowerCase());
-    if (columnIndex >= 0) return snapshot.rows[rowIndex][columnIndex];
-    const identityIndex = snapshot.rowIdentity?.columns?.findIndex((name) =>
-      name.toLowerCase() === columnName.toLowerCase()) ?? -1;
-    return identityIndex >= 0 ? snapshot.rowKeys[rowIndex]?.[identityIndex] : undefined;
-  }
-
-  function dataCompareRowObject(snapshot, rowIndex, columnNames = null) {
-    const wanted = columnNames
-      ? new Set(columnNames.map((name) => name.toLowerCase())) : null;
-    return Object.fromEntries(snapshot.columns
-      .map((column, index) => [column.name, snapshot.rows[rowIndex][index]])
-      .filter(([name]) => !wanted || wanted.has(name.toLowerCase())));
-  }
-
-  function compareDataRows(source, target, keyColumns) {
-    const sourceColumns = new Map(source.columns.map((column) => [column.name.toLowerCase(), column]));
-    const targetColumns = new Map(target.columns.map((column) => [column.name.toLowerCase(), column]));
-    const sharedColumns = source.columns
-      .filter((column) => targetColumns.has(column.name.toLowerCase()))
-      .map((column) => column.name);
-    const sourceOnlyColumns = source.columns
-      .filter((column) => !targetColumns.has(column.name.toLowerCase())).map((column) => column.name);
-    const targetOnlyColumns = target.columns
-      .filter((column) => !sourceColumns.has(column.name.toLowerCase())).map((column) => column.name);
-
-    const bucketRows = (snapshot) => {
-      const buckets = new Map();
-      snapshot.rows.forEach((row, rowIndex) => {
-        const values = keyColumns.map((column) => dataCompareColumnValue(snapshot, rowIndex, column));
-        if (values.some((value) => value === undefined)) {
-          throw new Error(`Key column ${keyColumns[values.findIndex((value) => value === undefined)]} `
-            + `is not available in ${scopeTitle(snapshot.scope)}.`);
-        }
-        const token = JSON.stringify(values.map(dataCompareValueToken));
-        const label = keyColumns.map((column, index) =>
-          `${column} = ${dataCompareValueText(values[index])}`).join(', ');
-        if (!buckets.has(token)) buckets.set(token, { label, rows: [] });
-        buckets.get(token).rows.push(rowIndex);
-      });
-      return buckets;
-    };
-
-    const sourceBuckets = bucketRows(source);
-    const targetBuckets = bucketRows(target);
-    const tokens = new Set([...sourceBuckets.keys(), ...targetBuckets.keys()]);
-    const differences = [];
-    for (const token of tokens) {
-      const sourceBucket = sourceBuckets.get(token);
-      const targetBucket = targetBuckets.get(token);
-      const key = sourceBucket?.label || targetBucket.label;
-      if ((sourceBucket?.rows.length || 0) > 1 || (targetBucket?.rows.length || 0) > 1) {
-        differences.push({
-          status: 'duplicate', key, changedColumns: [],
-          sourceValue: sourceBucket
-            ? sourceBucket.rows.map((index) => dataCompareRowObject(source, index)) : null,
-          targetValue: targetBucket
-            ? targetBucket.rows.map((index) => dataCompareRowObject(target, index)) : null,
-        });
-        continue;
-      }
-      if (!targetBucket) {
-        differences.push({
-          status: 'source-only', key, changedColumns: [],
-          sourceValue: dataCompareRowObject(source, sourceBucket.rows[0]), targetValue: null,
-        });
-        continue;
-      }
-      if (!sourceBucket) {
-        differences.push({
-          status: 'target-only', key, changedColumns: [], sourceValue: null,
-          targetValue: dataCompareRowObject(target, targetBucket.rows[0]),
-        });
-        continue;
-      }
-      const sourceIndex = sourceBucket.rows[0];
-      const targetIndex = targetBucket.rows[0];
-      const changedColumns = sharedColumns.filter((column) =>
-        dataCompareValueToken(dataCompareColumnValue(source, sourceIndex, column))
-          !== dataCompareValueToken(dataCompareColumnValue(target, targetIndex, column)));
-      if (changedColumns.length) {
-        differences.push({
-          status: 'changed', key, changedColumns,
-          sourceValue: dataCompareRowObject(source, sourceIndex, changedColumns),
-          targetValue: dataCompareRowObject(target, targetIndex, changedColumns),
-        });
-      }
-    }
-    differences.sort((left, right) => left.key.localeCompare(right.key));
-    return { differences, sharedColumns, sourceOnlyColumns, targetOnlyColumns };
-  }
-
-  function renderDataCompareResults(container, comparison, source, target, keyColumns) {
-    const counts = comparison.differences.reduce((all, item) => {
-      all[item.status] = (all[item.status] || 0) + 1;
-      return all;
-    }, {});
-    const partial = source.truncated || target.truncated;
-    const summary = h('div', { class: 'data-compare-summary', 'data-testid': 'data-compare-summary' },
-      h('strong', { text: `${scopeTitle(source.scope)} → ${scopeTitle(target.scope)}` }),
-      h('span', { class: 'muted', text: `${source.rows.length} source rows · ${target.rows.length} target rows` }),
-      ...['changed', 'source-only', 'target-only', 'duplicate'].filter((name) => counts[name])
-        .map((name) => h('span', {
-          class: `data-change-count ${name}`, text: `${counts[name]} ${name.replace('-', ' ')}`,
-        })));
-    const notes = h('div', { class: 'data-compare-notes' },
-      partial ? h('div', {
-        class: 'warning-box', 'data-testid': 'data-compare-partial',
-        text: 'Partial comparison: at least one side reached the row cap. Missing rows are not conclusive.',
-      }) : null,
-      comparison.sourceOnlyColumns.length ? h('div', {
-        class: 'muted', text: `Source-only columns: ${comparison.sourceOnlyColumns.join(', ')}`,
-      }) : null,
-      comparison.targetOnlyColumns.length ? h('div', {
-        class: 'muted', text: `Target-only columns: ${comparison.targetOnlyColumns.join(', ')}`,
-      }) : null,
-      h('div', { class: 'muted', text: `Matched by ${keyColumns.join(' + ')}. Values are compared with type-sensitive equality.` }));
-    const filter = h('input', {
-      type: 'search', placeholder: 'Filter differences…', 'aria-label': 'Filter data differences',
-      'data-testid': 'data-compare-filter',
-    });
-    const grid = h('div', { class: 'grid-scroll data-compare-grid' });
-    const exportColumns = ['Status', 'Key', 'ChangedColumns', 'Source', 'Target']
-      .map((name) => ({ name }));
-    const exportRows = comparison.differences.map((difference) => [
-      difference.status,
-      difference.key,
-      difference.changedColumns.join(', '),
-      difference.sourceValue === null ? null : JSON.stringify(difference.sourceValue),
-      difference.targetValue === null ? null : JSON.stringify(difference.targetValue),
-    ]);
-    const exports = exportButtons(exportColumns, exportRows,
-      `${source.object.name}-data-diff`);
-
-    const render = () => {
-      const query = filter.value.trim().toLowerCase();
-      const visible = comparison.differences.filter((difference) => {
-        const text = `${difference.status} ${difference.key} ${difference.changedColumns.join(' ')} `
-          + `${JSON.stringify(difference.sourceValue)} ${JSON.stringify(difference.targetValue)}`;
-        return !query || text.toLowerCase().includes(query);
-      });
-      if (!visible.length) {
-        grid.replaceChildren(h('div', {
-          class: 'empty-message',
-          text: comparison.differences.length
-            ? 'No differences match this filter.'
-            : 'No row differences found within the loaded data.',
-        }));
-        return;
-      }
-      grid.replaceChildren(h('table', { class: 'data-grid' },
-        h('thead', {}, h('tr', {},
-          h('th', { text: 'Status' }), h('th', { text: 'Key' }),
-          h('th', { text: 'Changed columns' }), h('th', { text: 'Source' }),
-          h('th', { text: 'Target' }))),
-        h('tbody', {}, visible.map((difference) => h('tr', {},
-          h('td', {}, h('span', {
-            class: `data-change ${difference.status}`, text: difference.status.replace('-', ' '),
-          })),
-          h('td', { class: 'mono', text: difference.key }),
-          h('td', { text: difference.changedColumns.join(', ') || '—' }),
-          h('td', {}, difference.sourceValue === null
-            ? h('span', { class: 'null', text: '—' })
-            : h('pre', { class: 'data-compare-value', text: JSON.stringify(difference.sourceValue, null, 2) })),
-          h('td', {}, difference.targetValue === null
-            ? h('span', { class: 'null', text: '—' })
-            : h('pre', { class: 'data-compare-value', text: JSON.stringify(difference.targetValue, null, 2) })))))));
-    };
-    filter.addEventListener('input', render);
-    render();
-    container.replaceChildren(summary, notes,
-      h('div', { class: 'data-compare-result-toolbar' }, filter, h('span', { class: 'spacer' }), exports),
-      grid);
-  }
-
-  async function loadDataCompareTab(tab) {
-    const sourceLabel = h('strong', {
-      class: 'data-compare-source',
-      text: `${scopeTitle(tab.source)} · ${displayName(tab.sourceObject, tab.source)}`,
-    });
-    const targetConnection = h('select', {
-      'aria-label': 'Target connection', 'data-testid': 'data-target-connection',
-    }, (state.meta?.connections || []).map((connection) =>
-      h('option', { value: connection.name, text: connection.name })));
-    const targetDatabase = h('select', {
-      'aria-label': 'Target database', 'data-testid': 'data-target-database',
-    });
-    const targetObject = h('select', {
-      'aria-label': 'Target table', 'data-testid': 'data-target-object',
-    });
-    const keyChoices = h('fieldset', {
-      class: 'data-compare-keys', 'data-testid': 'data-compare-keys',
-    }, h('legend', { text: 'Match rows by' }));
-    const rowCap = h('input', {
-      type: 'number', min: '1', max: String(state.meta.maxQueryResultRows),
-      value: String(Math.min(state.meta.maxQueryResultRows, Math.max(1, tab.maxRows || 2000))),
-      'aria-label': 'Data compare row cap', 'data-testid': 'data-compare-cap',
-    });
-    const compareButton = h('button', {
-      class: 'primary', text: 'Compare rows', 'data-testid': 'data-compare-run',
-    });
-    const status = h('span', {
-      class: 'muted data-compare-status', role: 'status', 'aria-live': 'polite',
-      'data-testid': 'data-compare-status', text: 'Choose a target table and matching key.',
-    });
-    const results = h('div', {
-      class: 'data-compare-results', 'data-testid': 'data-compare-results',
-    });
-    const toolbar = h('div', { class: 'viewbar data-compare-toolbar' },
-      h('span', { class: 'muted', text: 'Source' }), sourceLabel,
-      h('span', { class: 'schema-compare-arrow', text: '→', 'aria-hidden': 'true' }),
-      h('label', {}, h('span', { text: 'Target' }), targetConnection),
-      targetDatabase, targetObject,
-      h('label', { class: 'data-compare-cap' }, 'Row cap ', rowCap),
-      compareButton, status);
-    const setup = h('div', { class: 'data-compare-setup' }, keyChoices);
-    tab.panel.replaceChildren(toolbar, setup, results);
-
-    targetConnection.value = tab.target.connection;
-    let targetObjects = new Map();
-    let targetStructure = null;
-    let selectionRequest = 0;
-    let selectionLoads = 0;
-    let comparing = false;
-    let compareRequest = 0;
-    let compareController = null;
-    tab.onClose = () => compareController?.abort();
-
-    const checkedKeys = () => [...keyChoices.querySelectorAll('input[type=checkbox]:checked')]
-      .map((checkbox) => checkbox.value);
-    const updateControls = () => {
-      const busy = selectionLoads > 0 || comparing;
-      targetConnection.disabled = comparing;
-      targetDatabase.disabled = busy;
-      targetObject.disabled = busy;
-      rowCap.disabled = comparing;
-      keyChoices.disabled = busy;
-      compareButton.disabled = busy || !targetStructure || !checkedKeys().length;
-    };
-    const beginSelection = () => { selectionLoads += 1; updateControls(); };
-    const endSelection = () => { selectionLoads -= 1; updateControls(); };
-
-    let sourceStructure;
-    try {
-      sourceStructure = await api(urlsFor(tab.source).structure(
-        tab.sourceObject.schema, tab.sourceObject.name));
-    } catch (err) {
-      results.replaceChildren(errorBox(`Source structure unavailable: ${err.message}`));
-      status.textContent = 'Comparison unavailable';
-      updateControls();
-      return;
-    }
-
-    const renderKeyChoices = (preferred = []) => {
-      const targetColumnNames = new Set((targetStructure?.columns || [])
-        .filter((column) => !column.isHidden)
-        .map((column) => column.name.toLowerCase()));
-      const targetIdentityNames = new Set((targetStructure?.rowIdentity?.columns || [])
-        .map((name) => name.toLowerCase()));
-      const available = (sourceStructure.columns || [])
-        .filter((column) => !column.isHidden
-          && targetColumnNames.has(column.name.toLowerCase()))
-        .map((column) => column.name);
-      for (const identityColumn of sourceStructure.rowIdentity?.columns || []) {
-        if (!available.some((name) => name.toLowerCase() === identityColumn.toLowerCase())
-          && targetIdentityNames.has(identityColumn.toLowerCase())) available.push(identityColumn);
-      }
-      const preferredAvailable = preferred.filter((name) =>
-        available.some((candidate) => candidate.toLowerCase() === name.toLowerCase()));
-      const identityDefault = (sourceStructure.rowIdentity?.columns || []).filter((name) =>
-        available.some((candidate) => candidate.toLowerCase() === name.toLowerCase()));
-      const selected = preferredAvailable.length ? preferredAvailable
-        : identityDefault.length === (sourceStructure.rowIdentity?.columns || []).length
-          ? identityDefault : [];
-      keyChoices.replaceChildren(h('legend', { text: 'Match rows by' }),
-        ...available.map((name) => {
-          const checkbox = h('input', { type: 'checkbox', value: name });
-          checkbox.checked = selected.some((candidate) =>
-            candidate.toLowerCase() === name.toLowerCase());
-          checkbox.addEventListener('change', () => {
-            tab.keyColumns = checkedKeys();
-            results.replaceChildren();
-            status.textContent = tab.keyColumns.length
-              ? 'Ready to compare.' : 'Choose at least one matching key column.';
-            updateControls();
-            saveSession();
-          });
-          return h('label', { class: 'checkbox-row' }, checkbox, name);
-        }),
-        available.length ? null : h('span', {
-          class: 'muted', text: 'These tables have no columns in common.',
-        }));
-      tab.keyColumns = checkedKeys();
-      status.textContent = tab.keyColumns.length
-        ? 'Ready to compare.' : 'Choose at least one matching key column.';
-      updateControls();
-    };
-
-    const loadTargetStructure = async (request, preferredKeys) => {
-      const selected = targetObjects.get(targetObject.value);
-      targetStructure = null;
-      if (!selected) {
-        renderKeyChoices([]);
-        return;
-      }
-      beginSelection();
-      try {
-        const scope = { connection: targetConnection.value, database: targetDatabase.value };
-        const structure = await api(urlsFor(scope).structure(selected.schema, selected.name));
-        if (request !== selectionRequest) return;
-        targetStructure = structure;
-        renderKeyChoices(preferredKeys);
-      } catch (err) {
-        if (request !== selectionRequest) return;
-        keyChoices.replaceChildren(h('legend', { text: 'Match rows by' }), errorBox(err.message));
-        status.textContent = 'Target structure unavailable';
-      } finally {
-        endSelection();
-      }
-    };
-
-    const loadTargetObjects = async (request, preferredObject, preferredKeys) => {
-      beginSelection();
-      try {
-        const scope = { connection: targetConnection.value, database: targetDatabase.value };
-        const objects = (await api(urlsFor(scope).objects()))
-          .filter((object) => object.type === 'Table' && !object.isInternal && !isVirtualObject(object));
-        if (request !== selectionRequest) return;
-        targetObjects = new Map(objects.map((object) => [dataCompareObjectKey(object), object]));
-        targetObject.replaceChildren(h('option', { value: '', text: 'Choose target table' }),
-          ...objects.sort((left, right) => displayName(left, scope).localeCompare(displayName(right, scope)))
-            .map((object) => h('option', {
-              value: dataCompareObjectKey(object), text: displayName(object, scope),
-            })));
-        const preferredKey = preferredObject?.name
-          ? dataCompareObjectKey(preferredObject) : null;
-        const exact = preferredKey && targetObjects.has(preferredKey) ? preferredKey : null;
-        const sameName = [...targetObjects.entries()].find(([, object]) =>
-          object.name.toLowerCase() === tab.sourceObject.name.toLowerCase())?.[0];
-        targetObject.value = exact || sameName || '';
-      } catch (err) {
-        if (request !== selectionRequest) return;
-        targetObjects = new Map();
-        targetObject.replaceChildren();
-        results.replaceChildren(errorBox(`Target tables unavailable: ${err.message}`));
-        status.textContent = 'Comparison unavailable';
-      } finally {
-        endSelection();
-      }
-      if (request === selectionRequest) await loadTargetStructure(request, preferredKeys);
-    };
-
-    const loadTargetDatabases = async (preferredDatabase, preferredObject, preferredKeys) => {
-      const request = ++selectionRequest;
-      targetStructure = null;
-      beginSelection();
-      try {
-        const databases = await api(urls.databases(targetConnection.value));
-        if (request !== selectionRequest) return;
-        const available = databases.filter((database) => !database.isSystem);
-        targetDatabase.replaceChildren(...available.map((database) =>
-          h('option', { value: database.name, text: database.name })));
-        if (available.some((database) => database.name === preferredDatabase)) {
-          targetDatabase.value = preferredDatabase;
-        }
-      } catch (err) {
-        if (request !== selectionRequest) return;
-        targetDatabase.replaceChildren();
-        targetObject.replaceChildren();
-        status.textContent = `Database list unavailable: ${err.message}`;
-      } finally {
-        endSelection();
-      }
-      if (request === selectionRequest && targetDatabase.value) {
-        await loadTargetObjects(request, preferredObject, preferredKeys);
-      }
-    };
-
-    targetConnection.addEventListener('change', () => {
-      results.replaceChildren();
-      loadTargetDatabases(null, null, []);
-    });
-    targetDatabase.addEventListener('change', () => {
-      const request = ++selectionRequest;
-      results.replaceChildren();
-      loadTargetObjects(request, null, []);
-    });
-    targetObject.addEventListener('change', () => {
-      const request = ++selectionRequest;
-      results.replaceChildren();
-      loadTargetStructure(request, []);
-    });
-    rowCap.addEventListener('change', () => {
-      rowCap.value = String(Math.min(state.meta.maxQueryResultRows,
-        Math.max(1, Number(rowCap.value) || 2000)));
-      tab.maxRows = Number(rowCap.value);
-      results.replaceChildren();
-      saveSession();
-    });
-
-    compareButton.addEventListener('click', async () => {
-      if (selectionLoads || comparing || !targetStructure) return;
-      const keys = checkedKeys();
-      const selectedTarget = targetObjects.get(targetObject.value);
-      if (!keys.length || !selectedTarget) return;
-      comparing = true;
-      updateControls();
-      const request = ++compareRequest;
-      compareController?.abort();
-      const controller = new AbortController();
-      compareController = controller;
-      const targetScope = { connection: targetConnection.value, database: targetDatabase.value };
-      const cap = Math.min(state.meta.maxQueryResultRows, Math.max(1, Number(rowCap.value) || 2000));
-      tab.target = {
-        ...targetScope, schema: selectedTarget.schema, name: selectedTarget.name,
-      };
-      tab.keyColumns = keys;
-      tab.maxRows = cap;
-      status.textContent = `Comparing up to ${cap.toLocaleString()} rows on each side…`;
-      results.replaceChildren(h('div', { class: 'loading', text: 'Streaming source and target rows…' }));
-      try {
-        const firstKey = keys[0].toLowerCase();
-        const sourceSort = (sourceStructure.columns || []).find((column) =>
-          !column.isHidden && column.name.toLowerCase() === firstKey)?.name;
-        const targetSort = (targetStructure.columns || []).find((column) =>
-          !column.isHidden && column.name.toLowerCase() === firstKey)?.name;
-        const canSortBothSides = sourceSort && targetSort;
-        const [sourceSnapshot, targetSnapshot] = await Promise.all([
-          loadDataCompareRows(tab.source, tab.sourceObject,
-            canSortBothSides ? sourceSort : null, cap, controller.signal),
-          loadDataCompareRows(targetScope, selectedTarget,
-            canSortBothSides ? targetSort : null, cap, controller.signal),
-        ]);
-        if (request !== compareRequest) return;
-        const comparison = compareDataRows(sourceSnapshot, targetSnapshot, keys);
-        renderDataCompareResults(results, comparison, sourceSnapshot, targetSnapshot, keys);
-        const columnDifferenceCount = comparison.sourceOnlyColumns.length + comparison.targetOnlyColumns.length;
-        status.textContent = comparison.differences.length
-          ? `${comparison.differences.length} row difference${comparison.differences.length === 1 ? '' : 's'}`
-            + (columnDifferenceCount ? ` · ${columnDifferenceCount} column difference${columnDifferenceCount === 1 ? '' : 's'}` : '')
-          : columnDifferenceCount
-            ? `Rows match · ${columnDifferenceCount} column difference${columnDifferenceCount === 1 ? '' : 's'}`
-            : 'Rows match within the loaded data';
-        if (sourceSnapshot.truncated || targetSnapshot.truncated) status.textContent += ' · partial';
-        saveSession();
-      } catch (err) {
-        controller.abort();
-        if (request !== compareRequest || err.name === 'AbortError') return;
-        status.textContent = 'Comparison unavailable';
-        results.replaceChildren(errorBox(err.message));
-      } finally {
-        if (request === compareRequest) {
-          compareController = null;
-          comparing = false;
-          updateControls();
-        }
-      }
-    });
-
-    await loadTargetDatabases(tab.target.database, tab.target, tab.keyColumns);
   }
 
   function addTab(tab) {
@@ -5040,13 +4031,6 @@
       const cancel = h('button', { text: 'Cancel', onclick: () => controller.abort() });
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
       actionBar.replaceChildren(...[
-        o.type === 'Table' && !o.isInternal && !isVirtualObject(o)
-          ? h('button', {
-            'data-testid': 'data-compare-open',
-            title: 'Compare rows with the same table on another connection',
-            onclick: () => openDataCompareTab(scope, o),
-          }, 'Compare data…')
-          : null,
         structure && currentConn().allowWrites && !o.isInternal
           ? h('button', {
             onclick: () => openRowEditor(table, data.columns, structure, friendly, null, null, columnIndex),
@@ -8937,7 +7921,7 @@
       runButton.disabled = true;
       status.textContent = mode === 'actual' ? 'Running for actual plan…' : 'Explaining…';
       results.replaceChildren();
-      results.classList.remove('single-result');
+      results.classList.remove('single-result', 'multi-result');
       try {
         const plan = await post(urls.queryPlan(), { sql, mode });
         historyOutcome = 'succeeded';
@@ -8972,7 +7956,7 @@
       runButton.disabled = true;
       cancelButton.disabled = false;
       results.replaceChildren();
-      results.classList.remove('single-result');
+      results.classList.remove('single-result', 'multi-result');
       const startedAt = performance.now();
       const historyStartedAt = Date.now();
       let historyDuration = null;
@@ -8983,6 +7967,7 @@
       }, 100);
 
       const sets = new Map();
+      let lastPanel = null;
       let completedSuccessfully = false;
       const messages = h('div', { class: 'query-messages' });
       const addEvent = (event) => {
@@ -8993,12 +7978,17 @@
           const scroll = h('div', { class: 'grid-scroll' });
           const gridView = progressiveDataGrid(scroll, { selectable: true });
           gridView.setColumns(event.columns);
-          results.append(meta, scroll);
+          const panel = h('div', { class: 'result-set' }, meta, scroll);
+          if (lastPanel) results.append(resultSetGrip(lastPanel, panel, results));
+          results.append(panel);
+          lastPanel = panel;
           sets.set(event.resultSetIndex, {
             columns: gridView.columns, rows: gridView.rows, metaText, meta, exports, scroll, gridView,
           });
-          // A single result set fills the panel; a second reverts to capped, scroll-between grids.
+          // A single result set fills the panel; further sets each get an equal, resizable share
+          // of it with their own scrollbar.
           results.classList.toggle('single-result', sets.size === 1);
+          results.classList.toggle('multi-result', sets.size > 1);
         } else if (event.type === 'rows') {
           const set = sets.get(event.resultSetIndex);
           if (!set) return;

@@ -6,7 +6,7 @@ namespace Gridlet.Sqlite;
 /// <summary>The SQLite implementation of the Gridlet provider boundary.</summary>
 public sealed class SqliteGridletProvider :
     IGridletProvider, IGridletProviderMetadata, IGridletDatabaseSystemInfoProvider, IForeignKeyLookupProvider,
-    ITableImportProvider
+    ITableImportProvider, IColumnDistinctValuesProvider
 {
     public GridletProviderNames ProviderName => GridletProviderNames.Sqlite;
 
@@ -112,6 +112,101 @@ public sealed class SqliteGridletProvider :
                 reader.IsDBNull(1) ? null : reader.GetValue(1)));
         }
         return items;
+    }
+
+    public async Task<IReadOnlyList<object?>> GetDistinctColumnValuesAsync(
+        GridletConnectionContext context, string schema, string table, string column,
+        string? search, int limit, CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
+        var quotedColumn = SqliteIdentifier.Quote(column);
+        var qualified = SqliteIdentifier.QuoteQualified(schema, table);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+
+        string? columnType = null;
+        // Validate existence to give a clear 400 rather than a cryptic SQLite error and capture type.
+        await using (var validate = connection.CreateCommand())
+        {
+            validate.CommandText = "SELECT type FROM pragma_table_info(@table, @schema) WHERE name = @col LIMIT 1;";
+            validate.Parameters.AddWithValue("@table", table);
+            validate.Parameters.AddWithValue("@schema", schema);
+            validate.Parameters.AddWithValue("@col", column);
+            var typeObj = await validate.ExecuteScalarAsync(cancellationToken);
+            if (typeObj is null || typeObj is DBNull) throw new GridletValidationException($"Column '{column}' does not exist on {qualified}.");
+            columnType = Convert.ToString(typeObj);
+        }
+
+        var capped = Math.Clamp(limit, 1, 50);
+        var trimmed = search?.Trim();
+        var isDateByName = column.Contains("date", StringComparison.OrdinalIgnoreCase)
+            || column.Contains("time", StringComparison.OrdinalIgnoreCase)
+            || column.Contains("atutc", StringComparison.OrdinalIgnoreCase);
+        var isDistribution = string.IsNullOrEmpty(trimmed) && capped <= 10
+            && columnType is not null
+            && (columnType.StartsWith("INT", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("INTEGER", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("REAL", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("NUMERIC", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("DECIMAL", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("DOUBLE", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("FLOAT", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("DATE", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("TIME", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("DATETIME", StringComparison.OrdinalIgnoreCase)
+                || isDateByName);
+        if (isDistribution)
+        {
+            long distinctCount;
+            await using (var countCmd = connection.CreateCommand())
+            {
+                countCmd.CommandText = $"SELECT COUNT(DISTINCT {quotedColumn}) FROM {qualified} WHERE {quotedColumn} IS NOT NULL;";
+                distinctCount = Convert.ToInt64(await countCmd.ExecuteScalarAsync(cancellationToken));
+            }
+            if (distinctCount <= capped)
+            {
+                await using var allCmd = connection.CreateCommand();
+                allCmd.CommandText = $"SELECT DISTINCT {quotedColumn} FROM {qualified} WHERE {quotedColumn} IS NOT NULL ORDER BY {quotedColumn};";
+                var allValues = new List<object?>();
+                await using var r = await allCmd.ExecuteReaderAsync(cancellationToken);
+                while (await r.ReadAsync(cancellationToken)) allValues.Add(r.IsDBNull(0) ? null : SqliteValues.Materialize(r.GetValue(0)));
+                return allValues;
+            }
+            var step = Math.Max(1, distinctCount / capped);
+            var sampled = new List<object?>();
+            for (var i = 0; i < capped; i++)
+            {
+                var offset = i * step;
+                await using var offCmd = connection.CreateCommand();
+                offCmd.CommandText = $"SELECT {quotedColumn} FROM (SELECT DISTINCT {quotedColumn} AS v FROM {qualified} WHERE {quotedColumn} IS NOT NULL ORDER BY v) LIMIT 1 OFFSET @off;";
+                offCmd.Parameters.AddWithValue("@off", offset);
+                var val = await offCmd.ExecuteScalarAsync(cancellationToken);
+                if (val is not null && val is not DBNull) sampled.Add(SqliteValues.Materialize(val));
+            }
+            return sampled.Distinct().ToArray();
+        }
+
+        await using var command = connection.CreateCommand();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            command.CommandText = $"SELECT DISTINCT {quotedColumn} FROM {qualified} WHERE {quotedColumn} IS NOT NULL ORDER BY {quotedColumn} LIMIT @limit;";
+        }
+        else
+        {
+            var escaped = EscapeLike(trimmed);
+            command.Parameters.AddWithValue("@search", escaped);
+            command.CommandText =
+                $"SELECT DISTINCT {quotedColumn} FROM {qualified} WHERE {quotedColumn} IS NOT NULL " +
+                $"AND CAST({quotedColumn} AS TEXT) LIKE @search || '%' ESCAPE '\\' ORDER BY " +
+                $"CASE WHEN CAST({quotedColumn} AS TEXT) = @search THEN 0 ELSE 1 END, {quotedColumn} LIMIT @limit;";
+        }
+        command.Parameters.AddWithValue("@limit", capped);
+        var values = new List<object?>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            values.Add(reader.IsDBNull(0) ? null : SqliteValues.Materialize(reader.GetValue(0)));
+        }
+        return values;
     }
 
     private static string EscapeLike(string value)

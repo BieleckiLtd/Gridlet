@@ -6,7 +6,8 @@ namespace Gridlet.SqlServer;
 /// <summary>The SQL Server implementation of the Gridlet provider boundary.</summary>
 public sealed class SqlServerGridletProvider :
     IGridletProvider, IGridletProviderMetadata, IGridletDatabaseSystemInfoProvider, IForeignKeyLookupProvider,
-    ITableImportProvider, ISequenceProvider
+    ITableImportProvider, ISequenceProvider, IDatabaseSecurityProvider, ITriggerManagementProvider,
+    IColumnDistinctValuesProvider
 {
     public GridletProviderNames ProviderName => GridletProviderNames.SqlServer;
 
@@ -35,7 +36,9 @@ public sealed class SqlServerGridletProvider :
         SupportsQueryPlans: true,
         SupportsSequences: true,
         SupportsImport: true,
-        SupportsDefaultConstraints: true);
+        SupportsDefaultConstraints: true,
+        SupportsSecurityOverview: true,
+        SupportsTriggerManagement: true);
 
     public ISchemaReader Schema { get; } = new SqlServerSchemaReader();
 
@@ -61,6 +64,22 @@ public sealed class SqlServerGridletProvider :
         GridletConnectionContext context, string schema, string name, string value,
         CancellationToken cancellationToken = default)
         => SqlServerSequenceService.RestartAsync(context, schema, name, value, cancellationToken);
+
+    public Task<DatabaseSecurityOverview> GetSecurityOverviewAsync(
+        GridletConnectionContext context,
+        CancellationToken cancellationToken = default)
+        => SqlServerSecurityService.GetOverviewAsync(context, cancellationToken);
+
+    public Task<IReadOnlyList<TriggerInfo>> GetTriggersAsync(
+        GridletConnectionContext context,
+        CancellationToken cancellationToken = default)
+        => SqlServerTriggerService.GetAsync(context, cancellationToken);
+
+    public Task SetTriggerEnabledAsync(
+        GridletConnectionContext context,
+        TriggerStateDesign trigger,
+        CancellationToken cancellationToken = default)
+        => SqlServerTriggerService.SetEnabledAsync(context, trigger, cancellationToken);
 
     public async Task<GridletDatabaseSystemInfo> GetDatabaseSystemInfoAsync(
         GridletConnectionContext context,
@@ -124,6 +143,120 @@ public sealed class SqlServerGridletProvider :
                 reader.IsDBNull(1) ? null : reader.GetValue(1)));
         }
         return items;
+    }
+
+    public async Task<IReadOnlyList<object?>> GetDistinctColumnValuesAsync(
+        GridletConnectionContext context, string schema, string table, string column,
+        string? search, int limit, CancellationToken cancellationToken = default)
+    {
+        var quotedColumn = SqlServerIdentifier.Quote(column);
+        var qualified = SqlServerIdentifier.QuoteQualified(schema, table);
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+
+        string? columnType = null;
+        // Validate the table and column exist before reaching dynamic SQL and capture the type for
+        // distribution heuristics (numeric/date range predicates want a spread, not just the low end).
+        await using (var validate = connection.CreateCommand())
+        {
+            validate.CommandText = """
+                SELECT t.name
+                FROM sys.columns c
+                JOIN sys.types t ON t.user_type_id = c.user_type_id
+                WHERE c.object_id = OBJECT_ID(@name) AND c.name = @col;
+                """;
+            validate.Parameters.AddWithValue("@name", qualified);
+            validate.Parameters.AddWithValue("@col", column);
+            var typeObj = await validate.ExecuteScalarAsync(cancellationToken);
+            if (typeObj is null) throw new GridletValidationException($"Column '{column}' does not exist on {qualified}.");
+            columnType = Convert.ToString(typeObj);
+        }
+
+        var capped = Math.Clamp(limit, 1, 50);
+        var trimmed = search?.Trim();
+        // When the request is a range distribution (empty prefix, small limit) on a numeric/date
+        // column, return 10 values spread across the full distinct set instead of the 10 smallest.
+        // For SQLite TEXT columns that store ISO8601 dates, the declared type is TEXT, so also
+        // consider the column name (e.g. OrderedAtUtc) as a date hint.
+        var isDateByName = column.Contains("date", StringComparison.OrdinalIgnoreCase)
+            || column.Contains("time", StringComparison.OrdinalIgnoreCase)
+            || column.Contains("atutc", StringComparison.OrdinalIgnoreCase);
+        var isDistribution = string.IsNullOrEmpty(trimmed) && capped <= 10
+            && columnType is not null
+            && (columnType.StartsWith("int", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("bigint", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("smallint", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("tinyint", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("decimal", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("numeric", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("float", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("real", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("money", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("date", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("time", StringComparison.OrdinalIgnoreCase)
+                || columnType.StartsWith("datetime", StringComparison.OrdinalIgnoreCase)
+                || isDateByName);
+        if (isDistribution)
+        {
+            // Count distinct to size the sample.
+            long distinctCount;
+            await using (var countCmd = connection.CreateCommand())
+            {
+                countCmd.CommandText = $"SELECT COUNT(DISTINCT {quotedColumn}) FROM {qualified} WHERE {quotedColumn} IS NOT NULL;";
+                distinctCount = Convert.ToInt64(await countCmd.ExecuteScalarAsync(cancellationToken));
+            }
+            if (distinctCount <= capped)
+            {
+                await using var allCmd = connection.CreateCommand();
+                allCmd.CommandText = $"SELECT DISTINCT {quotedColumn} FROM {qualified} WHERE {quotedColumn} IS NOT NULL ORDER BY {quotedColumn};";
+                var allValues = new List<object?>();
+                await using var r = await allCmd.ExecuteReaderAsync(cancellationToken);
+                while (await r.ReadAsync(cancellationToken)) allValues.Add(r.IsDBNull(0) ? null : SqlServerValues.Materialize(r.GetValue(0)));
+                return allValues;
+            }
+            // Sample evenly: OFFSET step = count / limit.
+            var step = Math.Max(1, distinctCount / capped);
+            var sampled = new List<object?>();
+            for (var i = 0; i < capped; i++)
+            {
+                var offset = i * step;
+                // OFFSET/FETCH requires ORDER BY, supported on SQL Server 2012+.
+                await using var offCmd = connection.CreateCommand();
+                offCmd.CommandText = $"SELECT {quotedColumn} FROM (SELECT DISTINCT {quotedColumn} AS v FROM {qualified} WHERE {quotedColumn} IS NOT NULL) t ORDER BY v OFFSET @off ROWS FETCH NEXT 1 ROWS ONLY;";
+                offCmd.Parameters.AddWithValue("@off", offset);
+                var val = await offCmd.ExecuteScalarAsync(cancellationToken);
+                if (val is not null && val is not DBNull) sampled.Add(SqlServerValues.Materialize(val));
+            }
+            // Deduplicate while preserving order (distinct offsets can collide on small sets).
+            return sampled.Distinct().ToArray();
+        }
+
+        await using var command = connection.CreateCommand();
+        // DISTINCT on a column with many distinct values can be expensive; TOP limits the work.
+        // Prefix filtering reduces the set further when the user has typed something.
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            command.CommandText = $"SELECT DISTINCT TOP (@limit) {quotedColumn} FROM {qualified} WHERE {quotedColumn} IS NOT NULL ORDER BY {quotedColumn};";
+        }
+        else
+        {
+            // Escape LIKE specials before using the prefix.
+            var escaped = EscapeLike(trimmed);
+            command.Parameters.AddWithValue("@search", escaped);
+            command.Parameters.AddWithValue("@contains", $"%{escaped}%");
+            command.CommandText =
+                $"SELECT DISTINCT TOP (@limit) {quotedColumn} FROM {qualified} WHERE {quotedColumn} IS NOT NULL " +
+                $"AND CONVERT(nvarchar(max), {quotedColumn}) LIKE @search + '%' ESCAPE '[' ORDER BY " +
+                $"CASE WHEN CONVERT(nvarchar(max), {quotedColumn}) = @search THEN 0 ELSE 1 END, {quotedColumn};";
+        }
+
+        command.Parameters.AddWithValue("@limit", capped);
+        var values = new List<object?>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            values.Add(reader.IsDBNull(0) ? null : SqlServerValues.Materialize(reader.GetValue(0)));
+        }
+        return values;
     }
 
     private static string EscapeLike(string value)

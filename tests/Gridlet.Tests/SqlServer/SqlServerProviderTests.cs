@@ -16,6 +16,33 @@ public sealed class SqlServerProviderTests
         Assert.True(capabilities.SupportsSequences);
         Assert.True(capabilities.SupportsImport);
         Assert.True(capabilities.SupportsDefaultConstraints);
+        Assert.True(capabilities.SupportsSecurityOverview);
+        Assert.True(capabilities.SupportsTriggerManagement);
+    }
+
+    [Theory]
+    [InlineData("object", true, "ENABLE TRIGGER [audit].[TrackOrders] ON [sales].[Orders];")]
+    [InlineData("database", false, "DISABLE TRIGGER [TrackDdl] ON DATABASE;")]
+    [InlineData("server", true, "ENABLE TRIGGER [TrackLogons] ON ALL SERVER;")]
+    public void Builds_trigger_state_sql(string scope, bool enabled, string expected)
+    {
+        var design = new Gridlet.Models.TriggerStateDesign(
+            scope == "object" ? "TrackOrders" : scope == "database" ? "TrackDdl" : "TrackLogons",
+            scope, enabled,
+            Schema: scope == "object" ? "audit" : null,
+            ParentSchema: scope == "object" ? "sales" : null,
+            ParentName: scope == "object" ? "Orders" : null);
+
+        Assert.Equal(expected, SqlServerTriggerService.BuildSetEnabled(design));
+    }
+
+    [Fact]
+    public void Trigger_state_sql_requires_a_known_complete_target()
+    {
+        Assert.Throws<GridletValidationException>(() => SqlServerTriggerService.BuildSetEnabled(
+            new Gridlet.Models.TriggerStateDesign("T", "unknown", true)));
+        Assert.Throws<GridletValidationException>(() => SqlServerTriggerService.BuildSetEnabled(
+            new Gridlet.Models.TriggerStateDesign("T", Gridlet.Models.TriggerScopes.Object, true)));
     }
 
     [Fact]

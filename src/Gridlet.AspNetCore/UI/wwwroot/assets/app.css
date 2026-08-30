@@ -478,6 +478,7 @@ button.ghost { background: transparent; }
 .badge-R { background: #573034; color: #ff9aa2; }
 .badge-S { background: #3b355e; color: #b9a9ff; }
 .badge-Q { background: #263244; color: #9db9e4; }
+.badge-U { background: #3d3157; color: #c7a7f3; }
 .badge-A { background: #23484c; color: #78d4d1; }
 .badge-H { background: #234a3f; color: #74d4b0; }
 .badge-I { background: #493b3b; color: #d7b8b8; }
@@ -493,6 +494,7 @@ button.ghost { background: transparent; }
 :root[data-theme="light"] .badge-R { background: #f8dfe1; color: #92363d; }
 :root[data-theme="light"] .badge-S { background: #e6e0f5; color: #594692; }
 :root[data-theme="light"] .badge-Q { background: #e1e8f1; color: #405a7d; }
+:root[data-theme="light"] .badge-U { background: #e9def5; color: #65418b; }
 :root[data-theme="light"] .badge-A { background: #d9eeee; color: #286a6d; }
 :root[data-theme="light"] .badge-H { background: #d8efe6; color: #1f6650; }
 :root[data-theme="light"] .badge-I { background: #eee3e3; color: #704848; }
@@ -702,116 +704,6 @@ button.ghost { background: transparent; }
   .er-summary { margin-left: 0; }
 }
 
-/* ---- schema comparison ---- */
-.badge-compare {
-  background: color-mix(in srgb, var(--ok) 20%, var(--panel)); color: var(--ok);
-}
-.schema-compare-panel { overflow: hidden; }
-.schema-compare-toolbar { flex: 0 0 auto; flex-wrap: wrap; gap: 8px; }
-.schema-compare-toolbar label { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 11px; }
-.schema-compare-toolbar select { min-width: 125px; }
-.schema-compare-arrow { color: var(--muted); font-size: 18px; }
-.schema-compare-status { margin-left: auto; }
-.schema-compare-results {
-  display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 14px;
-  overflow: auto; padding: 14px;
-}
-.schema-compare-summary { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
-.schema-change-count, .schema-change {
-  padding: 2px 6px; border-radius: 999px; font: 700 10px/1.4 var(--mono); text-transform: uppercase;
-}
-.schema-change-count.missing, .schema-change.missing {
-  background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent);
-}
-.schema-change-count.different, .schema-change.different {
-  background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning);
-}
-.schema-change-count.extra, .schema-change.extra {
-  background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted);
-}
-.schema-change-count.unavailable, .schema-change.unavailable {
-  background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger);
-}
-.schema-change-grid { flex: 0 0 auto; max-height: min(34vh, 360px); }
-.schema-change-grid .data-grid { min-width: 700px; }
-.schema-migration-preview { display: flex; min-height: 360px; flex: 1; flex-direction: column; gap: 8px; }
-.schema-migration-preview .section-heading { display: flex; gap: 12px; align-items: center; }
-.schema-migration-preview .section-heading h3 { margin: 0; }
-.schema-migration-preview .section-heading p { margin: 3px 0 0; }
-.schema-migration-preview .section-heading > .inline-form { margin-left: auto; }
-.schema-migration-preview .sql-editor { min-height: 300px; flex: 1; }
-
-@media (max-width: 760px) {
-  .schema-compare-toolbar { align-items: stretch; }
-  .schema-compare-toolbar label, .schema-compare-toolbar select { width: 100%; }
-  .schema-compare-arrow { display: none; }
-  .schema-compare-status { width: 100%; margin-left: 0; }
-  .schema-migration-preview .section-heading { align-items: stretch; flex-direction: column; }
-  .schema-migration-preview .section-heading > .inline-form { margin-left: 0; }
-}
-
-/* ---- row-level data comparison ---- */
-.data-compare-panel { overflow: hidden; }
-.data-compare-toolbar { flex: 0 0 auto; flex-wrap: wrap; gap: 8px; }
-.data-compare-toolbar label {
-  display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 11px;
-}
-.data-compare-toolbar select { min-width: 130px; max-width: 220px; }
-.data-compare-source { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.data-compare-cap input { width: 82px; }
-.data-compare-status { margin-left: auto; }
-.data-compare-setup { flex: 0 0 auto; padding: 10px 14px 0; }
-.data-compare-keys {
-  display: flex; flex-wrap: wrap; gap: 5px 16px; min-width: 0; margin: 0; padding: 7px 10px;
-  border: 1px solid var(--border); border-radius: 8px;
-}
-.data-compare-keys legend { padding: 0 5px; color: var(--muted); font-size: 11px; }
-.data-compare-keys .checkbox-row { padding: 0; font: 12px var(--mono); }
-.data-compare-results {
-  display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 10px;
-  overflow: hidden; padding: 12px 14px 14px;
-}
-.data-compare-results > .loading, .data-compare-results > .error-box { margin: 4px 0; }
-.data-compare-summary { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
-.data-change-count, .data-change {
-  padding: 2px 6px; border-radius: 999px; font: 700 10px/1.4 var(--mono); text-transform: uppercase;
-}
-.data-change-count.changed, .data-change.changed {
-  background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning);
-}
-.data-change-count.source-only, .data-change.source-only {
-  background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent);
-}
-.data-change-count.target-only, .data-change.target-only {
-  background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted);
-}
-.data-change-count.duplicate, .data-change.duplicate {
-  background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger);
-}
-.data-compare-notes { display: flex; flex: 0 0 auto; flex-direction: column; gap: 4px; }
-.warning-box {
-  padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warning) 55%, var(--border));
-  border-radius: 7px; background: color-mix(in srgb, var(--warning) 9%, transparent); color: var(--warning);
-}
-.data-compare-result-toolbar { display: flex; flex: 0 0 auto; gap: 8px; align-items: center; }
-.data-compare-result-toolbar input[type="search"] { width: min(360px, 45vw); }
-.data-compare-grid { min-height: 0; flex: 1; }
-.data-compare-grid .data-grid { min-width: 920px; }
-.data-compare-grid td { vertical-align: top; }
-.data-compare-value {
-  max-width: 440px; max-height: 180px; margin: 0; overflow: auto; white-space: pre-wrap;
-  overflow-wrap: anywhere; font: 11px/1.35 var(--mono);
-}
-
-@media (max-width: 760px) {
-  .data-compare-toolbar { align-items: stretch; }
-  .data-compare-toolbar label, .data-compare-toolbar select { width: 100%; max-width: none; }
-  .data-compare-source { width: 100%; max-width: none; }
-  .data-compare-status { width: 100%; margin-left: 0; }
-  .data-compare-result-toolbar { align-items: stretch; flex-direction: column; }
-  .data-compare-result-toolbar input[type="search"] { width: 100%; }
-}
-
 /* ---- data grid ---- */
 .grid-scroll { overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .grid-scroll.virtualized { max-height: min(60vh, 640px); }
@@ -931,6 +823,10 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   background: var(--accent-dim);
 }
 .sql-surface { position: relative; flex: 1; min-height: 100px; overflow: hidden; }
+/* While the completion popup is open the editor stops clipping, so the list and its
+   documentation panel can use the height of the panel rather than of the editor box. */
+.sql-editor.completing, .sql-surface.completing { overflow: visible; }
+.sql-editor.completing { position: relative; z-index: 30; }
 .sql-input, .sql-highlight {
   position: absolute; inset: 0; margin: 0; border: 0; border-radius: 0;
   padding: 9px 12px 9px 55px; font: 13px/1.5 var(--mono); tab-size: 4;
@@ -956,13 +852,43 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 .sql-diagnostic { padding: 4px 10px; border-top: 1px solid var(--border); font: 11.5px var(--sans); }
 .sql-invalid { color: var(--error-text); }
 .sql-completions {
-  position: absolute; z-index: 5; top: 0; left: 0;
-  min-width: 180px; max-width: min(360px, calc(100% - 16px));
-  max-height: 210px; overflow: auto; padding: 4px; border: 1px solid var(--code-border);
+  position: absolute; z-index: 45; top: 0; left: 0;
+  display: flex; flex-direction: column; min-width: 200px; max-width: calc(100% - 16px);
+  max-height: 210px; overflow: hidden; padding: 4px; border: 1px solid var(--code-border);
   border-radius: 6px; background: var(--code-popup); box-shadow: 0 8px 25px var(--shadow);
 }
-.sql-completions button { display: block; min-width: 100%; padding: 4px 8px; border: 0; text-align: left; white-space: nowrap; font-family: var(--mono); background: transparent; }
-.sql-completions button:hover, .sql-completions button.active { background: var(--accent-dim); }
+.sql-completion-filters { display: flex; flex: 0 0 auto; gap: 3px; padding: 1px 1px 4px; border-bottom: 1px solid var(--code-border); }
+.sql-completion-chip {
+  display: flex; align-items: center; justify-content: center; width: 24px; height: 22px;
+  padding: 0; border: 1px solid transparent; border-radius: 5px; color: var(--muted); background: transparent;
+}
+.sql-completion-chip svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.sql-completion-chip:hover:not(:disabled) { color: var(--text); border-color: var(--code-border); }
+.sql-completion-chip.active { color: var(--text); border-color: var(--accent); background: var(--accent-dim); }
+.sql-completion-chip:disabled { opacity: .35; }
+.sql-completion-body { display: flex; min-height: 0; flex: 1; gap: 4px; }
+.sql-completion-list { flex: 1 1 auto; min-width: 170px; max-width: 340px; overflow: auto; padding-top: 3px; }
+.sql-completion-row {
+  display: flex; align-items: baseline; gap: 8px; min-width: 100%; padding: 3px 8px;
+  border: 0; text-align: left; white-space: nowrap; background: transparent;
+}
+.sql-completion-row:hover, .sql-completion-row.active { background: var(--accent-dim); }
+.sql-completion-mark { display: flex; flex: 0 0 auto; align-self: center; color: var(--muted); }
+.sql-completion-mark svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.sql-completion-row.active .sql-completion-mark { color: var(--text); }
+.sql-completion-value { flex: 1; font-family: var(--mono); }
+.sql-completion-empty { padding: 6px 8px; font: 11.5px var(--sans); }
+.sql-completion-doc {
+  flex: 0 0 250px; min-width: 0; overflow: auto; padding: 5px 8px;
+  border-left: 1px solid var(--code-border); font: 11.5px/1.45 var(--sans);
+}
+.sql-completions.stacked .sql-completion-body { flex-direction: column; }
+.sql-completions.stacked .sql-completion-list { max-width: none; }
+.sql-completions.stacked .sql-completion-doc { flex: 0 0 auto; max-height: 96px; border-left: 0; border-top: 1px solid var(--code-border); }
+.sql-completion-doc-name { margin-bottom: 4px; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.sql-completion-doc-text { margin: 0 0 5px; }
+.sql-completion-doc-link { color: var(--accent); text-decoration: none; }
+.sql-completion-doc-link:hover { text-decoration: underline; }
 .inline-editor .sql-editor { flex: 1; resize: none; }
 
 @media (forced-colors: active) {
@@ -971,11 +897,30 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 }
 
 .query-results { flex: 1; overflow-x: hidden; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
-.query-results > .grid-scroll { max-width: 100%; }
-/* A lone result set fills the panel and owns the only scrollbar, so the grid never scrolls inside
-   a second scrollbar. Multiple result sets keep the capped height and let .query-results scroll. */
+.result-set { display: flex; flex-direction: column; min-width: 0; }
+.result-set > .grid-scroll { max-width: 100%; }
+/* A lone result set fills the panel and owns the only scrollbar. With several sets each panel
+   gets an equal share with its own scrollbar, and the grips between panels resize the shares. */
 .query-results.single-result { overflow: hidden; }
-.query-results.single-result > .grid-scroll { flex: 1; min-height: 0; max-height: none; }
+.query-results.single-result > .result-set { flex: 1; min-height: 0; }
+.query-results.single-result > .result-set > .grid-scroll { flex: 1; min-height: 0; max-height: none; }
+.query-results.multi-result { gap: 0; }
+.query-results.multi-result > .result-set { flex: 1 1 0; min-height: 96px; }
+.query-results.multi-result > .result-set > .grid-scroll { flex: 1; min-height: 0; max-height: none; }
+.query-results.multi-result > .result-set > .grid-scroll.virtualized { max-height: none; }
+.query-results.multi-result > :not(.result-set):not(.result-set-grip) { margin-top: 8px; }
+.result-set-grip {
+  height: 11px;
+  flex: 0 0 11px;
+  cursor: row-resize;
+  touch-action: none;
+  border-top: 1px solid transparent;
+  outline: none;
+}
+.result-set-grip:hover, .result-set-grip:focus-visible, .result-set-grip.dragging {
+  border-top-color: var(--accent);
+  background: var(--accent-dim);
+}
 .result-meta { font-size: 12.5px; }
 .message { color: var(--ok); font-size: 12.5px; white-space: pre-wrap; }
 

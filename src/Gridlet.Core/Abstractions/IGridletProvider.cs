@@ -91,3 +91,40 @@ public interface ISequenceProvider
         string value,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Optional database-security metadata capability.</summary>
+public interface IDatabaseSecurityProvider
+{
+    Task<Models.DatabaseSecurityOverview> GetSecurityOverviewAsync(
+        Models.GridletConnectionContext context,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>Optional discovery and enable/disable capability for DML and DDL triggers.</summary>
+public interface ITriggerManagementProvider
+{
+    Task<IReadOnlyList<Models.TriggerInfo>> GetTriggersAsync(
+        Models.GridletConnectionContext context,
+        CancellationToken cancellationToken = default);
+
+    Task SetTriggerEnabledAsync(
+        Models.GridletConnectionContext context,
+        Models.TriggerStateDesign trigger,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Optional column distinct-values capability used to complete predicates such as
+/// <c>WHERE Status = 'placed'</c> with real values from the table.
+/// </summary>
+public interface IColumnDistinctValuesProvider
+{
+    Task<IReadOnlyList<object?>> GetDistinctColumnValuesAsync(
+        Models.GridletConnectionContext context,
+        string schema,
+        string table,
+        string column,
+        string? search,
+        int limit,
+        CancellationToken cancellationToken = default);
+}
