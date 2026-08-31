@@ -407,7 +407,37 @@ button.ghost { background: transparent; }
 }
 
 .sidebar-head { margin: 8px 10px 10px; }
-#search { flex: 1; min-width: 0; }
+.sidebar-filter { position: relative; flex: 1; min-width: 0; }
+#search { width: 100%; min-width: 0; padding-right: 34px; }
+.sidebar-filter-advanced {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 100ms ease, visibility 100ms ease;
+}
+.sidebar-filter:hover .sidebar-filter-advanced,
+.sidebar-filter:focus-within .sidebar-filter-advanced {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+.sidebar-filter-advanced:hover,
+.sidebar-filter-advanced:focus-visible { color: var(--text); }
 
 .tree { overflow: auto; flex: 1; padding: 0 6px 12px; }
 

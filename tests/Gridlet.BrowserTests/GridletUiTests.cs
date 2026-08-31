@@ -1872,6 +1872,81 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Object_search_finds_and_opens_components_and_code()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        const string componentHtml = """
+            <div data-gridlet="2" data-name="AdvancedSearchComponent">
+              <span data-name="result">workspace_definition_token</span>
+            </div>
+            """;
+        const string scriptSource = """
+            // workspace_definition_token
+            export function advancedSearchCode() { return true; }
+            """;
+        var component = new
+        {
+            id = "advanced-search-component",
+            name = "AdvancedSearchComponent",
+            html = componentHtml,
+            updatedAtUtc = DateTimeOffset.UtcNow,
+        };
+        var script = new
+        {
+            name = "AdvancedSearchCode.js",
+            source = scriptSource,
+            updatedAtUtc = DateTimeOffset.UtcNow,
+            readOnly = false,
+        };
+        await page.RouteAsync("**/api/components", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 200, ContentType = "application/json",
+            Body = JsonSerializer.Serialize(new[] { component }),
+        }));
+        await page.RouteAsync("**/api/components/scripts", route => route.FulfillAsync(new RouteFulfillOptions
+        {
+            Status = 200, ContentType = "application/json",
+            Body = JsonSerializer.Serialize(new[] { script }),
+        }));
+        await page.RouteAsync("**/api/components/scripts/AdvancedSearchCode.js", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = JsonSerializer.Serialize(script),
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var search = await OpenObjectSearchAsync(page);
+        await search.GetByTestId("object-search-query").FillAsync("AdvancedSearch");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(2);
+        await Assertions.Expect(search.GetByText("Workspace / Components", new() { Exact = false }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(search.GetByText("Workspace / Code", new() { Exact = false }))
+            .ToBeVisibleAsync();
+        await search.GetByTestId("object-search-result")
+            .Filter(new() { HasText = "AdvancedSearchComponent" }).ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas")).ToBeVisibleAsync();
+
+        await page.Locator("#tabbar .tab").Filter(new() { HasText = "Find objects" }).ClickAsync();
+        search = page.GetByTestId("object-search");
+        await search.GetByTestId("object-search-mode").SelectOptionAsync("definitions");
+        await search.GetByTestId("object-search-query").FillAsync("workspace_definition_token");
+        await search.GetByTestId("object-search-run").ClickAsync();
+
+        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(2);
+        await Assertions.Expect(search.GetByTestId("object-search-results"))
+            .ToContainTextAsync("Line 2:");
+        await search.GetByTestId("object-search-result")
+            .Filter(new() { HasText = "AdvancedSearchCode.js" }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-code-editor"))
+            .ToHaveValueAsync(new Regex("workspace_definition_token"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Object_name_search_skips_definitions_and_opens_the_original_scope()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -6248,7 +6323,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
     private static async Task<ILocator> OpenObjectSearchAsync(IPage page)
     {
-        await page.GetByTestId("object-search-open").ClickAsync();
+        var filter = page.Locator("#search");
+        var advancedSearch = page.GetByTestId("object-search-open");
+        await Assertions.Expect(advancedSearch).ToBeHiddenAsync();
+        await filter.FocusAsync();
+        await Assertions.Expect(advancedSearch).ToBeVisibleAsync();
+        await advancedSearch.ClickAsync();
         var search = page.GetByTestId("object-search");
         await Assertions.Expect(search).ToBeVisibleAsync();
         await Assertions.Expect(search.GetByTestId("object-search-query")).ToBeFocusedAsync();

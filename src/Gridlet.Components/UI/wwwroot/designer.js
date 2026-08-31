@@ -6812,6 +6812,7 @@ export default class ${CLASS_NAME(name)} {
     items: () => components.map((component) => ({
       name: component.name,
       title: `${component.name} — updated ${new Date(component.updatedAtUtc).toLocaleString()}`,
+      definition: component.html,
       onOpen: () => openDesigner(component),
       contextItems: () => [
         { label: 'Open', action: () => openDesigner(component) },
@@ -6849,6 +6850,7 @@ export default class ${CLASS_NAME(name)} {
       title: script.readOnly
         ? `${script.name} — part of Gridlet, and importable from your own modules`
         : `${script.name} — updated ${new Date(script.updatedAtUtc).toLocaleString()}`,
+      definition: script.source,
       onOpen: () => openCodeTab(script.name),
       contextItems: () => [
         { label: 'Open', action: () => openCodeTab(script.name) },

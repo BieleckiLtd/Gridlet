@@ -2158,8 +2158,12 @@
       }
       renderTree();
     };
-    refresh();
-    return { refresh };
+    const startRefresh = () => {
+      section.ready = refresh();
+      return section.ready;
+    };
+    startRefresh();
+    return { refresh: startRefresh };
   }
 
   function renderModuleSections(tree, filter) {
@@ -2309,7 +2313,7 @@
     await loadModules();
 
     navigationOverflow = setupOverflowToolbar($('#topbar'), [
-      $('#version'), $('#about-btn'), $('#apis-btn'), $('#schema-compare-btn'), $('#object-search-btn'), $('#ask-btn'),
+      $('#version'), $('#about-btn'), $('#apis-btn'), $('#schema-compare-btn'), $('#ask-btn'),
       $('#theme-btn'), $('#refresh-btn'), $('.connection-pickers'), $('#new-query-btn'), $('#diagram-btn'),
       ...moduleActions,
     ], 'More app actions');
@@ -3399,7 +3403,7 @@
   async function loadObjectSearchTab(tab) {
     const controls = h('form', { class: 'viewbar object-search-toolbar' });
     const query = h('input', {
-      type: 'search', value: tab.query, placeholder: 'Object name or definition text…',
+      type: 'search', value: tab.query, placeholder: 'Object, component, code, or definition text…',
       'aria-label': 'Object search text', 'data-testid': 'object-search-query', autocomplete: 'off',
       maxlength: objectSearchQueryLimit,
     });
@@ -3461,7 +3465,9 @@
       const orderedFailures = [...failures].sort(objectSearchCompareText);
       const grouped = new Map();
       for (const match of visible) {
-        const key = `${match.scope.connection} / ${match.scope.database}`;
+        const key = match.section
+          ? `Workspace / ${match.section.label}`
+          : `${match.scope.connection} / ${match.scope.database}`;
         if (!grouped.has(key)) grouped.set(key, []);
         grouped.get(key).push(match);
       }
@@ -3483,21 +3489,28 @@
       for (const [scopeName, scopedMatches] of grouped.entries()) {
         const list = h('div', { class: 'object-search-list' });
         for (const match of scopedMatches) {
-          const badge = objectBadge(match.object);
+          const moduleMatch = Boolean(match.section);
+          const badge = moduleMatch ? (match.section.badge || 'M') : objectBadge(match.object);
+          const name = moduleMatch ? match.item.name : `${match.object.schema}.${match.object.name}`;
+          const type = moduleMatch ? match.section.label : match.object.type;
+          const description = moduleMatch
+            ? (match.item.description || match.item.title)
+            : match.object.description;
           list.append(h('button', {
             type: 'button', class: 'object-search-result',
             'data-testid': 'object-search-result',
-            title: `Open ${match.object.schema}.${match.object.name} in ${scopeName}`,
-            onclick: () => openObjectTab(match.object, match.scope),
+            title: `Open ${name} in ${scopeName}`,
+            onclick: () => moduleMatch ? match.item.onOpen() : openObjectTab(match.object, match.scope),
           }, h('span', {
-            class: `badge badge-${badge}`, text: badge, title: match.object.type,
+            class: `badge ${moduleMatch ? 'badge-module' : `badge-${badge}`}`,
+            text: badge, title: type,
           }), h('span', { class: 'object-search-result-body' },
-          h('strong', { text: `${match.object.schema}.${match.object.name}` }),
-          h('span', { class: 'muted', text: `${match.object.type} · ${match.reasons.join(' + ')}` }),
+          h('strong', { text: name }),
+          h('span', { class: 'muted', text: `${type} · ${match.reasons.join(' + ')}` }),
           match.snippet ? h('span', {
             class: 'mono object-search-snippet', text: `Line ${match.snippet.line}: ${match.snippet.text}`,
-          }) : match.object.description ? h('span', {
-            class: 'object-search-snippet', text: match.object.description,
+          }) : description ? h('span', {
+            class: 'object-search-snippet', text: description,
           }) : null)));
         }
         content.push(h('section', { class: 'object-search-group' },
@@ -3507,7 +3520,7 @@
       }
       if (!matches.length && summary) content.push(h('div', {
           class: 'empty-inner object-search-empty',
-          text: 'No matching objects were found in the searched locations.',
+          text: 'No matching database or workspace items were found.',
         }));
       results.replaceChildren(...content);
     };
@@ -3538,6 +3551,9 @@
       const scopes = [];
       let candidates = [];
       try {
+        await Promise.all(moduleSections.map((section) => section.ready));
+        const moduleCandidates = moduleSections.flatMap((section) =>
+          (section.items?.() || []).map((item) => ({ section, item })));
         await objectSearchMap(state.meta.connections, 4, async (connection) => {
           try {
             const databases = await api(urlsFor({ connection: connection.name }).databases(connection.name), { signal });
@@ -3569,12 +3585,19 @@
 
         const found = new Map();
         const resultKey = (candidate) => `${scopeKey(candidate.scope)}\0${candidate.object.schema}\0${candidate.object.name}\0${candidate.object.type}`.toLowerCase();
+        const moduleResultKey = (candidate) => `workspace\0${candidate.section.id}\0${candidate.item.name}`.toLowerCase();
         if (mode.value !== 'definitions') {
           for (const candidate of candidates) {
             const reasons = [];
             if (objectSearchMatches(`${candidate.object.schema}.${candidate.object.name}`, terms)) reasons.push('name');
             if (objectSearchMatches(candidate.object.description, terms)) reasons.push('description');
             if (reasons.length) found.set(resultKey(candidate), { ...candidate, reasons, snippet: null });
+          }
+          for (const candidate of moduleCandidates) {
+            const reasons = [];
+            if (objectSearchMatches(candidate.item.name, terms)) reasons.push('name');
+            if (objectSearchMatches(candidate.item.description || candidate.item.title, terms)) reasons.push('description');
+            if (reasons.length) found.set(moduleResultKey(candidate), { ...candidate, reasons, snippet: null });
           }
         }
 
@@ -3607,15 +3630,25 @@
               failures.push(`${candidate.scope.connection} / ${candidate.scope.database} / ${candidate.object.schema}.${candidate.object.name}: ${err.message}`);
             }
           }, signal);
+
+          for (const candidate of moduleCandidates) {
+            const key = moduleResultKey(candidate);
+            if (mode.value === 'all' && found.has(key)) continue;
+            const snippet = objectSearchDefinitionMatch(candidate.item.definition || '', terms);
+            if (snippet) found.set(key, { ...candidate, reasons: ['definition'], snippet });
+          }
         }
         if (current !== request) return;
         const matches = [...found.values()].sort((left, right) =>
-          objectSearchCompareText(left.scope.connection, right.scope.connection)
-          || objectSearchCompareText(left.scope.database, right.scope.database)
-          || objectSearchCompareText(left.object.schema, right.object.schema)
-          || objectSearchCompareText(left.object.name, right.object.name));
+          objectSearchCompareText(left.section ? 'Workspace' : left.scope.connection,
+            right.section ? 'Workspace' : right.scope.connection)
+          || objectSearchCompareText(left.section?.label || left.scope.database,
+            right.section?.label || right.scope.database)
+          || objectSearchCompareText(left.item?.name || left.object.name,
+            right.item?.name || right.object.name));
         status.textContent = `${matches.length.toLocaleString()} match${matches.length === 1 ? '' : 'es'} · `
           + `${candidates.length.toLocaleString()} object${candidates.length === 1 ? '' : 's'} · `
+          + `${moduleCandidates.length.toLocaleString()} workspace item${moduleCandidates.length === 1 ? '' : 's'} · `
           + `${scopes.length.toLocaleString()} database${scopes.length === 1 ? '' : 's'} · `
           + `${state.meta.connections.length.toLocaleString()} connection${state.meta.connections.length === 1 ? '' : 's'}`
           + (definitionCoverage ? ` · ${definitionCoverage.searched.toLocaleString()} / ${definitionCoverage.eligible.toLocaleString()} definitions` : '')
