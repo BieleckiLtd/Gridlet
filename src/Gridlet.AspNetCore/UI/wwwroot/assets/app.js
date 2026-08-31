@@ -40,6 +40,7 @@
     'info-circle': ['M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0', 'M12 9h.01', 'M11 12h1v4h1'],
     lock: ['M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-6', 'M11 16a1 1 0 1 0 2 0a1 1 0 0 0 -2 0', 'M8 11v-4a4 4 0 1 1 8 0v4'],
     microphone: ['M9 5a3 3 0 0 1 3 -3a3 3 0 0 1 3 3v5a3 3 0 0 1 -3 3a3 3 0 0 1 -3 -3l0 -5', 'M5 10a7 7 0 0 0 14 0', 'M8 21l8 0', 'M12 17l0 4'],
+    'player-play': ['M7 4v16l13 -8z'],
     plus: ['M12 5l0 14', 'M5 12l14 0'],
     // Completion categories. The popup shows these instead of spelling the category out.
     'completion-keyword': ['M7 8l-4 4l4 4', 'M17 8l4 4l-4 4'],
@@ -10391,10 +10392,11 @@
       capabilities.selectExample.replace('{object}', exampleObject), { scope });
     const results = h('div', { class: 'query-results', 'data-testid': 'query-results' });
     const status = h('span', { class: 'muted', 'data-testid': 'query-status' });
+    const runButtonLabel = h('span', { text: 'Run (Ctrl+Enter)' });
     const runButton = h('button', {
-      class: 'primary', text: 'Run (Ctrl+Enter)', 'data-testid': 'query-run',
+      class: 'primary app-action', 'data-testid': 'query-run',
       title: 'Run the selected SQL, or the whole editor when nothing is selected (Ctrl+Enter)',
-    });
+    }, icon('player-play', 'app-action-icon'), runButtonLabel);
     const cancelButton = h('button', { text: 'Cancel', disabled: '', 'data-testid': 'query-cancel' });
     const formatButton = h('button', {
       text: 'Format', title: 'Format SQL (Ctrl+Shift+F)', 'data-testid': 'query-format',
@@ -10867,7 +10869,7 @@
       let reattachAvailable = false;
       let retryingPoll = false;
       let jobId = existingJobId;
-      runButton.textContent = 'Run';
+      runButtonLabel.textContent = 'Run';
       status.textContent = existingJobId ? 'Reattaching to query job…' : 'Starting query job…';
       const timer = setInterval(() => {
         if (!terminalEvent && !retryingPoll && !status.textContent.startsWith('Cancelling')) {
@@ -11039,7 +11041,7 @@
           tab.isRunning = stillRunning;
           tab.detachableJob = unresolvedJob;
           runButton.disabled = stillRunning;
-          runButton.textContent = reattachAvailable ? 'Reattach' : 'Run';
+          runButtonLabel.textContent = reattachAvailable ? 'Reattach' : 'Run';
           cancelButton.disabled = !unresolvedJob;
         }
       }
