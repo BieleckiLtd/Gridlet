@@ -10,6 +10,65 @@ namespace Gridlet.BrowserTests;
 [Collection(BrowserCollection.Name)]
 public sealed class GridletUiTests(BrowserAppFixture fixture)
 {
+    // Connector style moved from a toolbar selector onto each line's own context menu. A synthesised
+    // event carries real coordinates so the menu opens where the pointer would have been; clicking
+    // the curve itself would land on the bounding box rather than the stroke.
+    private static async Task OpenDiagramMenuAsync(ILocator target) =>
+        await target.EvaluateAsync("""
+            element => {
+                const box = element.getBoundingClientRect();
+                element.dispatchEvent(new MouseEvent('contextmenu', {
+                    bubbles: true,
+                    clientX: box.x + box.width / 2,
+                    clientY: box.y + box.height / 2,
+                }));
+            }
+            """);
+
+    private static async Task ChooseDiagramMenuAsync(IPage page, ILocator target, string label)
+    {
+        await OpenDiagramMenuAsync(target);
+        await page.Locator(".context-menu button").Filter(new() { HasText = label }).ClickAsync();
+    }
+
+    // Reports, for the dbo.Orders to dbo.Pizzas line: the gap between the end of the line and the
+    // card, how level the arrival is, and the clearance between the arrowhead tip and the card.
+    // The tip sits a whole marker length beyond the end of the line, so the end of the line on its
+    // own says nothing about whether the head is visible.
+    private const string ArrowTipProbe = """
+        panel => {
+            const path = panel.querySelector('[data-relationship="FK_Orders_Pizzas"]');
+            const card = panel.querySelector('[data-table="dbo.Pizzas"]');
+            const marker = panel.querySelector('marker');
+            const origin = path.ownerSVGElement.getBoundingClientRect();
+            const length = path.getTotalLength();
+            const end = path.getPointAtLength(length);
+            const approach = path.getPointAtLength(length - 1);
+            const step = Math.hypot(end.x - approach.x, end.y - approach.y) || 1;
+            const head = Number(marker.getAttribute('markerWidth'))
+                * (marker.getAttribute('markerUnits') === 'userSpaceOnUse'
+                    ? 1 : parseFloat(getComputedStyle(path).strokeWidth));
+            const tip = end.x + ((end.x - approach.x) / step) * head;
+            const border = card.getBoundingClientRect().left - origin.left;
+            return [border - end.x, end.y - approach.y, border - tip];
+        }
+        """;
+
+    // Adding a routing point reads the pointer position, so the event has to name a point that is
+    // actually on the line rather than the centre of its bounding box.
+    private static async Task DoubleClickPathMiddleAsync(ILocator path) =>
+        await path.EvaluateAsync("""
+            element => {
+                const middle = element.getPointAtLength(element.getTotalLength() / 2);
+                const origin = element.ownerSVGElement.getBoundingClientRect();
+                element.dispatchEvent(new MouseEvent('dblclick', {
+                    bubbles: true,
+                    clientX: origin.x + middle.x,
+                    clientY: origin.y + middle.y,
+                }));
+            }
+            """);
+
     [Fact]
     public async Task Shows_a_database_relationship_diagram_with_filter_context_and_table_navigation()
     {
@@ -17,6 +76,11 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var page = browserPage.Page;
         await page.GotoAsync("/gridlet/");
 
+        await Assertions.Expect(page.Locator("#diagram-btn")).ToHaveCountAsync(0);
+        var sidebarSections = await page.Locator("#tree > details > summary")
+            .EvaluateAllAsync<string[]>("summaries => summaries.map(summary => summary.firstChild.textContent.trim())");
+        Assert.Equal(Array.IndexOf(sidebarSections, "Triggers") + 1,
+            Array.IndexOf(sidebarSections, "Diagrams"));
         await page.GetByTestId("er-diagram-open").ClickAsync();
         var diagram = page.GetByTestId("er-diagram");
         await Assertions.Expect(diagram.GetByTestId("er-table").Filter(new() { HasText = "dbo.Orders" }))
@@ -31,6 +95,24 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .GetByText("SysStart", new() { Exact = true })).ToHaveCountAsync(0);
         await Assertions.Expect(diagram.Locator("[data-relationship='FK_Orders_Pizzas']"))
             .ToHaveCountAsync(1);
+        Assert.True(await diagram.EvaluateAsync<bool>("""
+            diagram => {
+                const path = diagram.querySelector('[data-relationship="FK_Orders_Pizzas"]');
+                const numbers = path.getAttribute('d').match(/-?\d+(?:\.\d+)?/g).map(Number);
+                const canvasTop = diagram.querySelector('.er-canvas').getBoundingClientRect().top;
+                const orders = diagram.querySelector('[data-table="dbo.Orders"]');
+                const pizzas = diagram.querySelector('[data-table="dbo.Pizzas"]');
+                const fk = orders.querySelector('[data-column="pizzaid"]').getBoundingClientRect();
+                const key = pizzas.querySelector('[data-column="id"]').getBoundingClientRect();
+                const sourceY = fk.top + fk.height / 2 - canvasTop;
+                const targetY = key.top + key.height / 2 - canvasTop;
+                // SVG coordinates originate at the canvas content box while DOM rectangles include
+                // the one-pixel table border and sub-pixel device scaling.
+                return Math.abs(numbers[1] - sourceY) < 2.5
+                    && Math.abs(numbers.at(-1) - targetY) < 2.5
+                    && diagram.querySelector('marker').getAttribute('refX') === '0';
+            }
+            """));
         await Assertions.Expect(diagram.Locator(".er-link-label"))
             .ToHaveTextAsync("FK_Orders_Pizzas");
         await Assertions.Expect(diagram.GetByTestId("er-relationship-list"))
@@ -55,12 +137,45 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.NotNull(filteredOrdersBox);
         Assert.NotNull(filteredPizzasBox);
         Assert.NotNull(filteredLinkBox);
-        // Chromium's path box includes a few pixels of marker/stroke overhang at an endpoint.
         Assert.InRange(Math.Abs(filteredLinkBox.X - (filteredOrdersBox.X + filteredOrdersBox.Width)), 0, 5);
-        Assert.InRange(Math.Abs(filteredLinkBox.X + filteredLinkBox.Width - filteredPizzasBox.X), 0, 5);
+        Assert.True(filteredPizzasBox.X > filteredOrdersBox.X);
+        // The whole arrowhead, tip included, has to clear dbo.Pizzas. Connectors are drawn under
+        // the cards, so any part that reaches past the border is cut off. The line also arrives
+        // level, square on to the card edge.
+        var arrival = await diagram.EvaluateAsync<double[]>(ArrowTipProbe);
+        Assert.InRange(arrival[0], 8, 10);
+        Assert.InRange(Math.Abs(arrival[1]), 0, 0.2);
+        // The half circle at the near end holds a fixed angle. Dragging a curve handle tilts the
+        // line where it leaves the card, and a tilted half circle sits askew on an upright border.
+        Assert.Equal("0", await diagram.EvaluateAsync<string>("""
+            panel => {
+                const path = panel.querySelector('[data-relationship="FK_Orders_Pizzas"]');
+                const id = path.getAttribute('marker-start').slice(5, -1);
+                return document.getElementById(id).getAttribute('orient');
+            }
+            """));
+        Assert.True(arrival[2] > 0,
+            $"The arrowhead tip reaches {-arrival[2]} pixels under dbo.Pizzas.");
 
-        await diagram.GetByTestId("er-table").Filter(new() { HasText = "dbo.Orders" })
-            .Locator(".er-table-open").ClickAsync();
+        // Selecting the relationship thickens the line. The arrowhead must not grow with it.
+        await diagram.Locator("[data-relationship='FK_Orders_Pizzas']").DispatchEventAsync("click");
+        await Assertions.Expect(diagram.Locator("[data-relationship='FK_Orders_Pizzas']"))
+            .ToHaveClassAsync(new Regex(@"\bselected\b"));
+        var selectedArrival = await diagram.EvaluateAsync<double[]>(ArrowTipProbe);
+        Assert.True(selectedArrival[2] > 0,
+            $"The selected arrowhead tip reaches {-selectedArrival[2]} pixels under dbo.Pizzas.");
+        await diagram.GetByTestId("er-viewport").ClickAsync(new() { Position = new() { X = 6, Y = 6 } });
+
+        // One click selects the card, and clicking the empty canvas puts the selection back.
+        var ordersCard = diagram.GetByTestId("er-table").Filter(new() { HasText = "dbo.Orders" });
+        await ordersCard.Locator(".er-table-open").ClickAsync();
+        await Assertions.Expect(ordersCard).ToHaveClassAsync(new Regex(@"\bselected\b"));
+        await Assertions.Expect(page.Locator(".tab.active .tab-title")).Not.ToHaveTextAsync("dbo.Orders");
+        await diagram.GetByTestId("er-viewport").ClickAsync(new() { Position = new() { X = 6, Y = 6 } });
+        await Assertions.Expect(ordersCard).Not.ToHaveClassAsync(new Regex(@"\bselected\b"));
+
+        // Opening the table takes a double click, so a single click can select without navigating.
+        await ordersCard.Locator(".er-table-open").DblClickAsync();
         await Assertions.Expect(page.Locator(".tab.active .tab-title")).ToHaveTextAsync("dbo.Orders");
 
         // Install the saved workspace before application boot. Setting it immediately before a
@@ -206,6 +321,14 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
                     $"Expected relationship labels {names[first]} and {names[second]} to be separated.");
             }
         }
+
+        // Each line carries its own style, so restyling one leaves its neighbours alone.
+        await ChooseDiagramMenuAsync(page, diagram.Locator($"[data-relationship='{names[0]}']"),
+            "Right-angled connector");
+        Assert.Contains(" L ", await diagram.Locator($"[data-relationship='{names[0]}']").GetAttributeAsync("d"));
+        await Assertions.Expect(diagram.Locator($"[data-relationship='{names[1]}']"))
+            .ToHaveAttributeAsync("data-connector-type", "bezier");
+        Assert.Contains(" C ", await diagram.Locator($"[data-relationship='{names[1]}']").GetAttributeAsync("d"));
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -1868,6 +1991,544 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToContainTextAsync("dbo.AuditCustomers");
         await Assertions.Expect(search.GetByTestId("object-search-results"))
             .ToContainTextAsync("Line 1:");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_persists_dragged_layout_and_adjustable_connector()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        var diagram = page.GetByTestId("er-diagram");
+        var orders = diagram.Locator("[data-table='dbo.Orders']");
+        var before = await orders.BoundingBoxAsync();
+        Assert.NotNull(before);
+
+        var relationship = diagram.Locator("[data-relationship='FK_Orders_Pizzas']");
+        await relationship.DispatchEventAsync("click");
+        var bezierHandles = diagram.GetByTestId("er-connector-handle");
+        await Assertions.Expect(bezierHandles).ToHaveCountAsync(2);
+        var firstControl = await bezierHandles.First.BoundingBoxAsync();
+        Assert.NotNull(firstControl);
+        await page.Mouse.MoveAsync(firstControl.X + firstControl.Width / 2,
+            firstControl.Y + firstControl.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(firstControl.X + firstControl.Width / 2 + 20,
+            firstControl.Y + firstControl.Height / 2 + 12);
+        await page.Mouse.UpAsync();
+        firstControl = await bezierHandles.First.BoundingBoxAsync();
+        Assert.NotNull(firstControl);
+        var labelBox = await diagram.Locator("[data-relationship-label='FK_Orders_Pizzas']").BoundingBoxAsync();
+        Assert.NotNull(labelBox);
+        Assert.True(MathF.Sqrt(
+            MathF.Pow((labelBox.X + labelBox.Width / 2) - (firstControl.X + firstControl.Width / 2), 2)
+            + MathF.Pow((labelBox.Y + labelBox.Height / 2) - (firstControl.Y + firstControl.Height / 2), 2)) > 10,
+            "The relationship label should follow the curve, not its control handle.");
+
+        var header = await orders.Locator(".er-table-open").BoundingBoxAsync();
+        Assert.NotNull(header);
+        await page.Mouse.MoveAsync(header.X + header.Width / 2, header.Y + header.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(header.X + header.Width / 2 + 80, header.Y + header.Height / 2 + 45,
+            new() { Steps = 4 });
+        await page.Mouse.UpAsync();
+
+        var moved = await orders.BoundingBoxAsync();
+        Assert.NotNull(moved);
+        Assert.InRange(moved.X - before.X, 78, 82);
+        Assert.InRange(moved.Y - before.Y, 43, 47);
+        var movedFirstControl = await bezierHandles.First.BoundingBoxAsync();
+        Assert.NotNull(movedFirstControl);
+        Assert.InRange(movedFirstControl.X - firstControl.X, 78, 82);
+        Assert.InRange(movedFirstControl.Y - firstControl.Y, 43, 47);
+        Assert.True(await page.EvaluateAsync<bool>("""
+            () => {
+                const documents = JSON.parse(localStorage.getItem('gridlet.diagrams'));
+                const key = Object.keys(documents[0].positions).find(value => value.endsWith('\u0000orders'));
+                return documents[0].positions[key].x > 100;
+            }
+            """));
+
+        await Assertions.Expect(diagram.GetByTestId("er-connector-handle")).ToHaveCountAsync(2);
+        await ChooseDiagramMenuAsync(page, relationship, "Right-angled connector");
+        var handle = diagram.GetByTestId("er-connector-handle");
+        await Assertions.Expect(handle).ToBeVisibleAsync();
+        await Assertions.Expect(handle).ToHaveCountAsync(1);
+        Assert.Contains(" L ", await relationship.GetAttributeAsync("d"));
+        await DoubleClickPathMiddleAsync(relationship);
+        await Assertions.Expect(handle).ToHaveCountAsync(2);
+        await handle.Last.DispatchEventAsync("dblclick");
+        await Assertions.Expect(handle).ToHaveCountAsync(1);
+
+        // The last knob holds the crossing run, so double-clicking it leaves it where it is and its
+        // own menu says why.
+        await handle.DispatchEventAsync("dblclick");
+        await Assertions.Expect(handle).ToHaveCountAsync(1);
+        await OpenDiagramMenuAsync(handle);
+        await Assertions.Expect(page.Locator(".context-menu button")
+            .Filter(new() { HasText = "Remove routing point" })).ToBeDisabledAsync();
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.Locator(".context-menu")).ToHaveCountAsync(0);
+
+        // With a second knob on the line, either one can go from that menu.
+        await DoubleClickPathMiddleAsync(relationship);
+        await Assertions.Expect(handle).ToHaveCountAsync(2);
+        await OpenDiagramMenuAsync(handle.Last);
+        await page.Locator(".context-menu button")
+            .Filter(new() { HasText = "Remove routing point" }).ClickAsync();
+        await Assertions.Expect(handle).ToHaveCountAsync(1);
+
+        var handleBox = await handle.BoundingBoxAsync();
+        Assert.NotNull(handleBox);
+        await page.Mouse.MoveAsync(handleBox.X + handleBox.Width / 2, handleBox.Y + handleBox.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(handleBox.X + 50, handleBox.Y + 35);
+        await page.Mouse.UpAsync();
+        Assert.True(await page.EvaluateAsync<bool>("""
+            () => Object.keys(JSON.parse(localStorage.getItem('gridlet.diagrams'))[0].connectors).length === 1
+            """));
+        // Every routing knob sits on the line it routes.
+        Assert.True(await diagram.EvaluateAsync<bool>("""
+            panel => {
+                const path = panel.querySelector('[data-relationship="FK_Orders_Pizzas"]');
+                return [...panel.querySelectorAll('.er-connector-handle')].every(knob => {
+                    const point = new DOMPoint(
+                        Number(knob.getAttribute('cx')), Number(knob.getAttribute('cy')));
+                    return path.isPointInStroke(point);
+                });
+            }
+            """));
+
+        // Dragging one knob onto another leaves a single line with a single knob.
+        await DoubleClickPathMiddleAsync(relationship);
+        await Assertions.Expect(handle).ToHaveCountAsync(2);
+        var firstKnob = await handle.First.BoundingBoxAsync();
+        var secondKnob = await handle.Last.BoundingBoxAsync();
+        Assert.NotNull(firstKnob);
+        Assert.NotNull(secondKnob);
+        await page.Mouse.MoveAsync(secondKnob.X + secondKnob.Width / 2, secondKnob.Y + secondKnob.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(firstKnob.X + firstKnob.Width / 2, firstKnob.Y + firstKnob.Height / 2,
+            new() { Steps = 4 });
+        await page.Mouse.UpAsync();
+        await Assertions.Expect(handle).ToHaveCountAsync(1);
+
+        await page.ReloadAsync();
+        diagram = page.GetByTestId("er-diagram");
+        orders = diagram.Locator("[data-table='dbo.Orders']");
+        var restored = await orders.BoundingBoxAsync();
+        Assert.NotNull(restored);
+        Assert.InRange(Math.Abs(restored.X - moved.X), 0, 2);
+        Assert.InRange(Math.Abs(restored.Y - moved.Y), 0, 2);
+        await Assertions.Expect(diagram.Locator("[data-relationship='FK_Orders_Pizzas']"))
+            .ToHaveAttributeAsync("data-connector-type", "orthogonal");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_supports_multiple_diagrams_and_json_round_trip()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        var first = page.GetByTestId("er-diagram");
+        await Assertions.Expect(first.GetByTestId("er-save")).ToHaveTextAsync("Export");
+        await Assertions.Expect(first.GetByTestId("er-open")).ToHaveTextAsync("Import");
+
+        var download = await page.RunAndWaitForDownloadAsync(() => first.GetByTestId("er-save").ClickAsync());
+        Assert.EndsWith(".gridlet-diagram.json", download.SuggestedFilename);
+        await first.GetByTestId("er-open-file").SetInputFilesAsync(new FilePayload
+        {
+            Name = "imported.json",
+            MimeType = "application/json",
+            Buffer = System.Text.Encoding.UTF8.GetBytes("""
+                {
+                  "version": 1,
+                  "name": "Imported model",
+                  "scope": { "connection": "Main", "database": "FakeDb" },
+                  "connectorType": "straight",
+                  "positions": { "dbo\u0000orders": { "x": 520, "y": 120 } },
+                  "connectors": {}
+                }
+                """),
+        });
+
+        await Assertions.Expect(page.GetByTestId("er-diagram")).ToHaveCountAsync(2);
+        await Assertions.Expect(page.Locator(".tab.active .tab-title")).ToHaveTextAsync("Imported model");
+        await page.GetByTestId("er-diagram").Last.GetByTestId("er-new").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("er-diagram")).ToHaveCountAsync(3);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_starts_a_new_diagram_empty_and_takes_tables_from_the_canvas_menu()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        await page.GetByTestId("er-diagram").GetByTestId("er-new").ClickAsync();
+        var blank = page.GetByTestId("er-diagram").Last;
+        await Assertions.Expect(blank.GetByTestId("er-table")).ToHaveCountAsync(0);
+        await Assertions.Expect(blank.GetByTestId("er-hint")).ToContainTextAsync("Right-click the canvas");
+
+        await blank.GetByTestId("er-viewport").ClickAsync(new()
+        {
+            Button = MouseButton.Right,
+            Position = new() { X = 60, Y = 60 },
+        });
+        await page.Locator(".context-menu button").Filter(new() { HasText = "Add tables" }).ClickAsync();
+        await page.GetByTestId("er-add-filter").FillAsync("dbo.Orders");
+        await page.GetByTestId("er-add-item").Locator("input").CheckAsync();
+        await page.GetByTestId("er-add-filter").FillAsync("dbo.Pizzas");
+        await page.GetByTestId("er-add-item").Locator("input").CheckAsync();
+        await page.Locator(".dialog-actions button").Filter(new() { HasText = "Add" }).ClickAsync();
+
+        await Assertions.Expect(blank.GetByTestId("er-table")).ToHaveCountAsync(2);
+        await Assertions.Expect(blank.Locator("[data-relationship='FK_Orders_Pizzas']")).ToHaveCountAsync(1);
+        // Tables added from the menu land where the pointer asked for them.
+        var added = await blank.Locator("[data-table='dbo.Orders']").BoundingBoxAsync();
+        var canvasOrigin = await blank.GetByTestId("er-viewport").BoundingBoxAsync();
+        Assert.NotNull(added);
+        Assert.NotNull(canvasOrigin);
+        Assert.InRange(added.X - canvasOrigin.X, 55, 100);
+
+        await blank.Locator("[data-table='dbo.Pizzas']").ClickAsync(new() { Button = MouseButton.Right });
+        await page.Locator(".context-menu button")
+            .Filter(new() { HasText = "Remove from diagram" }).ClickAsync();
+        await Assertions.Expect(blank.GetByTestId("er-table")).ToHaveCountAsync(1);
+        await Assertions.Expect(blank.Locator("[data-relationship='FK_Orders_Pizzas']")).ToHaveCountAsync(0);
+
+        // Membership survives a reload, so a trimmed model stays trimmed.
+        await page.ReloadAsync();
+        await Assertions.Expect(page.GetByTestId("er-diagram").Last.GetByTestId("er-table"))
+            .ToHaveCountAsync(1);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_keeps_ghost_cards_for_tables_the_database_no_longer_has()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        await page.GetByTestId("er-diagram").GetByTestId("er-open-file").SetInputFilesAsync(new FilePayload
+        {
+            Name = "archived.json",
+            MimeType = "application/json",
+            Buffer = System.Text.Encoding.UTF8.GetBytes("""
+                {
+                  "version": 1,
+                  "name": "Archived model",
+                  "scope": { "connection": "Main", "database": "FakeDb" },
+                  "tables": [
+                    { "schema": "dbo", "name": "Orders" },
+                    { "schema": "dbo", "name": "Retired" }
+                  ],
+                  "positions": {},
+                  "connectors": {}
+                }
+                """),
+        });
+
+        var imported = page.GetByTestId("er-diagram").Last;
+        await Assertions.Expect(page.Locator(".tab.active .tab-title")).ToHaveTextAsync("Archived model");
+        await Assertions.Expect(imported.GetByTestId("er-table")).ToHaveCountAsync(2);
+        var ghost = imported.Locator("[data-table='dbo.Retired']");
+        await Assertions.Expect(ghost).ToHaveAttributeAsync("data-ghost", "true");
+        await Assertions.Expect(ghost).ToContainTextAsync("No longer in this database");
+        await Assertions.Expect(imported.Locator(".er-summary")).ToContainTextAsync("1 missing");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_routes_a_right_angled_connector_without_doubling_back()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        var diagram = page.GetByTestId("er-diagram");
+        var relationship = diagram.Locator("[data-relationship='FK_Orders_Pizzas']");
+        await ChooseDiagramMenuAsync(page, relationship, "Right-angled connector");
+
+        // The lone knob is a grip on the crossing run: it slides sideways and holds the middle.
+        var knob = diagram.GetByTestId("er-connector-handle");
+        await Assertions.Expect(knob).ToHaveCountAsync(1);
+        await Assertions.Expect(knob).ToHaveClassAsync(new Regex(@"\ber-run-grip\b"));
+        var knobBox = await knob.BoundingBoxAsync();
+        var viewportBox = await diagram.GetByTestId("er-viewport").BoundingBoxAsync();
+        Assert.NotNull(knobBox);
+        Assert.NotNull(viewportBox);
+        await page.Mouse.MoveAsync(knobBox.X + knobBox.Width / 2, knobBox.Y + knobBox.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(knobBox.X + knobBox.Width / 2 - 40, viewportBox.Y + 24, new() { Steps = 5 });
+        await page.Mouse.UpAsync();
+        var slidBox = await knob.BoundingBoxAsync();
+        Assert.NotNull(slidBox);
+        Assert.InRange(slidBox.X - knobBox.X, -42, -38);
+        Assert.InRange(Math.Abs(slidBox.Y - knobBox.Y), 0, 1);
+
+        // A second routing point can go anywhere, so park it above both cards. Carrying straight on
+        // from there would send the line back up the run it has just come down.
+        await DoubleClickPathMiddleAsync(relationship);
+        await Assertions.Expect(knob).ToHaveCountAsync(2);
+        var strayBox = await knob.Last.BoundingBoxAsync();
+        Assert.NotNull(strayBox);
+        await page.Mouse.MoveAsync(strayBox.X + strayBox.Width / 2, strayBox.Y + strayBox.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(strayBox.X + strayBox.Width / 2 - 30, viewportBox.Y + 24, new() { Steps = 5 });
+        await page.Mouse.UpAsync();
+
+        var shape = await diagram.EvaluateAsync<bool[]>("""
+            panel => {
+                const path = panel.querySelector('[data-relationship="FK_Orders_Pizzas"]');
+                const corners = path.getAttribute('d').trim().split(/(?=[ML])/)
+                    .map(part => part.replace(/^[ML]/, '').trim().split(/\s+/).map(Number))
+                    .map(([x, y]) => ({ x, y }));
+                const legs = corners.slice(1).map((corner, index) => ({
+                    x: Math.sign(corner.x - corners[index].x),
+                    y: Math.sign(corner.y - corners[index].y),
+                }));
+                const reverses = legs.some((leg, index) => index > 0
+                    && ((leg.x !== 0 && leg.x === -legs[index - 1].x)
+                        || (leg.y !== 0 && leg.y === -legs[index - 1].y)));
+                const arrival = legs.at(-1);
+                const dots = [...panel.querySelectorAll('.er-connector-handle')];
+                return [
+                    reverses,
+                    arrival.y === 0 && arrival.x !== 0,
+                    dots.every(dot => path.isPointInStroke(new DOMPoint(
+                        Number(dot.getAttribute('cx')), Number(dot.getAttribute('cy'))))),
+                ];
+            }
+            """);
+        Assert.False(shape[0], "The connector doubles back along a run it has already travelled.");
+        Assert.True(shape[1], "The connector should reach the card sideways, so the arrowhead is square on.");
+        Assert.True(shape[2], "The routing knob should sit on the line it routes.");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_leaves_by_the_border_its_routing_point_faces()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        var diagram = page.GetByTestId("er-diagram");
+        var relationship = diagram.Locator("[data-relationship='FK_Orders_Pizzas']");
+        await ChooseDiagramMenuAsync(page, relationship, "Right-angled connector");
+
+        // Reports where the line leaves dbo.Orders, that card's two borders, and which way the half
+        // circle faces.
+        const string probe = """
+            panel => {
+                const path = panel.querySelector('[data-relationship="FK_Orders_Pizzas"]');
+                const card = panel.querySelector('[data-table="dbo.Orders"]');
+                const origin = path.ownerSVGElement.getBoundingClientRect();
+                const box = card.getBoundingClientRect();
+                return [
+                    path.getPointAtLength(0).x,
+                    box.left - origin.left,
+                    box.right - origin.left,
+                    path.getAttribute('marker-start').includes('socket-right') ? 1 : 0,
+                ];
+            }
+            """;
+        var start = await diagram.EvaluateAsync<double[]>(probe);
+        // dbo.Pizzas sits to the right, so the line leaves by the right border.
+        Assert.InRange(Math.Abs(start[0] - start[2]), 0, 2);
+        Assert.Equal(1, start[3]);
+
+        // Drag the routing knob out to the left of the card. The line has to leave by the left
+        // border to reach it, rather than starting on the right and cutting back under the card.
+        var knob = diagram.GetByTestId("er-connector-handle");
+        var knobBox = await knob.BoundingBoxAsync();
+        var viewportBox = await diagram.GetByTestId("er-viewport").BoundingBoxAsync();
+        Assert.NotNull(knobBox);
+        Assert.NotNull(viewportBox);
+        await page.Mouse.MoveAsync(knobBox.X + knobBox.Width / 2, knobBox.Y + knobBox.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(viewportBox.X + 12, knobBox.Y + knobBox.Height / 2, new() { Steps = 5 });
+        await page.Mouse.UpAsync();
+
+        var moved = await diagram.EvaluateAsync<double[]>(probe);
+        Assert.InRange(Math.Abs(moved[0] - moved[1]), 0, 2);
+        Assert.Equal(0, moved[3]);
+
+        // A routing point parked over the card cannot be reached from either side border without
+        // crossing the card, so the line leaves by the top border instead.
+        await DoubleClickPathMiddleAsync(relationship);
+        await Assertions.Expect(knob).ToHaveCountAsync(2);
+        var cardBox = await diagram.Locator("[data-table='dbo.Orders']").BoundingBoxAsync();
+        var firstKnob = await knob.First.BoundingBoxAsync();
+        Assert.NotNull(cardBox);
+        Assert.NotNull(firstKnob);
+        await page.Mouse.MoveAsync(firstKnob.X + firstKnob.Width / 2, firstKnob.Y + firstKnob.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(cardBox.X + cardBox.Width / 2, cardBox.Y - 40, new() { Steps = 5 });
+        await page.Mouse.UpAsync();
+
+        var overhead = await diagram.EvaluateAsync<double[]>("""
+            panel => {
+                const path = panel.querySelector('[data-relationship="FK_Orders_Pizzas"]');
+                const card = panel.querySelector('[data-table="dbo.Orders"]');
+                const origin = path.ownerSVGElement.getBoundingClientRect();
+                const box = card.getBoundingClientRect();
+                const start = path.getPointAtLength(0);
+                return [
+                    start.y - (box.top - origin.top),
+                    start.x - (box.left - origin.left),
+                    box.width,
+                    path.getAttribute('marker-start').includes('socket-top') ? 1 : 0,
+                ];
+            }
+            """);
+        Assert.InRange(Math.Abs(overhead[0]), 0, 2);
+        Assert.InRange(overhead[1], 0, overhead[2]);
+        Assert.Equal(1, overhead[3]);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_list_shows_only_the_database_the_sidebar_describes()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("er-diagram")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("diagram-item")).ToHaveCountAsync(1);
+
+        // The diagram belongs to the connection it was made on, so another connection does not list
+        // it beside its own tables.
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
+        await Assertions.Expect(page.GetByTestId("diagram-item")).ToHaveCountAsync(0);
+
+        // Making one here gives this connection its own, and still only its own.
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("diagram-item")).ToHaveCountAsync(1);
+        await Assertions.Expect(page.GetByTestId("diagram-item"))
+            .Not.ToHaveAttributeAsync("title", new Regex("Main"));
+
+        await page.Locator("#connection-select").SelectOptionAsync("Main");
+        await Assertions.Expect(page.GetByTestId("diagram-item")).ToHaveCountAsync(1);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_keeps_a_connector_beside_its_column_while_the_card_scrolls()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        var diagram = page.GetByTestId("er-diagram");
+        var orders = diagram.Locator("[data-table='dbo.Orders']");
+
+        // Shorten the card until its column list has to scroll.
+        var grip = orders.GetByTestId("er-table-resize");
+        var gripBox = await grip.BoundingBoxAsync();
+        Assert.NotNull(gripBox);
+        await page.Mouse.MoveAsync(gripBox.X + gripBox.Width / 2, gripBox.Y + gripBox.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(gripBox.X + gripBox.Width / 2, gripBox.Y + gripBox.Height / 2 - 240,
+            new() { Steps = 4 });
+        await page.Mouse.UpAsync();
+
+        // Scroll PizzaId to the middle of the card, clear of either edge.
+        var placed = await orders.EvaluateAsync<double[]>("""
+            card => {
+                const list = card.querySelector('.er-columns');
+                const row = card.querySelector('[data-column="pizzaid"]');
+                const centre = row.offsetTop + row.offsetHeight / 2;
+                const scroll = Math.max(0, Math.min(list.scrollHeight - list.clientHeight,
+                    centre - card.clientHeight / 2));
+                list.scrollTop = scroll;
+                // The connector redraws from the scroll event, which lands with the next frame.
+                return new Promise(done => requestAnimationFrame(
+                    () => requestAnimationFrame(() => done([scroll, centre - scroll]))));
+            }
+            """);
+        Assert.True(placed[0] > 4,
+            $"The column list should have had room to scroll; it moved {placed[0]}.");
+
+        // The line still leaves the border level with its own column, not with whatever row the
+        // scroll happened to leave at the top of the list.
+        var anchor = await diagram.EvaluateAsync<double[]>("""
+            panel => {
+                const path = panel.querySelector('[data-relationship="FK_Orders_Pizzas"]');
+                const card = panel.querySelector('[data-table="dbo.Orders"]');
+                const origin = path.ownerSVGElement.getBoundingClientRect();
+                return [
+                    path.getPointAtLength(0).y,
+                    card.getBoundingClientRect().top - origin.top,
+                ];
+            }
+            """);
+        Assert.InRange(Math.Abs(anchor[0] - (anchor[1] + placed[1])), 0, 1);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Relationship_diagram_pans_zooms_and_resizes_cards()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.GetByTestId("er-diagram-open").ClickAsync();
+        var diagram = page.GetByTestId("er-diagram");
+        var orders = diagram.Locator("[data-table='dbo.Orders']");
+        await Assertions.Expect(diagram.GetByTestId("er-minimap")).ToBeVisibleAsync();
+        var before = await orders.BoundingBoxAsync();
+        Assert.NotNull(before);
+
+        await diagram.GetByTestId("er-zoom-out").ClickAsync();
+        await Assertions.Expect(diagram.GetByTestId("er-zoom-level")).ToHaveTextAsync("83%");
+        var zoomed = await orders.BoundingBoxAsync();
+        Assert.NotNull(zoomed);
+        Assert.True(zoomed.Width < before.Width,
+            $"Expected the card to shrink; {zoomed.Width} was not smaller than {before.Width}.");
+        await diagram.GetByTestId("er-zoom-level").ClickAsync();
+        await Assertions.Expect(diagram.GetByTestId("er-zoom-level")).ToHaveTextAsync("100%");
+
+        // Dragging empty canvas moves the whole model rather than any one card.
+        var viewportBox = await diagram.GetByTestId("er-viewport").BoundingBoxAsync();
+        Assert.NotNull(viewportBox);
+        await page.Mouse.MoveAsync(viewportBox.X + 8, viewportBox.Y + 8);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(viewportBox.X + 68, viewportBox.Y + 48, new() { Steps = 4 });
+        await page.Mouse.UpAsync();
+        var panned = await orders.BoundingBoxAsync();
+        Assert.NotNull(panned);
+        Assert.InRange(panned.X - before.X, 58, 62);
+        Assert.InRange(panned.Y - before.Y, 38, 42);
+
+        var grip = orders.GetByTestId("er-table-resize");
+        var gripBox = await grip.BoundingBoxAsync();
+        Assert.NotNull(gripBox);
+        await page.Mouse.MoveAsync(gripBox.X + gripBox.Width / 2, gripBox.Y + gripBox.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(gripBox.X + gripBox.Width / 2 + 55,
+            gripBox.Y + gripBox.Height / 2 + 35, new() { Steps = 4 });
+        await page.Mouse.UpAsync();
+        var resized = await orders.BoundingBoxAsync();
+        Assert.NotNull(resized);
+        Assert.InRange(resized.Width - panned.Width, 53, 57);
+        Assert.InRange(resized.Height - panned.Height, 33, 37);
+        Assert.True(await page.EvaluateAsync<bool>("""
+            () => {
+                const documents = JSON.parse(localStorage.getItem('gridlet.diagrams'));
+                const key = Object.keys(documents[0].sizes).find(value => value.endsWith('\u0000orders'));
+                return documents[0].sizes[key].width > 300;
+            }
+            """));
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -3830,6 +4491,13 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var page = browserPage.Page;
         await page.GotoAsync("/gridlet/");
 
+        // EvaluateAllAsync does not wait, so the sidebar has to be on the page before it is read.
+        await Assertions.Expect(page.Locator("#tree > details > summary").First).ToBeVisibleAsync();
+        Assert.Equal(
+            ["Tables", "Views", "Stored procedures", "Functions", "Triggers", "Diagrams", "Sequences", "Types", "Schemas"],
+            await page.Locator("#tree > details > summary").EvaluateAllAsync<string[]>(
+                "summaries => summaries.slice(0, 9).map(summary => summary.firstChild.textContent.trim())"));
+
         await page.Locator("#connection-select").SelectOptionAsync("SQLite");
         await Assertions.Expect(page.Locator("#database-select")).ToHaveValueAsync("FakeDb");
 
@@ -3853,6 +4521,54 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC"],
             await page.Locator("#gridlet-types option").EvaluateAllAsync<string[]>(
                 "options => options.map(option => option.value)"));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Scrolls_the_administration_panel_when_the_pointer_is_over_a_table()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.SetViewportSizeAsync(700, 500);
+        await page.RouteAsync("**/security", async route => await route.FulfillAsync(new()
+        {
+            Status = 200,
+            ContentType = "application/json",
+            Body = JsonSerializer.Serialize(new
+            {
+                currentUser = "app_user",
+                login = "app_login",
+                originalLogin = "app_login",
+                principals = Array.Empty<object>(),
+                roleMemberships = Array.Empty<object>(),
+                explicitPermissions = Array.Empty<object>(),
+                effectivePermissions = Enumerable.Range(1, 120).Select(index => new
+                {
+                    scope = "DATABASE",
+                    permission = $"PERMISSION {index:D3}",
+                }),
+            }),
+        }));
+        await page.GotoAsync("/gridlet/");
+
+        await page.Locator("#tree summary").Filter(new() { HasText = "Administration" }).ClickAsync();
+        await page.GetByText("Security", new() { Exact = true }).ClickAsync();
+        var panel = ActivePanel(page);
+        var body = panel.Locator(".panel-body");
+        var tableScroll = panel.Locator("section")
+            .Filter(new() { HasText = "Effective permissions" })
+            .Locator(".administration-table-scroll");
+        await Assertions.Expect(tableScroll).ToBeVisibleAsync();
+        Assert.Equal("auto", await tableScroll.EvaluateAsync<string>(
+            "element => getComputedStyle(element).overscrollBehaviorY"));
+
+        var bounds = await tableScroll.BoundingBoxAsync();
+        Assert.NotNull(bounds);
+        await page.Mouse.MoveAsync(bounds.X + bounds.Width / 2, bounds.Y + 80);
+        await page.Mouse.WheelAsync(0, 400);
+        await page.WaitForTimeoutAsync(100);
+
+        Assert.True(await body.EvaluateAsync<double>("element => element.scrollTop") > 0);
         browserPage.AssertNoUnexpectedErrors();
     }
 
