@@ -407,7 +407,37 @@ button.ghost { background: transparent; }
 }
 
 .sidebar-head { margin: 8px 10px 10px; }
-#search { flex: 1; min-width: 0; }
+.sidebar-filter { position: relative; flex: 1; min-width: 0; }
+#search { width: 100%; min-width: 0; padding-right: 34px; }
+.sidebar-filter-advanced {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 100ms ease, visibility 100ms ease;
+}
+.sidebar-filter:hover .sidebar-filter-advanced,
+.sidebar-filter:focus-within .sidebar-filter-advanced {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+.sidebar-filter-advanced:hover,
+.sidebar-filter-advanced:focus-visible { color: var(--text); }
 
 .tree { overflow: auto; flex: 1; padding: 0 6px 12px; }
 
@@ -609,6 +639,11 @@ button.ghost { background: transparent; }
 .context-menu button:hover, .context-menu button:focus-visible { background: var(--accent-dim); }
 .context-menu button.danger { color: var(--danger); background: transparent; }
 .context-menu button.danger:hover, .context-menu button.danger:focus-visible { background: rgba(220, 80, 80, 0.14); }
+.context-menu button.checkable { padding-left: 24px; }
+.context-menu button.checkable::before {
+  position: absolute; margin-left: -15px; color: var(--accent); content: '';
+}
+.context-menu button.checkable[aria-checked="true"]::before { content: '✓'; }
 .context-menu-separator { height: 1px; margin: 4px; background: var(--border); }
 
 #panels { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -703,27 +738,72 @@ button.ghost { background: transparent; }
   background: color-mix(in srgb, var(--accent) 22%, var(--panel)); color: var(--accent);
 }
 .er-panel { overflow: hidden; }
-.er-toolbar { flex: 0 0 auto; gap: 10px; }
-.er-toolbar input[type="search"] { width: min(360px, 45vw); }
+.er-toolbar { flex: 0 0 auto; flex-wrap: wrap; gap: 7px; }
+.er-toolbar input[type="search"] { width: min(300px, 38vw); }
+.er-zoom { display: flex; gap: 2px; align-items: center; }
+.er-zoom-step { min-width: 26px; padding: 3px 0; font-size: 15px; line-height: 1; text-align: center; }
+.er-zoom-level { min-width: 52px; font-variant-numeric: tabular-nums; text-align: center; }
 .er-summary { margin-left: auto; white-space: nowrap; }
-.er-viewport { flex: 1; min-height: 0; overflow: auto; padding: 0; background: var(--bg); }
-.er-canvas { position: relative; min-width: 100%; min-height: 100%; }
+.er-viewport {
+  position: relative; flex: 1; min-height: 0; overflow: hidden; padding: 0;
+  background: var(--bg); cursor: grab; touch-action: none; overscroll-behavior: contain;
+}
+.er-viewport.panning { cursor: grabbing; }
+.er-canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 .er-links { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
-.er-link { fill: none; stroke: color-mix(in srgb, var(--accent) 62%, var(--muted)); stroke-width: 2; }
+/* Connectors run under the cards; the selected one's handles ride above them so they stay usable. */
+.er-overlay { z-index: 2; }
+.er-link {
+  fill: none; stroke: color-mix(in srgb, var(--accent) 62%, var(--muted)); stroke-width: 2;
+  pointer-events: none;
+}
+.er-link.selected { stroke: var(--accent); stroke-width: 3; }
+/* A two-pixel line is a hard target, so an invisible wide stroke takes the pointer instead. */
+.er-link-hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
+.er-link-group:hover .er-link { stroke: var(--accent); }
+.er-connector-handle {
+  fill: var(--panel); stroke: var(--accent); stroke-width: 2; pointer-events: all; cursor: move;
+}
+/* The lone knob on a right-angled line slides its run sideways and nothing else. */
+.er-connector-handle.er-run-grip { cursor: ew-resize; }
+.er-control-guide {
+  stroke: color-mix(in srgb, var(--accent) 55%, transparent); stroke-width: 1;
+  stroke-dasharray: 4 3; pointer-events: none;
+}
+/* One name shows at a time: the hovered line, or the selected one. */
 .er-link-label {
   fill: var(--muted); paint-order: stroke; stroke: var(--bg); stroke-width: 4px;
-  font: 10px/1 var(--mono); stroke-linejoin: round;
+  font: 10px/1 var(--mono); stroke-linejoin: round; pointer-events: none;
+  opacity: 0;
 }
+.er-link-label.hovered, .er-link-label.selected { opacity: 1; }
+.er-link-label.selected { fill: var(--accent); }
+/* The arrowhead fills its own viewBox, so clipping would shave the point off. */
+.er-links marker { overflow: visible; }
 .er-links marker path { fill: color-mix(in srgb, var(--accent) 62%, var(--muted)); }
 .er-table {
   position: absolute; display: flex; width: 260px; height: 270px; padding: 0;
   flex-direction: column; overflow: hidden; text-align: left; color: var(--text);
   border: 1px solid var(--border); border-radius: 9px; background: var(--panel);
   box-shadow: 0 5px 18px rgb(0 0 0 / 14%);
+  cursor: default;
 }
-.er-table:has(.er-table-open:hover) { border-color: var(--accent); transform: translateY(-1px); }
+.er-table:has(.er-table-open:hover) { border-color: var(--accent); }
 .er-table:has(.er-table-open:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
-.er-table-open { display: block; width: 100%; padding: 0; border: 0; border-radius: 8px 8px 0 0; text-align: left; }
+.er-table.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim), 0 5px 18px rgb(0 0 0 / 14%); }
+/* A table the document names but the database no longer holds. */
+.er-table.ghost { border-style: dashed; opacity: 0.72; background: var(--panel-2); }
+.er-table-open { display: block; width: 100%; padding: 0; border: 0; border-radius: 8px 8px 0 0; text-align: left; touch-action: none; cursor: move; }
+.er-resize {
+  position: absolute; right: 0; bottom: 0; width: 15px; height: 15px; padding: 0;
+  border: 0; border-radius: 0 0 8px 0; background: transparent; cursor: nwse-resize;
+  touch-action: none;
+}
+.er-resize::after {
+  position: absolute; right: 3px; bottom: 1px; color: var(--muted); font-size: 11px;
+  line-height: 1; content: '◢';
+}
+.er-resize:hover::after { color: var(--accent); }
 .er-table-open:hover { background: transparent; }
 .er-table-open:focus-visible { outline: 0; }
 .er-table-title {
@@ -743,11 +823,32 @@ button.ghost { background: transparent; }
 .er-table.unavailable { border-style: dashed; }
 .er-unavailable { padding: 12px; color: var(--muted); }
 .er-viewport > .empty-message, .er-viewport > .error-box { margin: 16px; }
+.er-hint {
+  position: absolute; top: 50%; left: 50%; display: flex; gap: 10px;
+  align-items: center; padding: 12px 16px; transform: translate(-50%, -50%);
+  border: 1px solid var(--border); border-radius: 9px; background: var(--panel);
+  color: var(--muted); box-shadow: 0 5px 18px rgb(0 0 0 / 14%);
+}
+.er-minimap {
+  position: absolute; right: 12px; bottom: 12px; overflow: hidden; line-height: 0;
+  border: 1px solid var(--border); border-radius: 7px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 22%); cursor: pointer;
+}
+.er-minimap[hidden] { display: none; }
+.er-minimap-card { fill: color-mix(in srgb, var(--accent) 45%, var(--muted)); }
+.er-minimap-card.selected { fill: var(--accent); }
+.er-minimap-view { fill: color-mix(in srgb, var(--accent) 14%, transparent); stroke: var(--accent); stroke-width: 1; }
+.er-add-dialog { display: flex; min-width: min(420px, 70vw); gap: 9px; flex-direction: column; }
+.er-add-list { max-height: 320px; overflow: auto; padding: 4px; border: 1px solid var(--border); border-radius: 7px; }
+.er-add-item { display: flex; gap: 8px; align-items: center; padding: 4px 6px; border-radius: 5px; cursor: pointer; }
+.er-add-item:hover { background: var(--accent-dim); }
 
 @media (max-width: 700px) {
   .er-toolbar { align-items: stretch; flex-direction: column; }
   .er-toolbar input[type="search"] { width: 100%; }
   .er-summary { margin-left: 0; }
+  .er-zoom { justify-content: flex-start; }
 }
 
 /* ---- schema comparison ---- */
@@ -915,6 +1016,7 @@ button.ghost { background: transparent; }
 
 /* ---- data grid ---- */
 .grid-scroll { overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.administration-table-scroll { overscroll-behavior-y: auto; }
 .grid-scroll.virtualized { max-height: min(60vh, 640px); }
 .data-grid-scroll { flex: 1; min-height: 0; }
 .data-grid-scroll.virtualized { max-height: none; }

@@ -473,8 +473,11 @@
     };
     menu = h('div', { class: 'context-menu', role: 'menu' }, items.map((item) =>
       item.separator ? h('div', { class: 'context-menu-separator', role: 'separator' }) : h('button', {
-        class: item.danger ? 'danger' : '',
-        role: 'menuitem',
+        // A `checked` item states which of a set of alternatives is in force, so it reports itself
+        // as a radio item rather than relying on the tick alone.
+        class: `${item.danger ? 'danger' : ''}${item.checked === undefined ? '' : ' checkable'}`.trim(),
+        role: item.checked === undefined ? 'menuitem' : 'menuitemradio',
+        'aria-checked': item.checked === undefined ? null : String(!!item.checked),
         text: item.label,
         disabled: item.disabled ? '' : null,
         onclick: () => { dismiss(true); item.action(); },
@@ -2116,7 +2119,8 @@
     });
   });
 
-  registerTabRestorer('diagram', (descriptor) => openDiagramTab(descriptor.scope));
+  registerTabRestorer('diagram', (descriptor) => openDiagramTab(
+    descriptor.scope, diagramReadStored(descriptor.diagramId) || descriptor.document || null));
 
   registerTabRestorer('schema-compare', (descriptor) =>
     openSchemaCompareTab(descriptor.source, descriptor.target));
@@ -2159,8 +2163,12 @@
       }
       renderTree();
     };
-    refresh();
-    return { refresh };
+    const startRefresh = () => {
+      section.ready = refresh();
+      return section.ready;
+    };
+    startRefresh();
+    return { refresh: startRefresh };
   }
 
   function renderModuleSections(tree, filter) {
@@ -2310,8 +2318,8 @@
     await loadModules();
 
     navigationOverflow = setupOverflowToolbar($('#topbar'), [
-      $('#version'), $('#about-btn'), $('#apis-btn'), $('#schema-compare-btn'), $('#object-search-btn'), $('#ask-btn'),
-      $('#theme-btn'), $('#refresh-btn'), $('.connection-pickers'), $('#new-query-btn'), $('#diagram-btn'),
+      $('#version'), $('#about-btn'), $('#apis-btn'), $('#schema-compare-btn'), $('#ask-btn'),
+      $('#theme-btn'), $('#refresh-btn'), $('.connection-pickers'), $('#new-query-btn'),
       ...moduleActions,
     ], 'More app actions');
 
@@ -2345,7 +2353,6 @@
     $('#database-select').addEventListener('change', () => selectDatabase($('#database-select').value));
     $('#refresh-btn').addEventListener('click', () => loadObjects());
     $('#ask-btn').addEventListener('click', () => openAgentTab());
-    $('#diagram-btn').addEventListener('click', () => openDiagramTab());
     $('#schema-compare-btn').addEventListener('click', () => openSchemaCompareTab());
     $('#object-search-btn').addEventListener('click', () => openObjectSearchTab());
     $('#new-query-btn').addEventListener('click', () => openQueryTab());
@@ -2702,6 +2709,76 @@
     const tree = $('#tree');
     tree.replaceChildren();
     const capabilities = currentCapabilities();
+    const appendDiagramSection = () => {
+      // The sidebar describes one database, so it lists the diagrams of that database only. A
+      // diagram of another connection belongs in that connection's own sidebar, not mixed in with
+      // these tables.
+      const here = scopeOf();
+      const diagrams = diagramStoredDocuments()
+        .filter((diagram) => diagram.scope?.connection === here.connection
+          && diagram.scope?.database === here.database)
+        .filter((diagram) => !filter || diagram.name?.toLowerCase().includes(filter));
+      const diagramSummary = h('summary', {}, 'Diagrams ',
+        h('span', { class: 'count', text: String(diagrams.length) }));
+      diagramSummary.append(h('button', {
+        class: 'mini-btn summary-add', title: 'Create diagram',
+        'data-testid': 'er-diagram-open',
+        onclick: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openDiagramTab();
+        },
+      }, '＋'));
+      tree.append(treeSection('diagrams', false, diagramSummary,
+        h('div', { class: 'items' }, diagrams.map((diagram) => h('button', {
+          class: 'tree-item', title: diagram.name || 'Relationships',
+          'data-testid': 'diagram-item',
+          onclick: () => openDiagramTab(diagram.scope || scopeOf(), diagram),
+        },
+        h('span', { class: 'badge badge-diagram', text: 'ER' }),
+        h('span', { class: 'item-name', text: diagram.name || 'Relationships' })))), !!filter));
+    };
+    for (const [label, types, badge, capability] of SECTIONS) {
+      if (capability && !capabilities[capability]) {
+        if (label === 'Triggers') appendDiagramSection();
+        continue;
+      }
+      const items = state.objects.filter((o) => !o.isInternal &&
+        types.includes(o.type) &&
+        (!filter || (o.schema + '.' + o.name).toLowerCase().includes(filter)));
+      const summary = h('summary', {}, label + ' ', h('span', { class: 'count', text: String(items.length) }));
+      const canCreate = currentConn().allowDdl
+        && badge !== 'Y'
+        && (badge === 'T' || badge === 'Q' || currentConn().allowSqlExecution);
+      if (canCreate) {
+        summary.append(h('button', {
+          class: 'mini-btn summary-add',
+          title: `Create ${label.toLowerCase().replace(/s$/, '')}`,
+          onclick: (e) => {
+            e.preventDefault(); e.stopPropagation();
+            if (badge === 'T') openTableDesignerTab();
+            else if (badge === 'Q') openSequenceDialog();
+            else openNewSchemaObject(types[0]);
+          },
+        }, '＋'));
+      }
+      tree.append(treeSection(label.toLowerCase().replaceAll(' ', '-'), badge === 'T', summary,
+        h('div', { class: 'items' }, items.map((o) =>
+          h('button', {
+            class: 'tree-item',
+            title: `${o.schema}.${o.name}${o.description ? ` — ${o.description}` : ''}`,
+            onclick: () => openObjectTab(o),
+            oncontextmenu: (event) => showContextMenu(event, objectContextItems(o)),
+          },
+            h('span', {
+              class: 'badge badge-' + (isVirtualObject(o) ? 'VT' : badge),
+              text: isVirtualObject(o) ? 'VT' : badge,
+              title: isVirtualObject(o) ? (o.subKind || 'Virtual table') : null,
+            }),
+            h('span', { class: 'item-name', text: displayName(o) })))), !!filter));
+      if (label === 'Triggers') appendDiagramSection();
+    }
+
     if (capabilities.supportsSchemas) {
       const schemaSummary = h('summary', {}, 'Schemas ',
         h('span', { class: 'count', text: String(state.schemas.length) }));
@@ -2750,43 +2827,6 @@
         h('span', { class: 'count', text: String(administration.length) }));
       tree.append(treeSection('administration', false, summary,
         h('div', { class: 'items' }, administration), !!filter));
-    }
-
-    for (const [label, types, badge, capability] of SECTIONS) {
-      if (capability && !capabilities[capability]) continue;
-      const items = state.objects.filter((o) => !o.isInternal &&
-        types.includes(o.type) &&
-        (!filter || (o.schema + '.' + o.name).toLowerCase().includes(filter)));
-      const summary = h('summary', {}, label + ' ', h('span', { class: 'count', text: String(items.length) }));
-      const canCreate = currentConn().allowDdl
-        && badge !== 'Y'
-        && (badge === 'T' || badge === 'Q' || currentConn().allowSqlExecution);
-      if (canCreate) {
-        summary.append(h('button', {
-          class: 'mini-btn summary-add',
-          title: `Create ${label.toLowerCase().replace(/s$/, '')}`,
-          onclick: (e) => {
-            e.preventDefault(); e.stopPropagation();
-            if (badge === 'T') openTableDesignerTab();
-            else if (badge === 'Q') openSequenceDialog();
-            else openNewSchemaObject(types[0]);
-          },
-        }, '＋'));
-      }
-      tree.append(treeSection(label.toLowerCase().replaceAll(' ', '-'), badge === 'T', summary,
-        h('div', { class: 'items' }, items.map((o) =>
-          h('button', {
-            class: 'tree-item',
-            title: `${o.schema}.${o.name}${o.description ? ` — ${o.description}` : ''}`,
-            onclick: () => openObjectTab(o),
-            oncontextmenu: (event) => showContextMenu(event, objectContextItems(o)),
-          },
-            h('span', {
-              class: 'badge badge-' + (isVirtualObject(o) ? 'VT' : badge),
-              text: isVirtualObject(o) ? 'VT' : badge,
-              title: isVirtualObject(o) ? (o.subKind || 'Virtual table') : null,
-            }),
-            h('span', { class: 'item-name', text: displayName(o) })))), !!filter));
     }
 
     const internalItems = state.objects.filter((o) => o.isInternal &&
@@ -2857,7 +2897,7 @@
   function administrationTable(title, headers, rows) {
     return h('section', {}, h('h3', { text: title }),
       rows.length
-        ? h('div', { class: 'grid-scroll' }, h('table', { class: 'grid' },
+        ? h('div', { class: 'grid-scroll administration-table-scroll' }, h('table', { class: 'grid' },
           h('thead', {}, h('tr', {}, headers.map((header) => h('th', { text: header })))),
           h('tbody', {}, rows)))
         : h('p', { class: 'muted', text: 'None visible to the current database identity.' }));
@@ -3400,7 +3440,7 @@
   async function loadObjectSearchTab(tab) {
     const controls = h('form', { class: 'viewbar object-search-toolbar' });
     const query = h('input', {
-      type: 'search', value: tab.query, placeholder: 'Object name or definition text…',
+      type: 'search', value: tab.query, placeholder: 'Object, component, code, or definition text…',
       'aria-label': 'Object search text', 'data-testid': 'object-search-query', autocomplete: 'off',
       maxlength: objectSearchQueryLimit,
     });
@@ -3462,7 +3502,9 @@
       const orderedFailures = [...failures].sort(objectSearchCompareText);
       const grouped = new Map();
       for (const match of visible) {
-        const key = `${match.scope.connection} / ${match.scope.database}`;
+        const key = match.section
+          ? `Workspace / ${match.section.label}`
+          : `${match.scope.connection} / ${match.scope.database}`;
         if (!grouped.has(key)) grouped.set(key, []);
         grouped.get(key).push(match);
       }
@@ -3484,21 +3526,28 @@
       for (const [scopeName, scopedMatches] of grouped.entries()) {
         const list = h('div', { class: 'object-search-list' });
         for (const match of scopedMatches) {
-          const badge = objectBadge(match.object);
+          const moduleMatch = Boolean(match.section);
+          const badge = moduleMatch ? (match.section.badge || 'M') : objectBadge(match.object);
+          const name = moduleMatch ? match.item.name : `${match.object.schema}.${match.object.name}`;
+          const type = moduleMatch ? match.section.label : match.object.type;
+          const description = moduleMatch
+            ? (match.item.description || match.item.title)
+            : match.object.description;
           list.append(h('button', {
             type: 'button', class: 'object-search-result',
             'data-testid': 'object-search-result',
-            title: `Open ${match.object.schema}.${match.object.name} in ${scopeName}`,
-            onclick: () => openObjectTab(match.object, match.scope),
+            title: `Open ${name} in ${scopeName}`,
+            onclick: () => moduleMatch ? match.item.onOpen() : openObjectTab(match.object, match.scope),
           }, h('span', {
-            class: `badge badge-${badge}`, text: badge, title: match.object.type,
+            class: `badge ${moduleMatch ? 'badge-module' : `badge-${badge}`}`,
+            text: badge, title: type,
           }), h('span', { class: 'object-search-result-body' },
-          h('strong', { text: `${match.object.schema}.${match.object.name}` }),
-          h('span', { class: 'muted', text: `${match.object.type} · ${match.reasons.join(' + ')}` }),
+          h('strong', { text: name }),
+          h('span', { class: 'muted', text: `${type} · ${match.reasons.join(' + ')}` }),
           match.snippet ? h('span', {
             class: 'mono object-search-snippet', text: `Line ${match.snippet.line}: ${match.snippet.text}`,
-          }) : match.object.description ? h('span', {
-            class: 'object-search-snippet', text: match.object.description,
+          }) : description ? h('span', {
+            class: 'object-search-snippet', text: description,
           }) : null)));
         }
         content.push(h('section', { class: 'object-search-group' },
@@ -3508,7 +3557,7 @@
       }
       if (!matches.length && summary) content.push(h('div', {
           class: 'empty-inner object-search-empty',
-          text: 'No matching objects were found in the searched locations.',
+          text: 'No matching database or workspace items were found.',
         }));
       results.replaceChildren(...content);
     };
@@ -3539,6 +3588,9 @@
       const scopes = [];
       let candidates = [];
       try {
+        await Promise.all(moduleSections.map((section) => section.ready));
+        const moduleCandidates = moduleSections.flatMap((section) =>
+          (section.items?.() || []).map((item) => ({ section, item })));
         await objectSearchMap(state.meta.connections, 4, async (connection) => {
           try {
             const databases = await api(urlsFor({ connection: connection.name }).databases(connection.name), { signal });
@@ -3570,12 +3622,19 @@
 
         const found = new Map();
         const resultKey = (candidate) => `${scopeKey(candidate.scope)}\0${candidate.object.schema}\0${candidate.object.name}\0${candidate.object.type}`.toLowerCase();
+        const moduleResultKey = (candidate) => `workspace\0${candidate.section.id}\0${candidate.item.name}`.toLowerCase();
         if (mode.value !== 'definitions') {
           for (const candidate of candidates) {
             const reasons = [];
             if (objectSearchMatches(`${candidate.object.schema}.${candidate.object.name}`, terms)) reasons.push('name');
             if (objectSearchMatches(candidate.object.description, terms)) reasons.push('description');
             if (reasons.length) found.set(resultKey(candidate), { ...candidate, reasons, snippet: null });
+          }
+          for (const candidate of moduleCandidates) {
+            const reasons = [];
+            if (objectSearchMatches(candidate.item.name, terms)) reasons.push('name');
+            if (objectSearchMatches(candidate.item.description || candidate.item.title, terms)) reasons.push('description');
+            if (reasons.length) found.set(moduleResultKey(candidate), { ...candidate, reasons, snippet: null });
           }
         }
 
@@ -3608,15 +3667,25 @@
               failures.push(`${candidate.scope.connection} / ${candidate.scope.database} / ${candidate.object.schema}.${candidate.object.name}: ${err.message}`);
             }
           }, signal);
+
+          for (const candidate of moduleCandidates) {
+            const key = moduleResultKey(candidate);
+            if (mode.value === 'all' && found.has(key)) continue;
+            const snippet = objectSearchDefinitionMatch(candidate.item.definition || '', terms);
+            if (snippet) found.set(key, { ...candidate, reasons: ['definition'], snippet });
+          }
         }
         if (current !== request) return;
         const matches = [...found.values()].sort((left, right) =>
-          objectSearchCompareText(left.scope.connection, right.scope.connection)
-          || objectSearchCompareText(left.scope.database, right.scope.database)
-          || objectSearchCompareText(left.object.schema, right.object.schema)
-          || objectSearchCompareText(left.object.name, right.object.name));
+          objectSearchCompareText(left.section ? 'Workspace' : left.scope.connection,
+            right.section ? 'Workspace' : right.scope.connection)
+          || objectSearchCompareText(left.section?.label || left.scope.database,
+            right.section?.label || right.scope.database)
+          || objectSearchCompareText(left.item?.name || left.object.name,
+            right.item?.name || right.object.name));
         status.textContent = `${matches.length.toLocaleString()} match${matches.length === 1 ? '' : 'es'} · `
           + `${candidates.length.toLocaleString()} object${candidates.length === 1 ? '' : 's'} · `
+          + `${moduleCandidates.length.toLocaleString()} workspace item${moduleCandidates.length === 1 ? '' : 's'} · `
           + `${scopes.length.toLocaleString()} database${scopes.length === 1 ? '' : 's'} · `
           + `${state.meta.connections.length.toLocaleString()} connection${state.meta.connections.length === 1 ? '' : 's'}`
           + (definitionCoverage ? ` · ${definitionCoverage.searched.toLocaleString()} / ${definitionCoverage.eligible.toLocaleString()} definitions` : '')
@@ -3665,44 +3734,269 @@
     }
   }
 
-  function openDiagramTab(scope = scopeOf()) {
-    const key = `diagram:${scopeKey(scope)}`;
-    const existing = state.tabs.find((candidate) => candidate.key === key);
-    if (existing) {
-      setActiveTab(existing.id);
-      return;
+  const DIAGRAMS_KEY = 'gridlet.diagrams';
+  const diagramConnectorTypes = new Set(['bezier', 'straight', 'orthogonal']);
+  const diagramConnectorLabels = {
+    bezier: 'Curved connector',
+    straight: 'Straight line',
+    orthogonal: 'Right-angled connector',
+  };
+  const DIAGRAM_CARD_WIDTH = 260;
+  const DIAGRAM_CARD_HEIGHT = 270;
+  const DIAGRAM_MIN_WIDTH = 150;
+  const DIAGRAM_MIN_HEIGHT = 90;
+  const DIAGRAM_MAX_SIZE = 1400;
+  // Connectors are painted underneath the cards, so a path that reaches the border would tuck its
+  // arrowhead behind the card. Every endpoint stops this far short, which has to be more than the
+  // arrowhead is long, or the card cuts the tip off.
+  const DIAGRAM_ARROW_LENGTH = 9;
+  const DIAGRAM_ARROW_GAP = 10;
+  const DIAGRAM_SOCKET_SIZE = 9;
+  const DIAGRAM_ANCHOR_NORMALS = {
+    right: { x: 1, y: 0 }, left: { x: -1, y: 0 },
+    top: { x: 0, y: -1 }, bottom: { x: 0, y: 1 },
+  };
+
+  // Which border a line uses, and where along it. A routing point that sits clear of the card
+  // decides, so the line comes out of the side it is heading for instead of starting on the far
+  // border and cutting back under the card. With no routing point the line uses the border that
+  // faces the other card, level with its own column.
+  function diagramAnchor(rect, rowY, pin, prefersRight) {
+    const right = rect.left + rect.width;
+    const bottom = rect.top + rect.height;
+    if (pin) {
+      if (pin.x > right) return { side: 'right', x: right, y: rowY };
+      if (pin.x < rect.left) return { side: 'left', x: rect.left, y: rowY };
+      // Over the card, so the line leaves by the top or bottom, below the routing point.
+      const margin = Math.min(16, rect.width / 2);
+      const x = Math.min(right - margin, Math.max(rect.left + margin, pin.x));
+      if (pin.y < rect.top) return { side: 'top', x, y: rect.top };
+      if (pin.y > bottom) return { side: 'bottom', x, y: bottom };
     }
-
-    const panel = h('div', { class: 'panel er-panel', 'data-testid': 'er-diagram' });
-    const tab = {
-      id: state.nextTabId++, key, scope, badge: 'ER', badgeClass: 'badge-diagram',
-      title: 'Relationships', panel, loaded: false,
-      load: () => loadDiagramTab(tab),
-      restore: { kind: 'diagram', scope },
-    };
-    addTab(tab);
+    return prefersRight
+      ? { side: 'right', x: right, y: rowY }
+      : { side: 'left', x: rect.left, y: rowY };
   }
-
+  const DIAGRAM_MIN_ZOOM = 0.2;
+  const DIAGRAM_MAX_ZOOM = 3;
+  const DIAGRAM_MINIMAP_WIDTH = 172;
+  const DIAGRAM_MINIMAP_HEIGHT = 118;
   const diagramTableKey = (schema, name) => `${schema}\u0000${name}`.toLowerCase();
+  const diagramRelationshipKey = (relationship) => `${diagramTableKey(
+    relationship.source.object.schema, relationship.source.object.name)}\u0001${relationship.foreignKey.name}`;
 
   function diagramSvgElement(tag, attributes = {}) {
     const element = document.createElementNS(SVG_NS, tag);
-    for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, value);
+    for (const [name, value] of Object.entries(attributes)) {
+      if (value === null || value === undefined) continue;
+      element.setAttribute(name, value);
+    }
     return element;
+  }
+
+  function diagramStoredDocuments() {
+    try {
+      const value = JSON.parse(localStorage.getItem(DIAGRAMS_KEY) || '[]');
+      return Array.isArray(value) ? value : [];
+    } catch { return []; }
+  }
+
+  function diagramReadStored(id) {
+    if (!id) return null;
+    return diagramStoredDocuments().find((document) => document?.id === id) || null;
+  }
+
+  function diagramNormalizeDocument(value, fallbackScope) {
+    const source = value && typeof value === 'object' ? value : {};
+    const defaultConnectorType = diagramConnectorTypes.has(source.connectorType)
+      ? source.connectorType : 'bezier';
+    const point = (value) => {
+      const x = Number(value?.x);
+      const y = Number(value?.y);
+      return Number.isFinite(x) && Number.isFinite(y) ? {
+        x: Math.min(100000, Math.max(0, x)), y: Math.min(100000, Math.max(0, y)),
+      } : null;
+    };
+    const positions = Object.create(null);
+    for (const [key, position] of Object.entries(source.positions || {})) {
+      const x = Number(position?.x);
+      const y = Number(position?.y);
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        positions[key] = { x: Math.min(100000, Math.max(0, x)), y: Math.min(100000, Math.max(0, y)) };
+      }
+    }
+    const sizes = Object.create(null);
+    for (const [key, size] of Object.entries(source.sizes || {})) {
+      const width = Number(size?.width);
+      const height = Number(size?.height);
+      if (Number.isFinite(width) && Number.isFinite(height)) {
+        sizes[key] = {
+          width: Math.min(DIAGRAM_MAX_SIZE, Math.max(DIAGRAM_MIN_WIDTH, width)),
+          height: Math.min(DIAGRAM_MAX_SIZE, Math.max(DIAGRAM_MIN_HEIGHT, height)),
+        };
+      }
+    }
+    const connectors = Object.create(null);
+    for (const [key, connector] of Object.entries(source.connectors || {})) {
+      if (!connector || typeof connector !== 'object') continue;
+      const legacyPoint = point(connector);
+      connectors[key] = {
+        type: diagramConnectorTypes.has(connector.type) ? connector.type : defaultConnectorType,
+        ...(point(connector.control1) ? { control1: point(connector.control1) } : {}),
+        ...(point(connector.control2) ? { control2: point(connector.control2) } : {}),
+        ...(Array.isArray(connector.points)
+          ? { points: connector.points.map(point).filter(Boolean).slice(0, 100) } : {}),
+        ...(point(connector.waypoint) || legacyPoint
+          ? { waypoint: point(connector.waypoint) || legacyPoint } : {}),
+      };
+    }
+    // A document without a table list predates explicit membership, so it adopts whatever the
+    // database holds. An empty list is a deliberate blank canvas, not a missing one.
+    const tables = Array.isArray(source.tables)
+      ? source.tables
+        .filter((table) => table && typeof table.name === 'string' && table.name)
+        .map((table) => ({ schema: String(table.schema ?? ''), name: table.name }))
+        .slice(0, 1000)
+      : null;
+    const viewX = Number(source.view?.x);
+    const viewY = Number(source.view?.y);
+    const viewZoom = Number(source.view?.zoom);
+    const importedScope = source.scope && typeof source.scope.connection === 'string'
+      && typeof source.scope.database === 'string' ? source.scope : fallbackScope;
+    return {
+      version: 1,
+      id: typeof source.id === 'string' && source.id ? source.id : crypto.randomUUID(),
+      name: typeof source.name === 'string' && source.name.trim()
+        ? source.name.trim().slice(0, 100) : 'Relationships',
+      scope: { connection: importedScope.connection, database: importedScope.database },
+      connectorType: defaultConnectorType,
+      tables,
+      positions,
+      sizes,
+      connectors,
+      view: {
+        x: Number.isFinite(viewX) ? Math.min(100000, Math.max(-100000, viewX)) : 0,
+        y: Number.isFinite(viewY) ? Math.min(100000, Math.max(-100000, viewY)) : 0,
+        zoom: Number.isFinite(viewZoom)
+          ? Math.min(DIAGRAM_MAX_ZOOM, Math.max(DIAGRAM_MIN_ZOOM, viewZoom)) : 1,
+      },
+    };
+  }
+
+  function diagramPersist(document) {
+    try {
+      const documents = diagramStoredDocuments();
+      const index = documents.findIndex((candidate) => candidate?.id === document.id);
+      const copy = JSON.parse(JSON.stringify(document));
+      if (index < 0) documents.push(copy); else documents[index] = copy;
+      localStorage.setItem(DIAGRAMS_KEY, JSON.stringify(documents.slice(-50)));
+      saveSession();
+    } catch { /* browser storage can be unavailable or full */ }
+  }
+
+  function diagramDownload(diagramDocument) {
+    const content = `${JSON.stringify(diagramDocument, null, 2)}\n`;
+    const href = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
+    const safeName = diagramDocument.name.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-|-$/g, '') || 'diagram';
+    const link = h('a', { href, download: `${safeName}.gridlet-diagram.json` });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 0);
+  }
+
+  function openDiagramTab(scope = scopeOf(), initialDocument = null) {
+    const diagramDocument = diagramNormalizeDocument(initialDocument, scope);
+    if (!initialDocument?.name) {
+      const count = state.tabs.filter((candidate) => candidate.diagramDocument).length;
+      if (count) diagramDocument.name = `Relationships ${count + 1}`;
+    }
+    // Opening a JSON file creates a distinct diagram, even when it came from an existing browser
+    // document. Session restoration passes the stored object with the same id.
+    const existing = state.tabs.find((candidate) => candidate.diagramDocument?.id === diagramDocument.id);
+    if (existing) { setActiveTab(existing.id); return existing; }
+    const panel = h('div', { class: 'panel er-panel', 'data-testid': 'er-diagram' });
+    const tab = {
+      id: state.nextTabId++, key: `diagram:${diagramDocument.id}`, scope: diagramDocument.scope,
+      badge: 'ER', badgeClass: 'badge-diagram', title: diagramDocument.name, panel, loaded: false,
+      diagramDocument,
+      load: () => loadDiagramTab(tab),
+      restore: () => ({
+        kind: 'diagram', scope: tab.scope, diagramId: tab.diagramDocument.id,
+        document: tab.diagramDocument,
+      }),
+    };
+    diagramPersist(diagramDocument);
+    addTab(tab);
+    renderTree();
+    return tab;
   }
 
   async function loadDiagramTab(tab) {
     const scope = tab.scope;
+    const diagramDocument = tab.diagramDocument;
+    const persist = () => diagramPersist(diagramDocument);
+    const view = diagramDocument.view;
+
     const toolbar = h('div', { class: 'viewbar er-toolbar' });
     const filter = h('input', {
       type: 'search', placeholder: 'Filter tables or columns…',
       'aria-label': 'Filter relationship diagram', 'data-testid': 'er-filter',
     });
+    const newDiagram = h('button', {
+      type: 'button', class: 'ghost', text: 'New', title: 'Create an empty diagram',
+      'data-testid': 'er-new', onclick: () => openDiagramTab(scope, { tables: [] }),
+    });
+    const saveDiagram = h('button', {
+      type: 'button', class: 'ghost', text: 'Export', title: 'Export this diagram',
+      'data-testid': 'er-save', onclick: () => diagramDownload(diagramDocument),
+    });
+    const openInput = h('input', {
+      type: 'file', accept: '.json,application/json', class: 'sr-only',
+      'data-testid': 'er-open-file',
+    });
+    const openDiagram = h('button', {
+      type: 'button', class: 'ghost', text: 'Import', title: 'Import a diagram file',
+      'data-testid': 'er-open', onclick: () => openInput.click(),
+    });
+    const zoomOut = h('button', {
+      type: 'button', class: 'ghost er-zoom-step', text: '−', title: 'Zoom out',
+      'aria-label': 'Zoom out', 'data-testid': 'er-zoom-out', onclick: () => zoomBy(1 / 1.2),
+    });
+    const zoomLevel = h('button', {
+      type: 'button', class: 'ghost er-zoom-level', text: '100%', title: 'Reset zoom to 100%',
+      'aria-label': 'Reset zoom', 'data-testid': 'er-zoom-level', onclick: () => setZoom(1),
+    });
+    const zoomIn = h('button', {
+      type: 'button', class: 'ghost er-zoom-step', text: '+', title: 'Zoom in',
+      'aria-label': 'Zoom in', 'data-testid': 'er-zoom-in', onclick: () => zoomBy(1.2),
+    });
+    const fitDiagram = h('button', {
+      type: 'button', class: 'ghost', text: 'Fit', title: 'Fit the diagram to the window',
+      'data-testid': 'er-fit', onclick: () => fitToView(),
+    });
     const summary = h('span', { class: 'muted er-summary', text: 'Loading table metadata…' });
-    const viewport = h('div', { class: 'er-viewport' },
+    const viewport = h('div', { class: 'er-viewport', 'data-testid': 'er-viewport' },
       h('div', { class: 'loading', text: 'Loading table metadata…' }));
-    toolbar.append(filter, summary);
-    tab.panel.replaceChildren(toolbar, viewport);
+    toolbar.append(filter, newDiagram, openDiagram, saveDiagram,
+      h('span', { class: 'er-zoom' }, zoomOut, zoomLevel, zoomIn, fitDiagram), summary);
+    tab.panel.replaceChildren(toolbar, openInput, viewport);
+
+    openInput.addEventListener('change', async () => {
+      const file = openInput.files?.[0];
+      if (!file) return;
+      try {
+        const parsed = JSON.parse(await file.text());
+        if (parsed?.version !== 1) throw new Error('Only Gridlet diagram JSON version 1 is supported.');
+        const imported = diagramNormalizeDocument(parsed, scope);
+        imported.id = crypto.randomUUID();
+        openDiagramTab(imported.scope, imported);
+      } catch (err) {
+        toast(`Could not open diagram: ${err.message}`, true);
+      } finally {
+        openInput.value = '';
+      }
+    });
 
     let objects;
     try {
@@ -3715,35 +4009,489 @@
       return;
     }
 
-    if (!objects.length) {
+    if (!objects.length && !diagramDocument.tables?.length) {
       viewport.replaceChildren(h('div', { class: 'empty-message', text: 'This database has no visible tables.' }));
       summary.textContent = '0 tables';
       return;
     }
 
+    const objectsByKey = new Map(objects.map((object) =>
+      [diagramTableKey(object.schema, object.name), object]));
+    if (!diagramDocument.tables) {
+      // A diagram opened from the sidebar starts as the whole database and then keeps that list, so
+      // removing a card sticks and an exported file still describes what it held.
+      diagramDocument.tables = objects.map((object) => ({ schema: object.schema, name: object.name }));
+      persist();
+    }
+
     // Large databases should not turn one diagram request into an unbounded connection burst.
     // Six workers keep metadata loading responsive while respecting ordinary connection-pool sizes.
-    const definitions = new Array(objects.length);
-    const failures = [];
-    let next = 0;
-    const worker = async () => {
-      while (next < objects.length) {
-        const index = next++;
-        const object = objects[index];
-        try {
-          definitions[index] = await api(urlsFor(scope).structure(object.schema, object.name));
-        } catch (err) {
-          failures.push({ object, message: err.message });
-          definitions[index] = { object, columns: [], indexes: [], foreignKeys: [], unavailable: true };
+    const definitionCache = new Map();
+    let definitions = [];
+    const refreshDefinitions = async () => {
+      const wanted = diagramDocument.tables.map((table) => ({
+        table, key: diagramTableKey(table.schema, table.name),
+      }));
+      const pending = wanted.filter((entry) =>
+        !definitionCache.has(entry.key) && objectsByKey.has(entry.key));
+      let next = 0;
+      const worker = async () => {
+        while (next < pending.length) {
+          const key = pending[next++].key;
+          const object = objectsByKey.get(key);
+          try {
+            const definition = await api(urlsFor(scope).structure(object.schema, object.name));
+            definitionCache.set(key, { ...definition, object: definition.object || object });
+          } catch {
+            definitionCache.set(key, {
+              object, columns: [], indexes: [], foreignKeys: [], unavailable: true,
+            });
+          }
         }
-      }
+      };
+      await Promise.all(Array.from({ length: Math.min(6, pending.length) }, worker));
+      // A table the document names but the database no longer holds keeps its place as a ghost
+      // card: an imported model should show what it expected rather than quietly dropping it.
+      definitions = wanted.map((entry) => definitionCache.get(entry.key) || {
+        object: { schema: entry.table.schema, name: entry.table.name, type: 'Table' },
+        columns: [], indexes: [], foreignKeys: [], ghost: true,
+      });
     };
-    await Promise.all(Array.from({ length: Math.min(6, objects.length) }, worker));
+    await refreshDefinitions();
 
-    const relationships = definitions.flatMap((definition) =>
-      (definition.foreignKeys || []).map((foreignKey) => ({ source: definition, foreignKey })));
     const visibleDiagramColumns = (definition) =>
       (definition.columns || []).filter((column) => !column.isHidden);
+
+    let selectedRelationshipKey = null;
+    let selectedTableKey = null;
+    let drawLinks = () => {};
+    let drawMinimap = () => {};
+    let cardPositions = new Map();
+    let contentBounds = { width: DIAGRAM_CARD_WIDTH, height: DIAGRAM_CARD_HEIGHT };
+    // Releasing a connector handle over a card fires a click there as well. Ignoring that one keeps
+    // an adjustment from immediately dropping the selection it was adjusting.
+    let adjustingConnector = false;
+    const finishConnectorAdjustment = () => {
+      adjustingConnector = true;
+      setTimeout(() => { adjustingConnector = false; }, 0);
+    };
+
+    // ---- canvas, panning and zooming ----
+
+    const canvas = h('div', { class: 'er-canvas', 'data-testid': 'er-canvas' });
+    const minimap = h('div', {
+      class: 'er-minimap', 'data-testid': 'er-minimap', title: 'Click to move the view',
+    });
+
+    const applyView = () => {
+      canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
+      zoomLevel.textContent = `${Math.round(view.zoom * 100)}%`;
+      drawMinimap();
+    };
+    let viewTimer = 0;
+    const persistView = () => {
+      clearTimeout(viewTimer);
+      viewTimer = setTimeout(persist, 400);
+    };
+    const setZoom = (zoom, anchor = null) => {
+      const next = Math.min(DIAGRAM_MAX_ZOOM, Math.max(DIAGRAM_MIN_ZOOM, zoom));
+      const rect = viewport.getBoundingClientRect();
+      const point = anchor || { x: rect.width / 2, y: rect.height / 2 };
+      // Hold the anchored point still while the scale changes around it.
+      view.x = point.x - (point.x - view.x) * (next / view.zoom);
+      view.y = point.y - (point.y - view.y) * (next / view.zoom);
+      view.zoom = next;
+      applyView();
+      persistView();
+    };
+    const zoomBy = (factor) => setZoom(view.zoom * factor);
+    const fitToView = () => {
+      const rect = viewport.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const margin = 24;
+      const zoom = Math.min(1, Math.max(DIAGRAM_MIN_ZOOM, Math.min(
+        (rect.width - margin * 2) / contentBounds.width,
+        (rect.height - margin * 2) / contentBounds.height)));
+      view.zoom = zoom;
+      view.x = (rect.width - contentBounds.width * zoom) / 2;
+      view.y = (rect.height - contentBounds.height * zoom) / 2;
+      applyView();
+      persistView();
+    };
+    const canvasPoint = (clientX, clientY) => {
+      const rect = viewport.getBoundingClientRect();
+      return {
+        x: (clientX - rect.left - view.x) / view.zoom,
+        y: (clientY - rect.top - view.y) / view.zoom,
+      };
+    };
+
+    const applySelection = () => {
+      for (const card of canvas.querySelectorAll('.er-table')) {
+        card.classList.toggle('selected', card.dataset.tableKey === selectedTableKey);
+      }
+    };
+    const selectTable = (key) => {
+      if (selectedTableKey === key && !selectedRelationshipKey) return;
+      selectedTableKey = key;
+      selectedRelationshipKey = null;
+      applySelection();
+      drawLinks();
+    };
+    const selectRelationship = (relationshipKey) => {
+      selectedRelationshipKey = relationshipKey;
+      selectedTableKey = null;
+      applySelection();
+      drawLinks();
+    };
+    const clearSelection = () => {
+      if (!selectedRelationshipKey && !selectedTableKey) return;
+      selectedRelationshipKey = null;
+      selectedTableKey = null;
+      applySelection();
+      drawLinks();
+    };
+
+    // Panning starts anywhere the reader is not already holding something. The context menu is
+    // stricter: an empty-canvas hint is still empty canvas, and right-clicking it should offer to
+    // fill it.
+    const DIAGRAM_PARTS = '.er-table, .er-link-group, .er-link-label, .er-connector-handle, .er-minimap';
+    const isDiagramPart = (target) => target instanceof Element && !!target.closest(DIAGRAM_PARTS);
+    const isCanvasFurniture = (target) => target instanceof Element
+      && !!target.closest(`${DIAGRAM_PARTS}, .er-hint`);
+
+    viewport.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 && event.button !== 1) return;
+      const onFurniture = isCanvasFurniture(event.target);
+      if (event.button === 0 && onFurniture) return;
+      const originX = event.clientX;
+      const originY = event.clientY;
+      const startX = view.x;
+      const startY = view.y;
+      let panned = false;
+      const move = (moveEvent) => {
+        const dx = moveEvent.clientX - originX;
+        const dy = moveEvent.clientY - originY;
+        if (!panned && Math.hypot(dx, dy) < 3) return;
+        panned = true;
+        viewport.classList.add('panning');
+        view.x = startX + dx;
+        view.y = startY + dy;
+        applyView();
+      };
+      const up = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        window.removeEventListener('pointercancel', up);
+        viewport.classList.remove('panning');
+        if (panned) persistView();
+        else if (!onFurniture) clearSelection();
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up, { once: true });
+      window.addEventListener('pointercancel', up, { once: true });
+      if (event.button === 1) event.preventDefault();
+    });
+
+    viewport.addEventListener('wheel', (event) => {
+      const rect = viewport.getBoundingClientRect();
+      if (event.ctrlKey || event.metaKey) {
+        setZoom(view.zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1),
+          { x: event.clientX - rect.left, y: event.clientY - rect.top });
+      } else {
+        view.x -= event.shiftKey ? event.deltaY : event.deltaX;
+        view.y -= event.shiftKey ? 0 : event.deltaY;
+        applyView();
+        persistView();
+      }
+      event.preventDefault();
+    }, { passive: false });
+
+    // ---- diagram membership ----
+
+    const includedKeys = () => new Set(diagramDocument.tables.map((table) =>
+      diagramTableKey(table.schema, table.name)));
+    const absentTables = () => {
+      const included = includedKeys();
+      return objects.filter((object) => !included.has(diagramTableKey(object.schema, object.name)));
+    };
+    const addTables = async (added, point = null) => {
+      if (!added.length) return;
+      const included = includedKeys();
+      let placed = 0;
+      for (const object of added) {
+        const key = diagramTableKey(object.schema, object.name);
+        if (included.has(key)) continue;
+        included.add(key);
+        diagramDocument.tables.push({ schema: object.schema, name: object.name });
+        if (point) {
+          // Several tables added at once fan out from the click in card-sized steps rather than
+          // stacking on top of each other.
+          diagramDocument.positions[key] = {
+            x: Math.max(0, point.x + (placed % 3) * (DIAGRAM_CARD_WIDTH + 40)),
+            y: Math.max(0, point.y + Math.floor(placed / 3) * (DIAGRAM_CARD_HEIGHT + 40)),
+          };
+        }
+        placed++;
+      }
+      if (!placed) return;
+      persist();
+      await refreshDefinitions();
+      render();
+    };
+    const removeTable = async (key) => {
+      diagramDocument.tables = diagramDocument.tables.filter((table) =>
+        diagramTableKey(table.schema, table.name) !== key);
+      delete diagramDocument.positions[key];
+      delete diagramDocument.sizes[key];
+      if (selectedTableKey === key) selectedTableKey = null;
+      persist();
+      await refreshDefinitions();
+      render();
+    };
+    const addTablesDialog = (point) => {
+      const available = absentTables();
+      if (!available.length) {
+        toast('Every table in this database is already on the diagram.', false);
+        return;
+      }
+      const chosen = new Set();
+      const search = h('input', {
+        type: 'search', placeholder: 'Filter tables…', 'aria-label': 'Filter tables',
+        'data-testid': 'er-add-filter',
+      });
+      const list = h('div', { class: 'er-add-list', role: 'group', 'aria-label': 'Tables to add' });
+      const paint = () => {
+        const query = search.value.trim().toLowerCase();
+        list.replaceChildren(...available
+          .filter((object) => !query || displayName(object, scope).toLowerCase().includes(query))
+          .map((object) => {
+            const key = diagramTableKey(object.schema, object.name);
+            const box = h('input', { type: 'checkbox', ...(chosen.has(key) ? { checked: '' } : {}) });
+            box.addEventListener('change', () => {
+              if (box.checked) chosen.add(key); else chosen.delete(key);
+            });
+            return h('label', { class: 'er-add-item', 'data-testid': 'er-add-item' },
+              box, h('span', { text: displayName(object, scope) }));
+          }));
+        if (!list.childElementCount) {
+          list.append(h('div', { class: 'muted', text: 'No table matches this filter.' }));
+        }
+      };
+      search.addEventListener('input', paint);
+      paint();
+      modal('Add tables', h('div', { class: 'er-add-dialog' }, search, list), [
+        { label: 'Cancel', onClick: (close) => close() },
+        {
+          label: 'Add', primary: true,
+          onClick: (close) => {
+            close();
+            addTables(available.filter((object) =>
+              chosen.has(diagramTableKey(object.schema, object.name))), point);
+          },
+        },
+      ]);
+    };
+
+    const canvasMenuItems = (point) => [
+      { label: 'Add tables…', action: () => addTablesDialog(point) },
+      {
+        label: 'Add every table', disabled: !absentTables().length,
+        action: () => addTables(absentTables()),
+      },
+      { separator: true },
+      { label: 'Fit to window', action: () => fitToView() },
+      { label: 'Zoom in', action: () => zoomBy(1.2) },
+      { label: 'Zoom out', action: () => zoomBy(1 / 1.2) },
+      { label: 'Reset zoom', action: () => setZoom(1) },
+    ];
+
+    viewport.addEventListener('contextmenu', (event) => {
+      if (isDiagramPart(event.target)) return;
+      clearSelection();
+      showContextMenu(event, canvasMenuItems(canvasPoint(event.clientX, event.clientY)));
+    });
+
+    // ---- minimap ----
+
+    const minimapScale = () => Math.min(
+      DIAGRAM_MINIMAP_WIDTH / contentBounds.width,
+      DIAGRAM_MINIMAP_HEIGHT / contentBounds.height);
+    drawMinimap = () => {
+      minimap.hidden = !cardPositions.size;
+      if (!cardPositions.size) return;
+      const scale = minimapScale();
+      const rect = viewport.getBoundingClientRect();
+      const map = diagramSvgElement('svg', {
+        width: DIAGRAM_MINIMAP_WIDTH, height: DIAGRAM_MINIMAP_HEIGHT,
+        viewBox: `0 0 ${DIAGRAM_MINIMAP_WIDTH} ${DIAGRAM_MINIMAP_HEIGHT}`, 'aria-hidden': 'true',
+      });
+      for (const [key, position] of cardPositions) {
+        map.append(diagramSvgElement('rect', {
+          class: `er-minimap-card${key === selectedTableKey ? ' selected' : ''}`,
+          x: position.left * scale, y: position.top * scale,
+          width: Math.max(2, position.width * scale),
+          height: Math.max(2, position.height * scale), rx: '1',
+        }));
+      }
+      map.append(diagramSvgElement('rect', {
+        class: 'er-minimap-view', 'data-testid': 'er-minimap-view',
+        x: (-view.x / view.zoom) * scale, y: (-view.y / view.zoom) * scale,
+        width: Math.max(3, (rect.width / view.zoom) * scale),
+        height: Math.max(3, (rect.height / view.zoom) * scale),
+      }));
+      minimap.replaceChildren(map);
+    };
+    const minimapJump = (clientX, clientY) => {
+      const rect = minimap.getBoundingClientRect();
+      const scale = minimapScale() || 1;
+      const viewportRect = viewport.getBoundingClientRect();
+      view.x = viewportRect.width / 2 - ((clientX - rect.left) / scale) * view.zoom;
+      view.y = viewportRect.height / 2 - ((clientY - rect.top) / scale) * view.zoom;
+      applyView();
+    };
+    minimap.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      minimapJump(event.clientX, event.clientY);
+      const move = (moveEvent) => minimapJump(moveEvent.clientX, moveEvent.clientY);
+      const up = () => {
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        window.removeEventListener('pointercancel', up);
+        persistView();
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up, { once: true });
+      window.addEventListener('pointercancel', up, { once: true });
+      event.preventDefault();
+      event.stopPropagation();
+    });
+
+    // ---- connector routing ----
+
+    // Only a corner that the line passes straight through is redundant. A point where the run
+    // doubles back has to stay, or the drawn route stops going where its knob says it goes.
+    const passesThrough = (first, middle, last) => (middle - first) * (last - middle) >= 0;
+    const simplifyRoute = (points) => {
+      const result = [];
+      for (const point of points) {
+        const previous = result.at(-1);
+        if (previous && previous.x === point.x && previous.y === point.y) continue;
+        result.push(point);
+        while (result.length >= 3) {
+          const [a, b, c] = result.slice(-3);
+          if ((a.x === b.x && b.x === c.x && passesThrough(a.y, b.y, c.y))
+            || (a.y === b.y && b.y === c.y && passesThrough(a.x, b.x, c.x))) {
+            result.splice(result.length - 2, 1);
+          } else break;
+        }
+      }
+      return result;
+    };
+    // Each leg leaves its last stop sideways, and the final leg arrives sideways so the arrowhead
+    // meets the card square on. The last leg normally carries straight on down or up to the target.
+    // It steps aside instead when the routing point sits past the target, because carrying on would
+    // send the line back along the run it has just travelled and leave a stub hanging off a corner.
+    // Where the line turns aside rather than carrying on, it turns aside clear of the card it has
+    // just left, instead of coming back down across it.
+    const stepClearOf = (between, towards, rect, lower, span) => {
+      const middle = (between + towards) / 2;
+      if (!rect || middle <= rect[lower] || middle >= rect[lower] + rect[span]) return middle;
+      return towards < rect[lower] ? rect[lower] - 24 : rect[lower] + rect[span] + 24;
+    };
+    const orthogonalRoute = (start, target, pins,
+      leaveDown = false, arriveDown = false, avoid = null) => {
+      const route = [start];
+      // A corner can land on top of the point it serves, which leaves a leg travelling along one
+      // axis only. Reading the axis back off the route rather than assuming it keeps every leg
+      // turning the other way from the one before, so no leg retraces its predecessor.
+      const travelled = () => {
+        const end = route.at(-1);
+        let index = route.length - 2;
+        while (index >= 0 && route[index].x === end.x && route[index].y === end.y) index--;
+        if (index < 0) return null;
+        return route[index].x === end.x ? 'y' : 'x';
+      };
+      for (const pin of pins) {
+        const previous = route.at(-1);
+        const axis = travelled();
+        const alongX = axis === null ? !leaveDown : axis === 'y';
+        route.push(alongX ? { x: pin.x, y: previous.y } : { x: previous.x, y: pin.y }, pin);
+      }
+      const last = route.at(-1);
+      let back = route.length - 2;
+      while (back >= 0 && route[back].x === last.x && route[back].y === last.y) back--;
+      const previous = back >= 0 ? route[back] : last;
+      // The final move runs along the border's own normal, so the arrowhead meets it square on.
+      // The leg before it normally carries straight on, and only steps aside when carrying on
+      // would send the line back along the run it has just travelled.
+      const arrived = arriveDown
+        ? Math.sign(last.x - previous.x) : Math.sign(last.y - previous.y);
+      const onwards = arriveDown
+        ? Math.sign(target.x - last.x) : Math.sign(target.y - last.y);
+      const carriesOn = pins.length && (!arrived || !onwards || arrived === onwards);
+      if (arriveDown) {
+        if (carriesOn) route.push({ x: target.x, y: last.y }, target);
+        else {
+          const step = stepClearOf(last.y, target.y, avoid, 'top', 'height');
+          route.push({ x: last.x, y: step }, { x: target.x, y: step }, target);
+        }
+      } else if (carriesOn) {
+        route.push({ x: last.x, y: target.y }, target);
+      } else {
+        const step = stepClearOf(last.x, target.x, avoid, 'left', 'width');
+        route.push({ x: step, y: last.y }, { x: step, y: target.y }, target);
+      }
+      return simplifyRoute(route);
+    };
+    const routePath = (points) => points.length
+      ? `M ${points[0].x} ${points[0].y}`
+        + points.slice(1).map((point) => ` L ${point.x} ${point.y}`).join('')
+      : '';
+    const routeMidpoint = (points) => {
+      const lengths = points.slice(1).map((point, index) => Math.hypot(
+        point.x - points[index].x, point.y - points[index].y));
+      const half = lengths.reduce((sum, length) => sum + length, 0) / 2;
+      let travelled = 0;
+      for (let index = 0; index < lengths.length; index++) {
+        if (travelled + lengths[index] >= half) {
+          const ratio = lengths[index] ? (half - travelled) / lengths[index] : 0;
+          return {
+            x: points[index].x + (points[index + 1].x - points[index].x) * ratio,
+            y: points[index].y + (points[index + 1].y - points[index].y) * ratio,
+          };
+        }
+        travelled += lengths[index];
+      }
+      return points.at(-1) || { x: 0, y: 0 };
+    };
+    const nearestRoutePoint = (point, route) => {
+      let nearest = null;
+      route.slice(1).forEach((end, index) => {
+        const start = route[index];
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const lengthSquared = dx * dx + dy * dy || 1;
+        const ratio = Math.max(0, Math.min(1,
+          ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
+        const candidate = { x: start.x + dx * ratio, y: start.y + dy * ratio, index };
+        const distance = Math.hypot(point.x - candidate.x, point.y - candidate.y);
+        if (!nearest || distance < nearest.distance) nearest = { ...candidate, distance };
+      });
+      return nearest;
+    };
+    // A routing point the connector would pass through anyway is redundant. Dragging two knobs onto
+    // one straight run leaves one line and one knob rather than a stack of them.
+    const mergeRedundantPins = (pins, start, target, leaveDown, arriveDown, avoid) => {
+      const kept = pins.map((pin) => ({ ...pin }));
+      for (let index = kept.length - 1; index >= 0 && kept.length > 1; index--) {
+        const without = kept.filter((_, other) => other !== index);
+        const nearest = nearestRoutePoint(kept[index],
+          orthogonalRoute(start, target, without, leaveDown, arriveDown, avoid));
+        if (nearest && nearest.distance <= 4) kept.splice(index, 1);
+      }
+      return kept;
+    };
 
     const render = () => {
       const query = filter.value.trim().toLowerCase();
@@ -3754,6 +4502,9 @@
           || visibleDiagramColumns(definition)
             .some((column) => column.name.toLowerCase().includes(query));
       }).map((definition) => diagramTableKey(definition.object.schema, definition.object.name)));
+
+      const relationships = definitions.flatMap((definition) =>
+        (definition.foreignKeys || []).map((foreignKey) => ({ source: definition, foreignKey })));
 
       // When filtering, retain directly related tables as context. A matching Orders card is much
       // less useful if the referenced Pizzas card and the line between them disappear.
@@ -3773,9 +4524,32 @@
 
       const visible = definitions.filter((definition) => visibleKeys.has(
         diagramTableKey(definition.object.schema, definition.object.name)));
+      const failures = definitions.filter((definition) => definition.unavailable).length;
+      const ghosts = definitions.filter((definition) => definition.ghost).length;
+      summary.textContent = `${visible.length}${query ? ` of ${definitions.length}` : ''} tables`
+        + (failures ? ` · ${failures} unavailable` : '')
+        + (ghosts ? ` · ${ghosts} missing` : '');
+
       if (!visible.length) {
-        viewport.replaceChildren(h('div', { class: 'empty-message', text: 'No tables or columns match this filter.' }));
-        summary.textContent = `0 of ${definitions.length} tables`;
+        cardPositions = new Map();
+        contentBounds = { width: DIAGRAM_CARD_WIDTH, height: DIAGRAM_CARD_HEIGHT };
+        drawLinks = () => {};
+        canvas.replaceChildren();
+        canvas.style.width = `${contentBounds.width}px`;
+        canvas.style.height = `${contentBounds.height}px`;
+        viewport.replaceChildren(canvas,
+          h('div', { class: 'er-hint', 'data-testid': 'er-hint' },
+            h('span', {
+              text: definitions.length
+                ? 'No tables or columns match this filter.'
+                : 'This diagram is empty. Right-click the canvas to add tables.',
+            }),
+            definitions.length ? null : h('button', {
+              type: 'button', class: 'ghost', text: 'Add tables…',
+              'data-testid': 'er-hint-add', onclick: () => addTablesDialog(null),
+            })),
+          minimap);
+        applyView();
         return;
       }
 
@@ -3786,9 +4560,11 @@
           relationship.foreignKey.referencedSchema, relationship.foreignKey.referencedTable);
         return visibleKeys.has(sourceKey) && visibleKeys.has(targetKey);
       });
+      summary.textContent += ` · ${visibleRelationships.length} `
+        + `relationship${visibleRelationships.length === 1 ? '' : 's'}`;
       // Fan parallel and reverse relationships around their shared card pair. Slotting by an
-      // unordered key gives both directions the same perpendicular axis instead of mirroring them
-      // back onto the same curve.
+      // unordered key gives both directions the same axis instead of mirroring them back onto the
+      // same curve.
       const relationshipGroups = new Map();
       for (const relationship of visibleRelationships) {
         const sourceKey = diagramTableKey(
@@ -3825,8 +4601,6 @@
           || displayName(a.object, scope).localeCompare(displayName(b.object, scope));
       });
 
-      const cardWidth = 260;
-      const cardHeight = 270;
       const horizontalGap = 120;
       const verticalGap = 90;
       // The extra top margin leaves self-referencing relationships room to loop above a card.
@@ -3839,9 +4613,6 @@
         }).map((group) => group.length));
       const canvasTop = Math.max(96, 72 + Math.max(0, largestSelfGroup - 1) * 18);
       const columns = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(visible.length))));
-      const rows = Math.ceil(visible.length / columns);
-      const canvasWidth = 32 + columns * cardWidth + (columns - 1) * horizontalGap + 32;
-      const canvasHeight = canvasTop + rows * cardHeight + (rows - 1) * verticalGap + 32;
       const positions = new Map();
       const cards = [];
 
@@ -3850,9 +4621,19 @@
         const key = diagramTableKey(object.schema, object.name);
         const column = index % columns;
         const row = Math.floor(index / columns);
-        const left = 32 + column * (cardWidth + horizontalGap);
-        const top = canvasTop + row * (cardHeight + verticalGap);
-        positions.set(key, { left, top });
+        const automaticLeft = 32 + column * (DIAGRAM_CARD_WIDTH + horizontalGap);
+        const automaticTop = canvasTop + row * (DIAGRAM_CARD_HEIGHT + verticalGap);
+        const stored = diagramDocument.positions[key];
+        const storedSize = diagramDocument.sizes[key];
+        const left = stored?.x ?? automaticLeft;
+        const top = stored?.y ?? automaticTop;
+        if (!stored) diagramDocument.positions[key] = { x: left, y: top };
+        const place = {
+          left, top,
+          width: storedSize?.width ?? DIAGRAM_CARD_WIDTH,
+          height: storedSize?.height ?? DIAGRAM_CARD_HEIGHT,
+        };
+        positions.set(key, place);
 
         const primaryColumns = new Set((definition.indexes || [])
           .filter((item) => item.isPrimaryKey)
@@ -3863,123 +4644,226 @@
           .flatMap((item) => item.columns || [])
           .map((pair) => String(pair.column || pair.sourceColumn || '').toLowerCase()));
         const columnRows = visibleDiagramColumns(definition).map((item) => h('span', {
-          class: 'er-column',
+          class: 'er-column', 'data-column': item.name.toLowerCase(),
         },
           h('span', { class: 'er-column-name', text: item.name }),
           primaryColumns.has(item.name.toLowerCase()) ? h('span', { class: 'er-key er-key-pk', text: 'PK' }) : null,
           foreignColumns.has(item.name.toLowerCase()) ? h('span', { class: 'er-key er-key-fk', text: 'FK' }) : null,
           h('span', { class: 'er-column-type', text: item.dataType })));
         const objectName = displayName(object, scope);
+        const openTable = () => {
+          if (definition.ghost) {
+            toast(`${objectName} is no longer in this database.`, true);
+            return;
+          }
+          openObjectTab(object, scope);
+        };
+        const header = h('button', {
+          type: 'button', class: 'er-table-open',
+          title: definition.ghost
+            ? `${objectName} is missing from this database`
+            : `Double-click to open ${objectName}`,
+          'aria-label': definition.ghost
+            ? `${objectName}, missing from this database`
+            : `Open ${objectName}`,
+          onkeydown: (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            openTable();
+          },
+        }, h('span', { class: 'er-table-title', text: objectName }));
+        // Pointer-only furniture: keyboard and screen-reader users reach the same setting through
+        // the card's context menu, so the grip stays out of the accessibility tree.
+        const resizeGrip = h('button', {
+          type: 'button', class: 'er-resize', 'data-testid': 'er-table-resize',
+          title: `Resize ${objectName}`, 'aria-hidden': 'true', tabindex: '-1',
+          ondblclick: (event) => event.stopPropagation(),
+        });
         const card = h('article', {
-          class: `er-table${definition.unavailable ? ' unavailable' : ''}`,
-          'data-testid': 'er-table', 'data-table': objectName,
+          class: `er-table${definition.unavailable ? ' unavailable' : ''}${definition.ghost ? ' ghost' : ''}`,
+          'data-testid': 'er-table', 'data-table': objectName, 'data-table-key': key,
+          'data-ghost': definition.ghost ? 'true' : null,
         },
-          h('button', {
-            type: 'button', class: 'er-table-open', title: `Open ${objectName}`,
-            'aria-label': `Open ${objectName}`, onclick: () => openObjectTab(object, scope),
-          }, h('span', { class: 'er-table-title', text: objectName })),
-          definition.unavailable
-            ? h('span', { class: 'er-unavailable', text: 'Metadata unavailable' })
-            : h('div', {
-              class: 'er-columns', tabindex: '0', 'aria-label': `Columns in ${objectName}`,
-            }, columnRows));
+          header,
+          definition.ghost
+            ? h('span', {
+              class: 'er-unavailable', 'data-testid': 'er-ghost-note',
+              text: 'No longer in this database',
+            })
+            : definition.unavailable
+              ? h('span', { class: 'er-unavailable', text: 'Metadata unavailable' })
+              : h('div', {
+                class: 'er-columns', tabindex: '0', 'aria-label': `Columns in ${objectName}`,
+                onscroll: () => drawLinks(),
+              }, columnRows),
+          resizeGrip);
         card.style.left = `${left}px`;
         card.style.top = `${top}px`;
+        card.style.width = `${place.width}px`;
+        card.style.height = `${place.height}px`;
+        // A drag ends in a click event too. Swallowing that one keeps a move or a resize from
+        // stealing the selection away from a relationship the reader is still adjusting.
+        let dragged = false;
+        card.addEventListener('click', () => {
+          if (dragged) { dragged = false; return; }
+          if (adjustingConnector) return;
+          selectTable(key);
+        });
+        card.addEventListener('dblclick', (event) => {
+          event.preventDefault();
+          openTable();
+        });
+        card.addEventListener('contextmenu', (event) => {
+          selectTable(key);
+          showContextMenu(event, [
+            { label: `Open ${objectName}`, disabled: !!definition.ghost, action: openTable },
+            { label: 'Remove from diagram', danger: true, action: () => { removeTable(key); } },
+            {
+              label: 'Reset size', disabled: !diagramDocument.sizes[key],
+              action: () => {
+                delete diagramDocument.sizes[key];
+                persist();
+                render();
+              },
+            },
+            { separator: true },
+            ...canvasMenuItems(canvasPoint(event.clientX, event.clientY)),
+          ]);
+        });
+        header.addEventListener('pointerdown', (event) => {
+          if (event.button !== 0) return;
+          const start = positions.get(key);
+          const originX = event.clientX;
+          const originY = event.clientY;
+          const startLeft = start.left;
+          const startTop = start.top;
+          const attachedControls = relationships.map((relationship) => {
+            const relationshipKey = diagramRelationshipKey(relationship);
+            const connector = diagramDocument.connectors[relationshipKey];
+            if (!connector) return null;
+            return {
+              relationshipKey, connector: JSON.parse(JSON.stringify(connector)),
+              sourceKey: diagramTableKey(relationship.source.object.schema, relationship.source.object.name),
+              targetKey: diagramTableKey(relationship.foreignKey.referencedSchema,
+                relationship.foreignKey.referencedTable),
+            };
+          }).filter(Boolean);
+          dragged = false;
+          const move = (moveEvent) => {
+            const dx = (moveEvent.clientX - originX) / view.zoom;
+            const dy = (moveEvent.clientY - originY) / view.zoom;
+            if (Math.hypot(dx, dy) < 3 && !dragged) return;
+            dragged = true;
+            start.left = Math.max(0, startLeft + dx);
+            start.top = Math.max(0, startTop + dy);
+            diagramDocument.positions[key] = { x: start.left, y: start.top };
+            for (const attached of attachedControls) {
+              const connector = diagramDocument.connectors[attached.relationshipKey];
+              if (attached.sourceKey === key && attached.connector.control1) {
+                connector.control1 = {
+                  x: attached.connector.control1.x + dx, y: attached.connector.control1.y + dy,
+                };
+              }
+              if (attached.targetKey === key && attached.connector.control2) {
+                connector.control2 = {
+                  x: attached.connector.control2.x + dx, y: attached.connector.control2.y + dy,
+                };
+              }
+              // A routing point belongs to the line rather than to either end, so it travels the
+              // average of what its two cards travel. Moving one card carries it half the way and
+              // it stays between them.
+              const ends = (attached.sourceKey === key ? 1 : 0) + (attached.targetKey === key ? 1 : 0);
+              if (ends && attached.connector.points?.length) {
+                const share = ends / 2;
+                connector.points = attached.connector.points.map((point) => ({
+                  x: Math.max(0, point.x + dx * share), y: Math.max(0, point.y + dy * share),
+                }));
+              }
+            }
+            card.style.left = `${start.left}px`;
+            card.style.top = `${start.top}px`;
+            drawLinks();
+          };
+          const up = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+            window.removeEventListener('pointercancel', up);
+            if (dragged) persist();
+          };
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', up, { once: true });
+          window.addEventListener('pointercancel', up, { once: true });
+          event.preventDefault();
+        });
+        resizeGrip.addEventListener('pointerdown', (event) => {
+          if (event.button !== 0) return;
+          const start = positions.get(key);
+          const originX = event.clientX;
+          const originY = event.clientY;
+          const startWidth = start.width;
+          const startHeight = start.height;
+          const move = (moveEvent) => {
+            dragged = true;
+            start.width = Math.min(DIAGRAM_MAX_SIZE, Math.max(DIAGRAM_MIN_WIDTH,
+              startWidth + (moveEvent.clientX - originX) / view.zoom));
+            start.height = Math.min(DIAGRAM_MAX_SIZE, Math.max(DIAGRAM_MIN_HEIGHT,
+              startHeight + (moveEvent.clientY - originY) / view.zoom));
+            diagramDocument.sizes[key] = { width: start.width, height: start.height };
+            card.style.width = `${start.width}px`;
+            card.style.height = `${start.height}px`;
+            drawLinks();
+          };
+          const up = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+            window.removeEventListener('pointercancel', up);
+            persist();
+          };
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', up, { once: true });
+          window.addEventListener('pointercancel', up, { once: true });
+          event.preventDefault();
+          event.stopPropagation();
+        });
         cards.push(card);
       });
+      cardPositions = positions;
 
-      const svg = diagramSvgElement('svg', {
-        class: 'er-links', width: canvasWidth, height: canvasHeight,
-        viewBox: `0 0 ${canvasWidth} ${canvasHeight}`, 'aria-hidden': 'true',
+      const svg = diagramSvgElement('svg', { class: 'er-links', 'aria-hidden': 'true' });
+      // Connectors run under the cards, so a knob over a card would be unreachable. The overlay
+      // sits above them and carries the selected connector's handles alone.
+      const overlay = diagramSvgElement('svg', {
+        class: 'er-links er-overlay', 'aria-hidden': 'true',
       });
       const defs = diagramSvgElement('defs');
+      // User-space units keep the arrowhead one fixed length. Left to the default the marker
+      // scales with the line, so selecting a relationship grew its head past the gap and pushed
+      // the tip under the card.
       const marker = diagramSvgElement('marker', {
-        id: `er-arrow-${tab.id}`, viewBox: '0 0 10 10', refX: '9', refY: '5',
-        markerWidth: '6', markerHeight: '6', orient: 'auto-start-reverse',
+        id: `er-arrow-${tab.id}`, viewBox: '0 0 10 10', refX: '0', refY: '5',
+        markerUnits: 'userSpaceOnUse',
+        markerWidth: String(DIAGRAM_ARROW_LENGTH), markerHeight: String(DIAGRAM_ARROW_LENGTH),
+        orient: 'auto',
       });
       marker.append(diagramSvgElement('path', { d: 'M 0 0 L 10 5 L 0 10 z' }));
-      defs.append(marker);
-      svg.append(defs);
-
-      visibleRelationships.forEach((relationship, index) => {
-        const sourceKey = diagramTableKey(
-          relationship.source.object.schema, relationship.source.object.name);
-        const targetKey = diagramTableKey(
-          relationship.foreignKey.referencedSchema, relationship.foreignKey.referencedTable);
-        const source = positions.get(sourceKey);
-        const target = positions.get(targetKey);
-        if (!source || !target) return;
-        const isSelfReference = sourceKey === targetKey;
-        const slot = relationshipSlots.get(relationship) || { index: 0, count: 1, offset: 0 };
-        let pathData;
-        let labelX;
-        let labelY;
-        if (isSelfReference) {
-          const loopHeight = 48 + slot.index * 18;
-          const centerX = source.left + cardWidth / 2;
-          const startX = centerX - 44;
-          const endX = centerX + 44;
-          pathData = `M ${startX} ${source.top} C ${startX} ${source.top - loopHeight}, `
-            + `${endX} ${source.top - loopHeight}, ${endX} ${source.top}`;
-          labelX = centerX;
-          labelY = source.top - loopHeight - 6;
-        } else {
-          let sourceX = source.left + cardWidth / 2;
-          let sourceY = source.top + cardHeight / 2;
-          let targetX = target.left + cardWidth / 2;
-          let targetY = target.top + cardHeight / 2;
-          const deltaX = targetX - sourceX;
-          const deltaY = targetY - sourceY;
-          const bend = 45 + (index % 3) * 14;
-          const distance = Math.hypot(deltaX, deltaY) || 1;
-          let perpendicularX = -deltaY / distance;
-          let perpendicularY = deltaX / distance;
-          if (sourceKey.localeCompare(targetKey) > 0) {
-            perpendicularX *= -1;
-            perpendicularY *= -1;
-          }
-          let directionX = 0;
-          let directionY = 0;
-          if (Math.abs(deltaX) >= Math.abs(deltaY)) {
-            const direction = Math.sign(deltaX) || 1;
-            sourceX += direction * cardWidth / 2;
-            targetX -= direction * cardWidth / 2;
-            directionX = direction;
-          } else {
-            const direction = Math.sign(deltaY) || 1;
-            sourceY += direction * cardHeight / 2;
-            targetY -= direction * cardHeight / 2;
-            directionY = direction;
-          }
-          const curveX = perpendicularX * slot.offset;
-          const curveY = perpendicularY * slot.offset;
-          pathData = `M ${sourceX} ${sourceY} C `
-            + `${sourceX + directionX * bend + curveX} ${sourceY + directionY * bend + curveY}, `
-            + `${targetX - directionX * bend + curveX} ${targetY - directionY * bend + curveY}, `
-            + `${targetX} ${targetY}`;
-          labelX = (sourceX + targetX) / 2 + curveX * 0.75;
-          labelY = (sourceY + targetY) / 2 + curveY * 0.75 - 6;
-        }
-        const path = diagramSvgElement('path', {
-          class: 'er-link',
-          d: pathData,
-          'marker-end': `url(#er-arrow-${tab.id})`, 'data-testid': 'er-relationship',
-          'data-relationship': relationship.foreignKey.name,
-          'data-self-reference': String(isSelfReference),
+      // The far end carries an arrowhead, so the near end carries a half circle. Its flat side sits
+      // on the card border and the dome faces out into the gap.
+      //
+      // It holds a fixed angle rather than following the line. Dragging a curve handle tilts the
+      // line where it leaves the card, and a tilted half circle then sits at an angle across a
+      // border that is always upright. Only the side it faces changes, so there are two of them.
+      const socketFor = (id, angle) => {
+        const socket = diagramSvgElement('marker', {
+          id, viewBox: '0 0 10 10', refX: '0', refY: '5',
+          markerUnits: 'userSpaceOnUse',
+          markerWidth: String(DIAGRAM_SOCKET_SIZE), markerHeight: String(DIAGRAM_SOCKET_SIZE),
+          orient: String(angle),
         });
-        const title = diagramSvgElement('title');
-        title.textContent = relationship.foreignKey.name;
-        path.append(title);
-        svg.append(path);
-        const label = diagramSvgElement('text', {
-          class: 'er-link-label', x: String(labelX),
-          y: String(labelY), 'text-anchor': 'middle',
-          'data-relationship-label': relationship.foreignKey.name,
-        });
-        label.textContent = relationship.foreignKey.name;
-        svg.append(label);
-      });
-
+        socket.append(diagramSvgElement('path', { d: 'M 0 0 A 5 5 0 0 1 0 10 z' }));
+        return socket;
+      };
+      defs.append(marker, ...Object.entries({ right: 0, bottom: 90, left: 180, top: 270 })
+        .map(([side, angle]) => socketFor(`er-socket-${side}-${tab.id}`, angle)));
       const accessibleRelationships = h('ul', {
         class: 'sr-only', 'aria-label': 'Relationships', 'data-testid': 'er-relationship-list',
       }, visibleRelationships.map((relationship) => {
@@ -3994,13 +4878,419 @@
           + `references ${targetName} `
           + `through ${foreignKey.name}${pairs ? `: ${pairs}` : ''}.` });
       }));
-      const canvas = h('div', { class: 'er-canvas' }, svg, accessibleRelationships, cards);
-      canvas.style.width = `${canvasWidth}px`;
-      canvas.style.height = `${canvasHeight}px`;
-      viewport.replaceChildren(canvas);
-      summary.textContent = `${visible.length}${query ? ` of ${definitions.length}` : ''} tables · `
-        + `${visibleRelationships.length} relationship${visibleRelationships.length === 1 ? '' : 's'}`
-        + (failures.length ? ` · ${failures.length} unavailable` : '');
+      canvas.replaceChildren(svg, accessibleRelationships, ...cards, overlay);
+      viewport.replaceChildren(canvas, minimap);
+      const updateCanvasSize = () => {
+        let width = 0;
+        let height = 0;
+        for (const position of positions.values()) {
+          width = Math.max(width, position.left + position.width);
+          height = Math.max(height, position.top + position.height);
+        }
+        contentBounds = { width: Math.max(320, width + 48), height: Math.max(240, height + 48) };
+        canvas.style.width = `${contentBounds.width}px`;
+        canvas.style.height = `${contentBounds.height}px`;
+        for (const layer of [svg, overlay]) {
+          layer.setAttribute('width', contentBounds.width);
+          layer.setAttribute('height', contentBounds.height);
+          layer.setAttribute('viewBox', `0 0 ${contentBounds.width} ${contentBounds.height}`);
+        }
+      };
+
+      const cardsByKey = new Map();
+      // Dataset keys avoid using display names as selectors (quoted identifiers are legal).
+      cards.forEach((card, index) => {
+        const object = visible[index].object;
+        cardsByKey.set(diagramTableKey(object.schema, object.name), card);
+      });
+      const rowY = (key, columnName) => {
+        const card = cardsByKey.get(key);
+        const row = card?.querySelector(`[data-column="${CSS.escape(String(columnName || '').toLowerCase())}"]`);
+        const position = positions.get(key);
+        if (!row) return position.top + position.height / 2;
+        // A column list scrolls inside its card, and offsetTop does not follow it. The anchor
+        // holds the border beside its own row and keeps travelling once that row scrolls out of
+        // sight, past the list in both directions, until it reaches the edge of the card. Parking
+        // it at the first or last visible row instead would leave it beside somebody else's
+        // column, which reads as though the line belonged to that one.
+        const list = row.parentElement;
+        const centre = row.offsetTop + row.offsetHeight / 2 - list.scrollTop;
+        const inset = Math.min(6, position.height / 2);
+        return position.top
+          + Math.min(Math.max(centre, inset), Math.max(inset, position.height - inset));
+      };
+      const relationshipRowY = (key, pairs, property, fallbackProperty = null) => {
+        const values = pairs.map((pair) => pair[property] || (fallbackProperty && pair[fallbackProperty]))
+          .filter(Boolean).map((column) => rowY(key, column));
+        return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length
+          : positions.get(key).top + positions.get(key).height / 2;
+      };
+      // A run into an angled card corner would bury its arrowhead under the card. Back the endpoint
+      // out to the inflated card border so the marker always lands beside the card.
+      const clipToCard = (from, to, key) => {
+        const position = positions.get(key);
+        const left = position.left - DIAGRAM_ARROW_GAP;
+        const right = position.left + position.width + DIAGRAM_ARROW_GAP;
+        const top = position.top - DIAGRAM_ARROW_GAP;
+        const bottom = position.top + position.height + DIAGRAM_ARROW_GAP;
+        if (from.x >= left && from.x <= right && from.y >= top && from.y <= bottom) return to;
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        let ratio = 1;
+        const test = (edge, delta, start) => {
+          if (!delta) return;
+          const candidate = (edge - start) / delta;
+          if (candidate < 0 || candidate > ratio) return;
+          const x = from.x + dx * candidate;
+          const y = from.y + dy * candidate;
+          if (x >= left - 0.01 && x <= right + 0.01 && y >= top - 0.01 && y <= bottom + 0.01) {
+            ratio = candidate;
+          }
+        };
+        test(left, dx, from.x);
+        test(right, dx, from.x);
+        test(top, dy, from.y);
+        test(bottom, dy, from.y);
+        return { x: from.x + dx * ratio, y: from.y + dy * ratio };
+      };
+      const connectorTypeOf = (relationshipKey) =>
+        diagramDocument.connectors[relationshipKey]?.type || diagramDocument.connectorType;
+      const connectorMenuItems = (relationshipKey) => [
+        ...['bezier', 'straight', 'orthogonal'].map((option) => ({
+          label: diagramConnectorLabels[option],
+          checked: connectorTypeOf(relationshipKey) === option,
+          action: () => setConnectorType(relationshipKey, option),
+        })),
+        { separator: true },
+        {
+          label: 'Reset shape',
+          action: () => setConnectorType(relationshipKey, connectorTypeOf(relationshipKey)),
+        },
+      ];
+      const setConnectorType = (relationshipKey, type) => {
+        // Control points and routing pins belong to the shape that produced them, so switching type
+        // starts the new shape from its own default rather than from stale coordinates.
+        diagramDocument.connectors[relationshipKey] = { type };
+        persist();
+        drawLinks();
+      };
+
+      drawLinks = () => {
+        svg.replaceChildren(defs);
+        overlay.replaceChildren();
+        updateCanvasSize();
+        drawMinimap();
+        visibleRelationships.forEach((relationship) => {
+          const sourceKey = diagramTableKey(
+            relationship.source.object.schema, relationship.source.object.name);
+          const targetKey = diagramTableKey(
+            relationship.foreignKey.referencedSchema, relationship.foreignKey.referencedTable);
+          const source = positions.get(sourceKey);
+          const target = positions.get(targetKey);
+          if (!source || !target) return;
+          const isSelfReference = sourceKey === targetKey;
+          const slot = relationshipSlots.get(relationship) || { index: 0, count: 1, offset: 0 };
+          const pairs = relationship.foreignKey.columns || [];
+          const relationshipKey = diagramRelationshipKey(relationship);
+          const connector = diagramDocument.connectors[relationshipKey] || {};
+          const type = connector.type || diagramDocument.connectorType;
+          let pathData;
+          let labelX;
+          let labelY;
+          let routePoints = null;
+          let sourcePoint;
+          let targetPoint;
+          let bezierControls;
+          let orthogonalPins;
+          // Which border the line leaves by, which is the way its half circle faces, and
+          // whether each end runs along y rather than x.
+          let leavesBy = 'right';
+          let leaveDown = false;
+          let arriveDown = false;
+          if (isSelfReference) {
+            // The loop leaves one side and returns to the other above the card, where nothing else
+            // competes for the space.
+            const sourceX = source.left + source.width;
+            const sourceY = relationshipRowY(sourceKey, pairs, 'column', 'sourceColumn');
+            leavesBy = 'right';
+            const targetX = source.left;
+            const targetY = relationshipRowY(sourceKey, pairs, 'referencedColumn');
+            const loopY = source.top - 48 - slot.index * 18;
+            const control1 = connector.control1 || { x: sourceX + 52, y: loopY };
+            const control2 = connector.control2 || { x: targetX - 52, y: loopY };
+            const waypoint = connector.waypoint || { x: source.left + source.width / 2, y: loopY };
+            bezierControls = [control1, control2];
+            orthogonalPins = connector.points?.length ? connector.points : [waypoint];
+            sourcePoint = { x: sourceX, y: sourceY };
+            targetPoint = { x: targetX - DIAGRAM_ARROW_GAP, y: targetY };
+            if (type === 'straight') {
+              pathData = `M ${sourcePoint.x} ${sourcePoint.y} L ${targetPoint.x} ${targetPoint.y}`;
+              labelX = (sourcePoint.x + targetPoint.x) / 2;
+              labelY = (sourcePoint.y + targetPoint.y) / 2 - 7;
+            } else if (type === 'orthogonal') {
+              routePoints = orthogonalRoute(sourcePoint, targetPoint, orthogonalPins);
+              pathData = routePath(routePoints);
+              const midpoint = routeMidpoint(routePoints);
+              labelX = midpoint.x;
+              labelY = midpoint.y - 7;
+            } else {
+              pathData = `M ${sourcePoint.x} ${sourcePoint.y} C ${control1.x} ${control1.y}, `
+                + `${control2.x} ${control2.y}, ${targetPoint.x} ${targetPoint.y}`;
+              labelX = (sourcePoint.x + 3 * control1.x + 3 * control2.x + targetPoint.x) / 8;
+              labelY = (sourcePoint.y + 3 * control1.y + 3 * control2.y + targetPoint.y) / 8 - 7;
+            }
+          } else {
+            const targetIsRight = target.left >= source.left;
+            const sourceRow = relationshipRowY(sourceKey, pairs, 'column', 'sourceColumn');
+            const targetRow = relationshipRowY(targetKey, pairs, 'referencedColumn');
+            const routedPins = type === 'orthogonal' && connector.points?.length
+              ? connector.points : null;
+            const from = diagramAnchor(source, sourceRow, routedPins?.[0], targetIsRight);
+            const to = diagramAnchor(target, targetRow, routedPins?.at(-1), !targetIsRight);
+            const away = DIAGRAM_ANCHOR_NORMALS[to.side];
+            const direction = targetIsRight ? 1 : -1;
+            // A curve and a straight line always use the side borders, level with their columns.
+            const sourceX = source.left + (targetIsRight ? source.width : 0);
+            const targetX = target.left + (targetIsRight ? 0 : target.width)
+              + (targetIsRight ? -DIAGRAM_ARROW_GAP : DIAGRAM_ARROW_GAP);
+            const sourceY = sourceRow;
+            const targetY = targetRow;
+            sourcePoint = { x: sourceX, y: sourceY };
+            targetPoint = { x: targetX, y: targetY };
+            // Control points sit level with their own anchor, so the curve leaves and meets each
+            // card at a right angle to its border. Parallel relationships fan by nudging them apart.
+            const reach = Math.max(48, Math.min(180, Math.abs(targetX - sourceX) * 0.5))
+              + slot.index * 16;
+            const control1 = connector.control1
+              || { x: sourceX + direction * reach, y: sourceY + slot.offset };
+            const control2 = connector.control2
+              || { x: targetX - direction * reach, y: targetY + slot.offset };
+            // The default right-angled route leaves and arrives horizontally too, so its arrowhead
+            // meets the card square-on rather than clipping a corner. Its knob sits half way along
+            // the line, which is where a reader looks for it.
+            const waypoint = connector.waypoint || {
+              x: (sourceX + targetX) / 2 + slot.offset, y: (sourceY + targetY) / 2,
+            };
+            bezierControls = [control1, control2];
+            orthogonalPins = connector.points?.length ? connector.points : [waypoint];
+            if (type === 'straight') {
+              leavesBy = targetIsRight ? 'right' : 'left';
+              targetPoint = clipToCard(sourcePoint, targetPoint, targetKey);
+              pathData = `M ${sourcePoint.x} ${sourcePoint.y} L ${targetPoint.x} ${targetPoint.y}`;
+              labelX = (sourcePoint.x + targetPoint.x) / 2;
+              labelY = (sourcePoint.y + targetPoint.y) / 2 - 7;
+            } else if (type === 'orthogonal') {
+              leavesBy = from.side;
+              leaveDown = from.side === 'top' || from.side === 'bottom';
+              arriveDown = to.side === 'top' || to.side === 'bottom';
+              sourcePoint = { x: from.x, y: from.y };
+              targetPoint = {
+                x: to.x + away.x * DIAGRAM_ARROW_GAP, y: to.y + away.y * DIAGRAM_ARROW_GAP,
+              };
+              routePoints = orthogonalRoute(
+                sourcePoint, targetPoint, orthogonalPins, leaveDown, arriveDown, source);
+              pathData = routePath(routePoints);
+              const midpoint = routeMidpoint(routePoints);
+              labelX = midpoint.x;
+              // The routing knob sits half way along too, so the name clears it.
+              labelY = midpoint.y - 15;
+            } else {
+              leavesBy = targetIsRight ? 'right' : 'left';
+              pathData = `M ${sourceX} ${sourceY} C ${control1.x} ${control1.y}, `
+                + `${control2.x} ${control2.y}, ${targetX} ${targetY}`;
+              labelX = (sourceX + 3 * control1.x + 3 * control2.x + targetX) / 8;
+              labelY = (sourceY + 3 * control1.y + 3 * control2.y + targetY) / 8 - 7;
+            }
+          }
+          const selected = selectedRelationshipKey === relationshipKey;
+          const group = diagramSvgElement('g', { class: 'er-link-group' });
+          // A two-pixel line is a hard target, so an invisible wide stroke underneath takes the
+          // click instead.
+          group.append(diagramSvgElement('path', { class: 'er-link-hit', d: pathData }));
+          const path = diagramSvgElement('path', {
+            class: `er-link${selected ? ' selected' : ''}`,
+            d: pathData,
+            'marker-start': `url(#er-socket-${leavesBy}-${tab.id})`,
+            'marker-end': `url(#er-arrow-${tab.id})`, 'data-testid': 'er-relationship',
+            'data-relationship': relationship.foreignKey.name,
+            'data-connector-type': type,
+            'data-self-reference': String(isSelfReference),
+          });
+          const title = diagramSvgElement('title');
+          title.textContent = type === 'orthogonal'
+            ? `${relationship.foreignKey.name} — double-click to add a routing point`
+            : `${relationship.foreignKey.name} — right-click to change the connector`;
+          path.append(title);
+          group.append(path);
+          const toggleSelection = () => {
+            if (adjustingConnector) return;
+            if (selectedRelationshipKey === relationshipKey) clearSelection();
+            else selectRelationship(relationshipKey);
+          };
+          group.addEventListener('click', toggleSelection);
+          group.addEventListener('contextmenu', (event) => {
+            selectRelationship(relationshipKey);
+            showContextMenu(event, connectorMenuItems(relationshipKey));
+          });
+          group.addEventListener('dblclick', (event) => {
+            if (type !== 'orthogonal' || !routePoints) return;
+            const clicked = canvasPoint(event.clientX, event.clientY);
+            const nearest = nearestRoutePoint(clicked, routePoints);
+            const points = connector.points?.length
+              ? connector.points.slice()
+              : orthogonalPins.map((point) => ({ ...point }));
+            const insertion = Math.min(points.length, Math.max(0,
+              Math.round((nearest?.index || 0) * points.length / Math.max(1, routePoints.length - 2))));
+            points.splice(insertion, 0, nearest ? { x: nearest.x, y: nearest.y } : clicked);
+            diagramDocument.connectors[relationshipKey] = { ...connector, type, points };
+            persist();
+            drawLinks();
+            event.preventDefault();
+            event.stopPropagation();
+          });
+          svg.append(group);
+          // Eighteen names drawn at once turn the middle of a busy model into overlapping text that
+          // the cards then cut in half. One name shows at a time, above the cards, where it reads.
+          const label = diagramSvgElement('text', {
+            class: `er-link-label${selected ? ' selected' : ''}`, x: String(labelX),
+            y: String(labelY), 'text-anchor': 'middle',
+            'data-relationship-label': relationship.foreignKey.name,
+          });
+          label.textContent = relationship.foreignKey.name;
+          group.addEventListener('mouseenter', () => label.classList.add('hovered'));
+          group.addEventListener('mouseleave', () => label.classList.remove('hovered'));
+          overlay.append(label);
+          if (!selected || type === 'straight') return;
+          const handles = type === 'bezier'
+            ? [
+              { property: 'control1', point: bezierControls[0] },
+              { property: 'control2', point: bezierControls[1] },
+            ]
+            // A routing knob is drawn where the connector actually runs, so it can never float away
+            // from its own line.
+            : orthogonalPins.map((point, index) => {
+              const onRoute = nearestRoutePoint(point, routePoints);
+              return {
+                property: 'points', index,
+                point: onRoute ? { x: onRoute.x, y: onRoute.y } : point,
+              };
+            });
+          if (type === 'bezier') {
+            for (const [endpoint, handle] of [[sourcePoint, handles[0]], [targetPoint, handles[1]]]) {
+              overlay.append(diagramSvgElement('line', {
+                class: 'er-control-guide', x1: endpoint.x, y1: endpoint.y,
+                x2: handle.point.x, y2: handle.point.y,
+              }));
+            }
+          }
+          for (const handleDefinition of handles) {
+            const runGrip = type === 'orthogonal' && orthogonalPins.length === 1;
+            const handle = diagramSvgElement('circle', {
+              class: `er-connector-handle${runGrip ? ' er-run-grip' : ''}`,
+              cx: handleDefinition.point.x,
+              cy: handleDefinition.point.y, r: '7',
+              'data-testid': 'er-connector-handle',
+              'data-control': handleDefinition.property,
+              'data-point-index': handleDefinition.index ?? '', tabindex: '0',
+            });
+            // The last knob on a right-angled line is the grip that holds its crossing run, and a
+            // curve has exactly two control points. Neither can go, so neither offers to.
+            const removable = type === 'orthogonal' && orthogonalPins.length > 1;
+            const removePoint = () => {
+              const current = diagramDocument.connectors[relationshipKey] || { type };
+              const points = current.points?.length
+                ? current.points.slice() : orthogonalPins.map((point) => ({ ...point }));
+              points.splice(handleDefinition.index, 1);
+              current.points = points;
+              diagramDocument.connectors[relationshipKey] = current;
+              persist();
+              drawLinks();
+            };
+            handle.append(diagramSvgElement('title'));
+            handle.firstChild.textContent = type !== 'orthogonal'
+              ? 'Drag Bézier control point; right-click for the connector menu'
+              : (removable
+                ? 'Drag to route; double-click to remove; right-click for the menu'
+                : 'Drag sideways to move the line; right-click for the menu');
+            handle.addEventListener('contextmenu', (event) => {
+              showContextMenu(event, [
+                {
+                  label: 'Remove routing point', disabled: !removable, danger: removable,
+                  action: removePoint,
+                },
+                { separator: true },
+                ...connectorMenuItems(relationshipKey),
+              ]);
+            });
+            handle.addEventListener('dblclick', (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (!removable) return;
+              removePoint();
+            });
+            handle.addEventListener('pointerdown', (event) => {
+              if (event.button !== 0) return;
+              const move = (moveEvent) => {
+                const current = diagramDocument.connectors[relationshipKey] || { type };
+                current.type = type;
+                const dragged = canvasPoint(moveEvent.clientX, moveEvent.clientY);
+                let nextPoint = { x: Math.max(0, dragged.x), y: Math.max(0, dragged.y) };
+                if (handleDefinition.property === 'points') {
+                  const points = current.points?.length
+                    ? current.points.slice() : orthogonalPins.map((point) => ({ ...point }));
+                  const otherPoints = points.filter((_, index) => index !== handleDefinition.index);
+                  if (points.length === 1) {
+                    // The single knob is a grip on the crossing run. It slides that run sideways and
+                    // stays half way along it. Dragging it up or down only ever moved the knob off
+                    // its own line or folded the route back on itself, so it does neither now.
+                    nextPoint = { x: nextPoint.x, y: (sourcePoint.y + targetPoint.y) / 2 };
+                    for (const candidate of [sourcePoint, targetPoint]) {
+                      if (Math.abs(nextPoint.x - candidate.x) <= 10) nextPoint.x = candidate.x;
+                    }
+                  } else {
+                    const snapCoordinates = [sourcePoint, targetPoint, ...otherPoints];
+                    for (const candidate of snapCoordinates) {
+                      if (Math.abs(nextPoint.x - candidate.x) <= 10) nextPoint.x = candidate.x;
+                      if (Math.abs(nextPoint.y - candidate.y) <= 10) nextPoint.y = candidate.y;
+                    }
+                    const routeWithoutPoint = orthogonalRoute(
+                      sourcePoint, targetPoint, otherPoints, leaveDown, arriveDown, source);
+                    const nearest = nearestRoutePoint(nextPoint, routeWithoutPoint);
+                    if (nearest?.distance <= 10) nextPoint = { x: nearest.x, y: nearest.y };
+                  }
+                  points[handleDefinition.index] = nextPoint;
+                  current.points = points;
+                } else {
+                  current[handleDefinition.property] = nextPoint;
+                }
+                diagramDocument.connectors[relationshipKey] = current;
+                drawLinks();
+              };
+              const up = () => {
+                window.removeEventListener('pointermove', move);
+                window.removeEventListener('pointerup', up);
+                window.removeEventListener('pointercancel', up);
+                const current = diagramDocument.connectors[relationshipKey];
+                if (current?.points?.length > 1) {
+                  current.points = mergeRedundantPins(
+                    current.points, sourcePoint, targetPoint, leaveDown, arriveDown, source);
+                }
+                finishConnectorAdjustment();
+                persist();
+                drawLinks();
+              };
+              window.addEventListener('pointermove', move);
+              window.addEventListener('pointerup', up, { once: true });
+              window.addEventListener('pointercancel', up, { once: true });
+              event.preventDefault();
+              event.stopPropagation();
+            });
+            overlay.append(handle);
+          }
+        });
+      };
+      drawLinks();
+      applyView();
     };
 
     filter.addEventListener('input', render);

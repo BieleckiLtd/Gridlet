@@ -58,15 +58,6 @@
         </svg>
         <span>Ask</span>
       </button>
-      <button id="diagram-btn" class="ghost app-action" title="Open an ER diagram" data-testid="er-diagram-open">
-        <svg class="app-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <rect x="3" y="4" width="7" height="5" rx="1"></rect>
-          <rect x="14" y="15" width="7" height="5" rx="1"></rect>
-          <path d="M10 6.5h2a4 4 0 0 1 4 4V15"></path>
-          <path d="M7 9v3a4 4 0 0 0 4 4h3"></path>
-        </svg>
-        <span>Diagram</span>
-      </button>
       <button id="schema-compare-btn" class="ghost app-action" title="Compare database schemas" data-testid="schema-compare-open">
         <svg class="app-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path d="M4 5h6v14h-6z"></path>
@@ -75,13 +66,6 @@
           <path d="M14 15h-4m2-2l-2 2l2 2"></path>
         </svg>
         <span>Compare</span>
-      </button>
-      <button id="object-search-btn" class="ghost app-action" title="Search objects across every connection" data-testid="object-search-open">
-        <svg class="app-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <circle cx="10.5" cy="10.5" r="6.5"></circle>
-          <path d="m15.5 15.5l5 5"></path>
-        </svg>
-        <span>Find</span>
       </button>
       <button id="new-query-btn" class="ghost app-action" title="Open an ad-hoc SQL workspace">
         <svg class="app-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -108,7 +92,13 @@
               <path d="M9 4l0 16"></path>
             </svg>
           </button>
-          <input id="search" type="search" placeholder="Filter objects…" autocomplete="off" />
+          <div class="sidebar-filter">
+            <input id="search" type="search" placeholder="Filter objects…" autocomplete="off" />
+            <button id="object-search-btn" class="ghost sidebar-filter-advanced" type="button"
+              title="Advanced object search" aria-label="Advanced object search" data-testid="object-search-open">
+              <span aria-hidden="true">⋮</span>
+            </button>
+          </div>
         </div>
         <div id="tree" class="tree"></div>
         <div id="sidebar-grip" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>
