@@ -3788,6 +3788,10 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var page = browserPage.Page;
         await OpenQueryAsync(page, "SELECT 42");
 
+        await Assertions.Expect(page.Locator("#new-query-btn svg path"))
+            .ToHaveAttributeAsync("d", "M7 4v16l13 -8z");
+        await Assertions.Expect(page.GetByTestId("query-run").Locator("svg path"))
+            .ToHaveAttributeAsync("d", "M7 4v16l13 -8z");
         await page.GetByTestId("query-run").ClickAsync();
 
         var results = page.GetByTestId("query-results");
