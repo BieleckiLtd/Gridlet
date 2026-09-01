@@ -356,13 +356,54 @@ public sealed record RoutineArgument(string? Value, bool IsNull = false, bool Is
 public sealed record ForeignKeyColumnPair(string Column, string ReferencedColumn);
 
 /// <summary>A foreign key from this table to a referenced table.</summary>
+/// <param name="IsNameSynthesized">
+/// True when the database holds no declared name for the key and <paramref name="Name"/> is a
+/// label Gridlet made up so the key can be shown and referred to. SQLite reports foreign keys
+/// through <c>pragma_foreign_key_list</c>, which omits the declared name, and a key written
+/// without <c>CONSTRAINT</c> has no name to report. A synthesized name must never be written
+/// back to the database, because that would add a constraint name the author did not choose.
+/// </param>
+// The compatibility constructor below leaves the serializer with two candidates, so the shape a
+// consumer deserializes into is named explicitly.
+[method: System.Text.Json.Serialization.JsonConstructor]
 public sealed record ForeignKeyInfo(
     string Name,
     string ReferencedSchema,
     string ReferencedTable,
     IReadOnlyList<ForeignKeyColumnPair> Columns,
     string OnDelete = "NO_ACTION",
-    string OnUpdate = "NO_ACTION");
+    string OnUpdate = "NO_ACTION",
+    bool IsNameSynthesized = false)
+{
+    /// <summary>Creates the previous six-field shape without relying on optional-parameter ABI.</summary>
+    public ForeignKeyInfo(
+        string name,
+        string referencedSchema,
+        string referencedTable,
+        IReadOnlyList<ForeignKeyColumnPair> columns,
+        string onDelete,
+        string onUpdate)
+        : this(name, referencedSchema, referencedTable, columns, onDelete, onUpdate, false)
+    {
+    }
+
+    /// <summary>Deconstructs the previous six-field shape.</summary>
+    public void Deconstruct(
+        out string name,
+        out string referencedSchema,
+        out string referencedTable,
+        out IReadOnlyList<ForeignKeyColumnPair> columns,
+        out string onDelete,
+        out string onUpdate)
+    {
+        name = Name;
+        referencedSchema = ReferencedSchema;
+        referencedTable = ReferencedTable;
+        columns = Columns;
+        onDelete = OnDelete;
+        onUpdate = OnUpdate;
+    }
+}
 
 /// <summary>SQL Server system-versioning metadata for a current or history table.</summary>
 public sealed record TemporalTableInfo(

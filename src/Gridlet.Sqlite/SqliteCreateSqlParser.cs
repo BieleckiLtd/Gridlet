@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Gridlet.Models;
 
 namespace Gridlet.Sqlite;
@@ -13,7 +13,18 @@ internal static class SqliteCreateSqlParser
     internal sealed record ParsedTable(
         IReadOnlyList<CheckConstraintInfo> Checks,
         IReadOnlyList<UniqueConstraintInfo> Uniques,
-        IReadOnlyDictionary<string, string> ColumnCollations);
+        IReadOnlyDictionary<string, string> ColumnCollations,
+        IReadOnlyList<ParsedForeignKey> ForeignKeys);
+
+    /// <summary>
+    /// One foreign key as it was written, in declaration order. Only the parts needed to match the
+    /// declaration against a <c>pragma_foreign_key_list</c> row are kept; the pragma is the
+    /// authority on everything else.
+    /// </summary>
+    internal sealed record ParsedForeignKey(
+        string? Name,
+        IReadOnlyList<string> Columns,
+        string ReferencedTable);
 
     internal sealed record ParsedIndex(
         IReadOnlyList<IndexKeyInfo> Keys,
@@ -26,21 +37,23 @@ internal static class SqliteCreateSqlParser
     {
         if (string.IsNullOrWhiteSpace(sql) || !TryFindParenthesizedBody(sql, out var bodyStart, out var bodyEnd))
         {
-            return new ParsedTable([], [], new Dictionary<string, string>());
+            return new ParsedTable([], [], new Dictionary<string, string>(), []);
         }
 
         var checks = new List<CheckConstraintInfo>();
         var uniques = new List<UniqueConstraintInfo>();
         var columnCollations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var foreignKeys = new List<ParsedForeignKey>();
         foreach (var fragment in SplitTopLevel(sql[(bodyStart + 1)..bodyEnd]))
         {
-            ParseTableFragment(fragment, checks, uniques, columnCollations);
+            ParseTableFragment(fragment, checks, uniques, columnCollations, foreignKeys);
         }
 
         return new ParsedTable(
             checks.Select((item, ordinal) => item with { Ordinal = ordinal }).ToArray(),
             uniques.Select((item, ordinal) => item with { Ordinal = ordinal }).ToArray(),
-            columnCollations);
+            columnCollations,
+            foreignKeys);
     }
 
     public static ParsedIndex ParseIndex(string? sql)
@@ -124,11 +137,13 @@ internal static class SqliteCreateSqlParser
     }
 
     /// <param name="columnCollations">Receives the declared collation of each column that has one.</param>
+    /// <param name="foreignKeys">Receives each foreign key in the order it was written.</param>
     private static void ParseTableFragment(
         string rawFragment,
         List<CheckConstraintInfo> checks,
         List<UniqueConstraintInfo> uniques,
-        Dictionary<string, string> columnCollations)
+        Dictionary<string, string> columnCollations,
+        List<ParsedForeignKey> foreignKeys)
     {
         var fragment = rawFragment.Trim();
         if (fragment.Length == 0) return;
@@ -162,7 +177,21 @@ internal static class SqliteCreateSqlParser
             return;
         }
 
-        // PRIMARY KEY and FOREIGN KEY are table constraints, not column definitions.
+        if (position + 1 < tokens.Count &&
+            IsWord(tokens[position], "FOREIGN") && IsWord(tokens[position + 1], "KEY"))
+        {
+            var body = ExtractParenthesizedAfter(fragment, tokens[position + 1]);
+            var referenced = FindReferencedTable(tokens, position + 2);
+            var keyColumns = body is null ? null : ParseColumnNames(body);
+            if (keyColumns is not null && referenced is not null)
+            {
+                foreignKeys.Add(new ParsedForeignKey(tableConstraintName, keyColumns, referenced));
+            }
+            return;
+        }
+
+        // PRIMARY KEY, and a FOREIGN KEY that did not parse, are table constraints rather than
+        // column definitions, so neither starts with a column name.
         if (position < tokens.Count && (IsWord(tokens[position], "PRIMARY") || IsWord(tokens[position], "FOREIGN")))
         {
             return;
@@ -195,6 +224,17 @@ internal static class SqliteCreateSqlParser
                     [new IndexKeyInfo(columnName, 1)]));
                 pendingConstraintName = null;
             }
+            else if (IsWord(token, "REFERENCES"))
+            {
+                // A column-level REFERENCES is a foreign key on that one column. SQLite reports it
+                // through the same pragma as a table-level FOREIGN KEY.
+                var referenced = FindReferencedTable(tokens, i);
+                if (referenced is not null)
+                {
+                    foreignKeys.Add(new ParsedForeignKey(pendingConstraintName, [columnName], referenced));
+                }
+                pendingConstraintName = null;
+            }
             else if (pendingConstraintName is not null && token.Kind == TokenKind.Word)
             {
                 // A CONSTRAINT name belongs only to the immediately following column constraint.
@@ -210,6 +250,53 @@ internal static class SqliteCreateSqlParser
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Reads a foreign key's parenthesized column list. Every entry has to be one plain identifier,
+    /// which is all SQLite allows there; the list is tokenized rather than split on text so quoting
+    /// and comments do not become part of a column name. Returns null when any entry is something
+    /// else, which leaves the caller with no usable declaration rather than a wrong one.
+    /// </summary>
+    private static IReadOnlyList<string>? ParseColumnNames(string body)
+    {
+        var names = new List<string>();
+        foreach (var part in SplitTopLevel(body))
+        {
+            var tokens = Tokenize(part);
+            if (tokens.Count != 1 || !IsIdentifierToken(tokens[0])) return null;
+            names.Add(UnquoteIdentifier(tokens[0].Text));
+        }
+
+        return names.Count == 0 ? null : names;
+    }
+
+    /// <summary>
+    /// True when a token names something. A single-quoted token counts: SQLite reads one as an
+    /// identifier wherever a string literal cannot appear, which includes a constraint's column
+    /// list and the table after REFERENCES, and older tools wrote them that way.
+    /// </summary>
+    private static bool IsIdentifierToken(Token token)
+        => token.Kind is TokenKind.Word or TokenKind.Identifier or TokenKind.String;
+
+    /// <summary>
+    /// Returns the table named by the first top-level REFERENCES at or after <paramref name="start"/>.
+    /// </summary>
+    private static string? FindReferencedTable(List<Token> tokens, int start)
+    {
+        for (var i = Math.Max(start, 0); i < tokens.Count; i++)
+        {
+            if (tokens[i].Depth != 0 || !IsWord(tokens[i], "REFERENCES")) continue;
+            if (i + 1 >= tokens.Count || tokens[i + 1].Depth != 0 || !IsIdentifierToken(tokens[i + 1]))
+            {
+                return null;
+            }
+
+            var name = UnquoteIdentifier(tokens[i + 1].Text);
+            return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+
+        return null;
     }
 
     private static IndexKeyInfo ParseIndexKey(string raw, int ordinal, bool allowSingleQuotedIdentifier)
@@ -304,7 +391,10 @@ internal static class SqliteCreateSqlParser
         var depth = 0;
         for (var i = 0; i < sql.Length;)
         {
-            if (char.IsWhiteSpace(sql[i])) { i++; continue; }
+            // Only ASCII whitespace separates tokens. SQLite's whitespace is space, tab, newline,
+            // carriage return, form feed and vertical tab; anything at or above U+0080 belongs to
+            // the identifier, even where .NET calls it whitespace (U+00A0, for one).
+            if (sql[i] < '\u0080' && char.IsWhiteSpace(sql[i])) { i++; continue; }
             if (sql[i] == '-' && i + 1 < sql.Length && sql[i + 1] == '-')
             {
                 i += 2;
@@ -336,10 +426,10 @@ internal static class SqliteCreateSqlParser
                 ReadQuoted(sql, ref i, '[', ']');
                 tokens.Add(new Token(sql[start..i], start, i, TokenKind.Identifier, depth));
             }
-            else if (char.IsLetterOrDigit(sql[i]) || sql[i] is '_' or '$')
+            else if (IsWordCharacter(sql[i]))
             {
                 i++;
-                while (i < sql.Length && (char.IsLetterOrDigit(sql[i]) || sql[i] is '_' or '$')) i++;
+                while (i < sql.Length && IsWordCharacter(sql[i])) i++;
                 tokens.Add(new Token(sql[start..i], start, i, TokenKind.Word, depth));
             }
             else
@@ -352,6 +442,14 @@ internal static class SqliteCreateSqlParser
         }
         return tokens;
     }
+
+    /// <summary>
+    /// Characters SQLite accepts inside an unquoted identifier. SQLite treats every character at or
+    /// above U+0080 as an identifier character, so a name written with a combining mark stays one
+    /// token here rather than splitting into several.
+    /// </summary>
+    private static bool IsWordCharacter(char value)
+        => char.IsLetterOrDigit(value) || value is '_' or '$' || value >= '\u0080';
 
     private static void ReadQuoted(string sql, ref int i, char open, char close)
     {

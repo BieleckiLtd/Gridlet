@@ -92,13 +92,53 @@ public sealed record DefaultConstraintDesign(
 public sealed record ConstraintReference(string? Name = null, int? Ordinal = null);
 
 /// <summary>A foreign-key constraint designed in the structure editor.</summary>
+/// <param name="IsNameSynthesized">
+/// True when <paramref name="Name"/> is a label Gridlet made up for a key the database holds
+/// without a declared name. Providers that can write an unnamed foreign key omit the
+/// <c>CONSTRAINT</c> clause for it, so replaying a table does not name what the author left
+/// unnamed. See <see cref="Gridlet.Models.ForeignKeyInfo.IsNameSynthesized"/>.
+/// </param>
+// The compatibility constructor below leaves the serializer with two candidates, so the shape a
+// request body binds to is named explicitly.
+[method: System.Text.Json.Serialization.JsonConstructor]
 public sealed record ForeignKeyDesign(
     string Name,
     string ReferencedSchema,
     string ReferencedTable,
     IReadOnlyList<ForeignKeyColumnPair> Columns,
     string OnDelete = "NO ACTION",
-    string OnUpdate = "NO ACTION");
+    string OnUpdate = "NO ACTION",
+    bool IsNameSynthesized = false)
+{
+    /// <summary>Creates the previous six-field shape without relying on optional-parameter ABI.</summary>
+    public ForeignKeyDesign(
+        string name,
+        string referencedSchema,
+        string referencedTable,
+        IReadOnlyList<ForeignKeyColumnPair> columns,
+        string onDelete,
+        string onUpdate)
+        : this(name, referencedSchema, referencedTable, columns, onDelete, onUpdate, false)
+    {
+    }
+
+    /// <summary>Deconstructs the previous six-field shape.</summary>
+    public void Deconstruct(
+        out string name,
+        out string referencedSchema,
+        out string referencedTable,
+        out IReadOnlyList<ForeignKeyColumnPair> columns,
+        out string onDelete,
+        out string onUpdate)
+    {
+        name = Name;
+        referencedSchema = ReferencedSchema;
+        referencedTable = ReferencedTable;
+        columns = Columns;
+        onDelete = OnDelete;
+        onUpdate = OnUpdate;
+    }
+}
 
 /// <summary>A new table as designed in the UI.</summary>
 /// <param name="Options">

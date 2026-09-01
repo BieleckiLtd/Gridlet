@@ -75,4 +75,26 @@ public sealed class ForeignKeyDisplayEndpointTests
         var lookup = await client.PostAsJsonAsync(BaseUrl + "/lookup", new { search = "pizza" });
         Assert.Equal(HttpStatusCode.BadRequest, lookup.StatusCode);
     }
+
+    /// <summary>
+    /// SQLite does not require foreign-key names to be unique within a table, so a name can match
+    /// more than one relationship. A display has to belong to one, so an ambiguous name is refused
+    /// rather than bound to whichever key is found first.
+    /// </summary>
+    [Fact]
+    public async Task Configuration_refuses_a_name_that_matches_two_foreign_keys()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        const string duplicateUrl =
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/DuplicateKeys/foreign-key-displays/fk_dup";
+
+        var save = await client.PostAsJsonAsync(duplicateUrl, new { labelColumn = "Name" });
+        Assert.Equal(HttpStatusCode.BadRequest, save.StatusCode);
+        Assert.Contains("More than one foreign key",
+            await save.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+        var lookup = await client.PostAsJsonAsync(duplicateUrl + "/lookup", new { search = "pizza" });
+        Assert.Equal(HttpStatusCode.BadRequest, lookup.StatusCode);
+    }
 }
