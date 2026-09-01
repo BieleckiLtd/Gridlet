@@ -419,8 +419,10 @@ button.ghost { background: transparent; }
   width: 26px;
   height: 26px;
   padding: 0;
-  border-color: transparent;
+  border: 0;
   border-radius: 4px;
+  background: none;
+  box-shadow: none;
   color: var(--muted);
   font-size: 20px;
   line-height: 1;
@@ -437,7 +439,12 @@ button.ghost { background: transparent; }
   pointer-events: auto;
 }
 .sidebar-filter-advanced:hover,
-.sidebar-filter-advanced:focus-visible { color: var(--text); }
+.sidebar-filter-advanced:focus-visible {
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--text);
+}
 
 .tree { overflow: auto; flex: 1; padding: 0 6px 12px; }
 
