@@ -1915,8 +1915,61 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
                 ["color.light"] = "=concat(\"#\", \"3366ff\")",
             })]);
 
+        // Make the light variant the one on the canvas. The colour panel now deliberately shows
+        // only that current theme rather than presenting both stored variants as simultaneous inputs.
+        var theme = page.GetByTestId("component-theme");
+        for (var attempts = 0; attempts < 3 && await theme.GetAttributeAsync("data-theme-mode") != "light"; attempts++)
+        {
+            await theme.ClickAsync();
+        }
+
         await Canvas(page, "swatchLabel").ClickAsync();
         await OpenPanelTabAsync(page, "Appearance");
+
+        await Assertions.Expect(page.Locator(".gfd-heading", new() { HasTextString = "Colours (Light theme)" }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("colour-color.dark")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTestId("colour-not-defined-fill.light")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("colour-fill.light"))
+            .ToHaveAttributeAsync("placeholder", "Not defined");
+
+        // Colour rows use the same two-column track and input height as ordinary property rows.
+        // Their fields therefore have identical widths and the same one-pixel inter-row gap.
+        var colourLayout = await page.EvaluateAsync<double[]>("""
+            () => {
+              const box = selector => document.querySelector(selector).getBoundingClientRect();
+              const width = box('.gfd-row[data-property="w"] .gfd-cell input');
+              const height = box('.gfd-row[data-property="h"] .gfd-cell input');
+              const text = box('.gfd-row [data-property="color.light"] .gfd-colour-control');
+              const fill = box('.gfd-row [data-property="fill.light"] .gfd-colour-control');
+              return [width.width, text.width, height.top - width.bottom, fill.top - text.bottom];
+            }
+            """);
+        Assert.Equal(colourLayout[0], colourLayout[1]);
+        Assert.Equal(colourLayout[2], colourLayout[3]);
+
+        var fillControl = page.GetByTestId("colour-fill.light").Locator("xpath=..");
+        var clearFill = fillControl.GetByRole(AriaRole.Button, new() { Name = "Clear background on the light theme" });
+        await Assertions.Expect(clearFill).ToBeDisabledAsync();
+        await Assertions.Expect(clearFill).ToHaveCSSAsync("opacity", "0");
+        await fillControl.HoverAsync();
+        await Assertions.Expect(clearFill).ToHaveCSSAsync("opacity", "0");
+
+        // The slash is only the undefined marker; the swatch remains a working colour picker.
+        var undefinedPicker = page.GetByTestId("colour-picker-fill.light");
+        await Assertions.Expect(undefinedPicker).ToBeEnabledAsync();
+        await undefinedPicker.EvaluateAsync("""
+            picker => {
+              picker.value = '#224466';
+              picker.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            """);
+        await Assertions.Expect(page.GetByTestId("colour-fill.light")).ToHaveValueAsync("#224466");
+        await Assertions.Expect(clearFill).ToBeEnabledAsync();
+        await fillControl.HoverAsync();
+        await Assertions.Expect(clearFill).ToHaveCSSAsync("opacity", "1");
+        await Assertions.Expect(clearFill).ToHaveCSSAsync("border-top-width", "0px");
+        await Assertions.Expect(clearFill).ToHaveCSSAsync("background-color", "rgba(0, 0, 0, 0)");
 
         // The picker reports the colour rather than taking one: dragging it would be overwritten
         // on the next draw.

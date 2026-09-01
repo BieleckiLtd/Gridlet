@@ -2952,8 +2952,7 @@ export default class ${CLASS_NAME(name)} {
             : (options.hint || label),
           text: label,
         }),
-        cell,
-        h('span', { class: 'gfd-bind-gap' }));
+        cell);
     }
 
     // ---- one box per property ----
@@ -3132,7 +3131,8 @@ export default class ${CLASS_NAME(name)} {
 
     // A colour with a way back out of it. A colour input cannot express "not set", so Clear is a
     // separate control rather than a magic value, and the text box takes anything CSS accepts — a
-    // variable, a colour function, a hex, or a formula that works one out.
+    // variable, a colour function, a hex, or a formula that works one out. The picker and box share
+    // one outline because they are two ways to edit the same value, not two separate properties.
     //
     // The swatch keeps its job when a formula decides the colour: it shows the colour that came
     // out, so the formula and its result are on screen together. A result that is not a colour at
@@ -3148,7 +3148,8 @@ export default class ${CLASS_NAME(name)} {
         type: 'text',
         spellcheck: 'false',
         autocomplete: 'off',
-        placeholder: 'default',
+        placeholder: 'Not defined',
+        'aria-label': hint,
         'data-bind-key': key,
         'data-testid': 'colour-' + key,
         oninput: (event) => {
@@ -3158,48 +3159,11 @@ export default class ${CLASS_NAME(name)} {
       text.value = storedText(target, key, 'text');
       watchProperty(target, key, text);
 
-      // The swatch says what the colour came out as, so it is rebuilt whenever that changes rather
-      // than once when the panel was drawn. It swaps between a picker and a crossed-out box, which
-      // is a different element and not an attribute to toggle — so it lives in a slot of its own,
-      // and the text box keeps the cursor through all of it.
-      const slot = h('span', { class: 'gfd-swatch-slot' });
-
-      const sync = () => {
-        const formula = isFormula(target.bind?.[key]);
-        const resolved = asText(pass.read(target, key));
-
-        // A crossed-out box rather than a colour input, because there is no colour to put in one.
-        slot.replaceChildren(isColour(resolved)
-          ? h('input', {
-            type: 'color',
-            class: 'gfd-swatch',
-            'data-testid': 'colour-swatch-' + key,
-            title: formula ? `${hint} — ${resolved}, from the formula` : hint,
-            value: isHex(resolved) ? resolved : '#000000',
-            // A formula decides the colour; dragging the picker would only be overwritten on the
-            // next draw, so it shows the answer and does not pretend to take one.
-            disabled: formula ? '' : null,
-            oninput: (event) => {
-              writeProperty(target, key, event.target.value, { kind: 'text' });
-              text.value = event.target.value;
-            },
-          })
-          : h('span', {
-            class: 'gfd-swatch gfd-swatch-bad',
-            'data-testid': 'colour-bad-' + key,
-            title: resolved
-              ? `${hint} — "${resolved}" is not a colour`
-              : `${hint} — no colour set`,
-            text: resolved ? '✕' : '',
-          }));
-      };
-      expressionChecks.push(sync);
-      sync();
-
-      return [slot, text, h('button', {
+      const clear = h('button', {
         class: 'gfd-clear',
         type: 'button',
-        title: 'Clear',
+        title: `Clear ${hint.toLowerCase()}`,
+        'aria-label': `Clear ${hint.toLowerCase()}`,
         onclick: () => {
           delete target.bind?.[key];
           setLiteral(target, key, '');
@@ -3208,16 +3172,80 @@ export default class ${CLASS_NAME(name)} {
           renderCanvas();
           markDirty();
         },
-      }, '×')];
+      }, '×');
+
+      // The swatch says what the colour came out as, so it is rebuilt whenever that changes rather
+      // than once when the panel was drawn. It swaps between a picker, a not-defined marker and an
+      // invalid marker, which are different elements rather than attributes to toggle — so it lives
+      // in a slot of its own, and the text box keeps the cursor through all of it.
+      const slot = h('span', { class: 'gfd-swatch-slot' });
+
+      const sync = () => {
+        const formula = isFormula(target.bind?.[key]);
+        const resolved = asText(pass.read(target, key));
+        const defined = Boolean(target.bind?.[key])
+          || Boolean(asText(literalOf(target, key)))
+          || mixed(target, key);
+        clear.disabled = !defined;
+
+        const choose = (event) => {
+          writeProperty(target, key, event.target.value, { kind: 'text' });
+          text.value = event.target.value;
+        };
+        const picker = (value, title) => h('input', {
+          type: 'color',
+          class: 'gfd-swatch-picker',
+          'data-testid': 'colour-picker-' + key,
+          'aria-label': `Choose ${hint.toLowerCase()}`,
+          title,
+          value: isHex(value) ? value : '#000000',
+          oninput: choose,
+        });
+
+        let swatch;
+        if (isColour(resolved)) {
+          swatch = h('input', {
+            type: 'color',
+            class: 'gfd-swatch',
+            'data-testid': 'colour-swatch-' + key,
+            title: formula ? `${hint} — ${resolved}, from the formula` : hint,
+            value: isHex(resolved) ? resolved : '#000000',
+            // A formula decides the colour; dragging the picker would only be overwritten on the
+            // next draw, so it shows the answer and does not pretend to take one.
+            disabled: formula ? '' : null,
+            oninput: choose,
+          });
+        } else if (resolved) {
+          // Invalid text is an error; unlike an undefined value, it deserves an error treatment.
+          swatch = h('span', {
+            class: 'gfd-swatch gfd-swatch-bad',
+            'data-testid': 'colour-bad-' + key,
+            title: `${hint} — "${resolved}" is not a colour`,
+          }, h('span', { class: 'gfd-swatch-mark', 'aria-hidden': 'true', text: '✕' }),
+          picker('', `${hint} — choose a colour to replace "${resolved}"`));
+        } else {
+          // Empty means the colour is not defined here. A quiet slash communicates that without
+          // borrowing the red outline used for an invalid value.
+          swatch = h('span', {
+            class: 'gfd-swatch gfd-swatch-not-defined',
+            'data-testid': 'colour-not-defined-' + key,
+            title: `${hint} — not defined; uses the component default`,
+          }, picker('', `${hint} — choose a colour`));
+        }
+        slot.replaceChildren(swatch);
+      };
+      expressionChecks.push(sync);
+      sync();
+
+      return h('div', { class: 'gfd-colour-control' }, slot, text, clear);
     }
 
-    // A colour is chosen twice — once for each theme — and the two are decided together, so they
-    // sit side by side on one row under a Light and Dark caption. Each half binds on its own,
-    // because a fill that follows a value is the everyday reason to want an expression; a bound
-    // half takes the whole row, where an expression can actually be read.
+    // A colour is stored once for each theme, but the panel edits only the theme currently shown on
+    // the canvas. This keeps each row about one visible result and removes the temptation to read the
+    // two stored variants as two inputs that both affect the current preview.
     const COLOUR_ROWS = [
-      ['Text', 'color.light', 'color.dark', 'Text colour'],
-      ['Fill', 'fill.light', 'fill.dark', 'Background'],
+      ['Text', 'color', 'Text colour'],
+      ['Fill', 'fill', 'Background'],
     ];
 
     function colourSlot(target, key, hint) {
@@ -3227,40 +3255,28 @@ export default class ${CLASS_NAME(name)} {
         class: 'gfd-colour-slot' + (formula ? ' bound' : '') + (differs ? ' mixed' : ''),
         'data-property': key,
         title: differs ? `${hint} — the selected controls differ here` : null,
-      }, ...colourEditor(target, key, hint));
+      }, colourEditor(target, key, hint));
     }
 
-    // Which of the two columns is the one on screen right now. Choosing a colour for the theme you
-    // are not looking at and seeing nothing change is the easiest mistake this panel can invite,
-    // so the column in effect says so.
+    // Which stored variant is on screen right now. Auto follows the workspace.
     function activeScheme() {
       if (model.theme === 'light' || model.theme === 'dark') return model.theme;
       return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
     }
 
-    function pairCaption(text, scheme) {
-      const active = scheme === activeScheme();
-      return h('span', {
-        class: 'gfd-pair-caption' + (active ? ' active' : ''),
-        title: active
-          ? `${text} — the theme you are looking at, so this column is what you see`
-          : `${text} — not the theme you are looking at; switch the component's theme above to see it`,
-        text,
-      });
+    function colourHeading() {
+      const themeName = activeScheme() === 'light' ? 'Light' : 'Dark';
+      return heading(`Colours (${themeName} theme)`);
     }
 
-    const colourRows = (target) => [
-      h('div', { class: 'gfd-row wide head' },
-        h('span', { class: 'gfd-row-label' }),
-        h('div', { class: 'gfd-cell pair' },
-          pairCaption('Light', 'light'),
-          pairCaption('Dark', 'dark'))),
-      ...COLOUR_ROWS.map(([label, light, dark, hint]) => h('div', { class: 'gfd-row wide' },
-        h('span', { class: 'gfd-row-label', title: hint, text: label }),
-        h('div', { class: 'gfd-cell pair' },
-          colourSlot(target, light, `${hint} on a light theme`),
-          colourSlot(target, dark, `${hint} on a dark theme`)))),
-    ];
+    const colourRows = (target) => {
+      const scheme = activeScheme();
+      return [
+        ...COLOUR_ROWS.map(([label, property, hint]) => h('div', { class: 'gfd-row' },
+          h('span', { class: 'gfd-row-label', title: hint, text: label }),
+          colourSlot(target, `${property}.${scheme}`, `${hint} on the ${scheme} theme`))),
+      ];
+    };
 
     // ---- the four edges, as rows ----
     // One row per edge, each showing what decides that edge and nothing else.
@@ -4276,7 +4292,7 @@ export default class ${CLASS_NAME(name)} {
               markDirty();
             },
           }), { hint: 'Ignore workspace styles and start from the browser\'s own' }),
-          heading('Colour'),
+          colourHeading(),
           ...colourRows(model.doc),
           cssSection('component-custom', model.doc, `${componentSelector()} {\n  \n}`),
           // The component's own rule, not the whole sheet: a control's rules belong to that control.
@@ -4344,8 +4360,7 @@ export default class ${CLASS_NAME(name)} {
               attachmentChanged();
             },
           }),
-          h('span', { class: 'gfd-module-name', text: className })),
-        h('span', { class: 'gfd-bind-gap' }));
+          h('span', { class: 'gfd-module-name', text: className })));
 
       const rows = model.scripts.filter((script) => !script.readOnly).flatMap((script) => {
         const entries = model.doc.modules.filter((entry) => moduleFileOf(entry) === script.name);
@@ -4373,8 +4388,7 @@ export default class ${CLASS_NAME(name)} {
               type: 'button',
               title: `Edit ${script.name}`,
               onclick: () => openCodeTab(script.name),
-            }, 'Edit')),
-          h('span', { class: 'gfd-bind-gap' }));
+            }, 'Edit')));
 
         const classes = behaviour.classes.get(script.name) || [];
         return [row, ...classes.map((className) => classRow(script, className,
@@ -4555,7 +4569,7 @@ export default class ${CLASS_NAME(name)} {
             row(control, 'h', 'Height', numberEditor(control, 'h')),
           ]),
           alignmentRow(control),
-          heading('Colour'),
+          colourHeading(),
           ...colourRows(control),
           // Custom CSS and the cascade behind it are written against one control's own selector,
           // so they belong to one control. The rest of the page still works on all of them.

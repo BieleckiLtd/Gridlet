@@ -7281,6 +7281,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(advancedSearch).ToBeHiddenAsync();
         await filter.FocusAsync();
         await Assertions.Expect(advancedSearch).ToBeVisibleAsync();
+        await Assertions.Expect(advancedSearch).ToHaveCSSAsync("border-top-width", "0px");
+        await Assertions.Expect(advancedSearch)
+            .ToHaveCSSAsync("background-color", "rgba(0, 0, 0, 0)");
         await advancedSearch.ClickAsync();
         var search = page.GetByTestId("object-search");
         await Assertions.Expect(search).ToBeVisibleAsync();
