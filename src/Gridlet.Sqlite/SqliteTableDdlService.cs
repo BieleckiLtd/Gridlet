@@ -176,6 +176,16 @@ public sealed class SqliteTableDdlService : ITableDdlService
             throw new GridletValidationException("A foreign key needs at least one column pair.");
         }
 
+        // IsNameSynthesized records that a key already in the database carries no declared name. It
+        // describes what was read, so it is not something to ask for: a request that set it would
+        // name the key in the response and leave it unnamed in the schema.
+        if (foreignKey.IsNameSynthesized)
+        {
+            throw new GridletValidationException(
+                "A new foreign key needs a name. Leave the synthesized-name marker unset; it only " +
+                "describes a key the database already holds without one.");
+        }
+
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
         var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
         var referenced = await RequireTableAsync(connection, foreignKey.ReferencedSchema,
@@ -313,7 +323,24 @@ public sealed class SqliteTableDdlService : ITableDdlService
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
         var definition = await RequireTableAsync(connection, schema, table, cancellationToken);
         var primaryKey = definition.Indexes.FirstOrDefault(i => i.IsPrimaryKey);
-        if (primaryKey is not null && string.Equals(primaryKey.Name, constraintName, StringComparison.OrdinalIgnoreCase))
+
+        // SQLite does not require constraint names to be unique, so a name can identify more than
+        // one constraint on the same table. Dropping is not a guess: rather than act on whichever
+        // one is found first, say what the name matches and leave the table alone.
+        var matchingForeignKeys = definition.ForeignKeys
+            .Select((fk, index) => (fk, index))
+            .Where(entry => string.Equals(entry.fk.Name, constraintName, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var primaryKeyMatches = primaryKey is not null &&
+            string.Equals(primaryKey.Name, constraintName, StringComparison.OrdinalIgnoreCase);
+        if (matchingForeignKeys.Length > 1 || (primaryKeyMatches && matchingForeignKeys.Length > 0))
+        {
+            throw new GridletValidationException(
+                $"'{constraintName}' names more than one constraint on {schema}.{table}, so it does " +
+                "not say which one to drop. Rename or drop them with a statement in the query editor.");
+        }
+
+        if (primaryKeyMatches)
         {
             var columns = definition.Columns.Select(c => ToDesign(c) with
             {
@@ -325,14 +352,11 @@ public sealed class SqliteTableDdlService : ITableDdlService
             return;
         }
 
-        var foreignKey = definition.ForeignKeys.FirstOrDefault(
-            fk => string.Equals(fk.Name, constraintName, StringComparison.OrdinalIgnoreCase));
-        if (foreignKey is not null)
+        if (matchingForeignKeys.Length == 1)
         {
+            var target = matchingForeignKeys[0].index;
             await RebuildTableAsync(connection, definition, definition.Columns.Select(ToDesign).ToArray(),
-                ToForeignKeyDesigns(definition)
-                    .Where(fk => !string.Equals(fk.Name, constraintName, StringComparison.OrdinalIgnoreCase))
-                    .ToArray(),
+                ToForeignKeyDesigns(definition).Where((_, index) => index != target).ToArray(),
                 null, cancellationToken);
             return;
         }
@@ -697,6 +721,15 @@ public sealed class SqliteTableDdlService : ITableDdlService
         var unsupported = new List<string>();
         if (SqliteSqlInspection.ContainsKeywordSequence(source, "ON", "CONFLICT")) unsupported.Add("ON CONFLICT policies");
 
+        // SQLite accepts CONSTRAINT "" and CONSTRAINT "   ". Gridlet cannot write an empty
+        // identifier back, so a rebuild would quietly leave the key unnamed. Refusing says what
+        // happened instead of changing the schema without telling anyone.
+        if (SqliteCreateSqlParser.ParseTable(source).ForeignKeys
+            .Any(key => key.Name is not null && string.IsNullOrWhiteSpace(key.Name)))
+        {
+            unsupported.Add("blank foreign-key constraint names");
+        }
+
         await using (var primaryKey = connection.CreateCommand())
         {
             primaryKey.CommandText =
@@ -893,7 +926,8 @@ public sealed class SqliteTableDdlService : ITableDdlService
             fk.ReferencedTable,
             fk.Columns,
             fk.OnDelete.Replace('_', ' '),
-            fk.OnUpdate.Replace('_', ' '))).ToArray();
+            fk.OnUpdate.Replace('_', ' '),
+            fk.IsNameSynthesized)).ToArray();
 
     private static CheckConstraintDesign[] ToCheckDesigns(
         TableDefinition definition,

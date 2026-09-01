@@ -584,8 +584,7 @@ internal static partial class GridletApiEndpoints
             foreach (var setting in settings)
             {
                 var display = ValidateForeignKeyDisplay(definition, setting);
-                var relationship = definition.ForeignKeys.FirstOrDefault(candidate =>
-                    string.Equals(candidate.Name, setting.ForeignKeyName, StringComparison.OrdinalIgnoreCase));
+                var relationship = FindUniqueForeignKey(definition, setting.ForeignKeyName);
                 if (display.IsValid && relationship is not null)
                 {
                     try
@@ -733,11 +732,34 @@ internal static partial class GridletApiEndpoints
             _ => 256,
         };
 
+    /// <summary>
+    /// A friendly display is stored against a foreign key's name. SQLite does not require those
+    /// names to be unique, so a name can match more than one key; that is not enough to say which
+    /// key a display belongs to.
+    /// </summary>
+    private const string AmbiguousForeignKeyMessage =
+        "More than one foreign key on this table carries this name, so it does not say which "
+        + "relationship the display belongs to.";
+
+    private static ForeignKeyInfo? FindUniqueForeignKey(TableDefinition definition, string name)
+    {
+        var matches = definition.ForeignKeys
+            .Where(candidate => string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        return matches.Length == 1 ? matches[0] : null;
+    }
+
     private static ForeignKeyInfo FindSingleColumnForeignKey(TableDefinition definition, string name)
     {
-        var relationship = definition.ForeignKeys.FirstOrDefault(candidate =>
-            string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase))
-            ?? throw new GridletValidationException($"Foreign key '{name}' does not exist.");
+        var matches = definition.ForeignKeys
+            .Where(candidate => string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        var relationship = matches.Length switch
+        {
+            0 => throw new GridletValidationException($"Foreign key '{name}' does not exist."),
+            1 => matches[0],
+            _ => throw new GridletValidationException(AmbiguousForeignKeyMessage),
+        };
         if (relationship.Columns.Count != 1)
         {
             throw new GridletValidationException("Friendly display supports single-column foreign keys only.");
@@ -748,12 +770,24 @@ internal static partial class GridletApiEndpoints
     private static ForeignKeyDisplayDto ValidateForeignKeyDisplay(
         TableDefinition definition, ForeignKeyDisplaySetting setting)
     {
-        var relationship = definition.ForeignKeys.FirstOrDefault(candidate =>
-            string.Equals(candidate.Name, setting.ForeignKeyName, StringComparison.OrdinalIgnoreCase));
-        if (relationship is null)
+        if (definition.ForeignKeys.Count(candidate =>
+                string.Equals(candidate.Name, setting.ForeignKeyName, StringComparison.OrdinalIgnoreCase)) > 1)
         {
             return new ForeignKeyDisplayDto(
-                setting.ForeignKeyName, setting.LabelColumn, false, "Foreign key no longer exists.");
+                setting.ForeignKeyName, setting.LabelColumn, false, AmbiguousForeignKeyMessage);
+        }
+
+        var relationship = FindUniqueForeignKey(definition, setting.ForeignKeyName);
+        if (relationship is null)
+        {
+            // A display setting is stored under the foreign key's name. The key may be gone, or it
+            // may now be reported under a different name - a SQLite key whose declared CONSTRAINT
+            // name Gridlet once could not read is reported under that name now. Either way the
+            // setting cannot be matched, and saying so is better than binding it to a key by guess.
+            return new ForeignKeyDisplayDto(
+                setting.ForeignKeyName, setting.LabelColumn, false,
+                "No foreign key of this name exists on the table. If it was renamed, set the display "
+                + "again on the current name.");
         }
         if (relationship.Columns.Count != 1)
         {

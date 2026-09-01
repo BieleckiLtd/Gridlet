@@ -5562,7 +5562,9 @@
         const referenced = migrationName({
           schema: foreignKey.referencedSchema, name: foreignKey.referencedTable,
         }, sourceScope, targetScope);
-        const name = foreignKey.name
+        // A name Gridlet made up for a key the source holds unnamed is a label, not part of the
+        // schema. SQLite accepts an unnamed key, so the script leaves it unnamed too.
+        const name = foreignKey.name && !foreignKey.isNameSynthesized
           ? `CONSTRAINT ${migrationQuote(foreignKey.name, targetScope)} ` : '';
         body.push(`  ${name}FOREIGN KEY (${sourceColumns}) REFERENCES ${referenced} (${targetColumns}) `
           + `ON DELETE ${migrationReferentialAction(foreignKey.onDelete, targetScope)} `
@@ -5629,8 +5631,12 @@
     }
     const onDelete = migrationReferentialAction(foreignKey.onDelete, targetScope);
     const onUpdate = migrationReferentialAction(foreignKey.onUpdate, targetScope);
-    return `ALTER TABLE ${migrationName(object, sourceScope, targetScope)} ADD CONSTRAINT `
-      + `${migrationQuote(foreignKey.name, targetScope)} FOREIGN KEY (${sourceColumns}) `
+    // A label Gridlet made up for a key the source holds unnamed is not a name to write into
+    // another schema. The clause is left off, and the target names the constraint itself.
+    const constraint = foreignKey.name && !foreignKey.isNameSynthesized
+      ? `ADD CONSTRAINT ${migrationQuote(foreignKey.name, targetScope)} ` : 'ADD ';
+    return `ALTER TABLE ${migrationName(object, sourceScope, targetScope)} ${constraint}`
+      + `FOREIGN KEY (${sourceColumns}) `
       + `REFERENCES ${referenced} (${targetColumns}) ON DELETE ${onDelete} ON UPDATE ${onUpdate};`;
   }
 
@@ -5770,6 +5776,41 @@
       schema: foreignKey.referencedSchema,
       name: foreignKey.referencedTable,
     }, source.scope, target.scope);
+    // SQLite lets foreign keys carry the same name, on one table or across several. Providers that
+    // name constraints as schema objects, SQL Server among them, require the name to be unique
+    // within the schema, so a script that repeated it would not run. Names are counted across every
+    // source table that lands in the same target schema, and the repeats are held for review rather
+    // than renamed on the way out.
+    const foreignKeyNameScope = (definition) =>
+      String(migrationObject(definition.object, source.scope, target.scope).schema || '').toLowerCase();
+    const foreignKeyNameKey = (definition, foreignKey) =>
+      `${foreignKeyNameScope(definition)}|${String(foreignKey.name || '').toLowerCase()}`;
+    const repeatedForeignKeyNames = (() => {
+      if (migrationIsSqlite(target.scope)) return new Set();
+      const seen = new Map();
+      const count = (definition, name) => {
+        if (!name) return;
+        const key = foreignKeyNameKey(definition, { name });
+        seen.set(key, (seen.get(key) || 0) + 1);
+      };
+      for (const definition of sourceDefinitions) {
+        // A constraint name is one schema-scoped object name on such a provider, whatever kind of
+        // constraint carries it, so a foreign key that shares a name with a primary key, unique,
+        // check or default constraint collides just as surely as with another foreign key.
+        for (const foreignKey of definition.foreignKeys || []) {
+          // A synthesized label is never written, so it cannot collide with anything.
+          if (!foreignKey.isNameSynthesized) count(definition, foreignKey.name);
+        }
+        count(definition, (definition.indexes || []).find((index) => index.isPrimaryKey)?.name);
+        for (const constraint of definition.uniqueConstraints || []) count(definition, constraint.name);
+        for (const constraint of definition.checkConstraints || []) count(definition, constraint.name);
+        for (const constraint of definition.defaultConstraints || []) count(definition, constraint.name);
+      }
+      return new Set([...seen].filter(([, total]) => total > 1).map(([key]) => key));
+    })();
+    const hasRepeatedForeignKeyName = (definition, foreignKey) =>
+      !foreignKey.isNameSynthesized &&
+      repeatedForeignKeyNames.has(foreignKeyNameKey(definition, foreignKey));
     const createCollationIssues = (definition) => comparisonColumns(definition)
       .map((column) => migrationColumnCollationIssue(column, source.scope, target.scope))
       .filter(Boolean);
@@ -5962,7 +6003,11 @@
           }
           if (!migrationIsSqlite(target.scope)) {
             for (const foreignKey of sourceDefinition.foreignKeys || []) {
-              if (foreignKeyReferencesBlockedColumn(foreignKey)) {
+              if (hasRepeatedForeignKeyName(sourceDefinition, foreignKey)) {
+                scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.${foreignKey.name} `
+                  + 'shares its name with another constraint in the same target schema, which the '
+                  + 'target provider does not allow. Give them separate names first.');
+              } else if (foreignKeyReferencesBlockedColumn(foreignKey)) {
                 scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.`
                   + `${foreignKey.name || '(unnamed)'} references a column whose ADD requires review.`);
               } else if (blockedCreateKeys.has(foreignKeyTargetKey(foreignKey))) {
@@ -6118,7 +6163,11 @@
           addChange('missing', `${objectName}.${foreignKey.name}`, 'Foreign key is missing from target');
           const blockedSourceColumn = (foreignKey.columns || []).some((pair) =>
             blockedColumnKeys.has(String(pair.column).toLowerCase()));
-          if (blockedSourceColumn) {
+          if (hasRepeatedForeignKeyName(sourceDefinition, foreignKey)) {
+            scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.${foreignKey.name} `
+              + 'shares its name with another constraint in the same target schema, which the '
+              + 'target provider does not allow. Give them separate names first.');
+          } else if (blockedSourceColumn) {
             scripts.review.push(`-- NOT SCRIPTED: foreign key ${objectName}.`
               + `${foreignKey.name || '(unnamed)'} depends on a column whose ADD requires review.`);
           } else if (foreignKeyReferencesBlockedColumn(foreignKey)) {
@@ -9201,7 +9250,16 @@
             h('tbody', {}, s.foreignKeys.map((fk) => {
               const display = displayFor(fk);
               return h('tr', {},
-              h('td', { text: fk.name }),
+              // A synthesized name is a label for this screen, not something the database holds,
+              // so it is marked rather than presented as the constraint's name.
+              h('td', {}, fk.isNameSynthesized
+                ? h('span', {
+                  class: 'muted',
+                  title: 'This foreign key was declared without a CONSTRAINT name. '
+                    + 'Gridlet shows this label so the key can be referred to; the database keeps it unnamed.',
+                  text: `${fk.name} (unnamed)`,
+                })
+                : h('span', { text: fk.name })),
               h('td', { class: 'mono', text: fk.columns.map((p) => p.column).join(', ') }),
               h('td', {
                 class: 'mono',
@@ -9222,7 +9280,9 @@
               h('td', { class: 'mono muted', text: `${fk.onDelete.replaceAll('_', ' ')} / ${fk.onUpdate.replaceAll('_', ' ')}` }),
               h('td', { class: 'cell-actions' }, canDesign ? h('button', {
                 class: 'mini-btn', title: 'Drop foreign key', onclick: () => confirmModal(
-                  'Drop foreign key', `Drop foreign key ${fk.name}?`, async () => {
+                  'Drop foreign key', fk.isNameSynthesized
+                    ? `Drop the unnamed foreign key on ${fk.columns.map((p) => p.column).join(', ')}?`
+                    : `Drop foreign key ${fk.name}?`, async () => {
                     await del(urls.constraint(o.schema, o.name, fk.name));
                     toast('Foreign key dropped.', false); invalidateStructure(); renderStructure();
                   }, 'Drop'),

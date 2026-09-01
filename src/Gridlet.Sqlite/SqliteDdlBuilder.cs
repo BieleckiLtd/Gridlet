@@ -200,7 +200,15 @@ public static partial class SqliteDdlBuilder
 
         var local = string.Join(", ", foreignKey.Columns.Select(c => SqliteIdentifier.Quote(c.Column)));
         var referenced = string.Join(", ", foreignKey.Columns.Select(c => SqliteIdentifier.Quote(c.ReferencedColumn)));
-        return $"CONSTRAINT {SqliteIdentifier.Quote(foreignKey.Name)} FOREIGN KEY ({local}) REFERENCES " +
+
+        // A key the database holds without a declared name is written back without one. SQLite needs
+        // no name here, and inventing one would change the schema the author wrote. Only a key
+        // marked as carrying a made-up label takes that path: a request that simply left the name
+        // blank is still a malformed request, and Quote says so.
+        var name = foreignKey.IsNameSynthesized
+            ? string.Empty
+            : $"CONSTRAINT {SqliteIdentifier.Quote(foreignKey.Name)} ";
+        return $"{name}FOREIGN KEY ({local}) REFERENCES " +
                $"{SqliteIdentifier.Quote(foreignKey.ReferencedTable)} ({referenced}) " +
                $"ON DELETE {NormalizeReferentialAction(foreignKey.OnDelete)} " +
                $"ON UPDATE {NormalizeReferentialAction(foreignKey.OnUpdate)}";

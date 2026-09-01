@@ -167,7 +167,9 @@ public sealed class SqliteSchemaReader : ISchemaReader
         }).ToArray();
 
         var indexes = await LoadIndexesAsync(connection, schema, name, columns, cancellationToken);
-        var foreignKeys = await LoadForeignKeysAsync(connection, schema, name, cancellationToken);
+        var foreignKeys = await LoadForeignKeysAsync(
+            connection, schema, name, parsedTable.ForeignKeys,
+            indexes.FirstOrDefault(index => index.IsPrimaryKey)?.Name, cancellationToken);
         var rowIdentity = SqliteRowIdentity.Resolve(
             objectType,
             isInternal,
@@ -349,6 +351,8 @@ public sealed class SqliteSchemaReader : ISchemaReader
         SqliteConnection connection,
         string schema,
         string table,
+        IReadOnlyList<SqliteCreateSqlParser.ParsedForeignKey> declarations,
+        string? primaryKeyName,
         CancellationToken cancellationToken)
     {
         var entries = new Dictionary<long, (string Table, string OnDelete, string OnUpdate, List<ForeignKeyColumnPair> Columns)>();
@@ -375,13 +379,91 @@ public sealed class SqliteSchemaReader : ISchemaReader
                 reader.IsDBNull(4) ? "rowid" : reader.GetString(4)));
         }
 
-        return order.Select(id => new ForeignKeyInfo(
-            $"FK_{table}_{id}",
-            schema,
-            entries[id].Table,
-            entries[id].Columns,
-            entries[id].OnDelete.Replace(' ', '_'),
-            entries[id].OnUpdate.Replace(' ', '_'))).ToArray();
+        // A declared name is reported as it was written, even when it repeats or matches another
+        // constraint: it is what the database holds, and a rebuild has to write it back. SQLite does
+        // not require these names to be unique, so a name is not a reliable way to single out one
+        // key; DropConstraintAsync refuses an ambiguous name rather than acting on the wrong
+        // constraint.
+        var declaredNames = AlignDeclaredNames(declarations, order, entries);
+
+        // The label for an unnamed key is Gridlet's own choice, so it is chosen not to collide with
+        // a name the table already carries - a declared foreign-key name, or the primary key, which
+        // DropConstraintAsync resolves through the same route. A collision between two declared
+        // names is the database's, and stands.
+        var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (primaryKeyName is not null) taken.Add(primaryKeyName);
+        for (var position = 0; position < order.Count; position++)
+        {
+            if (declaredNames?[position] is { } declared && !string.IsNullOrWhiteSpace(declared))
+            {
+                taken.Add(declared);
+            }
+        }
+
+        return order.Select((id, position) =>
+        {
+            var declaredName = declaredNames?[position];
+            var synthesized = string.IsNullOrWhiteSpace(declaredName);
+            var name = declaredName!;
+            if (synthesized)
+            {
+                name = $"FK_{table}_{id}";
+                for (var attempt = 2; !taken.Add(name); attempt++) name = $"FK_{table}_{id}_{attempt}";
+            }
+
+            return new ForeignKeyInfo(
+                name,
+                schema,
+                entries[id].Table,
+                entries[id].Columns,
+                entries[id].OnDelete.Replace(' ', '_'),
+                entries[id].OnUpdate.Replace(' ', '_'),
+                synthesized);
+        }).ToArray();
+    }
+
+    /// <summary>
+    /// Pairs the foreign keys written in the CREATE statement with the rows
+    /// <c>pragma_foreign_key_list</c> returned, so a declared CONSTRAINT name can be recovered.
+    /// The pragma numbers foreign keys in reverse declaration order, which is why the declarations
+    /// are reversed before pairing. The pairing is accepted only when every pair agrees on the
+    /// referenced table and the local columns; on any disagreement the result is null and every key
+    /// keeps a synthesized name, because naming the wrong constraint is worse than naming none.
+    /// </summary>
+    /// <returns>One entry per pragma row, in pragma order, or null when the two do not line up.</returns>
+    private static IReadOnlyList<string?>? AlignDeclaredNames(
+        IReadOnlyList<SqliteCreateSqlParser.ParsedForeignKey> declarations,
+        IReadOnlyList<long> order,
+        IReadOnlyDictionary<long, (string Table, string OnDelete, string OnUpdate, List<ForeignKeyColumnPair> Columns)> entries)
+    {
+        if (declarations.Count != order.Count) return null;
+
+        var names = new string?[order.Count];
+        for (var position = 0; position < order.Count; position++)
+        {
+            var declaration = declarations[declarations.Count - 1 - position];
+            var entry = entries[order[position]];
+            if (!string.Equals(declaration.ReferencedTable, entry.Table, StringComparison.OrdinalIgnoreCase) ||
+                declaration.Columns.Count != entry.Columns.Count)
+            {
+                return null;
+            }
+
+            for (var column = 0; column < entry.Columns.Count; column++)
+            {
+                if (!string.Equals(
+                        declaration.Columns[column],
+                        entry.Columns[column].Column,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+            }
+
+            names[position] = declaration.Name;
+        }
+
+        return names;
     }
 
     private static string? ExtractGeneratedExpression(string? createSql, string columnName)

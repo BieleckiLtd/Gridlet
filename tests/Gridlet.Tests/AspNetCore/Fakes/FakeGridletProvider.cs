@@ -188,6 +188,25 @@ public sealed class FakeGridletProvider :
                 [],
                 new RowIdentityInfo(RowIdentityKinds.RowId, ["rowid"]))),
 
+            // Not in the object list: a table reached only by asking for it directly, so a repeated
+            // constraint name can be exercised without changing what the tree and diagram show.
+            // SQLite does not require foreign-key names to be unique within a table.
+            "DuplicateKeys" => Task.FromResult(new TableDefinition(
+                new DbObjectInfo(schema, name, DbObjectType.Table),
+                [
+                    new ColumnInfo("Id", "int", false, true, false, true, null, 0),
+                    new ColumnInfo("PizzaId", "int", false, false, false, false, null, 1),
+                    new ColumnInfo("BackupPizzaId", "int", false, false, false, false, null, 2),
+                ],
+                [new IndexInfo("PK_DuplicateKeys", "CLUSTERED", true, true, ["Id"])],
+                [
+                    new ForeignKeyInfo("fk_dup", "dbo", "Pizzas",
+                        [new ForeignKeyColumnPair("PizzaId", "Id")]),
+                    new ForeignKeyInfo("fk_dup", "dbo", "Pizzas",
+                        [new ForeignKeyColumnPair("BackupPizzaId", "Id")]),
+                ],
+                [], [], new RowIdentityInfo(RowIdentityKinds.PrimaryKey, ["Id"]))),
+
             "Orders" => Task.FromResult(new TableDefinition(
                 new DbObjectInfo(schema, name, DbObjectType.Table),
                 [

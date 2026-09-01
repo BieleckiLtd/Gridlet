@@ -598,6 +598,192 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    /// <summary>
+    /// A SQLite key with no declared name is shown under a label Gridlet made up. A migration script
+    /// has to write the key the source holds, so the label must not become a constraint name.
+    /// </summary>
+    [Fact]
+    public async Task Schema_compare_leaves_an_unnamed_foreign_key_unnamed()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Child\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/SQLite/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "[]",
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Child/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Child\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false,"
+                    + "\"isPrimaryKey\":true},{\"name\":\"ParentId\",\"dataType\":\"int\"}],"
+                    + "\"indexes\":[{\"name\":\"PK_Child\",\"isPrimaryKey\":true,\"isUnique\":true,"
+                    + "\"columns\":[\"Id\"]}],"
+                    + "\"foreignKeys\":[{\"name\":\"FK_Child_0\",\"referencedSchema\":\"dbo\","
+                    + "\"referencedTable\":\"Parent\",\"isNameSynthesized\":true,"
+                    + "\"onDelete\":\"NO_ACTION\",\"onUpdate\":\"NO_ACTION\","
+                    + "\"columns\":[{\"column\":\"ParentId\",\"referencedColumn\":\"Id\"}]}],"
+                    + "\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-target-connection").SelectOptionAsync("SQLite");
+        await Assertions.Expect(comparison.GetByTestId("schema-target-database")).ToHaveValueAsync("FakeDb");
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("FOREIGN KEY (\"ParentId\") REFERENCES \"Parent\" (\"Id\")", migration);
+        Assert.DoesNotContain("FK_Child_0", migration, StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The same rule on a target that names constraints as schema objects: SQL Server generates its
+    /// own name when the clause is left off, so the label never reaches the schema.
+    /// </summary>
+    [Fact]
+    public async Task Schema_compare_adds_an_unnamed_foreign_key_without_naming_it()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Child\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Child\",\"type\":\"Table\"}]",
+            }));
+        const string sourceBody =
+            "{\"object\":{\"schema\":\"dbo\",\"name\":\"Child\",\"type\":\"Table\"},"
+            + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false,"
+            + "\"isPrimaryKey\":true},{\"name\":\"ParentId\",\"dataType\":\"int\"}],"
+            + "\"indexes\":[{\"name\":\"PK_Child\",\"isPrimaryKey\":true,\"isUnique\":true,"
+            + "\"columns\":[\"Id\"]}],"
+            + "\"foreignKeys\":[{\"name\":\"FK_Child_0\",\"referencedSchema\":\"dbo\","
+            + "\"referencedTable\":\"Pizzas\",\"isNameSynthesized\":true,"
+            + "\"onDelete\":\"NO_ACTION\",\"onUpdate\":\"NO_ACTION\","
+            + "\"columns\":[{\"column\":\"ParentId\",\"referencedColumn\":\"Id\"}]}],"
+            + "\"checkConstraints\":[],\"uniqueConstraints\":[]}";
+        // The target has the table but not the key, so the script takes the ALTER path.
+        const string targetBody =
+            "{\"object\":{\"schema\":\"dbo\",\"name\":\"Child\",\"type\":\"Table\"},"
+            + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false,"
+            + "\"isPrimaryKey\":true},{\"name\":\"ParentId\",\"dataType\":\"int\"}],"
+            + "\"indexes\":[{\"name\":\"PK_Child\",\"isPrimaryKey\":true,\"isUnique\":true,"
+            + "\"columns\":[\"Id\"]}],"
+            + "\"foreignKeys\":[],\"checkConstraints\":[],\"uniqueConstraints\":[]}";
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Child/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = sourceBody,
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects/dbo/Child/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = targetBody,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("ADD FOREIGN KEY ([ParentId])", migration);
+        Assert.DoesNotContain("FK_Child_0", migration, StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// SQLite allows two foreign keys on one table to share a name; SQL Server names constraints as
+    /// schema objects and does not. A script that repeated the name would not run.
+    /// </summary>
+    [Fact]
+    public async Task Schema_compare_holds_duplicate_foreign_key_names_for_review()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "[{\"schema\":\"dbo\",\"name\":\"Child\",\"type\":\"Table\"},"
+                    + "{\"schema\":\"dbo\",\"name\":\"Sibling\",\"type\":\"Table\"}]",
+            }));
+        await page.RouteAsync("**/connections/DdlOnly/databases/FakeDb/objects", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json", Body = "[]",
+            }));
+        // A second table repeating the same name, which the target schema also has to keep unique.
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Sibling/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Sibling\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false,"
+                    + "\"isPrimaryKey\":true},{\"name\":\"C\",\"dataType\":\"int\"},"
+                    + "{\"name\":\"D\",\"dataType\":\"int\"}],"
+                    + "\"indexes\":[{\"name\":\"PK_Sibling\",\"isPrimaryKey\":true,\"isUnique\":true,"
+                    + "\"columns\":[\"Id\"]}],"
+                    + "\"foreignKeys\":[{\"name\":\"fk_dup\",\"referencedSchema\":\"dbo\","
+                    + "\"referencedTable\":\"Pizzas\",\"onDelete\":\"NO_ACTION\",\"onUpdate\":\"NO_ACTION\","
+                    + "\"columns\":[{\"column\":\"C\",\"referencedColumn\":\"Id\"}]},"
+                    // A foreign key named after this table's own primary key: one schema-scoped
+                    // object name on the target, whatever kind of constraint carries it.
+                    + "{\"name\":\"PK_Sibling\",\"referencedSchema\":\"dbo\","
+                    + "\"referencedTable\":\"Pizzas\",\"onDelete\":\"NO_ACTION\",\"onUpdate\":\"NO_ACTION\","
+                    + "\"columns\":[{\"column\":\"D\",\"referencedColumn\":\"Id\"}]}],"
+                    + "\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Child/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/json",
+                Body = "{\"object\":{\"schema\":\"dbo\",\"name\":\"Child\",\"type\":\"Table\"},"
+                    + "\"columns\":[{\"name\":\"Id\",\"dataType\":\"int\",\"isNullable\":false,"
+                    + "\"isPrimaryKey\":true},{\"name\":\"A\",\"dataType\":\"int\"},"
+                    + "{\"name\":\"B\",\"dataType\":\"int\"}],"
+                    + "\"indexes\":[{\"name\":\"PK_Child\",\"isPrimaryKey\":true,\"isUnique\":true,"
+                    + "\"columns\":[\"Id\"]}],"
+                    + "\"foreignKeys\":[{\"name\":\"fk_dup\",\"referencedSchema\":\"dbo\","
+                    + "\"referencedTable\":\"Pizzas\",\"onDelete\":\"NO_ACTION\",\"onUpdate\":\"NO_ACTION\","
+                    + "\"columns\":[{\"column\":\"A\",\"referencedColumn\":\"Id\"}]},"
+                    + "{\"name\":\"fk_dup\",\"referencedSchema\":\"dbo\","
+                    + "\"referencedTable\":\"Pizzas\",\"onDelete\":\"NO_ACTION\",\"onUpdate\":\"NO_ACTION\","
+                    + "\"columns\":[{\"column\":\"B\",\"referencedColumn\":\"Id\"}]}],"
+                    + "\"checkConstraints\":[],\"uniqueConstraints\":[]}",
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        var comparison = await OpenSchemaCompareAsync(page);
+        await comparison.GetByTestId("schema-compare-run").ClickAsync();
+
+        var migration = await comparison.GetByTestId("schema-migration-sql").InputValueAsync();
+        Assert.Contains("dbo.Child.fk_dup shares its name with another constraint in the same "
+            + "target schema", migration);
+        Assert.Contains("dbo.Sibling.fk_dup shares its name with another constraint in the same "
+            + "target schema", migration);
+        Assert.Contains("dbo.Sibling.PK_Sibling shares its name with another constraint in the same "
+            + "target schema", migration);
+        Assert.DoesNotContain("ADD CONSTRAINT [fk_dup]", migration, StringComparison.Ordinal);
+        Assert.DoesNotContain("ADD CONSTRAINT [PK_Sibling] FOREIGN KEY", migration, StringComparison.Ordinal);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     [Fact]
     public async Task Schema_compare_preserves_composite_keys_instead_of_forcing_sqlite_autoincrement()
     {
@@ -6552,6 +6738,53 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.Locator("#toast-stack").GetByText(
             "dbo.vw_Orders updated.", new() { Exact = true })).ToBeVisibleAsync();
         Assert.Equal(sql, fixture.Provider.LastQuerySql);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// SQLite keys written without a CONSTRAINT clause have no name in the database, so the label
+    /// Gridlet shows for them has to read as a label rather than as the constraint's own name.
+    /// </summary>
+    [Fact]
+    public async Task Marks_a_foreign_key_whose_name_Gridlet_synthesized()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.RouteAsync("**/objects/dbo/Orders/structure", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200,
+                ContentType = "application/json",
+                Body = """
+                    {
+                      "object":{"schema":"dbo","name":"Orders","type":"Table"},
+                      "columns":[
+                        {"name":"Id","dataType":"int"},
+                        {"name":"PizzaId","dataType":"int"}
+                      ],
+                      "indexes":[{"name":"PK_Orders","isPrimaryKey":true,"columns":["Id"]}],
+                      "foreignKeys":[
+                        {"name":"FK_Orders_0","referencedSchema":"dbo","referencedTable":"Pizzas",
+                         "isNameSynthesized":true,"onDelete":"NO_ACTION","onUpdate":"NO_ACTION",
+                         "columns":[{"column":"PizzaId","referencedColumn":"Id"}]}
+                      ],
+                      "checkConstraints":[],"uniqueConstraints":[]
+                    }
+                    """,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.Orders").ClickAsync();
+        var panel = ActivePanel(page);
+        await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
+
+        await Assertions.Expect(panel.GetByRole(AriaRole.Cell, new() { Name = "FK_Orders_0 (unnamed)" }))
+            .ToBeVisibleAsync();
+
+        // The confirmation names the columns rather than a constraint name the database does not hold.
+        await panel.GetByTitle("Drop foreign key").ClickAsync();
+        await Assertions.Expect(page.GetByRole(AriaRole.Dialog, new() { Name = "Drop foreign key" }))
+            .ToContainTextAsync("Drop the unnamed foreign key on PizzaId?");
         browserPage.AssertNoUnexpectedErrors();
     }
 
