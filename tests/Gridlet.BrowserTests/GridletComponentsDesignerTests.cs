@@ -240,6 +240,360 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     private static Task OpenPanelTabAsync(IPage page, string tab) =>
         page.Locator($".gfd-tabs button[title='{tab}']").ClickAsync();
 
+    [Fact]
+    public async Task A_saved_component_can_be_given_to_a_consumer_without_the_designer()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var html = """
+            <div data-gridlet="2" data-name="Consumer component" data-layout="free" data-isolated
+                 data-color-light="#b42318" data-color-dark="#b42318"
+                 data-fill-light="#e6f4ff" data-fill-dark="#e6f4ff"
+                 data-bind-classes="consumer-bound" data-bind-element-id="consumer-root"
+                 data-bind-tip="Consumer tip"
+                 style="width: 360px; height: 120px;">
+              <span data-name="caption" data-color-light="#067647" data-color-dark="#067647"
+                    style="left: 16px; top: 20px; width: 250px; height: 30px;">Hello consumer</span>
+              <input data-name="disabled-input" data-bind-enabled="false"
+                     style="left: 16px; top: 50px; width: 250px; height: 30px;">
+              <table data-role="grid" data-name="isolated-grid" data-no-header
+                     style="left: 16px; top: 80px; width: 250px; height: 30px;"><thead><tr><th>Hidden</th></tr></thead></table>
+            </div>
+            """;
+
+        var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
+        {
+            DataObject = new { name = "Consumer component", html },
+        });
+        Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
+        var saved = await response.JsonAsync();
+        var id = saved!.Value.GetProperty("id").GetString();
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        var sidebarItem = page.Locator("button.tree-item[title^='Consumer component —']");
+        await sidebarItem.ClickAsync(new LocatorClickOptions { Button = MouseButton.Right });
+        await Assertions.Expect(page.Locator(".context-menu button").Filter(
+            new LocatorFilterOptions { HasTextString = "Open consumer view" })).ToBeVisibleAsync();
+
+        // A shared link often gains a trailing slash from a router or a copy/paste. The viewer must
+        // resolve its runtime asset from the mount, not from the component id as a directory.
+        await page.GotoAsync($"/gridlet/components/{id}/");
+        await Assertions.Expect(page.Locator("#gridlet-component-host .gridlet-component-runtime"))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(page.Locator("[data-name='caption']")).ToHaveTextAsync("Hello consumer");
+        await Assertions.Expect(page.Locator("#gridlet-component-host .gridlet-component-runtime"))
+            .ToHaveCSSAsync("width", "360px");
+        var runtimeRoot = page.Locator("#consumer-root");
+        Assert.Contains("consumer-bound", await runtimeRoot.GetAttributeAsync("class"));
+        Assert.Equal("Consumer tip", await runtimeRoot.GetAttributeAsync("title"));
+        await Assertions.Expect(runtimeRoot).ToHaveCSSAsync("color", "rgb(180, 35, 24)");
+        await Assertions.Expect(runtimeRoot).ToHaveCSSAsync("background-color", "rgb(230, 244, 255)");
+        await Assertions.Expect(page.Locator("[data-name='caption']"))
+            .ToHaveCSSAsync("color", "rgb(6, 118, 71)");
+        Assert.True(await page.Locator("[data-name='disabled-input']").IsDisabledAsync());
+        await Assertions.Expect(page.Locator("[data-name='isolated-grid']"))
+            .ToHaveCSSAsync("display", "block");
+        await Assertions.Expect(page.Locator("[data-name='isolated-grid']"))
+            .ToHaveCSSAsync("overflow", "auto");
+        await Assertions.Expect(page.Locator(".gfd-designer")).ToHaveCountAsync(0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task A_consumer_component_keeps_authored_css_above_runtime_defaults()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var html = """
+            <div data-gridlet="2" data-name="Styled consumer" data-layout="free" data-isolated
+                 style="width: 360px; height: 100px;">
+              <style>.btn { color: rgb(1, 2, 3); border: 7px solid rgb(4, 5, 6); }</style>
+              <button data-name="action" class="btn" style="left: 16px; top: 20px; width: 250px; height: 30px;">Action</button>
+            </div>
+            """;
+
+        var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
+        {
+            DataObject = new { name = "Styled consumer", html },
+        });
+        Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
+        var saved = await response.JsonAsync();
+        var id = saved!.Value.GetProperty("id").GetString();
+
+        await page.GotoAsync($"/gridlet/components/{id}");
+        var action = page.Locator("[data-name='action']");
+        await Assertions.Expect(action).ToHaveCSSAsync("color", "rgb(1, 2, 3)");
+        await Assertions.Expect(action).ToHaveCSSAsync("border-top-width", "7px");
+        await Assertions.Expect(action).ToHaveCSSAsync("border-top-color", "rgb(4, 5, 6)");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task A_consumer_runtime_supports_focus_handlers_and_chainable_component_events()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var moduleName = $"consumer-interactions-{Guid.NewGuid():n}.js";
+        await WriteModuleAsync(page, moduleName, """
+            export default class ConsumerInteractions {
+              constructor(component) { this.component = component; }
+              connected() { this.component.emit('ready').notify('Emit chain alive'); }
+              focused() { this.component.notify('Focused'); }
+              blurred() { this.component.notify('Blurred'); }
+            }
+            """);
+
+        var html = """
+            <div data-gridlet="2" data-name="Interaction consumer" data-layout="free"
+                 style="width: 360px; height: 100px;">
+              <gridlet-code src="MODULE"></gridlet-code>
+              <label data-role="checkbox" data-name="choice"
+                     data-on-focus="=focused()" data-on-blur="=blurred()"
+                     style="left: 16px; top: 20px; width: 250px; height: 30px;">
+                <input type="checkbox"><span>Choice</span>
+              </label>
+            </div>
+            """.Replace("MODULE", moduleName, StringComparison.Ordinal);
+
+        var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
+        {
+            DataObject = new { name = "Interaction consumer", html },
+        });
+        Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
+        var saved = await response.JsonAsync();
+        var id = saved!.Value.GetProperty("id").GetString();
+
+        await page.GotoAsync($"/gridlet/components/{id}");
+        await Assertions.Expect(page.Locator(".gridlet-runtime-notice"))
+            .ToHaveTextAsync("Emit chain alive");
+
+        var input = page.Locator("[data-name='choice'] input");
+        await input.FocusAsync();
+        await Assertions.Expect(page.Locator(".gridlet-runtime-notice"))
+            .ToHaveTextAsync("Focused");
+        await input.BlurAsync();
+        await Assertions.Expect(page.Locator(".gridlet-runtime-notice"))
+            .ToHaveTextAsync("Blurred");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task The_consumer_runtime_renders_saved_grids_pagers_panels_and_markup()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var route = $"consumer-controls-{Guid.NewGuid():n}";
+        var published = await page.APIRequest.PostAsync("/gridlet/api/published", new APIRequestContextOptions
+        {
+            DataObject = new
+            {
+                name = "Consumer controls",
+                method = "GET",
+                route,
+                connectionName = "Main",
+                sql = "SELECT 1",
+                parameters = Array.Empty<object>(),
+                enabled = true,
+            },
+        });
+        Assert.True(published.Ok, $"Publishing the endpoint failed: {published.Status}");
+
+        var html = """
+            <div data-gridlet="2" data-name="Consumer controls" data-layout="free"
+                 style="width: 520px; height: 360px;">
+              <gridlet-source href="ROUTE"></gridlet-source>
+              <table data-role="grid" data-name="records" data-no-header
+                     data-bind-columns="Answer" data-bind-header="false"
+                     style="left: 16px; top: 16px; width: 300px; height: 100px;">
+                <thead><tr><th>Answer</th></tr></thead>
+              </table>
+              <div data-role="pager" data-name="pager" data-edges data-position
+                   data-bind-edges="false" data-bind-position="false"
+                   style="left: 16px; top: 125px; width: 300px; height: 30px;"></div>
+              <label data-role="checkbox" data-name="choice"
+                     data-bind-value="true"
+                     style="left: 16px; top: 165px; width: 300px; height: 30px;">
+                <input type="checkbox"><span>Accept</span>
+              </label>
+              <input data-name="readonly-input" data-bind-read-only="true"
+                     style="left: 16px; top: 195px; width: 300px; height: 30px;">
+              <select data-name="options" data-bind-options="First&#10;Second"
+                      style="left: 16px; top: 230px; width: 300px; height: 30px;"></select>
+              <div data-role="panel" data-name="details"
+                   data-bind-title="Bound details"
+                   style="left: 16px; top: 205px; width: 300px; height: 90px;">
+                <div data-role="panel-title">Details</div>
+              </div>
+              <span data-name="colored" data-bind-color.light="='#ff0000'" data-bind-color.dark="='#ff0000'"
+                    style="left: 330px; top: 70px; width: 170px; height: 40px;">Colored</span>
+              <gridlet-raw data-name="notes"
+                           data-raw="&lt;p&gt;Hand-authored markup&lt;/p&gt;"
+                           style="left: 330px; top: 16px; width: 170px; height: 40px;"></gridlet-raw>
+            </div>
+            """.Replace("ROUTE", route, StringComparison.Ordinal);
+
+        var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
+        {
+            DataObject = new { name = "Consumer controls", html },
+        });
+        Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
+        var saved = await response.JsonAsync();
+        var id = saved!.Value.GetProperty("id").GetString();
+
+        await page.GotoAsync($"/gridlet/components/{id}");
+        var grid = page.Locator("[data-name='records']");
+        await Assertions.Expect(grid.Locator("thead")).ToHaveCountAsync(1);
+        await Assertions.Expect(grid.Locator("thead")).ToHaveCSSAsync("display", "none");
+        await Assertions.Expect(grid.Locator("thead th")).ToHaveTextAsync("Answer");
+        await Assertions.Expect(grid.Locator("tbody td")).ToHaveTextAsync("42");
+        await Assertions.Expect(page.Locator("[data-name='pager'] button[title='Next record']"))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(page.Locator("[data-name='pager'] .gridlet-pager-position")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.Locator("[data-name='pager'] button[title='First record']")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.Locator("[data-name='choice']")).ToContainTextAsync("Accept");
+        Assert.True(await page.Locator("[data-name='choice'] input").IsCheckedAsync());
+        Assert.False(await page.Locator("[data-name='readonly-input']").IsEditableAsync());
+        await Assertions.Expect(page.Locator("[data-name='options'] option")).ToHaveCountAsync(2);
+        await Assertions.Expect(page.Locator("[data-name='details']"))
+            .ToHaveCSSAsync("border-radius", "6px");
+        await Assertions.Expect(page.Locator("[data-role='panel-title']")).ToHaveTextAsync("Bound details");
+        await Assertions.Expect(page.Locator("[data-name='colored']"))
+            .ToHaveCSSAsync("color", "rgb(255, 0, 0)");
+        await Assertions.Expect(page.Locator("[data-name='notes']"))
+            .ToContainTextAsync("Hand-authored markup");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task The_consumer_runtime_reads_a_published_record_and_keeps_document_markup_inert()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var route = $"consumer-record-{Guid.NewGuid():n}";
+        var published = await page.APIRequest.PostAsync("/gridlet/api/published", new APIRequestContextOptions
+        {
+            DataObject = new
+            {
+                name = "Consumer record",
+                method = "GET",
+                route,
+                connectionName = "Main",
+                sql = "SELECT 1",
+                parameters = Array.Empty<object>(),
+                enabled = true,
+            },
+        });
+        Assert.True(published.Ok, $"Publishing the endpoint failed: {published.Status}");
+
+        var moduleName = $"consumer-values-{Guid.NewGuid():n}.js";
+        await WriteModuleAsync(page, moduleName, """
+            export const VatRate = 0.2;
+            export default class ConsumerBehaviour {
+              #services;
+              constructor(component, services) { this.#services = services; }
+              connected() { this.#services.notify('Consumer ready'); }
+              rate() {
+                this.#services.storage.write('rate', VatRate);
+                return this.#services.storage.read('rate');
+              }
+            }
+            """);
+
+        var html = """
+            <div data-gridlet="2" data-name="Bound consumer" data-layout="free"
+                 style="width: 360px; height: 120px;">
+              <gridlet-source href="ROUTE"></gridlet-source>
+              <gridlet-code src="MODULE"></gridlet-code>
+              <span data-name="answer" data-bind-text="=data.Answer"
+                    style="left: 16px; top: 20px; width: 250px; height: 30px;">waiting</span>
+              <span data-name="vat" data-bind-text="=VatRate"
+                    style="left: 16px; top: 50px; width: 250px; height: 30px;">waiting</span>
+              <span data-name="rate" data-bind-text="=rate()"
+                    style="left: 16px; top: 80px; width: 250px; height: 30px;">waiting</span>
+              <span data-name="qualified-rate" data-bind-text="=ConsumerBehaviour.rate()"
+                    style="left: 16px; top: 110px; width: 250px; height: 30px;">waiting</span>
+              <span data-name="gridlet-function" data-bind-text="=gridlet.upper('ok')"
+                    style="left: 16px; top: 140px; width: 250px; height: 30px;">waiting</span>
+              <form data-name="unsafe-form" data-bind-action="https://example.invalid/collect"
+                    style="left: 16px; top: 80px; width: 250px; height: 30px;"></form>
+              <script>window.__gridletDocumentScriptRan = true;</script>
+              <meta http-equiv="refresh" content="0;url=https://example.invalid/">
+              <a data-name="unsafe-link" href="javascript:window.__gridletDocumentScriptRan = true">link</a>
+            </div>
+            """.Replace("ROUTE", route, StringComparison.Ordinal)
+            .Replace("MODULE", moduleName, StringComparison.Ordinal);
+
+        var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
+        {
+            DataObject = new { name = "Bound consumer", html },
+        });
+        Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
+        var saved = await response.JsonAsync();
+        var id = saved!.Value.GetProperty("id").GetString();
+
+        await page.GotoAsync($"/gridlet/components/{id}");
+        await Assertions.Expect(page.Locator("[data-name='answer']")).ToHaveTextAsync("42");
+        await Assertions.Expect(page.Locator("[data-name='vat']")).ToHaveTextAsync("0.2");
+        await Assertions.Expect(page.Locator("[data-name='rate']")).ToHaveTextAsync("0.2");
+        await Assertions.Expect(page.Locator("[data-name='qualified-rate']")).ToHaveTextAsync("0.2");
+        await Assertions.Expect(page.Locator("[data-name='gridlet-function']")).ToHaveTextAsync("OK");
+        await Assertions.Expect(page.Locator(".gridlet-runtime-notice")).ToHaveTextAsync("Consumer ready");
+        await Assertions.Expect(page.Locator("script")).ToHaveCountAsync(1);
+        await Assertions.Expect(page.Locator("#gridlet-component-host meta")).ToHaveCountAsync(0);
+        Assert.Null(await page.Locator("[data-name='unsafe-link']").GetAttributeAsync("href"));
+        Assert.Null(await page.Locator("[data-name='unsafe-form']").GetAttributeAsync("action"));
+        Assert.False(await page.EvaluateAsync<bool>("() => Boolean(window.__gridletDocumentScriptRan)"));
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task A_consumer_source_error_does_not_stop_its_behaviour_modules()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var moduleName = $"consumer-source-error-{Guid.NewGuid():n}.js";
+        await WriteModuleAsync(page, moduleName, """
+            export default class SourceErrorBehaviour {
+              constructor(component) { this.component = component; }
+              connected() { this.component.notify('Behavior alive'); }
+            }
+            """);
+
+        var html = """
+            <div data-gridlet="2" data-name="Source error" data-layout="free"
+                 style="width: 360px; height: 120px;">
+              <gridlet-source href="missing-consumer-source"></gridlet-source>
+              <gridlet-code src="MODULE"></gridlet-code>
+              <span data-name="value" style="left: 16px; top: 20px; width: 250px; height: 30px;">waiting</span>
+            </div>
+            """.Replace("MODULE", moduleName, StringComparison.Ordinal);
+
+        var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
+        {
+            DataObject = new { name = "Source error", html },
+        });
+        Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
+        var saved = await response.JsonAsync();
+        var id = saved!.Value.GetProperty("id").GetString();
+
+        await page.GotoAsync($"/gridlet/components/{id}");
+        await Assertions.Expect(page.Locator(".gridlet-runtime-message"))
+            .ToContainTextAsync("returned 404");
+        await Assertions.Expect(page.Locator(".gridlet-runtime-notice"))
+            .ToHaveTextAsync("Behavior alive");
+        await Assertions.Expect(page.Locator("[data-name='value']")).ToHaveTextAsync("waiting");
+
+        browserPage.AssertNoUnexpectedErrors("Failed to load resource");
+    }
+
     /// <summary>
     /// The rule that decides whether a property is a value or a formula, which is the whole of the
     /// syntax: <c>=</c> in front makes it a formula, <c>'</c> in front makes it text whatever it

@@ -35,6 +35,7 @@ public static class GridletEndpointRouteBuilderExtensions
         var api = group.MapGroup("/api");
         GridletApiEndpoints.Map(api, options);
         MapModuleEndpoints(endpoints, api);
+        MapRuntimeEndpoints(endpoints, group);
         GridletPublishedEndpoints.Map(group, options.PublishedApiSegment);
 
         return group;
@@ -94,6 +95,14 @@ public static class GridletEndpointRouteBuilderExtensions
         foreach (var contributor in endpoints.ServiceProvider.GetServices<IGridletEndpointContributor>())
         {
             contributor.Map(api);
+        }
+    }
+
+    private static void MapRuntimeEndpoints(IEndpointRouteBuilder endpoints, RouteGroupBuilder group)
+    {
+        foreach (var contributor in endpoints.ServiceProvider.GetServices<IGridletRuntimeContributor>())
+        {
+            contributor.Map(group);
         }
     }
 

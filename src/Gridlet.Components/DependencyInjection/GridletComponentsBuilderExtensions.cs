@@ -28,6 +28,7 @@ public static class GridletComponentsBuilderExtensions
         builder.Services.TryAddSingleton<IComponentStore, GridletComponentFileStore>();
         builder.Services.TryAddSingleton<IComponentScriptStore, GridletComponentScriptFileStore>();
         builder.Services.AddSingleton<IGridletEndpointContributor, GridletComponentEndpoints>();
+        builder.Services.AddSingleton<IGridletRuntimeContributor, GridletComponentEndpoints>();
         builder.Services.AddSingleton<IGridletUiAssetProvider, GridletComponentsAssetProvider>();
         return builder;
     }

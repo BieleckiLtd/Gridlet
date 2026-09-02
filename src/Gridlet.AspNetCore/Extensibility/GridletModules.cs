@@ -18,6 +18,21 @@ public interface IGridletEndpointContributor
 }
 
 /// <summary>
+/// Lets an optional Gridlet package add runtime endpoints beneath the Gridlet mount path.
+/// </summary>
+/// <remarks>
+/// These routes are distinct from the authorized management API. They still receive the
+/// authorization applied to the Gridlet route group, but they can serve the artifact that an
+/// end-user is meant to open rather than the JSON used by the designer.
+/// </remarks>
+public interface IGridletRuntimeContributor
+{
+    /// <summary>Maps the package's end-user runtime routes into the Gridlet route group.</summary>
+    /// <param name="gridlet">The <c>{mount}</c> route group.</param>
+    void Map(IEndpointRouteBuilder gridlet);
+}
+
+/// <summary>
 /// Lets an optional Gridlet package ship its own browser assets and have the shell load them.
 /// </summary>
 /// <remarks>

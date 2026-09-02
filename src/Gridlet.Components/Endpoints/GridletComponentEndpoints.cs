@@ -1,10 +1,13 @@
 using System.Text.Json;
+using System.Text;
 using Gridlet.AspNetCore.Contracts;
 using Gridlet.AspNetCore.Extensibility;
 using Gridlet.Components.Storage;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Gridlet.Components.Endpoints;
 
@@ -26,12 +29,11 @@ public sealed record ComponentScriptSaveRequest(string? Source);
 /// Component administration endpoints, contributed into Gridlet's authorized API group.
 /// </summary>
 /// <remarks>
-/// These are designer-side endpoints: they read and write component documents. Serving a component to end
-/// users is a separate surface and is not part of this package yet.
+/// These include the designer-side JSON endpoints and the separate consumer-facing component page.
 /// </remarks>
-internal sealed class GridletComponentEndpoints : IGridletEndpointContributor
+internal sealed class GridletComponentEndpoints : IGridletEndpointContributor, IGridletRuntimeContributor
 {
-    public void Map(IEndpointRouteBuilder api)
+    void IGridletEndpointContributor.Map(IEndpointRouteBuilder api)
     {
         // Scripts are routed before the {id} component route so a module name can never be read as a
         // component id.
@@ -52,6 +54,24 @@ internal sealed class GridletComponentEndpoints : IGridletEndpointContributor
         api.MapDelete("/components/{id}", DeleteComponent);
     }
 
+    /// <summary>
+    /// Maps the consumer-facing component page. It is deliberately outside <c>/api</c>: the
+    /// designer needs a JSON document, while a person filling or viewing a component needs an
+    /// ordinary browser page.
+    /// </summary>
+    void IGridletRuntimeContributor.Map(IEndpointRouteBuilder gridlet)
+    {
+        var options = gridlet.ServiceProvider.GetRequiredService<IOptions<GridletOptions>>().Value;
+        if (options.PublishedApiSegment.Equals("components", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "PublishedApiRoutePrefix cannot be 'components' when Gridlet components are enabled; " +
+                "that route is reserved for consumer-facing components.");
+        }
+
+        gridlet.MapGet("/components/{id}", GetComponentPage);
+    }
+
     private static async Task<IResult> GetComponents(IComponentStore store, CancellationToken cancellationToken)
         => Results.Ok(await store.GetAllAsync(cancellationToken));
 
@@ -59,6 +79,80 @@ internal sealed class GridletComponentEndpoints : IGridletEndpointContributor
         => await store.FindAsync(id, cancellationToken) is { } component
             ? Results.Ok(component)
             : Results.NotFound(new GridletErrorResponse($"No component with id '{id}'."));
+
+    private static async Task<IResult> GetComponentPage(
+        string id,
+        HttpContext context,
+        IComponentStore store,
+        IOptions<GridletOptions> options,
+        CancellationToken cancellationToken)
+    {
+        var component = await store.FindAsync(id, cancellationToken);
+        if (component is null)
+        {
+            return Results.NotFound(new GridletErrorResponse($"No component with id '{id}'."));
+        }
+
+        // The document is placed in a template as base64. This keeps arbitrary author markup inert
+        // until runtime.js parses and sanitizes it, and avoids a document containing </template> or
+        // a non-ASCII character changing the page that carries it.
+        var document = Convert.ToBase64String(Encoding.UTF8.GetBytes(component.Html));
+        var title = System.Net.WebUtility.HtmlEncode(component.Name);
+        var publishedSegment = System.Net.WebUtility.HtmlEncode(options.Value.PublishedApiSegment);
+        var scriptPath = RuntimeScriptPath(context, id);
+
+        context.Response.Headers.CacheControl = "no-store";
+        context.Response.Headers.ContentSecurityPolicy =
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+            "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; " +
+            "form-action 'self'; frame-ancestors 'self'";
+
+        var page = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>%TITLE%</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; color: CanvasText; background: Canvas; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: start center; box-sizing: border-box; padding: 24px; }
+    #gridlet-component-host { max-width: 100%; }
+    .gridlet-runtime-message { color: #b42318; background: #fef3f2; border: 1px solid #fecdca; border-radius: 6px; padding: 12px 16px; font: 14px system-ui, sans-serif; }
+    @media (prefers-color-scheme: dark) {
+      .gridlet-runtime-message { color: #fda29b; background: #55160c; border-color: #912018; }
+    }
+  </style>
+</head>
+<body data-gridlet-published-segment="%PUBLISHED_SEGMENT%" data-gridlet-component-id="%COMPONENT_ID%">
+  <main id="gridlet-component-host" aria-live="polite">
+    <template id="gridlet-component-document">%DOCUMENT%</template>
+  </main>
+  <script type="module" src="%RUNTIME_SCRIPT%"></script>
+</body>
+</html>
+"""
+            // Replace the document first: unlike base64, an arbitrary component name may contain
+            // one of the page placeholders, and values inserted later must not be substituted.
+            .Replace("%DOCUMENT%", document, StringComparison.Ordinal)
+            .Replace("%RUNTIME_SCRIPT%", System.Net.WebUtility.HtmlEncode(scriptPath), StringComparison.Ordinal)
+            .Replace("%PUBLISHED_SEGMENT%", publishedSegment, StringComparison.Ordinal)
+            .Replace("%COMPONENT_ID%", System.Net.WebUtility.HtmlEncode(id), StringComparison.Ordinal)
+            .Replace("%TITLE%", title, StringComparison.Ordinal);
+
+        return Results.Content(page, "text/html; charset=utf-8");
+    }
+
+    private static string RuntimeScriptPath(HttpContext context, string id)
+    {
+        var requestPath = (context.Request.Path.Value ?? string.Empty).TrimEnd('/');
+        var suffix = "/components/" + id;
+        var mount = requestPath.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
+            ? requestPath[..^suffix.Length]
+            : "/gridlet";
+        var pathBase = context.Request.PathBase.Value?.TrimEnd('/') ?? string.Empty;
+        return $"{pathBase}{mount.TrimEnd('/')}/assets/modules/components/runtime.js";
+    }
 
     private static async Task<IResult> SaveComponent(
         ComponentSaveRequest body, IComponentStore store, CancellationToken cancellationToken)

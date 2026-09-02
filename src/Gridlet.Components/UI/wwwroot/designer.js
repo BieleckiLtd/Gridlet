@@ -6830,6 +6830,28 @@ export default class ${CLASS_NAME(name)} {
       onOpen: () => openDesigner(component),
       contextItems: () => [
         { label: 'Open', action: () => openDesigner(component) },
+        {
+          label: 'Open consumer view',
+          action: () => window.open(
+            `${WORKSPACE_ROOT}components/${encodeURIComponent(component.id)}`,
+            '_blank', 'noopener,noreferrer'),
+        },
+        {
+          label: 'Copy consumer link',
+          action: async () => {
+            const url = `${WORKSPACE_ROOT}components/${encodeURIComponent(component.id)}`;
+            if (!navigator.clipboard?.writeText) {
+              toast('This browser cannot copy links.');
+              return;
+            }
+            try {
+              await navigator.clipboard.writeText(url);
+              toast('Consumer link copied.', false);
+            } catch (err) {
+              toast(`Could not copy consumer link: ${err.message}`);
+            }
+          },
+        },
         { separator: true },
         {
           label: 'Delete component…',
