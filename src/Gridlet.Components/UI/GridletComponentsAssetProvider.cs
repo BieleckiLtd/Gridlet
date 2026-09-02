@@ -21,11 +21,14 @@ internal sealed class GridletComponentsAssetProvider : IGridletUiAssetProvider
     // documents through it from the moment it loads.
     public IReadOnlyList<string> Scripts { get; } = ["format.js", "designer.js"];
 
+    /// <summary>The standalone component viewer uses this without loading it into the designer shell.</summary>
+    public string RuntimeScript => "runtime.js";
+
     public IReadOnlyList<string> Styles { get; } = ["designer.css"];
 
     public Stream? Open(string relativePath)
     {
-        var known = Scripts.Concat(Styles)
+        var known = Scripts.Concat(Styles).Append(RuntimeScript)
             .FirstOrDefault(a => string.Equals(a, relativePath, StringComparison.Ordinal));
         return known is null
             ? null
