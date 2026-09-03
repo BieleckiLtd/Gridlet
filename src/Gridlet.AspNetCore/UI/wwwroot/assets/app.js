@@ -419,7 +419,7 @@
           h('h2', { text: 'Third-party software' }),
           h('p', { text: 'Gridlet’s browser UI uses plain HTML, CSS, and JavaScript, with one third-party asset. Its provider and hosting packages use these third-party projects:' }),
           h('ul', {},
-            h('li', {}, h('a', { href: 'https://github.com/tabler/tabler-icons', target: '_blank', rel: 'noopener', text: 'Tabler Icons ↗' }), ' — the interface icons, MIT Licence, © 2020-2026 Paweł Kuna'),
+            h('li', {}, h('a', { href: 'https://github.com/tabler/tabler-icons', target: '_blank', rel: 'noopener', text: 'Tabler Icons ↗' }), ' - the interface icons, MIT Licence, © 2020-2026 Paweł Kuna'),
             h('li', {}, h('a', { href: 'https://github.com/dotnet/SqlClient', target: '_blank', rel: 'noopener', text: 'Microsoft.Data.SqlClient ↗' })),
             h('li', {}, h('a', { href: 'https://learn.microsoft.com/dotnet/standard/data/sqlite/', target: '_blank', rel: 'noopener', text: 'Microsoft.Data.Sqlite ↗' })),
             h('li', {}, h('a', { href: 'https://github.com/ericsink/SQLitePCL.raw', target: '_blank', rel: 'noopener', text: 'SQLitePCLRaw ↗' })),
@@ -2082,7 +2082,7 @@
       try {
         await restore(descriptor);
       } catch {
-        // One tab that cannot be rebuilt — a dropped table, a deleted component — must not stop the
+        // One tab that cannot be rebuilt - a dropped table, a deleted component - must not stop the
         // rest of the workspace from coming back.
       }
     }
@@ -2341,7 +2341,7 @@
       event.returnValue = '';
     });
 
-    // A tab's contents can change without any tab event — typing in a query editor, for one — so
+    // A tab's contents can change without any tab event - typing in a query editor, for one - so
     // the session is written again on the way out rather than only when tabs open and close.
     window.addEventListener('pagehide', saveSession);
 
@@ -2766,7 +2766,7 @@
         h('div', { class: 'items' }, items.map((o) =>
           h('button', {
             class: 'tree-item',
-            title: `${o.schema}.${o.name}${o.description ? ` — ${o.description}` : ''}`,
+            title: `${o.schema}.${o.name}${o.description ? ` - ${o.description}` : ''}`,
             onclick: () => openObjectTab(o),
             oncontextmenu: (event) => showContextMenu(event, objectContextItems(o)),
           },
@@ -3077,7 +3077,7 @@
               item.isInferred ? h('span', { class: 'muted', text: ' inferred' }) : null)))
               : h('p', { class: 'muted', text: 'None' }));
         };
-        modal(`Dependencies — ${displayName(o, scope)}`, h('div', { class: 'dependency-dialog' },
+        modal(`Dependencies - ${displayName(o, scope)}`, h('div', { class: 'dependency-dialog' },
           group('references', 'References'), group('referencedBy', 'Referenced by')), [
           { label: 'Close', onClick: (close) => close() },
         ]);
@@ -5118,8 +5118,8 @@
           });
           const title = diagramSvgElement('title');
           title.textContent = type === 'orthogonal'
-            ? `${relationship.foreignKey.name} — double-click to add a routing point`
-            : `${relationship.foreignKey.name} — right-click to change the connector`;
+            ? `${relationship.foreignKey.name} - double-click to add a routing point`
+            : `${relationship.foreignKey.name} - right-click to change the connector`;
           path.append(title);
           group.append(path);
           const toggleSelection = () => {
@@ -6774,12 +6774,12 @@
             class: `data-change ${difference.status}`, text: difference.status.replace('-', ' '),
           })),
           h('td', { class: 'mono', text: difference.key }),
-          h('td', { text: difference.changedColumns.join(', ') || '—' }),
+          h('td', { text: difference.changedColumns.join(', ') || '-' }),
           h('td', {}, difference.sourceValue === null
-            ? h('span', { class: 'null', text: '—' })
+            ? h('span', { class: 'null', text: '-' })
             : h('pre', { class: 'data-compare-value', text: JSON.stringify(difference.sourceValue, null, 2) })),
           h('td', {}, difference.targetValue === null
-            ? h('span', { class: 'null', text: '—' })
+            ? h('span', { class: 'null', text: '-' })
             : h('pre', { class: 'data-compare-value', text: JSON.stringify(difference.targetValue, null, 2) })))))));
     };
     filter.addEventListener('input', render);
@@ -7176,11 +7176,11 @@
             text: scopeLabel(tab.scope),
           }),
         // Unsaved work shows as a dot where the close button is, the way an editor marks a modified
-        // file. It is the same control either way — resting on it turns the dot into the ×, so the
+        // file. It is the same control either way - resting on it turns the dot into the ×, so the
         // mark never costs the row any width and closing is always in the same place.
         h('button', {
           class: 'tab-close' + (tab.hasUnsavedDefinition ? ' unsaved' : ''),
-          title: tab.hasUnsavedDefinition ? 'Unsaved changes — click to close tab' : 'Close tab',
+          title: tab.hasUnsavedDefinition ? 'Unsaved changes - click to close tab' : 'Close tab',
           'data-testid': tab.hasUnsavedDefinition ? 'tab-unsaved' : null,
           onclick: (e) => { e.stopPropagation(); closeTab(tab.id); },
         },
@@ -9427,7 +9427,7 @@
     });
     // Asked at the two moments the edit is actually lost: closing the tab, and switching to another
     // view of this object, which rebuilds the body and the editor with it. Switching to another
-    // *tab* is neither — this one stays open with the edit still in it — and the browser closing on
+    // *tab* is neither - this one stays open with the edit still in it - and the browser closing on
     // unsaved work is caught by the guard on the window.
     const confirmDefinitionChanges = () => {
       if (!tab.hasUnsavedDefinition) return Promise.resolve(true);
@@ -9798,17 +9798,190 @@
     return allowNetwork ? null : voices[0];
   };
 
+  // Following the voice through the answer needs ranges over the rendered response rather than a
+  // rewrite of it: the highlight API paints them without touching the markup, so links, selection
+  // and copy keep working while a response is read. Browsers without the API just read aloud.
+  const SPEECH_SENTENCE_HIGHLIGHT = 'gridlet-speech-sentence';
+  const SPEECH_WORD_HIGHLIGHT = 'gridlet-speech-word';
+
+  const speechHighlightSupported = () => typeof CSS !== 'undefined'
+    && typeof CSS.highlights !== 'undefined'
+    && typeof window.Highlight === 'function';
+
+  const isSpeechSpace = (character) => character === ' '
+    || character === '\t' || character === '\n' || character === '\r';
+
+  // Markup carries no whitespace of its own, so a paragraph that ends without a space would run
+  // into the list item after it and hide the join from the search.
+  const SPEECH_BLOCK_TAGS = new Set([
+    'ARTICLE', 'BLOCKQUOTE', 'BR', 'DD', 'DETAILS', 'DIV', 'DL', 'DT', 'FIGURE', 'H1', 'H2', 'H3',
+    'H4', 'H5', 'H6', 'HR', 'LI', 'OL', 'P', 'PRE', 'SECTION', 'SUMMARY', 'TABLE', 'TD', 'TH',
+    'TR', 'UL',
+  ]);
+
+  // Whitespace is collapsed on both sides of the match: the spoken text was rebuilt out of the
+  // markdown source, while the rendered answer carries that source's own wrapping and indentation.
+  const buildSpeechIndex = (roots) => {
+    const nodes = [];
+    const offsets = [];
+    let text = '';
+    // A separator stands between two blocks. It has no position in the document, so a match that
+    // begins or ends on one is trimmed back to real text before the range is built.
+    const separate = () => {
+      if (!text || text.endsWith(' ')) return;
+      text += ' ';
+      nodes.push(null);
+      offsets.push(0);
+    };
+    for (const root of roots) {
+      const walker = document.createTreeWalker(
+        root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          if (SPEECH_BLOCK_TAGS.has(node.tagName)) separate();
+          continue;
+        }
+        const value = node.nodeValue || '';
+        for (let index = 0; index < value.length; index += 1) {
+          if (isSpeechSpace(value[index])) {
+            if (!text || text.endsWith(' ')) continue;
+            text += ' ';
+          } else {
+            text += value[index];
+          }
+          nodes.push(node);
+          offsets.push(index);
+        }
+      }
+      separate();
+    }
+    return { text: text.toLowerCase(), nodes, offsets };
+  };
+
+  const normalizeSpeechChunk = (chunk) => {
+    const map = new Array(chunk.length).fill(-1);
+    let text = '';
+    for (let index = 0; index < chunk.length; index += 1) {
+      if (isSpeechSpace(chunk[index])) {
+        if (!text || text.endsWith(' ')) continue;
+        map[index] = text.length;
+        text += ' ';
+      } else {
+        map[index] = text.length;
+        text += chunk[index];
+      }
+    }
+    if (text.endsWith(' ')) {
+      const last = text.length - 1;
+      for (let index = 0; index < map.length; index += 1) if (map[index] === last) map[index] = -1;
+      text = text.slice(0, last);
+    }
+    return { text: text.toLowerCase(), map };
+  };
+
+  const speechRange = (index, start, end) => {
+    let from = start;
+    let to = end;
+    while (from < to && !index.nodes[from]) from += 1;
+    while (to > from && !index.nodes[to - 1]) to -= 1;
+    if (from >= to) return null;
+    const range = document.createRange();
+    range.setStart(index.nodes[from], index.offsets[from]);
+    range.setEnd(index.nodes[to - 1], index.offsets[to - 1] + 1);
+    return range;
+  };
+
+  const createSpeechHighlight = (roots) => {
+    const inert = { chunkStarted() {}, wordSpoken() {}, clear() {} };
+    if (!speechHighlightSupported() || !roots.length) return inert;
+    let index = null;
+    let cursor = 0;
+    let chunk = null;
+    const paint = (name, range) => {
+      if (range) CSS.highlights.set(name, new window.Highlight(range));
+      else CSS.highlights.delete(name);
+    };
+    const clearAll = () => {
+      CSS.highlights.delete(SPEECH_SENTENCE_HIGHLIGHT);
+      CSS.highlights.delete(SPEECH_WORD_HIGHLIGHT);
+    };
+    return {
+      chunkStarted(spoken) {
+        CSS.highlights.delete(SPEECH_WORD_HIGHLIGHT);
+        chunk = null;
+        const normalized = normalizeSpeechChunk(spoken || '');
+        if (!normalized.text) {
+          CSS.highlights.delete(SPEECH_SENTENCE_HIGHLIGHT);
+          return;
+        }
+        if (!index) {
+          index = buildSpeechIndex(roots);
+          cursor = 0;
+        }
+        // The search runs forward from the last sentence, so a phrase that repeats is highlighted
+        // where it is being read. A chunk the rendered answer does not hold - a code block the
+        // voice skips, or a table it drops - falls back to a search from the top, and an answer
+        // that is still growing is indexed again before the sentence is given up on.
+        let at = index.text.indexOf(normalized.text, cursor);
+        if (at < 0) at = index.text.indexOf(normalized.text);
+        if (at < 0) {
+          index = buildSpeechIndex(roots);
+          at = index.text.indexOf(normalized.text);
+        }
+        if (at < 0) {
+          CSS.highlights.delete(SPEECH_SENTENCE_HIGHLIGHT);
+          return;
+        }
+        cursor = at + normalized.text.length;
+        chunk = { start: at, text: normalized.text, map: normalized.map };
+        paint(SPEECH_SENTENCE_HIGHLIGHT, speechRange(index, at, cursor));
+      },
+      wordSpoken(charIndex, charLength) {
+        if (!chunk || !index || typeof charIndex !== 'number' || charIndex < 0) return;
+        let start = -1;
+        for (let at = charIndex; at < chunk.map.length; at += 1) {
+          if (chunk.map[at] >= 0) { start = chunk.map[at]; break; }
+        }
+        if (start < 0) return;
+        let end = -1;
+        if (typeof charLength === 'number' && charLength > 0) {
+          const limit = Math.min(charIndex + charLength, chunk.map.length);
+          for (let at = limit - 1; at >= charIndex; at -= 1) {
+            if (chunk.map[at] >= 0) { end = chunk.map[at] + 1; break; }
+          }
+        }
+        // A browser may report where a word starts without saying how long it is, and then the
+        // word ends where the next space in the sentence begins.
+        if (end < 0) {
+          end = start;
+          while (end < chunk.text.length && chunk.text[end] !== ' ') end += 1;
+        }
+        if (end <= start) return;
+        paint(SPEECH_WORD_HIGHLIGHT, speechRange(index, chunk.start + start, chunk.start + end));
+      },
+      clear() {
+        index = null;
+        cursor = 0;
+        chunk = null;
+        clearAll();
+      },
+    };
+  };
+
   let activeSpeech = null;
 
   const stopSpeaking = () => {
     const speaking = activeSpeech;
     activeSpeech = null;
-    if (speaking) speaking.onStopped();
+    if (speaking) {
+      speaking.highlight.clear();
+      speaking.onStopped();
+    }
     if (speechSupported()) window.speechSynthesis.cancel();
   };
 
   // Only one response is ever spoken at a time: starting another stops the first.
-  const speak = (markdown, button, onStopped) => {
+  const speak = (markdown, button, onStopped, contentRoots = []) => {
     const settings = voiceSettings();
     if (!settings) return false;
     const text = speechTextFrom(markdown, settings.speakCode);
@@ -9816,7 +9989,7 @@
     stopSpeaking();
     const chunks = speechChunks(text);
     if (!chunks.length) return false;
-    const session = { button, onStopped };
+    const session = { button, onStopped, highlight: createSpeechHighlight(contentRoots) };
     activeSpeech = session;
     const voice = pickSpeechVoice(settings);
     // Chromium ignores a speak() issued in the same task as the cancel() above, so the queue is
@@ -9830,6 +10003,14 @@
         utterance.rate = settings.rate ?? 1;
         utterance.pitch = settings.pitch ?? 1;
         utterance.volume = settings.volume ?? 1;
+        utterance.onstart = () => {
+          if (activeSpeech === session) session.highlight.chunkStarted(chunk);
+        };
+        utterance.onboundary = (event) => {
+          if (activeSpeech !== session) return;
+          if (event.name && event.name !== 'word') return;
+          session.highlight.wordSpoken(event.charIndex, event.charLength);
+        };
         if (index === chunks.length - 1) {
           utterance.onend = () => { if (activeSpeech === session) stopSpeaking(); };
         }
@@ -10872,7 +11053,8 @@
             return;
           }
           if (!lastContentValue) return;
-          if (!speak(lastContentValue, button, markStopped)) {
+          const spokenRoots = [...element.querySelectorAll(':scope > .agent-message-content')];
+          if (!speak(lastContentValue, button, markStopped, spokenRoots)) {
             toast('Nothing to read aloud in this response.');
             return;
           }
@@ -12148,7 +12330,7 @@
             const count = event.recordsAffected;
             results.append(h('div', {
               class: 'result-meta',
-              text: `Query executed successfully — ${count} ${count === 1 ? 'record' : 'records'} affected`,
+              text: `Query executed successfully - ${count} ${count === 1 ? 'record' : 'records'} affected`,
             }));
           }
           status.textContent = event.durationMs + ' ms';
@@ -12274,7 +12456,7 @@
             const count = event.recordsAffected;
             results.append(h('div', {
               class: 'result-meta',
-              text: `Query executed successfully — ${count} ${count === 1 ? 'record' : 'records'} affected`,
+              text: `Query executed successfully - ${count} ${count === 1 ? 'record' : 'records'} affected`,
             }));
           }
           status.textContent = event.durationMs + ' ms';
@@ -12328,7 +12510,7 @@
           } catch (err) {
             if (err.name === 'AbortError' || err.status === 404 || ++pollFailures > 3) throw err;
             retryingPoll = true;
-            status.textContent = `Connection interrupted — retrying query job (${pollFailures}/3)…`;
+            status.textContent = `Connection interrupted - retrying query job (${pollFailures}/3)…`;
             await waitBeforeRetry(250 * (2 ** (pollFailures - 1)));
             retryingPoll = false;
             continue;
@@ -12352,7 +12534,7 @@
       } catch (err) {
         if (err.name === 'AbortError') {
           reattachAvailable = Boolean(jobId);
-          status.textContent = 'Detached — query continues on the server';
+          status.textContent = 'Detached - query continues on the server';
         } else if (jobId && err.status === 404) {
           terminalStatus = 'expired';
           activeJobId = null;
@@ -12362,7 +12544,7 @@
           saveSession();
         } else if (jobId) {
           reattachAvailable = true;
-          status.textContent = 'Connection lost — choose Reattach to resume this query job';
+          status.textContent = 'Connection lost - choose Reattach to resume this query job';
           results.append(errorBox(err.message));
         } else {
           terminalStatus = 'failed';
@@ -13135,7 +13317,7 @@
         return { name: parameter.name, required, type: parameterTypeSelect(parameter.type || 'auto') };
       });
       const error = h('div', { class: 'inline-error', hidden: '' });
-      // Returns the saved endpoint so a caller can act on what the server actually stored — the
+      // Returns the saved endpoint so a caller can act on what the server actually stored - the
       // route may have changed, and the parameters are re-detected from the SQL.
       const save = async () => {
         error.hidden = true;

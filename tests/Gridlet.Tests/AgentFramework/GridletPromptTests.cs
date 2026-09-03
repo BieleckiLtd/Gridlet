@@ -86,7 +86,7 @@ public sealed class GridletPromptTests
 
     /// <summary>
     /// Adding a guide topic is meant to be dropping a file into <c>Guide/</c>, so this checks the
-    /// rules that make that work rather than pinning the exact list — which would turn every new
+    /// rules that make that work rather than pinning the exact list - which would turn every new
     /// topic into a failing test for no reason.
     /// </summary>
     [Fact]
@@ -111,7 +111,7 @@ public sealed class GridletPromptTests
 
     /// <summary>
     /// The agent has no way to discover the interface, so anything it cannot read here it will
-    /// answer with SQL instead — which is how "how do I delete a customer?" once turned into a
+    /// answer with SQL instead - which is how "how do I delete a customer?" once turned into a
     /// lecture about `DELETE` rather than "select the row and press Delete".
     /// </summary>
     [Fact]
@@ -130,8 +130,8 @@ public sealed class GridletPromptTests
 
     /// <summary>
     /// A published endpoint is edited in place from the Published APIs tab. Without this documented
-    /// the agent reasons out a plausible-sounding workflow instead — "edit the original query and
-    /// publish it again" — which does not work, because publishing copies the SQL rather than
+    /// the agent reasons out a plausible-sounding workflow instead - "edit the original query and
+    /// publish it again" - which does not work, because publishing copies the SQL rather than
     /// linking to it, and following it would leave somebody with two endpoints.
     /// </summary>
     [Fact]

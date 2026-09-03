@@ -104,15 +104,15 @@ public sealed record GridletDatabaseSystemInfo(string Technology, string? Versio
 /// visible in the person's address bar.
 /// </summary>
 /// <param name="BaseAddress">
-/// Absolute origin and path base the UI was served from, with a trailing slash — for example
+/// Absolute origin and path base the UI was served from, with a trailing slash - for example
 /// <c>https://localhost:5088/</c>.
 /// </param>
 /// <param name="MountPath">
-/// Route prefix Gridlet is mapped under, without a trailing slash — for example <c>/gridlet</c>.
+/// Route prefix Gridlet is mapped under, without a trailing slash - for example <c>/gridlet</c>.
 /// </param>
 /// <param name="PublishedApiSegment">
 /// The segment beneath the mount that published endpoints answer on, from
-/// <see cref="GridletOptions.PublishedApiRoutePrefix"/> — <c>pub</c> unless the host changed it.
+/// <see cref="GridletOptions.PublishedApiRoutePrefix"/> - <c>pub</c> unless the host changed it.
 /// It is carried here rather than assumed, because an agent that hands somebody a URL built from
 /// the documented default would be handing them one that resolves to nothing.
 /// </param>

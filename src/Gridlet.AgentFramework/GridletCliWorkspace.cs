@@ -14,7 +14,7 @@ namespace Gridlet.AgentFramework;
 /// <para>
 /// The location is stable rather than per-process. It sits under the current user's local
 /// application data, which another local account cannot write to, so there is no need to randomize
-/// the name to stop an <c>AGENTS.md</c> being planted there — and a stable path leaves nothing to
+/// the name to stop an <c>AGENTS.md</c> being planted there - and a stable path leaves nothing to
 /// accumulate across restarts. It is swept on first use anyway, because a directory this code
 /// requires to be empty should be checked rather than assumed.
 /// </para>

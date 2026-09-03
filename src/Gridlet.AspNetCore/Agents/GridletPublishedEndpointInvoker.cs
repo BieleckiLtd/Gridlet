@@ -20,8 +20,8 @@ namespace Gridlet.AspNetCore.Agents;
 ///   and the other verbs are the ones a person would reasonably use for something that changes data.
 /// - The call carries the browser's own credentials and is answered by the same authorization the
 ///   person would meet themselves, so this widens nothing they could not already reach. Those
-///   credentials go back to the exact origin the browser just sent them to — the address is built
-///   from the live request, never from anything the model supplied — so no credential reaches a
+///   credentials go back to the exact origin the browser just sent them to - the address is built
+///   from the live request, never from anything the model supplied - so no credential reaches a
 ///   host it was not already presented to.
 /// - The response is bounded in size and time before any of it is handed back to the model.
 /// </summary>
@@ -158,7 +158,7 @@ internal sealed class GridletPublishedEndpointInvoker(
         }
     }
 
-    /// <summary>Named client so a host can configure the loopback call — proxies, certificates.</summary>
+    /// <summary>Named client so a host can configure the loopback call - proxies, certificates.</summary>
     internal const string HttpClientName = "Gridlet.PublishedEndpointInvoker";
 
     private string BuildUrl(
@@ -187,7 +187,7 @@ internal sealed class GridletPublishedEndpointInvoker(
 
     /// <summary>
     /// Sends the call as the person, not as the server. Without this the endpoint would answer an
-    /// anonymous caller — which either fails confusingly or, on an installation that allows
+    /// anonymous caller - which either fails confusingly or, on an installation that allows
     /// anonymous access, shows the agent something the person's own session might not permit.
     /// </summary>
     private static void ForwardCallerCredentials(HttpContext httpContext, HttpRequestMessage message)

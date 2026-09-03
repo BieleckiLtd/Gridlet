@@ -108,7 +108,7 @@ public sealed class SqliteRenameAndTruncateTests : IAsyncLifetime
 
     /// <summary>
     /// A rename changes the name; it does not move the object. Quoting would accept a dotted name
-    /// and leave a table whose name only looks qualified, so it is refused — the same rule the SQL
+    /// and leave a table whose name only looks qualified, so it is refused - the same rule the SQL
     /// Server provider applies.
     /// </summary>
     [Theory]

@@ -20,7 +20,7 @@ A file is plain Markdown. Text before the first `## ` heading is the file's main
 `## name` heading starts a named section. Which sections a file must have depends on where it is
 used, and the tests in `GridletPromptTests` fail if a required one is missing.
 
-A `{token}` is replaced at runtime with a value from the running installation — for example
+A `{token}` is replaced at runtime with a value from the running installation - for example
 `{database_technology}`. Tokens are listed in an HTML comment at the top of each file that uses
 them. Leaving a token out of the text is allowed; inventing a new one is not, because nothing
 supplies it.

@@ -225,8 +225,8 @@ public class ComponentEndpointTests
         await using var _ = app;
 
         // A document is the operator's artifact and the server interprets none of it. Round-tripping
-        // must not drop anything, or an older build would silently strip a newer build's work — or
-        // somebody's own markup — on the next save.
+        // must not drop anything, or an older build would silently strip a newer build's work - or
+        // somebody's own markup - on the next save.
         const string html = """
             <div data-gridlet="2" data-name="Rich" data-layout="free">
               <p>Some <b>bold</b> text &amp; an entity</p>

@@ -103,7 +103,8 @@
       display: block;
       overflow: auto;
       border-collapse: collapse;
-      color: inherit;
+      color: var(--gridlet-control-text-light, inherit);
+      background-color: var(--gridlet-control-fill-light, transparent);
       font-size: 13px;
     }
     .gridlet-component-runtime [data-role="grid"] th,
@@ -112,12 +113,20 @@
       border: 1px solid var(--gridlet-border);
       text-align: left;
       white-space: nowrap;
+      color: inherit;
+      background-color: var(--gridlet-control-fill-light, transparent);
     }
     .gridlet-component-runtime[data-isolated] [data-role="grid"] {
       display: block;
       overflow: auto;
-      color: inherit;
+      color: var(--gridlet-control-text-light, inherit);
+      background-color: var(--gridlet-control-fill-light, transparent);
       font-size: 13px;
+    }
+    .gridlet-component-runtime[data-isolated] [data-role="grid"] th,
+    .gridlet-component-runtime[data-isolated] [data-role="grid"] td {
+      color: inherit;
+      background-color: var(--gridlet-control-fill-light, transparent);
     }
     .gridlet-component-runtime [data-role="panel"] {
       border: 1px solid var(--gridlet-border);
@@ -164,7 +173,23 @@
         color: var(--gridlet-control-text-dark, inherit);
         background-color: var(--gridlet-control-fill-dark, transparent);
       }
+      .gridlet-component-runtime [data-role="grid"],
+      .gridlet-component-runtime[data-isolated] [data-role="grid"] {
+        color: var(--gridlet-control-text-dark, inherit);
+        background-color: var(--gridlet-control-fill-dark, transparent);
+      }
       .gridlet-runtime-message { color: #fda29b; }
+    }
+  }
+  .gridlet-component-runtime [data-role="grid"] th,
+  .gridlet-component-runtime [data-role="grid"] td {
+    color: inherit;
+    background-color: var(--gridlet-control-fill-light, transparent);
+  }
+  @media (prefers-color-scheme: dark) {
+    .gridlet-component-runtime [data-role="grid"] th,
+    .gridlet-component-runtime [data-role="grid"] td {
+      background-color: var(--gridlet-control-fill-dark, transparent);
     }
   }
   `;

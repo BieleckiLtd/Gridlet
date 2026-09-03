@@ -1,5 +1,5 @@
 /* The palette is defined on the root and on any element carrying data-theme, so a region of the
-   page can be themed independently of the workspace — a component designer previewing a light component
+   page can be themed independently of the workspace - a component designer previewing a light component
    inside a dark workspace, for instance. */
 :root,
 [data-theme="dark"] {
@@ -347,7 +347,7 @@ button.ghost { background: transparent; }
   cursor: pointer;
 }
 
-/* A panel's first row carries the toggle alongside whatever else belongs at the top — a filter, a
+/* A panel's first row carries the toggle alongside whatever else belongs at the top - a filter, a
    heading. Collapsed, that row is all that survives, and inside it only the toggle. */
 .rail-head {
   display: flex;
@@ -1327,7 +1327,15 @@ td.empty-row { text-align: center; font-family: var(--sans); }
   padding-left: 10px;
   border-left: 1px solid var(--border);
 }
-.agent-history.is-collapsed { width: auto; padding-left: 6px; }
+/* Collapsed, the pane is only its toggle. Flush against the conversation it reads as a stray
+   glyph on the corner of the answer, so it keeps a margin and its own button chrome. */
+.agent-history.is-collapsed { width: auto; padding: 6px 2px 0 12px; }
+.agent-history.is-collapsed .agent-history-toggle {
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
 .agent-history-head { display: flex; min-width: 0; align-items: center; gap: 6px; }
 .agent-history-title {
   overflow: hidden;
@@ -1459,11 +1467,16 @@ td.empty-row { text-align: center; font-family: var(--sans); }
     box-shadow: 0 8px 24px var(--shadow);
   }
   .agent-history.is-collapsed {
-    padding: 2px;
+    top: 20px;
+    right: 20px;
+    padding: 0;
     border-color: transparent;
     background: none;
     box-shadow: none;
   }
+  .agent-history.is-collapsed .agent-history-toggle { box-shadow: 0 2px 8px var(--shadow); }
+  /* Floating, the toggle sits over the answer, which must not run under it. */
+  .agent-panel:has(.agent-history.is-collapsed) .agent-messages { padding-right: 52px; }
 }
 .agent-key-field {
   display: grid;
@@ -1476,6 +1489,17 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 }
 .agent-key-field input { color: var(--text); }
 .agent-field-note { min-width: 0; }
+/* Read-aloud follows the voice: the sentence being spoken is tinted and the word inside it is
+   picked out. Ranges are painted with the highlight API, so the response markup is never
+   rewritten mid-answer and selection, copy and links keep working while it reads. */
+::highlight(gridlet-speech-sentence) {
+  background-color: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--text);
+}
+::highlight(gridlet-speech-word) {
+  background-color: color-mix(in srgb, var(--accent) 52%, transparent);
+  color: var(--text);
+}
 .agent-messages {
   flex: 1;
   min-height: 0;

@@ -16,7 +16,7 @@ ORDER BY CustomerId;
 ```
 
 Always bind values as parameters. Never build the SQL by pasting a caller's value into the
-query text — that is how SQL injection happens, and a parameter is both safer and faster
+query text - that is how SQL injection happens, and a parameter is both safer and faster
 because the database can reuse the execution plan.
 
 Declare the narrowest type that fits. An `integer` parameter rejects `'12 OR 1=1'` before it

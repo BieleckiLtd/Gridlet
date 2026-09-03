@@ -560,7 +560,7 @@
 }
 
 /* Where a control sits and how big it is comes from the generated sheet, which defines each
-   measurement as a variable and then uses it in the same rule — so the panel can show the whole
+   measurement as a variable and then uses it in the same rule - so the panel can show the whole
    chain instead of half of it standing on a rule nobody can read. Only being taken out of the
    flow stays here, because that is what makes a control a control rather than a styling choice. */
 .gfd-control {
@@ -734,7 +734,7 @@
 }
 
 /* Only the line itself. The control it reveals sits outside this, and the reveal is held open
-   long enough to reach it — see the pointer bookkeeping beside it. Keeping the strip narrow is
+   long enough to reach it - see the pointer bookkeeping beside it. Keeping the strip narrow is
    what stops a dimension becoming a band of canvas that cannot be pressed through. */
 .gfd-dim-hit.gfd-dim-x { height: 24px; transform: translateY(-50%); }
 .gfd-dim-hit.gfd-dim-y { width: 24px; transform: translateX(-50%); }
@@ -763,7 +763,7 @@
 
 /* The canvas turns pointer events off for every real input it draws, so that clicking a text box
    selects the control rather than typing into the component. These two are the designer's own
-   chrome rather than part of the component, so they are named back in — and only while the
+   chrome rather than part of the component, so they are named back in - and only while the
    dimension they belong to is the one under the pointer. */
 .gfd-dim-hit.open .gfd-dim-control,
 .gfd-dim-hit:focus-within .gfd-dim-control,
@@ -838,8 +838,8 @@
 .gfd-checkbox input { width: auto; height: auto; }
 
 /* The pager's own parts. The box it sits in is styled by the generated sheet like every other
-   control; these are the pieces inside it, kept plain so the workspace theme — or the browser, in
-   an isolated component — decides how they look. */
+   control; these are the pieces inside it, kept plain so the workspace theme - or the browser, in
+   an isolated component - decides how they look. */
 .gfd-pager {
   display: flex;
   align-items: center;
@@ -896,7 +896,7 @@
   min-height: var(--gfd-row-h);
 }
 
-/* A property that needs the full width — a list of options, a block of CSS — keeps the same row,
+/* A property that needs the full width - a list of options, a block of CSS - keeps the same row,
    with the editor dropped under its own caption instead of beside it. */
 .gfd-row.block {
   grid-template-columns: minmax(0, 1fr);
@@ -966,7 +966,7 @@
 }
 
 /* An expression that cannot be worked out. The canvas shows the result of one that can, so only
-   the failure needs saying here — on the box, with the reason in its tooltip. */
+   the failure needs saying here - on the box, with the reason in its tooltip. */
 .gfd-properties-body .gfd-expr.bad {
   color: var(--danger);
   border-color: var(--danger);
@@ -1017,6 +1017,8 @@
 .gfd-colour-control:focus-within { border-color: var(--accent); }
 
 .gfd-swatch {
+  appearance: none;
+  font: inherit;
   width: 20px;
   height: 20px;
   flex: 0 0 auto;
@@ -1033,11 +1035,10 @@
 .gfd-swatch-slot { display: contents; }
 
 /* A formula decided the colour: the swatch reports it rather than taking one. */
-.gfd-swatch:disabled { cursor: default; opacity: 1; }
+.gfd-swatch:disabled { cursor: default; }
 
 /* What came out is not a colour at all, so there is nothing to put in a picker. */
 .gfd-swatch-bad {
-  position: relative;
   display: grid;
   place-items: center;
   box-sizing: border-box;
@@ -1045,20 +1046,6 @@
   border-right-color: var(--danger, #e5484d);
   font-size: 12px;
   line-height: 1;
-  cursor: help;
-}
-
-/* Undefined and invalid markers still contain a real picker over the whole swatch. It is visually
-   transparent so the marker remains honest, but clicking anywhere on the swatch opens the browser. */
-.gfd-swatch-picker {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  opacity: 0;
   cursor: pointer;
 }
 
@@ -1066,7 +1053,7 @@
 .gfd-swatch-not-defined {
   position: relative;
   box-sizing: border-box;
-  cursor: help;
+  cursor: pointer;
 }
 
 .gfd-swatch-not-defined::after {
@@ -1080,6 +1067,344 @@
   transform: rotate(-45deg);
   transform-origin: center;
 }
+
+/* ---- the colour picker ----
+   One popover on the body, shared by every swatch. It is positioned in page coordinates because
+   the properties panel scrolls and clips, and neither may cut a picker that is mid-drag. */
+.gfd-cp {
+  position: fixed;
+  z-index: 40;
+  box-sizing: content-box;
+  width: 222px;
+  max-height: calc(100vh - 16px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.gfd-cp[hidden] { display: none; }
+
+.gfd-cp-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gfd-cp-visual { display: flex; }
+
+/* The two editors take the same room, so turning a mode does not resize the popover under the
+   hand that turned it: 176 for the square, plus the gap and the two 16px rails beside it. */
+.gfd-cp-square-view {
+  display: flex;
+  gap: 8px;
+  width: 222px;
+}
+
+.gfd-cp-track-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 222px;
+}
+
+.gfd-cp-square-view[hidden],
+.gfd-cp-track-view[hidden],
+.gfd-cp-name-view[hidden] { display: none; }
+
+/* The keyword list: a search box over a scrolling column of swatch-and-name rows, in the same
+   footprint as the other two editors. */
+.gfd-cp-name-view {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 222px;
+  height: 176px;
+}
+
+.gfd-cp-name-search {
+  box-sizing: border-box;
+  height: 21px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.gfd-cp-name-search:focus { outline: none; border-color: var(--accent); }
+
+.gfd-cp-name-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+}
+
+.gfd-cp-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+}
+
+.gfd-cp-name[hidden] { display: none; }
+.gfd-cp-name:hover { background: var(--accent-dim); }
+.gfd-cp-name.active { background: var(--accent-dim); font-weight: 600; }
+
+.gfd-cp-name-swatch {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.gfd-cp-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.gfd-cp-track-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gfd-cp-track-label {
+  width: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+
+.gfd-cp-track {
+  position: relative;
+  box-sizing: border-box;
+  flex: 1;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: ew-resize;
+}
+
+.gfd-cp-track-cursor {
+  position: absolute;
+  top: -2px;
+  width: 6px;
+  height: 16px;
+  margin-left: -3px;
+  border: 2px solid #fff;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6), inset 0 0 0 1px rgb(0 0 0 / 0.6);
+  pointer-events: none;
+}
+
+.gfd-cp-sv {
+  position: relative;
+  box-sizing: border-box;
+  width: 176px;
+  height: 176px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #000;
+  cursor: crosshair;
+}
+
+.gfd-cp-rails {
+  display: flex;
+  gap: 6px;
+}
+
+.gfd-cp-rail {
+  position: relative;
+  box-sizing: border-box;
+  width: 16px;
+  height: 176px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: ns-resize;
+}
+
+.gfd-cp-hue {
+  background: linear-gradient(to bottom, #f00, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00);
+}
+
+.gfd-cp-cursor,
+.gfd-cp-rail-cursor {
+  position: absolute;
+  pointer-events: none;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6), inset 0 0 0 1px rgb(0 0 0 / 0.6);
+}
+
+.gfd-cp-cursor {
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+}
+
+.gfd-cp-rail-cursor {
+  left: 0;
+  box-sizing: border-box;
+  width: 16px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 2px;
+}
+
+.gfd-cp-previews {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.gfd-cp-preview-label {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.gfd-cp-new-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.gfd-cp-preview {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  overflow: hidden;
+}
+
+.gfd-cp-preview-value {
+  display: block;
+  overflow: hidden;
+  padding: 0 6px;
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 22px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The new preview is a reading, not a control; only the current preview takes you back. */
+.gfd-cp-previews div.gfd-cp-preview { cursor: default; }
+
+/* One control for a choice of one. The editors below it are what the picker is for, so the
+   selector states the mode quietly instead of competing with them. */
+.gfd-cp-mode-select {
+  width: 100%;
+  box-sizing: border-box;
+  height: 21px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.gfd-cp > .gfd-cp-mode-select { margin-bottom: 8px; }
+
+.gfd-cp-mode-select:focus { outline: none; border-color: var(--accent); }
+
+.gfd-cp-hex {
+  min-width: 0;
+  font-family: var(--mono);
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 9px;
+  outline: 0;
+}
+
+/* Picking off the screen is a secondary way in, so it shares the New label's cell. */
+.gfd-cp-dropper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 21px;
+  height: 21px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.gfd-cp-dropper:hover { color: var(--text); border-color: var(--accent); }
+
+.gfd-cp-dropper-icon { display: flex; }
+
+.gfd-cp-dropper-icon svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The palette that travels with the designer: one click applies a saved colour, right-click
+   takes it back out, and the plus saves whatever the picker is showing now. */
+.gfd-cp-favs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  min-width: 0;
+  width: 100%;
+}
+
+.gfd-cp-fav,
+.gfd-cp-fav-add {
+  box-sizing: border-box;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.gfd-cp-fav-add:hover { color: var(--text); border-color: var(--accent); }
 
 .gfd-properties-body .gfd-colour-text {
   flex: 1;
@@ -1188,13 +1513,29 @@
    of the layout it was placed in. */
 .gfd-grid { width: 100%; }
 
+/* Keep the component box and its selection handles fixed while the table scrolls inside it. */
+.gfd-grid-viewport {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+}
+
+/* The shared table stylesheet supplies its own header background. In the designer, grid cells
+   must reflect the configured grid text and fill instead of the containing component theme. */
+.gfd-grid-viewport .gfd-grid th,
+.gfd-grid-viewport .gfd-grid td {
+  color: inherit;
+  background-color: var(--gfd-fill);
+}
+
 /* The document, edited as itself. It fills the surface the canvas would have used: the two are the
    same component in two forms, so they occupy the same place rather than competing for it. */
 /* The surface it sits in is a block box that scrolls a canvas, not a flex container, so the pane
    takes its height from it rather than asking to be stretched by it. */
 /* The document, edited as itself. Laid out exactly like the module tab, because it is the same
    editor doing the same job: an editor that sat differently here would read as a different tool.
-   The margins are .gfd-code-surface's own — nothing is added on top of them. */
+   The margins are .gfd-code-surface's own - nothing is added on top of them. */
 .gfd-code-pane {
   display: flex;
   flex-direction: column;

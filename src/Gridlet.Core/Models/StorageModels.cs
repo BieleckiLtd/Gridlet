@@ -28,7 +28,7 @@ public sealed record PublishedParameter(string Name, bool Required, string Type 
 
 /// <summary>
 /// A data operation published as an HTTP endpoint under the Gridlet mount path, beneath the
-/// segment chosen by <see cref="GridletOptions.PublishedApiRoutePrefix"/> — by default
+/// segment chosen by <see cref="GridletOptions.PublishedApiRoutePrefix"/> - by default
 /// <c>{mount}/pub/{route}</c>. Endpoints inherit Gridlet's authorization and can additionally
 /// require their own policy.
 /// </summary>

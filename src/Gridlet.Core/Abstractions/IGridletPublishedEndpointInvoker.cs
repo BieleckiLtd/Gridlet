@@ -7,7 +7,7 @@ namespace Gridlet.Abstractions;
 /// agent can show a person the real response rather than a plausible-looking invention.
 ///
 /// Implementations are the security boundary for that capability. They must reach only endpoints
-/// published in this installation — never an arbitrary address — must not widen what the caller
+/// published in this installation - never an arbitrary address - must not widen what the caller
 /// could already reach themselves, and must bound the response they return.
 /// </summary>
 public interface IGridletPublishedEndpointInvoker

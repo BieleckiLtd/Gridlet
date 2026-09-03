@@ -1,6 +1,6 @@
 // my.js
 //
-// Behaviour for a Gridlet component. The component is handed to you; the rest is ordinary JavaScript —
+// Behaviour for a Gridlet component. The component is handed to you; the rest is ordinary JavaScript -
 // import what you like, export what you like, keep what is yours private.
 const sizeOf = (component) => {
   const box = component.element.getBoundingClientRect();

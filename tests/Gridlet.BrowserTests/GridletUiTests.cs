@@ -5828,7 +5828,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTestId("query-run").ClickAsync();
 
         await Assertions.Expect(page.GetByTestId("query-results").GetByText(
-            "Query executed successfully — 0 records affected", new() { Exact = true })).ToBeVisibleAsync();
+            "Query executed successfully - 0 records affected", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
         browserPage.AssertNoUnexpectedErrors();
     }
@@ -6558,7 +6558,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     /// <summary>
     /// An unsaved definition is asked about at the two moments it is actually lost: closing the
     /// tab, and changing to another view of the same object, which rebuilds the editor. Switching
-    /// to a different tab is neither — the tab stays open with the edit still in it — so it passes
+    /// to a different tab is neither - the tab stays open with the edit still in it - so it passes
     /// without a word.
     /// </summary>
     [Fact]

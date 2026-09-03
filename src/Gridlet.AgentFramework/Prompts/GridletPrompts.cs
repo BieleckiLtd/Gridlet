@@ -89,7 +89,7 @@ internal static class GridletPrompts
         if (values.Length == 0) return text;
 
         // Only the tokens a caller supplied are replaced. Prompt text legitimately contains other
-        // braces — JSON examples, and the `{route}` placeholder people are meant to read as one —
+        // braces - JSON examples, and the `{route}` placeholder people are meant to read as one -
         // and those have to survive untouched.
         var builder = new StringBuilder(text);
         foreach (var (token, value) in values)

@@ -26,16 +26,16 @@ Other object-management routes:
 - Open a table's Structure view to add or drop columns, primary keys, and foreign keys.
 - Use the table designer to create a table with its columns and constraints in one operation.
 - A column's collation is shown in the Structure view and can be set when adding or altering a
-  column — `Latin1_General_CI_AS` on SQL Server, `NOCASE` and friends on SQLite. It decides how
+  column - `Latin1_General_CI_AS` on SQL Server, `NOCASE` and friends on SQLite. It decides how
   every comparison on that column behaves, and SQLite keeps it through the table rebuilds the
   designer performs; a table with one used to be off limits to the designer entirely.
 - On SQLite the table designer offers `WITHOUT ROWID` and `STRICT`, and a table's Structure view
-  shows which of them it uses. Both change what the table is rather than how it looks — WITHOUT
-  ROWID removes the implicit rowid, STRICT makes SQLite enforce declared types — and the designer
+  shows which of them it uses. Both change what the table is rather than how it looks - WITHOUT
+  ROWID removes the implicit rowid, STRICT makes SQLite enforce declared types - and the designer
   keeps them when it rebuilds the table to change a column. It used to refuse such tables outright.
 - `Script…` writes an object out as SQL: its DROP statement, its CREATE statement, INSERT
   statements for its rows, or any combination, opened in a query tab. This is the way round
-  anything the designer refuses — script it, edit the script, run it — and the way to copy an
+  anything the designer refuses - script it, edit the script, run it - and the way to copy an
   object or its data somewhere else.
 - Rename an object from its Structure view or its context menu in the sidebar. A rename changes the
   object's name only: views, procedures and other code that names it are not rewritten, and the
@@ -45,8 +45,8 @@ Other object-management routes:
   connection's write permission, not its DDL permission, and cannot be undone.
 - Open a stored procedure or function and press `Execute…` for a form of its parameters. Each one
   can take a value, an explicit NULL, or be omitted so the routine's own default applies. Gridlet
-  turns the form into a script — quoted for each parameter's declared type, declaring any output
-  parameters and selecting them with the return value at the end — and opens it in a query tab, so
+  turns the form into a script - quoted for each parameter's declared type, declaring any output
+  parameters and selecting them with the return value at the end - and opens it in a query tab, so
   what runs is visible and editable rather than hidden. `Script only` stops before running it.
 
 If the person already supplied the object name, that is enough to explain the UI route. Do not ask

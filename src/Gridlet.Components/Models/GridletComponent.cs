@@ -9,8 +9,8 @@ namespace Gridlet.Components;
 /// The document is HTML, and it is the artifact: readable, diffable in review, and portable between
 /// environments by copying the file. A label is a <c>&lt;span&gt;</c>, a text box is an
 /// <c>&lt;input&gt;</c>, a drop-down is a <c>&lt;select&gt;</c> holding <c>&lt;option&gt;</c>s, and
-/// everything HTML already has a word for is spelled that way. Only what HTML has no word for —
-/// bindings, handlers, per-theme colours — is a <c>data-</c> attribute.
+/// everything HTML already has a word for is spelled that way. Only what HTML has no word for -
+/// bindings, handlers, per-theme colours - is a <c>data-</c> attribute.
 /// <para>
 /// The server stores the document verbatim and never executes it. It reads exactly two things out
 /// of it: the version it was written to, so a document from a newer build is refused rather than
