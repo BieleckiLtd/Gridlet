@@ -1,4 +1,4 @@
-// gridlet.js — the functions a Gridlet component expression can call.
+// gridlet.js - the functions a Gridlet component expression can call.
 //
 // This file is Gridlet's own. It is read-only in the workspace, and it is not a description of the
 // built-in functions: it *is* them. The designer imports this module and evaluates every expression
@@ -6,7 +6,7 @@
 // type it into a property.
 //
 // It is also the shortest worked example of a module. A component's own behaviour is written the same
-// way — a file, plain exports, imported by name — and yours can import this one:
+// way - a file, plain exports, imported by name - and yours can import this one:
 //
 //     import { text, json } from './gridlet.js';
 //
@@ -45,7 +45,7 @@ export const ERROR = Object.freeze({
   SYNTAX: '#SYNTAX?',
 });
 
-// `detail` is the sentence behind the code — which name was not found, what a module's own function
+// `detail` is the sentence behind the code - which name was not found, what a module's own function
 // threw. The code goes on the component; the detail goes in the property panel, where there is room.
 export const error = (code, detail = '') => Object.freeze({ gridletError: true, code, detail });
 

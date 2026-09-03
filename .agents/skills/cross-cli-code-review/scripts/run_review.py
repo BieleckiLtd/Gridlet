@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import hashlib
 import uuid
 
 PROVIDERS = ("claude", "codex", "copilot", "grok")
@@ -62,11 +63,49 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_git(*args: str) -> str:
+def run_git(*args: str, cwd: Path | None = None) -> str:
     result = subprocess.run(
-        ["git", *args], check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        ["git", *args], check=True, text=True, cwd=cwd,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     return result.stdout
+
+
+def has_head(root: Path) -> bool:
+    check = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=root, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    return check.returncode == 0
+
+
+def repo_content_state(root: Path) -> str:
+    # Contents, not stat: a watcher touching files without changing them must not read as a
+    # change, while edited, deleted, or staged files still show up. The tracked side is the full
+    # patch against HEAD (content, not names) and each untracked file is hashed, so even a dirty
+    # file that gets edited and restored is caught. Everything is anchored to the repository root,
+    # because ls-files answers for the current directory subtree when asked anywhere else, and a
+    # repository with no commits yet has no diff to take but its untracked files still count.
+    parts = []
+    if has_head(root):
+        parts.append(run_git("diff", "HEAD", cwd=root))
+        # A binary file's diff is only a sentence, so an already-dirty binary rewritten during the
+        # review would go unnoticed by the patch alone; the dirty files are hashed as well.
+        for rel in run_git("diff", "--name-only", "HEAD", cwd=root).splitlines():
+            path = root / rel
+            try:
+                digest = hashlib.sha1(path.read_bytes()).hexdigest()
+            except OSError:
+                digest = "unreadable"
+            parts.append(f"dirty {rel} {digest}")
+    for rel in run_git("ls-files", "--others", "--exclude-standard", cwd=root).splitlines():
+        path = root / rel
+        try:
+            digest = hashlib.sha1(path.read_bytes()).hexdigest()
+        except OSError:
+            digest = "unreadable"
+        parts.append(f"{rel} {digest}")
+    return "\n".join(parts)
 
 
 def scope_text(args: argparse.Namespace) -> str:
@@ -79,10 +118,15 @@ def scope_text(args: argparse.Namespace) -> str:
 
 def build_prompt(args: argparse.Namespace, marker: str) -> str:
     if args.identity_check:
-        return f"Identity check marker: {marker}\nReply with exactly: MODEL_OK"
+        return f"Identity check marker: {marker}\nReply with exactly this single token and nothing else: MODEL_OK"
     sections = [
-        f"Review session id: {marker}",
-        "You are already the reviewer for this session. Do not load, invoke, or follow any review skill.",
+        # The trace id rides in the first line on purpose: codex logs only that line of the prompt,
+        # and the logged id is what ties model verification to exactly this session.
+        f"You are the reviewer yourself (trace id: {marker}). Do not read, load, or follow any SKILL.md or skill, "
+        "including cross-cli-code-review, and do not search for any provider transcript, session "
+        "state, or prior review output: there is nothing to look up. Inspect the code in this "
+        "working tree directly with your own file and search tools, then write the findings "
+        "yourself.",
         "Use read_file for file contents, including untracked files. Run only one simple git command per shell call, such as `git status --short` or `git diff HEAD -- path`. Do not chain commands, fetch the web, or inspect another review session.",
         scope_text(args),
         "This is a read-only review. Do not modify files, stage, commit, push, or create repository artifacts.",
@@ -117,10 +161,13 @@ def build_command(args: argparse.Namespace, prompt: str, session_id: str | None 
             "--permission-mode", "plan", "--tools", "Read,Grep,Glob,Bash", "--output-format", "json",
         ]
     if args.provider == "codex":
+        # `codex exec review --uncommitted` cannot carry a custom prompt, and this script's marker,
+        # scope and context travel in the prompt, so the review runs as a read-only exec session
+        # instead of the bespoke review command.
         return [
             "codex", "-a", "never", "-c", f'model_reasoning_effort="{args.effort}"',
             "exec", "-s", "read-only", "--color", "never", "-m", args.model, "--json",
-            "review", "--uncommitted", prompt,
+            prompt,
         ]
     command = [
         "grok", "-p", prompt, "-m", args.model, "--reasoning-effort", args.effort,
@@ -194,6 +241,8 @@ def models_from_jsonl(root: Path, marker: str, started: float) -> set[str]:
             except json.JSONDecodeError:
                 continue
         return models
+    # No session correlates with this run: say so rather than guessing from sessions of other
+    # reviews, which could vouch for a model that never ran here.
     return set()
 
 
@@ -220,6 +269,23 @@ def verify_model(args: argparse.Namespace, stdout: str, marker: str, started: fl
 
 
 def extract_output_text(provider: str, stdout: str) -> str:
+    if provider == "codex":
+        # The --json stream carries the reply inside item.completed events, so the verdict has to
+        # be read out of the decoded text rather than looked for in raw JSONL. A stream with no
+        # reply decodes to nothing: the raw stream must never count as the reply, or an echoed
+        # prompt would pass the identity and verdict gates.
+        texts = []
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            item = event.get("item") if isinstance(event, dict) else None
+            if (event.get("type") == "item.completed" and isinstance(item, dict)
+                    and item.get("type") == "agent_message"
+                    and isinstance(item.get("text"), str)):
+                texts.append(item["text"])
+        return "\n".join(texts)
     if provider in {"claude", "grok"}:
         try:
             payload = json.loads(stdout)
@@ -232,9 +298,17 @@ def extract_output_text(provider: str, stdout: str) -> str:
     return stdout
 
 
-def has_required_closing(identity_check: bool, text: str) -> bool:
+def has_required_closing(identity_check: bool, text: str, marker: str = "",
+                         provider: str = "") -> bool:
     if identity_check:
-        return "MODEL_OK" in text
+        # Some models acknowledge the marker conversationally instead of parroting the token. An
+        # accepted acknowledgement has to repeat this run's unique trace id, so a generic refusal
+        # or any reply to a different prompt cannot pass; the effective model is verified
+        # separately from session metadata. The echo is only trusted where the text is known to
+        # be a decoded reply - codex's decoder returns nothing when there is no reply - because
+        # claude and grok fall back to raw stdout, which contains the echoed prompt itself.
+        marker_ok = marker != "" and marker in text and provider == "codex"
+        return "MODEL_OK" in text or marker_ok
     return VERDICT_RE.search(text) is not None
 
 
@@ -298,7 +372,7 @@ def main() -> int:
     args = parse_args()
     try:
         root = Path(run_git("rev-parse", "--show-toplevel").strip())
-        before = run_git("status", "--porcelain=v2", "--untracked-files=all")
+        before = repo_content_state(root)
     except (OSError, subprocess.CalledProcessError) as error:
         print(f"error: run this script inside a Git repository: {error}", file=sys.stderr)
         return 2
@@ -311,7 +385,14 @@ def main() -> int:
     session_id = str(uuid.uuid4())
     marker = f"review-session-{session_id}"
     prompt = build_prompt(args, marker)
+    if args.provider == "codex":
+        # codex-cli delivers only the first paragraph of an argv prompt and silently drops the
+        # rest, so the review contract travels as one block of single-broken lines.
+        prompt = prompt.replace("\n\n", "\n")
     command = build_command(args, prompt, session_id=session_id)
+    # The command names the CLI bare, but Windows cannot launch the .cmd shims the npm installs
+    # leave behind without the resolved path, so the search result leads the argument vector.
+    command[0] = executable
     if args.prompt_only:
         print(prompt)
         print("\nArgument vector:\n" + json.dumps(command, indent=2))
@@ -320,7 +401,7 @@ def main() -> int:
     started = time.time()
     completed = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     output_text = extract_output_text(args.provider, completed.stdout)
-    if args.provider == "grok" and not has_required_closing(args.identity_check, output_text):
+    if args.provider == "grok" and not has_required_closing(args.identity_check, output_text, marker, args.provider):
         session_text = wait_for_grok_session_text(session_id)
         if session_text.strip():
             output_text = session_text
@@ -331,7 +412,7 @@ def main() -> int:
         and hit_turn_limit(completed.stdout, completed.stderr)
     ):
         follow = subprocess.run(
-            grok_verdict_command(args, session_id),
+            [executable, *grok_verdict_command(args, session_id)[1:]],
             cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         follow_text = extract_output_text("grok", follow.stdout)
@@ -343,7 +424,7 @@ def main() -> int:
             output_text = follow_text
             completed = follow
 
-    if completed.returncode != 0 and not has_required_closing(args.identity_check, output_text):
+    if completed.returncode != 0 and not has_required_closing(args.identity_check, output_text, marker, args.provider):
         sys.stderr.write(completed.stderr or completed.stdout)
         print("error: review failed; no fallback model was used", file=sys.stderr)
         return completed.returncode or 1
@@ -354,12 +435,12 @@ def main() -> int:
         print(f"error: {error}; discard this review output", file=sys.stderr)
         return 3
 
-    after = run_git("status", "--porcelain=v2", "--untracked-files=all")
+    after = repo_content_state(root)
     if after != before:
         print("warning: repository status changed during the review; inspect it before trusting the result", file=sys.stderr)
         return 4
 
-    if not has_required_closing(args.identity_check, output_text):
+    if not has_required_closing(args.identity_check, output_text, marker, args.provider):
         expected = "MODEL_OK" if args.identity_check else "REVIEW_VERDICT"
         print(f"error: output lacked {expected}; discard this review output", file=sys.stderr)
         return 5

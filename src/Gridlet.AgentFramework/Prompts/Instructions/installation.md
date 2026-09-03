@@ -7,4 +7,4 @@ This Gridlet installation (the one the person is looking at right now):
 - Base address: {base_address}
 - Gridlet is mounted at: {mount}
 - Published endpoints are therefore at: {published_pattern}
-Build every URL you show from these facts. Never use the placeholder addresses that appear in documentation, and never assume the published-endpoint segment is the default one — this installation's real pattern is on the line above.
+Build every URL you show from these facts. Never use the placeholder addresses that appear in documentation, and never assume the published-endpoint segment is the default one - this installation's real pattern is on the line above.

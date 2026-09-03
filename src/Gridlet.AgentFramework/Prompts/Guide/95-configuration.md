@@ -27,4 +27,4 @@ model profiles are offered, including local Ollama endpoints, hosted OpenAI or A
 APIs, and subscription-backed local CLIs.
 
 If someone asks how to change a setting, tell them it is a code change in the host
-application and describe the option — do not imply it can be toggled from this page.
+application and describe the option - do not imply it can be toggled from this page.

@@ -5,7 +5,7 @@ namespace Gridlet.Components.Storage;
 
 /// <summary>
 /// Default store for component modules: one <c>.js</c> file per module in a folder. The files are the
-/// artifact — they are meant to be opened in an editor, linted, diffed and reviewed like any other
+/// artifact - they are meant to be opened in an editor, linted, diffed and reviewed like any other
 /// source in the project, so nothing is wrapped, encoded or minified on the way in or out.
 /// </summary>
 internal sealed class GridletComponentScriptFileStore : IComponentScriptStore

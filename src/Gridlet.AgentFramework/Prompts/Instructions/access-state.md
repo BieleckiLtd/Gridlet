@@ -1,4 +1,4 @@
-<!-- Tokens: {schema} {data} {api} — each is filled with one of the sections below. -->
+<!-- Tokens: {schema} {data} {api} - each is filled with one of the sections below. -->
 Shared when this conversation began:
 - schema: {schema}
 - data: {data}

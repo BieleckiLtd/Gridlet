@@ -76,7 +76,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
                 .Select(option => $"<option>{Escape(option)}</option>"))
             : string.Empty;
 
-    /// <summary>A grid's columns, which are its header — the rows are the source's, not the document's.</summary>
+    /// <summary>A grid's columns, which are its header - the rows are the source's, not the document's.</summary>
     private static string Header(IReadOnlyDictionary<string, string> properties)
         => properties.TryGetValue("columns", out var columns) && columns.Length > 0
             ? "<thead><tr>" + string.Concat(columns.Split('\n', StringSplitOptions.RemoveEmptyEntries)
@@ -218,7 +218,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await section.Locator("summary").First.ClickAsync();
         // By the whole name rather than by containing it: the store is shared across the tests in
         // this collection, and one component's name can sit inside another's.
-        await page.Locator($"button.tree-item[title^='{name} —']").ClickAsync();
+        await page.Locator($"button.tree-item[title^='{name} -']").ClickAsync();
         await Assertions.Expect(page.Locator(".gfd-canvas")).ToBeVisibleAsync();
         return page;
     }
@@ -231,7 +231,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         Assert.True(response.Ok, $"Writing {name} failed: {response.Status}");
     }
 
-    /// <summary>The control itself — the button, the input — which is what carries its name.</summary>
+    /// <summary>The control itself - the button, the input - which is what carries its name.</summary>
     private static ILocator Canvas(IPage page, string name) => page.Locator($"[data-name='{name}']");
 
     /// <summary>The box the designer positions the control with.</summary>
@@ -257,6 +257,8 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
               <input data-name="disabled-input" data-bind-enabled="false"
                      style="left: 16px; top: 50px; width: 250px; height: 30px;">
               <table data-role="grid" data-name="isolated-grid" data-no-header
+                     data-color-light="#067647" data-color-dark="#067647"
+                     data-fill-light="#fff1f2" data-fill-dark="#fff1f2"
                      style="left: 16px; top: 80px; width: 250px; height: 30px;"><thead><tr><th>Hidden</th></tr></thead></table>
             </div>
             """;
@@ -273,7 +275,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         var section = page.Locator("details").Filter(
             new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
         await section.Locator("summary").First.ClickAsync();
-        var sidebarItem = page.Locator("button.tree-item[title^='Consumer component —']");
+        var sidebarItem = page.Locator("button.tree-item[title^='Consumer component -']");
         await sidebarItem.ClickAsync(new LocatorClickOptions { Button = MouseButton.Right });
         await Assertions.Expect(page.Locator(".context-menu button").Filter(
             new LocatorFilterOptions { HasTextString = "Open consumer view" })).ToBeVisibleAsync();
@@ -298,6 +300,10 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             .ToHaveCSSAsync("display", "block");
         await Assertions.Expect(page.Locator("[data-name='isolated-grid']"))
             .ToHaveCSSAsync("overflow", "auto");
+        await Assertions.Expect(page.Locator("[data-name='isolated-grid']"))
+            .ToHaveCSSAsync("color", "rgb(6, 118, 71)");
+        await Assertions.Expect(page.Locator("[data-name='isolated-grid']"))
+            .ToHaveCSSAsync("background-color", "rgb(255, 241, 242)");
         await Assertions.Expect(page.Locator(".gfd-designer")).ToHaveCountAsync(0);
 
         browserPage.AssertNoUnexpectedErrors();
@@ -860,7 +866,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
     /// <summary>
     /// A handle is a thing to drag. Pressing one and letting go without moving must not anchor the
-    /// edge to whatever happens to be within reach of it — and the frame's own edge is within
+    /// edge to whatever happens to be within reach of it - and the frame's own edge is within
     /// reach of any control sitting near it.
     /// </summary>
     [Fact]
@@ -1166,6 +1172,19 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         var box = await from.BoundingBoxAsync()
             ?? throw new InvalidOperationException("There is nothing there to drag.");
         var x = box.X + box.Width / 2;
+        var y = box.Y + box.Height / 2;
+        await page.Mouse.MoveAsync(x, y);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(x + dx, y + dy, new MouseMoveOptions { Steps = 8 });
+        await page.Mouse.UpAsync();
+    }
+
+    /// <summary>Column grips overlap a header edge; start inside the grip rather than on that edge.</summary>
+    private static async Task DragGripByAsync(IPage page, ILocator from, float dx, float dy)
+    {
+        var box = await from.BoundingBoxAsync()
+            ?? throw new InvalidOperationException("There is nothing there to drag.");
+        var x = box.X + 1;
         var y = box.Y + box.Height / 2;
         await page.Mouse.MoveAsync(x, y);
         await page.Mouse.DownAsync();
@@ -1560,7 +1579,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
-    /// Where a control's box sits inside the component, in the component's own pixels — read off
+    /// Where a control's box sits inside the component, in the component's own pixels - read off
     /// the box rather than out of the document, so it is what the designer actually drew.
     /// </summary>
     private static Task<double> OffsetAsync(IPage page, string name, string edge) =>
@@ -1784,8 +1803,8 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         var problems = page.Locator(".gfd-code-problem");
         await Assertions.Expect(problems).ToContainTextAsync(new[]
         {
-            "total — is defined more than once",
-            "LIMIT — is defined more than once",
+            "total - is defined more than once",
+            "LIMIT - is defined more than once",
         });
 
         browserPage.AssertNoUnexpectedErrors();
@@ -1793,8 +1812,8 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
     /// <summary>
     /// A control keeps its own name. A module's file stem is a qualifier for calls, and the two
-    /// live in different places in an expression — <c>duty.w</c> is a path to the control, and
-    /// <c>duty.vat(1)</c> is a call into the file — so neither has to lose.
+    /// live in different places in an expression - <c>duty.w</c> is a path to the control, and
+    /// <c>duty.vat(1)</c> is a call into the file - so neither has to lose.
     /// </summary>
     [Fact]
     public async Task Tells_a_control_apart_from_a_module_with_the_same_name()
@@ -2092,7 +2111,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     /// <summary>
     /// Six rows of a panel is enough to keep a rule in and not enough to write a stylesheet in, so
     /// the same text opens in a tab of its own: numbered lines, highlighting, and a list of what
-    /// could come next. The box and the tab are two views of one string — what is typed in either
+    /// could come next. The box and the tab are two views of one string - what is typed in either
     /// styles the canvas at once, and the other one follows.
     /// </summary>
     [Fact]
@@ -2125,7 +2144,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     /// <summary>
     /// What could come next, offered where the caret is: this component's own selectors, then the
     /// properties CSS has, then what the property being written takes. The list suggests and never
-    /// decides — nothing arrives without being chosen.
+    /// decides - nothing arrives without being chosen.
     /// </summary>
     [Fact]
     public async Task Suggests_this_component_s_selectors_and_what_a_property_takes()
@@ -2264,10 +2283,13 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     {
         await using var browserPage = await fixture.NewPageAsync();
         var page = await OpenComponentAsync(browserPage, "Colour component",
-            [Control("swatchLabel", "label", bind: new Dictionary<string, string>
-            {
-                ["color.light"] = "=concat(\"#\", \"3366ff\")",
-            })]);
+            [
+                Control("swatchLabel", "label", bind: new Dictionary<string, string>
+                {
+                    ["color.light"] = "=concat(\"#\", \"3366ff\")",
+                }),
+                Control("otherLabel", "label", x: 10, y: 60),
+            ]);
 
         // Make the light variant the one on the canvas. The colour panel now deliberately shows
         // only that current theme rather than presenting both stored variants as simultaneous inputs.
@@ -2309,39 +2331,293 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await fillControl.HoverAsync();
         await Assertions.Expect(clearFill).ToHaveCSSAsync("opacity", "0");
 
-        // The slash is only the undefined marker; the swatch remains a working colour picker.
-        var undefinedPicker = page.GetByTestId("colour-picker-fill.light");
-        await Assertions.Expect(undefinedPicker).ToBeEnabledAsync();
-        await undefinedPicker.EvaluateAsync("""
-            picker => {
-              picker.value = '#224466';
-              picker.dispatchEvent(new Event('input', { bubbles: true }));
+        // The slash is only the undefined marker; the swatch is still a working colour picker, now
+        // the designer's own, which knows about opacity and the forms CSS spells colours in.
+        var undefinedSwatch = page.GetByTestId("colour-not-defined-fill.light");
+        await Assertions.Expect(undefinedSwatch).ToBeEnabledAsync();
+        await undefinedSwatch.EvaluateAsync("swatch => { window.__fillSwatch = swatch; }");
+        await undefinedSwatch.ClickAsync();
+        var popover = page.GetByTestId("gfd-colour-pop");
+        await Assertions.Expect(popover).ToBeVisibleAsync();
+        var horizontalOverflow = await popover.EvaluateAsync<JsonElement>(
+            """
+            popover => {
+              const right = popover.getBoundingClientRect().right
+                - parseFloat(getComputedStyle(popover).paddingRight);
+              return {
+                overflowX: getComputedStyle(popover).overflowX,
+                clientWidth: popover.clientWidth,
+                scrollWidth: popover.scrollWidth,
+                contentFits: popover.scrollWidth <= popover.clientWidth,
+                offenders: [...popover.querySelectorAll('*')]
+                  .filter(element => element.getBoundingClientRect().right > right + 0.5)
+                  .map(element => ({
+                    className: element.className?.baseVal || element.className,
+                    right: element.getBoundingClientRect().right,
+                    width: element.getBoundingClientRect().width,
+                  })).slice(0, 8),
+              };
             }
             """);
+        Assert.Equal("hidden", horizontalOverflow.GetProperty("overflowX").GetString());
+        Assert.True(horizontalOverflow.GetProperty("contentFits").GetBoolean(),
+            $"picker content overflowed horizontally: {horizontalOverflow}");
+
+        // A pick writes the property and the write redraws the panel, but the redraw must reach the
+        // swatch in place: a swatch rebuilt underneath its own popover would leave that popover
+        // pointing at a detached element.
+        await page.GetByTestId("gfd-cp-hex").FillAsync("#224466");
         await Assertions.Expect(page.GetByTestId("colour-fill.light")).ToHaveValueAsync("#224466");
+        Assert.True(await page.EvaluateAsync<bool>("window.__fillSwatch.isConnected"));
+        Assert.Equal("colour-swatch-fill.light",
+            await page.EvaluateAsync<string>("window.__fillSwatch.getAttribute('data-testid')"));
+
+        // Current means the literal value the picker opened with, even when that value was empty
+        // and therefore had no colour to parse or paint.
+        await popover.GetByRole(AriaRole.Button,
+            new() { Name = "Back to the colour this opened with" }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("colour-fill.light")).ToHaveValueAsync("");
+        await Assertions.Expect(page.GetByTestId("colour-not-defined-fill.light")).ToBeVisibleAsync();
+
+        // Invalid current text is restored literally too; Current is undo-to-open, not merely a
+        // shortcut to the last value that happened to parse as a colour.
+        await page.GetByTestId("colour-fill.light").FillAsync("not a colour");
+        await page.GetByTestId("colour-bad-fill.light").ClickAsync();
+        await page.GetByTestId("gfd-cp-hex").FillAsync("#abcdef");
+        await popover.GetByRole(AriaRole.Button,
+            new() { Name = "Back to the colour this opened with" }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("colour-fill.light")).ToHaveValueAsync("not a colour");
+        await page.GetByTestId("gfd-cp-hex").FillAsync("#224466");
+
+        // Opacity remains part of the editable literal after the redundant number boxes are gone.
+        await page.GetByTestId("gfd-cp-hex").FillAsync("#22446680");
+        await Assertions.Expect(page.GetByTestId("colour-fill.light")).ToHaveValueAsync("#22446680");
+        await page.GetByTestId("gfd-cp-hex").FillAsync("#224466");
+        await Assertions.Expect(page.GetByTestId("colour-fill.light")).ToHaveValueAsync("#224466");
+
+        // The New preview is the one literal editor for every form CSS spells colours in.
+        await page.GetByTestId("gfd-cp-mode").SelectOptionAsync("rgb");
+        await Assertions.Expect(page.GetByTestId("gfd-cp-hex")).ToHaveValueAsync("rgb(34 68 102)");
+        await page.GetByTestId("gfd-cp-hex").FillAsync("rgb(51 68 102)");
+        await Assertions.Expect(page.GetByTestId("colour-fill.light"))
+            .ToHaveValueAsync("rgb(51 68 102)");
+
+        // The mode, visual editor, previews and favourites form one column. No parallel numeric
+        // editor remains beside the visual controls.
+        var pickerLayout = await popover.EvaluateAsync<JsonElement>(
+            """
+            popover => {
+              const popStyle = getComputedStyle(popover);
+              const pickerInnerWidth = popover.clientWidth
+                - parseFloat(popStyle.paddingLeft) - parseFloat(popStyle.paddingRight);
+              const mode = popover.querySelector('[data-testid="gfd-cp-mode"]').getBoundingClientRect();
+              const grid = popover.querySelector('.gfd-cp-grid').getBoundingClientRect();
+              const visual = popover.querySelector('.gfd-cp-visual').getBoundingClientRect();
+              const previews = popover.querySelector('.gfd-cp-previews').getBoundingClientRect();
+              const favourites = popover.querySelector('.gfd-cp-favs').getBoundingClientRect();
+              const newLabel = popover.querySelector('.gfd-cp-new-label');
+              const dropper = popover.querySelector('.gfd-cp-dropper');
+              const cssValue = popover.querySelector('[data-testid="gfd-cp-hex"]');
+              const previewLabels = [...popover.querySelectorAll('.gfd-cp-preview-label')]
+                .map(label => label.textContent);
+              const trackRows = [...popover.querySelectorAll('.gfd-cp-track-row')]
+                .map(row => row.getBoundingClientRect());
+              const previewElements = [...popover.querySelectorAll('.gfd-cp-preview')];
+              const previewRows = previewElements.map(row => row.getBoundingClientRect());
+              const verticalGaps = [
+                ...trackRows.slice(1).map((row, index) => row.top - trackRows[index].bottom),
+                previews.top - visual.bottom,
+                previewRows[1].top - previewRows[0].bottom,
+                favourites.top - previews.bottom,
+              ];
+              return {
+                modeFirst: mode.bottom < grid.top,
+                modeUsesPickerWidth: Math.abs(mode.width - pickerInnerWidth) <= 1,
+                singleColumn: visual.bottom <= previews.top && previews.bottom <= favourites.top,
+                noVerticalVoid: previews.top - visual.bottom <= 9,
+                columnWidthsMatch: [visual, previews, favourites]
+                  .every(item => Math.abs(item.width - grid.width) <= 1),
+                hasNoNumericFields: !popover.querySelector('.gfd-cp-num, .gfd-cp-fields'),
+                hasEvenVerticalSpacing: verticalGaps.every(gap => Math.abs(gap - 8) <= 1),
+                currentComesFirst: previewLabels.join(',') === 'Current,New',
+                valueIsInNewPreview: cssValue.closest('.gfd-cp-preview') === previewElements[1],
+                previewsMatchWidth: Math.abs(previewRows[0].width - previewRows[1].width) <= 1,
+                previewFontsAreNinePixels: previewElements.every(preview => {
+                  const value = preview.matches('button') ? preview.firstElementChild : cssValue;
+                  return getComputedStyle(value).fontSize === '9px';
+                }),
+                dropperSharesNewLabel: !dropper || dropper.parentElement === newLabel,
+              };
+            }
+            """);
+        Assert.True(pickerLayout.GetProperty("modeFirst").GetBoolean(), $"mode was not first: {pickerLayout}");
+        Assert.True(pickerLayout.GetProperty("modeUsesPickerWidth").GetBoolean(),
+            $"mode did not use the picker width: {pickerLayout}");
+        Assert.True(pickerLayout.GetProperty("singleColumn").GetBoolean(),
+            $"picker controls did not form one column: {pickerLayout}");
+        Assert.True(pickerLayout.GetProperty("noVerticalVoid").GetBoolean(),
+            $"picker left empty space below its visual controls: {pickerLayout}");
+        Assert.True(pickerLayout.GetProperty("columnWidthsMatch").GetBoolean(),
+            $"picker column widths did not match: {pickerLayout}");
+        Assert.True(pickerLayout.GetProperty("hasNoNumericFields").GetBoolean(),
+            $"numeric channel fields remained: {pickerLayout}");
+        Assert.True(pickerLayout.GetProperty("hasEvenVerticalSpacing").GetBoolean(),
+            $"picker row spacing was uneven: {pickerLayout}");
+        Assert.True(pickerLayout.GetProperty("currentComesFirst").GetBoolean(),
+            $"Current did not precede New: {pickerLayout}");
+        Assert.True(pickerLayout.GetProperty("valueIsInNewPreview").GetBoolean(),
+            $"CSS text did not move into the New preview: {pickerLayout}");
+        Assert.True(pickerLayout.GetProperty("previewsMatchWidth").GetBoolean(),
+            $"Current and New previews did not match widths: {pickerLayout}");
+        Assert.True(pickerLayout.GetProperty("previewFontsAreNinePixels").GetBoolean(),
+            $"preview values did not use the compact font size: {pickerLayout}");
+        Assert.True(pickerLayout.GetProperty("dropperSharesNewLabel").GetBoolean(),
+            $"eyedropper did not share the New label cell: {pickerLayout}");
+
+        // It stays open through picking and redraws until it is dismissed: Escape closes it.
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(popover).ToBeHiddenAsync();
+
         await Assertions.Expect(clearFill).ToBeEnabledAsync();
         await fillControl.HoverAsync();
         await Assertions.Expect(clearFill).ToHaveCSSAsync("opacity", "1");
         await Assertions.Expect(clearFill).ToHaveCSSAsync("border-top-width", "0px");
         await Assertions.Expect(clearFill).ToHaveCSSAsync("background-color", "rgba(0, 0, 0, 0)");
 
-        // The picker reports the colour rather than taking one: dragging it would be overwritten
-        // on the next draw.
+        // A formula's swatch reports the colour rather than taking one, so it is disabled.
         var swatch = page.GetByTestId("colour-swatch-color.light");
-        await Assertions.Expect(swatch).ToHaveValueAsync("#3366ff");
         await Assertions.Expect(swatch).ToBeDisabledAsync();
+        await Assertions.Expect(swatch).ToHaveAttributeAsync("title",
+            new System.Text.RegularExpressions.Regex("#3366ff"));
 
         // The swatch follows the box as it is typed in: it is the answer to the formula, and the
         // panel is not rebuilt on a keystroke because the cursor is in the box being typed into.
         await page.GetByTestId("colour-color.light").FillAsync("=concat(\"#\", \"aa2211\")");
         await Assertions.Expect(page.GetByTestId("colour-swatch-color.light"))
-            .ToHaveValueAsync("#aa2211");
+            .ToHaveCSSAsync("background-color", "rgb(170, 34, 17)");
 
         await page.GetByTestId("colour-color.light").FillAsync("=upper(\"not a colour\")");
         var crossed = page.GetByTestId("colour-bad-color.light");
         await Assertions.Expect(crossed).ToHaveTextAsync("✕");
         await Assertions.Expect(crossed).ToHaveAttributeAsync(
             "title", new System.Text.RegularExpressions.Regex("is not a colour"));
+
+        // A variable is a colour the canvas bytes cannot read directly, but the cascade resolves
+        // it: the picker shows what the variable really says instead of quietly starting at black.
+        await page.GetByTestId("colour-fill.light")
+            .FillAsync("var(--gridlet-test-absent, #224466)");
+        var varSwatch = page.GetByTestId("colour-swatch-fill.light");
+        await varSwatch.ClickAsync();
+        await Assertions.Expect(popover).ToBeVisibleAsync();
+        await page.GetByTestId("gfd-cp-mode").SelectOptionAsync("hex");
+        await Assertions.Expect(page.GetByTestId("gfd-cp-hex")).ToHaveValueAsync("#224466");
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(popover).ToBeHiddenAsync();
+
+        // Transparency is a real colour, not the invalid marker: the picker opens at zero alpha
+        // rather than pretending the value was opaque black.
+        await page.GetByTestId("colour-fill.light").FillAsync("transparent");
+        var transparentSwatch = page.GetByTestId("colour-swatch-fill.light");
+        await transparentSwatch.ClickAsync();
+        await Assertions.Expect(popover).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("gfd-cp-hex")).ToHaveValueAsync("#00000000");
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(popover).ToBeHiddenAsync();
+
+        // A named colour is a colour: the picker resolves it and can spell it back in any form.
+        await page.GetByTestId("colour-fill.light").FillAsync("rebeccapurple");
+        var namedSwatch = page.GetByTestId("colour-swatch-fill.light");
+        await namedSwatch.ClickAsync();
+        await Assertions.Expect(popover).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("gfd-cp-mode")).ToHaveValueAsync("name");
+        await Assertions.Expect(page.GetByTestId("gfd-cp-hex")).ToHaveValueAsync("rebeccapurple");
+        await popover.GetByRole(AriaRole.Option, new() { Name = "cyan", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("colour-fill.light")).ToHaveValueAsync("cyan");
+        await page.GetByTestId("gfd-cp-mode").SelectOptionAsync("hex");
+        await Assertions.Expect(page.GetByTestId("gfd-cp-hex")).ToHaveValueAsync("#00ffff");
+
+        // The perceptual spaces CSS spells colours in are editable in their own numbers: pure red
+        // reads as the oklch the colour itself is famous for.
+        await page.GetByTestId("colour-fill.light").FillAsync("#ff0000");
+        await namedSwatch.ClickAsync();
+        await page.GetByTestId("gfd-cp-mode").SelectOptionAsync("oklch");
+        await Assertions.Expect(page.GetByTestId("gfd-cp-hex"))
+            .ToHaveValueAsync("oklch(62.8% 0.258 29.2)");
+
+        // The other perceptual spaces answer in their own ranges: CIE Lab and LCH keep their
+        // numbers where CIE keeps them, far from the Ok variants' quarters, and a value typed in
+        // CIE LCH is stored spelled in CIE LCH rather than mistaken for its Ok cousin.
+        await page.GetByTestId("gfd-cp-mode").SelectOptionAsync("lab");
+        await Assertions.Expect(page.GetByTestId("gfd-cp-hex"))
+            .ToHaveValueAsync("lab(54.3% 80.81 69.89)");
+        await page.GetByTestId("gfd-cp-mode").SelectOptionAsync("lch");
+        await Assertions.Expect(page.GetByTestId("gfd-cp-hex"))
+            .ToHaveValueAsync("lch(54.3% 106.84 40.9)");
+        await page.GetByTestId("gfd-cp-hex").FillAsync("lch(54.3% 106.84 40.9)");
+        await Assertions.Expect(page.GetByTestId("colour-fill.light"))
+            .ToHaveValueAsync("lch(54.3% 106.84 40.9)");
+        await page.GetByTestId("gfd-cp-mode").SelectOptionAsync("oklab");
+        await Assertions.Expect(page.GetByTestId("gfd-cp-hex"))
+            .ToHaveValueAsync("oklab(62.8% 0.225 0.126)");
+
+        // Canvas pixels come back premultiplied by alpha, so a barely-there colour must still read
+        // as the colour it is: five-percent red keeps its channels when the picker opens.
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(popover).ToBeHiddenAsync();
+        await page.GetByTestId("colour-fill.light").FillAsync("rgb(255 0 0 / 0.05)");
+        await namedSwatch.ClickAsync();
+        await Assertions.Expect(popover).ToBeVisibleAsync();
+        await page.GetByTestId("gfd-cp-mode").SelectOptionAsync("rgb");
+        await Assertions.Expect(page.GetByTestId("gfd-cp-hex"))
+            .ToHaveValueAsync("rgb(255 0 0 / 0.05)");
+
+        // A favourite preserves the mode and literal it was created in rather than flattening
+        // every saved swatch to hex.
+        await page.GetByTestId("gfd-cp-mode").SelectOptionAsync("hsl");
+        await Assertions.Expect(page.GetByTestId("gfd-cp-hex")).ToHaveValueAsync("hsl(0 100% 50% / 0.05)");
+        await page.EvaluateAsync(
+            """
+            localStorage.setItem('gridlet.designer.colourFavourites', JSON.stringify([
+              '#001122', '#112233', '#223344', '#334455', '#445566', '#556677', '#667788', '#778899',
+              '#8899aa', '#99aabb', '#aabbcc', '#bbccdd', '#ccddee', '#ddeeff', '#123456', '#654321'
+            ]))
+            """);
+        await popover.GetByRole(AriaRole.Button,
+            new() { Name = "Save the new colour to favourites" }).ClickAsync();
+        await Assertions.Expect(popover.Locator(".gfd-cp-fav").First).ToBeVisibleAsync();
+        var favouritesLayout = await popover.EvaluateAsync<JsonElement>(
+            """
+            popover => {
+              const palette = popover.querySelector('.gfd-cp-favs').getBoundingClientRect();
+              const visual = popover.querySelector('.gfd-cp-visual').getBoundingClientRect();
+              const swatches = [...popover.querySelectorAll('.gfd-cp-favs > *')]
+                .map(swatch => swatch.getBoundingClientRect());
+              return {
+                staysInColumn: palette.right <= visual.right + 1 && palette.width <= visual.width + 1,
+                wraps: swatches.at(-1).top > swatches[0].top,
+              };
+            }
+            """);
+        Assert.True(favouritesLayout.GetProperty("staysInColumn").GetBoolean(),
+            $"favourites expanded the picker width: {favouritesLayout}");
+        Assert.True(favouritesLayout.GetProperty("wraps").GetBoolean(),
+            $"favourites did not wrap: {favouritesLayout}");
+        await page.GetByTestId("gfd-cp-mode").SelectOptionAsync("hex");
+        await page.GetByTestId("gfd-cp-hex").FillAsync("#123123");
+        await Assertions.Expect(page.GetByTestId("colour-fill.light")).ToHaveValueAsync("#123123");
+        await popover.Locator(".gfd-cp-fav").First.ClickAsync();
+        await Assertions.Expect(page.GetByTestId("gfd-cp-mode")).ToHaveValueAsync("hsl");
+        await Assertions.Expect(page.GetByTestId("colour-fill.light"))
+            .ToHaveValueAsync("hsl(0 100% 50% / 0.05)");
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(popover).ToBeHiddenAsync();
+
+        // The popover belongs to the panel that opened it: selecting something else closes it,
+        // so it can never keep writing into a control that is no longer the subject.
+        await varSwatch.ClickAsync();
+        await Assertions.Expect(popover).ToBeVisibleAsync();
+        await Canvas(page, "otherLabel").ClickAsync();
+        await Assertions.Expect(popover).ToBeHiddenAsync();
 
         browserPage.AssertNoUnexpectedErrors();
     }
@@ -2411,7 +2687,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await Assertions.Expect(handler)
             .ToHaveAttributeAsync("title", "A handler has to start with = to run.");
 
-        // Made into a formula, it can run — and now it is the formula that fails, which is said
+        // Made into a formula, it can run - and now it is the formula that fails, which is said
         // beside the control that holds it rather than swallowed.
         await handler.FillAsync("=nosuch(1)");
         await page.GetByTestId("component-view-preview").ClickAsync();
@@ -2521,7 +2797,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         ]);
 
         // One palette button per kind somebody can add. Multi-line is not one of them: the text box
-        // does that now, and the kind survives only so documents that used it keep loading — which
+        // does that now, and the kind survives only so documents that used it keep loading - which
         // is why the seeded textarea below still has to draw.
         await Assertions.Expect(page.Locator(".gfd-palette button")).ToHaveCountAsync(8);
         await Assertions.Expect(page.Locator(".gfd-palette [data-type='textarea']")).ToHaveCountAsync(0);
@@ -2618,7 +2894,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await Assertions.Expect(dot).ToBeVisibleAsync();
         await Assertions.Expect(cross).ToBeHiddenAsync();
         await Assertions.Expect(close).ToHaveAttributeAsync(
-            "title", "Unsaved changes — click to close tab");
+            "title", "Unsaved changes - click to close tab");
 
         // Reaching for the tab is reaching for its close button.
         await page.Locator(".tab.active").HoverAsync();
@@ -2718,7 +2994,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
     /// <summary>
     /// Half-typed markup is not a component yet. It is reported where it is being typed, and the
-    /// component keeps the last document that did parse — the same bargain a broken formula makes.
+    /// component keeps the last document that did parse - the same bargain a broken formula makes.
     /// </summary>
     [Fact]
     public async Task Markup_that_is_not_a_document_is_reported_and_changes_nothing()
@@ -2746,7 +3022,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     /// <remarks>
     /// Naming no columns is the case worth testing: the grid takes the columns the source returned,
     /// so binding a grid to an endpoint shows its data without the document having to describe it
-    /// first — and what arrives is what the endpoint really answered rather than a shape the test
+    /// first - and what arrives is what the endpoint really answered rather than a shape the test
     /// asked for.
     /// </remarks>
     [Fact]
@@ -2847,12 +3123,14 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             """
             (grid) => {
               const box = grid.closest('.gfd-control').getBoundingClientRect();
-              const rect = grid.getBoundingClientRect();
+              const viewport = grid.closest('.gfd-grid-viewport');
+              const rect = viewport.getBoundingClientRect();
               return {
                 width: Math.round(rect.width),
                 height: Math.round(rect.height),
                 overflowsBox: rect.bottom > box.bottom + 1 || rect.right > box.right + 1,
-                scrolls: grid.scrollHeight > grid.clientHeight || grid.scrollWidth > grid.clientWidth,
+                scrolls: viewport.scrollHeight > viewport.clientHeight
+                  || viewport.scrollWidth > viewport.clientWidth,
               };
             }
             """);
@@ -2863,6 +3141,219 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         // Eight columns and a header cannot fit a 200x60 box, so it has to be scrolling to fit.
         Assert.True(size.GetProperty("scrolls").GetBoolean(), "the grid did not scroll its content");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A grid's appearance belongs to the grid rather than falling back to the component's text and
+    /// fill when the grid is rendered by the designer.
+    /// </summary>
+    [Fact]
+    public async Task A_data_grid_uses_its_own_text_and_fill_colours()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Grid colour component",
+            [Control("rows", "grid", props: new { columns = "Name\nCity", header = true }, w: 240, h: 80)]);
+
+        var theme = page.GetByTestId("component-theme");
+        for (var attempts = 0; attempts < 3 && await theme.GetAttributeAsync("data-theme-mode") != "light"; attempts++)
+        {
+            await theme.ClickAsync();
+        }
+
+        await Canvas(page, "rows").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+        await page.GetByTestId("colour-color.light").FillAsync("rgb(1 2 3)");
+        await page.GetByTestId("colour-fill.light").FillAsync("rgb(4 5 6)");
+        await page.EvaluateAsync(
+            """
+            () => {
+              const style = document.createElement('style');
+              style.textContent = 'table.grid { color: rgb(9, 9, 9); background-color: rgb(9, 9, 9); }';
+              document.head.append(style);
+            }
+            """);
+
+        await Assertions.Expect(Canvas(page, "rows")).ToHaveCSSAsync("color", "rgb(1, 2, 3)");
+        await Assertions.Expect(Canvas(page, "rows"))
+            .ToHaveCSSAsync("background-color", "rgb(4, 5, 6)");
+        var grid = Canvas(page, "rows");
+        await Assertions.Expect(grid.Locator("thead th").First)
+            .ToHaveCSSAsync("color", "rgb(1, 2, 3)");
+        await Assertions.Expect(grid.Locator("thead th").First)
+            .ToHaveCSSAsync("background-color", "rgb(4, 5, 6)");
+        await Assertions.Expect(grid.Locator("tbody td").First)
+            .ToHaveCSSAsync("color", "rgb(1, 2, 3)");
+        await Assertions.Expect(grid.Locator("tbody td").First)
+            .ToHaveCSSAsync("background-color", "rgb(4, 5, 6)");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>The same grid appearance must work when the workspace is using its dark palette.</summary>
+    [Fact]
+    public async Task A_data_grid_uses_its_own_dark_theme_text_and_fill_colours()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Dark grid colour component",
+            [Control("rows", "grid", props: new { columns = "Name\nCity", header = true }, w: 240, h: 80)]);
+
+        var theme = page.GetByTestId("component-theme");
+        for (var attempts = 0; attempts < 3 && await theme.GetAttributeAsync("data-theme-mode") != "dark"; attempts++)
+        {
+            await theme.ClickAsync();
+        }
+
+        await Canvas(page, "rows").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+        await page.GetByTestId("colour-color.dark").FillAsync("#ff0000");
+        await page.GetByTestId("colour-fill.dark").FillAsync("#000000");
+
+        await Assertions.Expect(Canvas(page, "rows")).ToHaveCSSAsync("color", "rgb(255, 0, 0)");
+        await Assertions.Expect(Canvas(page, "rows"))
+            .ToHaveCSSAsync("background-color", "rgb(0, 0, 0)");
+        var grid = Canvas(page, "rows");
+        await Assertions.Expect(grid.Locator("thead th").First)
+            .ToHaveCSSAsync("color", "rgb(255, 0, 0)");
+        await Assertions.Expect(grid.Locator("thead th").First)
+            .ToHaveCSSAsync("background-color", "rgb(0, 0, 0)");
+        await Assertions.Expect(grid.Locator("tbody td").First)
+            .ToHaveCSSAsync("color", "rgb(255, 0, 0)");
+        await Assertions.Expect(grid.Locator("tbody td").First)
+            .ToHaveCSSAsync("background-color", "rgb(0, 0, 0)");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>Following a dark workspace must select the grid's dark appearance too.</summary>
+    [Fact]
+    public async Task A_data_grid_uses_dark_colours_when_its_theme_follows_the_workspace()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Auto dark grid colour component",
+            [Control("rows", "grid", props: new { columns = "Name\nCity", header = true }, w: 240, h: 80)]);
+
+        await page.EvaluateAsync("document.documentElement.dataset.theme = 'dark'");
+        var theme = page.GetByTestId("component-theme");
+        for (var attempts = 0; attempts < 3 && await theme.GetAttributeAsync("data-theme-mode") != "auto"; attempts++)
+        {
+            await theme.ClickAsync();
+        }
+
+        await Canvas(page, "rows").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+        await page.GetByTestId("colour-color.dark").FillAsync("#ff0000");
+        await page.GetByTestId("colour-fill.dark").FillAsync("#000000");
+
+        await Assertions.Expect(Canvas(page, "rows")).ToHaveCSSAsync("color", "rgb(255, 0, 0)");
+        await Assertions.Expect(Canvas(page, "rows"))
+            .ToHaveCSSAsync("background-color", "rgb(0, 0, 0)");
+        var grid = Canvas(page, "rows");
+        await Assertions.Expect(grid.Locator("thead th").First)
+            .ToHaveCSSAsync("color", "rgb(255, 0, 0)");
+        await Assertions.Expect(grid.Locator("thead th").First)
+            .ToHaveCSSAsync("background-color", "rgb(0, 0, 0)");
+        await Assertions.Expect(grid.Locator("tbody td").First)
+            .ToHaveCSSAsync("color", "rgb(255, 0, 0)");
+        await Assertions.Expect(grid.Locator("tbody td").First)
+            .ToHaveCSSAsync("background-color", "rgb(0, 0, 0)");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Resizing a preview grid may make its table wider, but the positioned control remains the
+    /// chosen size and its inner viewport owns the horizontal scrollbar.
+    /// </summary>
+    [Fact]
+    public async Task A_preview_data_grid_contains_resized_columns_inside_its_box()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Resizable grid component",
+            [Control("rows", "grid", props: new { columns = "Name\nCity", header = true }, w: 200, h: 80)]);
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        var grid = Canvas(page, "rows");
+        await Assertions.Expect(grid.Locator(".col-grip")).ToHaveCountAsync(2);
+        await DragGripByAsync(page, grid.Locator(".col-grip").First, 160, 0);
+
+        var bounds = await page.EvaluateAsync<JsonElement>("""
+            () => {
+              const grid = document.querySelector('[data-name="rows"]');
+              const box = grid.closest('.gfd-control');
+              const viewport = grid.closest('.gfd-grid-viewport');
+              return {
+                boxWidth: Math.round(box.getBoundingClientRect().width),
+                viewportWidth: Math.round(viewport.getBoundingClientRect().width),
+                gridWidth: Math.round(grid.getBoundingClientRect().width),
+                scrolls: viewport.scrollWidth > viewport.clientWidth,
+              };
+            }
+            """);
+
+        Assert.Equal(200, bounds.GetProperty("boxWidth").GetInt32());
+        Assert.Equal(200, bounds.GetProperty("viewportWidth").GetInt32());
+        Assert.True(bounds.GetProperty("gridWidth").GetInt32() > 200,
+            $"the resized column did not widen the table: {bounds}");
+        Assert.True(bounds.GetProperty("scrolls").GetBoolean(),
+            $"the control did not contain the widened table: {bounds}");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Both scroll directions belong to the fixed viewport, so the vertical scrollbar stays at the
+    /// component's right edge even when a resized column makes the table wider than the viewport.
+    /// </summary>
+    [Fact]
+    public async Task A_data_grid_keeps_both_scrollbars_at_the_component_edges()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Two-axis grid component",
+            [Control("rows", "grid", props: new { columns = "Name\nCity", header = true }, w: 200, h: 80)]);
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        var grid = Canvas(page, "rows");
+
+        // Preview data normally comes from the source. Adding rows here keeps this layout test
+        // independent of the provider's result size while exercising the same rendered table.
+        await grid.EvaluateAsync(
+            """
+            grid => {
+              const tbody = grid.tBodies[0];
+              for (let index = 0; index < 30; index += 1) {
+                const row = tbody.insertRow();
+                row.insertCell().textContent = `Name ${index}`;
+                row.insertCell().textContent = `City ${index}`;
+              }
+            }
+            """);
+        await DragGripByAsync(page, grid.Locator(".col-grip").First, 160, 0);
+
+        var bounds = await page.EvaluateAsync<JsonElement>("""
+            () => {
+              const grid = document.querySelector('[data-name="rows"]');
+              const box = grid.closest('.gfd-control');
+              const viewport = grid.closest('.gfd-grid-viewport');
+              const boxRect = box.getBoundingClientRect();
+              const viewportRect = viewport.getBoundingClientRect();
+              return {
+                rightAtBoxEdge: Math.abs(viewportRect.right - boxRect.right) <= 1,
+                overflowY: getComputedStyle(viewport).overflowY,
+                scrollsVertically: viewport.scrollHeight > viewport.clientHeight,
+                scrollsHorizontally: viewport.scrollWidth > viewport.clientWidth,
+              };
+            }
+            """);
+
+        Assert.True(bounds.GetProperty("rightAtBoxEdge").GetBoolean(),
+            $"the vertical scrollbar's viewport moved with the table: {bounds}");
+        Assert.Equal("auto", bounds.GetProperty("overflowY").GetString());
+        Assert.True(bounds.GetProperty("scrollsVertically").GetBoolean(),
+            $"the grid did not expose vertical scrolling: {bounds}");
+        Assert.True(bounds.GetProperty("scrollsHorizontally").GetBoolean(),
+            $"the grid did not expose horizontal scrolling: {bounds}");
 
         browserPage.AssertNoUnexpectedErrors();
     }

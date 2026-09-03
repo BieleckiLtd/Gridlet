@@ -38,6 +38,10 @@ file, and discovers the same skills through its `.claude` alias.
 - Base feature and bug-fix branches on `dev` and open pull requests into `dev`.
 - Keep `dev` releasable. Run `dotnet test --configuration Release` before
   requesting review.
+- After a pull request is merged, check out `dev` and fast-forward it to
+  `origin/dev`; delete the merged local feature branch and remove its remote
+  branch when GitHub has not already done so. Prune stale remote-tracking refs
+  and verify that the worktree is clean before handing back control.
 - Only promote `dev` to `main` through a pull request.
 - Treat every merge to `main` as a public release. Do not push to `main`, create
   release tags manually, or bypass the promotion policy.

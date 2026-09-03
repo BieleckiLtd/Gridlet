@@ -7,7 +7,7 @@
 // format.js. What the designer holds while a component is open is a working model of that document;
 // format.js is the only thing that turns one into the other, so there is exactly one place that
 // knows what a component looks like on disk.
-// Renderers here are shared in spirit with the eventual runtime — the designer draws a control the
+// Renderers here are shared in spirit with the eventual runtime - the designer draws a control the
 // same way a published component will, so what you see is what runs.
 
 (() => {
@@ -31,7 +31,7 @@
   const LAYOUTS = { free: 'Freeform' };
 
   // The pages of the properties panel. Appearance is how it looks; Settings is everything else it
-  // is — what it is called, what it shows, and how it behaves. What a thing displays and what it
+  // is - what it is called, what it shows, and how it behaves. What a thing displays and what it
   // is called were two pages and are now two groups on one, because binding a value and naming the
   // control you are binding it in are the same piece of work and were a tab apart.
   // ---- icons ----
@@ -72,6 +72,11 @@
       'M11 6l.463 -.536a5 5 0 0 1 7.071 7.072l-.534 .464',
       'M13 18l-.397 .534a5.068 5.068 0 0 1 -7.127 0a4.972 4.972 0 0 1 0 -7.071l.524 -.463',
       'M20 17h2', 'M2 7h2', 'M7 2v2',
+    ].map(iconPath).join(''),
+    // The eyedropper: what the screen-pick button is, so a secondary action can be an icon rather
+    // than the widest control in the picker.
+    'color-picker': [
+      'M11 7l6 6', 'M4 16l11.7 -11.7a1 1 0 0 1 1.4 0l2.6 2.6a1 1 0 0 1 0 1.4l-11.7 11.7h-4v-4z',
     ].map(iconPath).join(''),
     contrast: [
       'M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0', 'M12 17a5 5 0 0 0 0 -10v10',
@@ -161,12 +166,12 @@
   }
 
   // The same idea for a stylesheet: comments, strings, at-rules, the property side of a
-  // declaration and the value side of one. Where a word sits decides what it is — a name before a
-  // colon inside braces is a property, the same name outside them is part of a selector — so the
+  // declaration and the value side of one. Where a word sits decides what it is - a name before a
+  // colon inside braces is a property, the same name outside them is part of a selector - so the
   // scanner carries just enough state to know which side of a declaration it is on.
   // Enough to read a document by: comments, tags, attribute names and their values. Like the others
   // here it is a highlighter rather than a parser, and the document it is showing has already been
-  // parsed by the thing that matters — the browser.
+  // parsed by the thing that matters - the browser.
   function highlightHtml(source) {
     const pattern = /(<!--[\s\S]*?-->)|(<\/?)([A-Za-z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?>)/g;
     let output = '';
@@ -276,8 +281,8 @@
   // being filled in.
   const openComponents = new Set();
 
-  // A component names the behaviour it runs. An entry is either the file — meaning the class it exports
-  // as its default — or the file and one class in it, which is how one file holds the behaviour of
+  // A component names the behaviour it runs. An entry is either the file - meaning the class it exports
+  // as its default - or the file and one class in it, which is how one file holds the behaviour of
   // two components without either of them running the other's. A plain name is the older spelling and
   // keeps its older meaning, so nothing has to be rewritten to keep working.
   const moduleFileOf = (entry) => (typeof entry === 'string' ? entry : entry?.module || '');
@@ -302,7 +307,7 @@
   // put what happens when that component is ready.
   const STARTER_MODULE = (name) => `// ${name}
 //
-// Behaviour for a Gridlet component. The component is handed to you; the rest is ordinary JavaScript —
+// Behaviour for a Gridlet component. The component is handed to you; the rest is ordinary JavaScript -
 // import what you like, export what you like, keep what is yours private.
 
 // What a formula can call. Anything exported here can be named in a property or in a handler on
@@ -378,7 +383,7 @@ export default class ${CLASS_NAME(name)} {
   // ---- what a stylesheet offers ------------------------------------------------
   // Enough of CSS to write a component's styling without a reference open beside it. It is not the
   // whole language and does not try to be: it is what a component's own rules reach for, and what each
-  // of those properties takes. A property that is not listed is still perfectly good CSS — the
+  // of those properties takes. A property that is not listed is still perfectly good CSS - the
   // list suggests, it does not permit.
 
   const CSS_VALUES = {
@@ -520,7 +525,7 @@ export default class ${CLASS_NAME(name)} {
   // A list of what could come next, under the word being typed. It suggests and never decides:
   // nothing is inserted without Enter or Tab, and Escape puts it away. What it offers comes from
   // the caller, because only the caller knows whether the caret is in a selector, a property or a
-  // value — and, for a selector, what this particular component actually contains.
+  // value - and, for a selector, what this particular component actually contains.
 
   function attachCompletions(input, highlight, suggest, testId = 'css-completions') {
     const list = h('div', {
@@ -569,7 +574,7 @@ export default class ${CLASS_NAME(name)} {
 
     // Asked for, or typed into. A list that opens on every space and every brace is a list that
     // swallows the Enter meant for a new line, so nothing is offered until there is a word to
-    // offer something for — unless it was asked for, which is what Ctrl+Space is.
+    // offer something for - unless it was asked for, which is what Ctrl+Space is.
     function show(explicit = false) {
       const found = suggest(input.value, input.selectionStart) || [];
       items = found.slice(0, 12);
@@ -757,9 +762,9 @@ export default class ${CLASS_NAME(name)} {
       surface.classList.add('read-only');
       saveButton.hidden = true;
       deleteButton.hidden = true;
-      note.textContent = `${name} — part of Gridlet. Read it, and import it from your own modules.`;
+      note.textContent = `${name} - part of Gridlet. Read it, and import it from your own modules.`;
     } else {
-      note.textContent = `${name} — runs in any component that names it`;
+      note.textContent = `${name} - runs in any component that names it`;
     }
 
     refresh();
@@ -769,11 +774,11 @@ export default class ${CLASS_NAME(name)} {
   // ---- expressions ------------------------------------------------------------
   // Every property can hold an expression instead of a literal: `self.h`, `data.Total * 1.2`,
   // `button1.x + button1.w + 8`, `if(data.Overdue, 'Overdue', '')`. Expressions are tokenized,
-  // parsed and evaluated by this file and nothing else — a saved document is never handed to the
+  // parsed and evaluated by this file and nothing else - a saved document is never handed to the
   // JavaScript engine, so it stays data. An expression can reach the values the designer puts in
   // scope and nothing more: no DOM, no network, no globals.
 
-  // The functions an expression can call, and the conversions behind them, come from gridlet.js —
+  // The functions an expression can call, and the conversions behind them, come from gridlet.js -
   // the module the workspace serves read-only and lists beside your own. It is deliberately not a
   // copy: what a component author reads there is the code that runs their expression, and it cannot
   // drift from it. It is loaded once, before any component is opened. A component adds its own modules'
@@ -847,7 +852,7 @@ export default class ${CLASS_NAME(name)} {
       if (!eat(type)) throw new Error(`Expected "${type}"`);
     };
 
-    // A reference is a dotted path, with brackets for names an identifier cannot spell — a column
+    // A reference is a dotted path, with brackets for names an identifier cannot spell - a column
     // called "Order Date" is written data["Order Date"].
     function path(first) {
       const parts = [first];
@@ -912,7 +917,7 @@ export default class ${CLASS_NAME(name)} {
         const lowered = name.toLowerCase();
         // Own properties only, here and at every other table in this file. `in` and a bare index
         // both walk the prototype chain, which would answer `constructor` or `toString` with real
-        // JavaScript — exactly what an expression language that never touches JavaScript must not
+        // JavaScript - exactly what an expression language that never touches JavaScript must not
         // hand back.
         if (Object.hasOwn(CONSTANTS, lowered) && peek() !== '.' && peek() !== '[') {
           return { kind: 'literal', value: CONSTANTS[lowered] };
@@ -1014,7 +1019,7 @@ export default class ${CLASS_NAME(name)} {
   // methods of the classes it runs, and those are the component author's own definitions. Two of them
   // under one name is not a race to be won by whichever file loaded first: it is a question only
   // the author can answer, so the bare name says it is ambiguous and says how to write it
-  // unambiguously. A qualifier names exactly one place to look — the class, the file, or `gridlet`
+  // unambiguously. A qualifier names exactly one place to look - the class, the file, or `gridlet`
   // for a built-in the component has written over.
 
   const GRIDLET = 'gridlet';
@@ -1046,7 +1051,7 @@ export default class ${CLASS_NAME(name)} {
     const ambiguous = (name, entries, call) => {
       const written = spell(entries, name, call);
       return makeError(ERROR.NAME, written
-        ? `"${name}" is ambiguous — write ${written}.`
+        ? `"${name}" is ambiguous - write ${written}.`
         : `"${name}" is defined more than once in this component. Rename one of them.`);
     };
 
@@ -1058,8 +1063,8 @@ export default class ${CLASS_NAME(name)} {
 
     return {
       // Takes a qualifier, unless something else already has that name. Qualifiers share one
-      // namespace — a class called `tax` in one file beside a `tax.js` in another would make
-      // `tax.vat()` two different things — so the second one to ask is refused and told about it.
+      // namespace - a class called `tax` in one file beside a `tax.js` in another would make
+      // `tax.vat()` two different things - so the second one to ask is refused and told about it.
       // Asking twice for the same file is not that: a class called My in my.js is one file's name
       // written two ways, so the two share the group and `my.LIMIT` and `My.total()` both work.
       claim(label, owner) {
@@ -1193,7 +1198,7 @@ export default class ${CLASS_NAME(name)} {
         try {
           // Called with no `this`, so a plain function is never handed something it did not ask for.
           // A method is bound to the instance it belongs to before it gets here, and a bound `this`
-          // is not something a call can take back — which is the whole difference between a method
+          // is not something a call can take back - which is the whole difference between a method
           // of the component's behaviour and a loose exported function.
           return Reflect.apply(found.fn, undefined, args);
         } catch (err) {
@@ -1295,8 +1300,8 @@ export default class ${CLASS_NAME(name)} {
   };
 
   // `bindable` controls can display a value; `valueKey` says which of the control's own properties
-  // that value is. A label's value is its text — the same property under two names would let one
-  // silently overwrite the other — so a label names `text` and the panel edits one thing. Where
+  // that value is. A label's value is its text - the same property under two names would let one
+  // silently overwrite the other - so a label names `text` and the panel edits one thing. Where
   // the displayed value is not a property at all, such as what a text box contains, the control
   // leaves `valueKey` off and `bind` puts the value into the rendered element instead.
   // Binding is read-only for now, so every bind is a display, never a write back.
@@ -1315,8 +1320,8 @@ export default class ${CLASS_NAME(name)} {
       properties: [TEXT('text', 'Text')],
       render: (c) => h('span', { class: 'gfd-label', text: c.props.text ?? '' }),
     },
-    // One text box, on one line or several. A value that is not a single line — a row read whole,
-    // JSON, anything with a newline in it — needs the room, and needing a different control for it
+    // One text box, on one line or several. A value that is not a single line - a row read whole,
+    // JSON, anything with a newline in it - needs the room, and needing a different control for it
     // would mean rebuilding the box and its bindings just to see the rest of the text.
     textbox: {
       title: 'Text box',
@@ -1397,7 +1402,7 @@ export default class ${CLASS_NAME(name)} {
     },
     // The one control that needs no binding at all: it moves the component through the rows its source
     // returned, so its subject is the component's own collection and there is nothing to point it at.
-    // Being a control rather than a fixed bar is the point — it goes wherever the component wants it.
+    // Being a control rather than a fixed bar is the point - it goes wherever the component wants it.
     pager: {
       title: 'Pager',
       icon: '⇄',
@@ -1461,7 +1466,13 @@ export default class ${CLASS_NAME(name)} {
       // about how a grid looks, which is why it is structure: an isolated component gives up
       // Gridlet's styling on purpose, and must still be a component whose controls stay where they
       // were put. A table needs `display: block` before it will scroll at all.
-      structure: { display: 'block', overflow: 'auto' },
+      structure: {
+        display: 'block',
+        width: 'max-content',
+        'min-width': '100%',
+        height: 'auto',
+        overflow: 'visible',
+      },
       properties: [
         LINES('columns', 'Columns (one per line, blank for all)'),
         BOOL('header', 'Show header'),
@@ -1510,7 +1521,7 @@ export default class ${CLASS_NAME(name)} {
       render: (c) => h('div', { class: 'gfd-panel' },
         c.props.title ? h('div', { class: 'gfd-panel-title', text: c.props.title }) : null),
     },
-    // Markup the document carries that the designer has no control for — a `<p>`, a `<table>`, an
+    // Markup the document carries that the designer has no control for - a `<p>`, a `<table>`, an
     // `<svg>` somebody wrote by hand. It is drawn because it is part of the component the author
     // wrote, and it is locked because the designer can render it without being able to say what its
     // properties are: a panel offering to edit it would be guessing, and a canvas that let it be
@@ -1619,7 +1630,7 @@ export default class ${CLASS_NAME(name)} {
   //
   // Both sides have to be colours. light-dark() takes two <color> values and nothing else, so a
   // CSS-wide keyword such as `inherit` makes the whole declaration invalid and the browser throws
-  // it away — the colour you picked for one theme silently doing nothing. `currentColor` is a real
+  // it away - the colour you picked for one theme silently doing nothing. `currentColor` is a real
   // colour that means the same thing here, so callers pass that, or a variable, and never a keyword.
   function themedColor(colors, key, fallback) {
     const light = colors?.light?.[key]?.trim();
@@ -1802,8 +1813,8 @@ export default class ${CLASS_NAME(name)} {
       tab: TABS.some((page) => page.id === readStored('gridlet.components.tab', 'settings'))
         ? readStored('gridlet.components.tab', 'settings')
         : 'settings',
-      // The modules the workspace holds. They belong to the workspace rather than to one component —
-      // the component names the ones it runs, and any component can run any of them — so the designer only
+      // The modules the workspace holds. They belong to the workspace rather than to one component -
+      // the component names the ones it runs, and any component can run any of them - so the designer only
       // keeps the list to offer, and each module is edited in its own tab.
       scripts: [],
     };
@@ -1842,7 +1853,7 @@ export default class ${CLASS_NAME(name)} {
         delete control.bind.value;
       }
       // A control's box used to take a bare declaration list. It takes rules now, like the component's,
-      // so an older document's declarations are turned into the rule they were standing in for —
+      // so an older document's declarations are turned into the rule they were standing in for -
       // visibly, in the box, rather than by a shim that keeps the two boxes subtly different.
       if (control.css.trim() && !control.css.includes('{')) {
         // Both halves of the control, because a bare list meant "this control" without saying
@@ -1915,10 +1926,10 @@ export default class ${CLASS_NAME(name)} {
       ['select', 'drop-down'],
       ['option', 'a drop-down choice'],
       ['button', 'button'],
-      ['table', 'data grid — with data-role="grid"'],
-      ['label', 'check box — with data-role="checkbox"'],
-      ['div', 'panel or pager — with data-role'],
-      ['gridlet-code', "the component's code-behind — a module it runs"],
+      ['table', 'data grid - with data-role="grid"'],
+      ['label', 'check box - with data-role="checkbox"'],
+      ['div', 'panel or pager - with data-role'],
+      ['gridlet-code', "the component's code-behind - a module it runs"],
       ['gridlet-source', 'where its rows come from'],
       ['style', "the component's CSS"],
     ];
@@ -1989,15 +2000,15 @@ export default class ${CLASS_NAME(name)} {
       for (const [type, spec] of Object.entries(CATALOGUE)) {
         if (spec.locked || tagOf(type) !== tag) continue;
         for (const property of spec.properties || []) {
-          offer(`data-bind-${dashedName(property.key)}`, `${property.label} — as a formula`);
+          offer(`data-bind-${dashedName(property.key)}`, `${property.label} - as a formula`);
         }
         if (spec.bindable && valueKeyOf(spec) === 'value') {
-          offer('data-bind-value', 'what it shows — as a formula');
+          offer('data-bind-value', 'what it shows - as a formula');
         }
       }
 
       for (const [event, label, hint] of CONTROL_EVENTS) {
-        offer(`data-on-${event}`, `${label} — ${hint.toLowerCase()}`);
+        offer(`data-on-${event}`, `${label} - ${hint.toLowerCase()}`);
       }
 
       offer('data-role', 'which kind, where a tag serves two');
@@ -2255,7 +2266,7 @@ export default class ${CLASS_NAME(name)} {
 
       function dataValue(rest) {
         // `data` on its own is the whole row. Anything that turns a value into text renders an
-        // object as JSON, so a control bound to the row shows the row — which is the quickest way
+        // object as JSON, so a control bound to the row shows the row - which is the quickest way
         // to see what a source actually returns.
         if (!rest.length) return row ?? (model.mode === 'preview' ? null : '[row]');
         const column = rest[0];
@@ -2271,7 +2282,7 @@ export default class ${CLASS_NAME(name)} {
       }
 
       function componentValue(rest) {
-        // `component` on its own is the component itself — the same object a module's class is handed. It is
+        // `component` on its own is the component itself - the same object a module's class is handed. It is
         // there so a function a formula calls can be given what it needs: `=showSize(component)` reads
         // as what it does, and the same function works from any control, in a property or in a
         // handler, without anything being passed to it invisibly.
@@ -2363,10 +2374,10 @@ export default class ${CLASS_NAME(name)} {
         componentView,
         read: resolve,
         // What a formula written on a control can name, for anything evaluated outside a property
-        // — an event handler reaches the same row, the same controls and the same component.
+        // - an event handler reaches the same row, the same controls and the same component.
         lookupFor: (target) => (parts) => lookup(target, parts),
         // The panel asks about one property at a time, and the pass it is asking has not
-        // necessarily worked that property out yet — the canvas and the panel each build their own.
+        // necessarily worked that property out yet - the canvas and the panel each build their own.
         // Resolving first fills the map before it is read; the result is cached either way.
         errorFor: (target, key) => {
           resolve(target, key);
@@ -2412,7 +2423,7 @@ export default class ${CLASS_NAME(name)} {
     // from it. Watching the element is how the formulas are told.
     //
     // It cannot loop: the sheet this produces only sets the variable the inline size overrides, so
-    // redrawing never changes the size that was observed. Whole pixels for the same reason — a
+    // redrawing never changes the size that was observed. Whole pixels for the same reason - a
     // grip dragged slowly reports fractions, and a redraw per hundredth of a pixel is a redraw
     // nobody asked for.
     const watchCanvasSize = () => {
@@ -2475,6 +2486,9 @@ export default class ${CLASS_NAME(name)} {
       if (view.classes.trim()) inner.classList.add(...view.classes.trim().split(/\s+/));
       if (view.elementId) inner.id = view.elementId;
 
+      const content = control.type === 'grid'
+        ? h('div', { class: 'gfd-grid-viewport' }, inner)
+        : inner;
       const element = h('div', {
         // `gfd-locked` is what the canvas and the marquee test to leave a control alone. It is a
         // class rather than a check in each place because there are two ways to pick a control up
@@ -2487,16 +2501,16 @@ export default class ${CLASS_NAME(name)} {
         title: model.mode === 'preview'
           ? (view.tip || null)
           : [view.tip, hint].filter(Boolean).join('\n') || null,
-      }, inner);
+      }, content);
 
       // The value is resolved the same way in both views. Design shows a column as its own name,
       // so a laid-out component reads as a description of what it will display rather than as a row of
       // empty boxes, and preview shows what the row actually holds. A control whose value is one
-      // of its own properties is already drawn from it — only the generic slot needs putting in.
+      // of its own properties is already drawn from it - only the generic slot needs putting in.
       if (bound && valueKey === 'value' && spec.bind) spec.bind(inner, view.value);
       // No inline geometry: it goes into the generated stylesheet instead. Inline custom
       // properties beat every stylesheet rule, so writing them here would make the component's own CSS
-      // unable to redefine the variables — which is the whole point of exposing them.
+      // unable to redefine the variables - which is the whole point of exposing them.
 
       if (spec.container) {
         const inner = h('div', { class: 'gfd-container' },
@@ -2572,6 +2586,9 @@ export default class ${CLASS_NAME(name)} {
     }
 
     function renderProperties() {
+      // Whatever rebuild follows - a new selection, another component, another tab - the picker
+      // must not survive it writing into a model that is no longer the one on screen.
+      closeColourPicker();
       generatedView = null;
       cascadeRefresh = null;
       expressionChecks = [];
@@ -2622,7 +2639,7 @@ export default class ${CLASS_NAME(name)} {
     const heading = (text) => h('div', { class: 'gfd-heading', text });
     const note = (text) => h('p', { class: 'field-note gfd-note', text });
 
-    // A textarea has no `value` content attribute — its text is its content — so the initial text
+    // A textarea has no `value` content attribute - its text is its content - so the initial text
     // is assigned after creation. Setting it as an attribute renders an empty box holding CSS that
     // is still being applied, which reads as the styling having been lost.
     function textArea(value, rows, className, onChange) {
@@ -2638,7 +2655,7 @@ export default class ${CLASS_NAME(name)} {
 
     // ---- custom CSS ----
     // The component has a box for its own rules and every control has one for its own. Both hold the
-    // same thing — CSS, scoped to this component — and both can be opened in a tab of their own when
+    // same thing - CSS, scoped to this component - and both can be opened in a tab of their own when
     // six rows in a panel stop being enough room. The box and the tab are two views of one string:
     // whichever is not being typed in follows the one that is, so there is never a newer copy
     // somewhere else.
@@ -2703,8 +2720,8 @@ export default class ${CLASS_NAME(name)} {
     }
 
     // Every selector this component really has, so what completes in a selector is what is actually
-    // there to style rather than a list of what CSS allows. A control is two elements — the box
-    // the designer positions and the element you see — and both are offered, because a rule about
+    // there to style rather than a list of what CSS allows. A control is two elements - the box
+    // the designer positions and the element you see - and both are offered, because a rule about
     // where something sits and a rule about what it looks like belong to different halves.
     function componentSelectors(subject = null) {
       const found = [
@@ -2829,8 +2846,8 @@ export default class ${CLASS_NAME(name)} {
       input.dataset.cssTarget = id;
 
       const subtitle = target === model.doc
-        ? `${model.name || 'component'} — the component's own rules`
-        : `${cssTargetName(target)} — this control's rules`;
+        ? `${model.name || 'component'} - the component's own rules`
+        : `${cssTargetName(target)} - this control's rules`;
 
       panel.append(h('div', { class: 'gfd-code-tab' },
         h('div', { class: 'viewbar' },
@@ -2948,7 +2965,7 @@ export default class ${CLASS_NAME(name)} {
         h('span', {
           class: 'gfd-row-label',
           title: differs
-            ? `${options.hint || label} — the selected controls differ here; this is the first one's`
+            ? `${options.hint || label} - the selected controls differ here; this is the first one's`
             : (options.hint || label),
           text: label,
         }),
@@ -2957,7 +2974,7 @@ export default class ${CLASS_NAME(name)} {
 
     // ---- one box per property ----
     // A property is edited the way a spreadsheet cell is: one box, holding either what the property
-    // is or the formula that decides it. There is nothing to switch on first — you type `=` and it
+    // is or the formula that decides it. There is nothing to switch on first - you type `=` and it
     // is a formula, and `'` in front of anything keeps it as text.
     //
     // What the box shows is what is stored, never what a formula worked out to. Seeing 240 in a box
@@ -3130,7 +3147,7 @@ export default class ${CLASS_NAME(name)} {
     };
 
     // A colour with a way back out of it. A colour input cannot express "not set", so Clear is a
-    // separate control rather than a magic value, and the text box takes anything CSS accepts — a
+    // separate control rather than a magic value, and the text box takes anything CSS accepts - a
     // variable, a colour function, a hex, or a formula that works one out. The picker and box share
     // one outline because they are two ways to edit the same value, not two separate properties.
     //
@@ -3140,7 +3157,1004 @@ export default class ${CLASS_NAME(name)} {
     const isColour = (value) => Boolean(value)
       && (typeof CSS === 'undefined' || !CSS.supports ? /^#[0-9a-f]{3,8}$/i.test(value)
         : CSS.supports('color', value));
-    const isHex = (value) => /^#[0-9a-f]{6}$/i.test(value);
+
+    // ---- the colour picker ----
+    // The browser's own picker cannot say how transparent a colour is and spells its answer in
+    // one form only, so the designer carries one of its own, laid out the way image editors lay
+    // theirs out: a saturation/value field, hue and opacity rails, and the numbers in the forms
+    // CSS spells colours in. One popover is shared by every swatch in the panel, because only one
+    // can be open at a time, and it lives on the body rather than in the row - a pick redraws the
+    // panel, and a popover rebuilt underneath the hand dragging it is the bug that used to close
+    // the browser's own on its first click.
+
+    const clamp01 = (n) => Math.min(1, Math.max(0, n));
+    const round1 = (n) => Math.round(n * 10) / 10;
+    const round2 = (n) => Math.round(n * 100) / 100;
+    const round3 = (n) => Math.round(n * 1000) / 1000;
+    const hex2 = (n) => Math.round(n).toString(16).padStart(2, '0');
+
+    const hsvToRgb = (h, s, v) => {
+      const channel = (n) => {
+        const k = (n + h / 60) % 6;
+        return Math.round(255 * (v - v * s * Math.max(0, Math.min(k, 4 - k, 1))));
+      };
+      return { r: channel(5), g: channel(3), b: channel(1) };
+    };
+
+    const rgbToHsv = ({ r, g, b }) => {
+      const [rr, gg, bb] = [r / 255, g / 255, b / 255];
+      const max = Math.max(rr, gg, bb);
+      const d = max - Math.min(rr, gg, bb);
+      const hue = d === 0 ? 0
+        : max === rr ? ((gg - bb) / d) * 60
+        : max === gg ? ((bb - rr) / d) * 60 + 120
+        : ((rr - gg) / d) * 60 + 240;
+      return { h: (hue + 360) % 360, s: max === 0 ? 0 : d / max, v: max };
+    };
+
+    const rgbToHsl = ({ r, g, b }) => {
+      const [rr, gg, bb] = [r / 255, g / 255, b / 255];
+      const max = Math.max(rr, gg, bb);
+      const min = Math.min(rr, gg, bb);
+      const l = (max + min) / 2;
+      const d = max - min;
+      const hue = d === 0 ? 0
+        : max === rr ? ((gg - bb) / d) * 60
+        : max === gg ? ((bb - rr) / d) * 60 + 120
+        : ((rr - gg) / d) * 60 + 240;
+      return { h: (hue + 360) % 360, s: d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1)), l };
+    };
+
+    const hslToRgb = (h, s, l) => {
+      const c = (1 - Math.abs(2 * l - 1)) * s;
+      const sector = (h / 60) % 6;
+      const x = c * (1 - Math.abs((sector % 2) - 1));
+      const [rr, gg, bb] = sector < 1 ? [c, x, 0] : sector < 2 ? [x, c, 0]
+        : sector < 3 ? [0, c, x] : sector < 4 ? [0, x, c] : sector < 5 ? [x, 0, c] : [c, 0, x];
+      const m = l - c / 2;
+      return {
+        r: Math.round((rr + m) * 255),
+        g: Math.round((gg + m) * 255),
+        b: Math.round((bb + m) * 255),
+      };
+    };
+
+    // The perceptual spaces CSS spells colours in. sRGB rides the same gamma the screen does, so
+    // a channel in is a channel out; Lab and the Ok variants cross into_xyz and a cube-rooted LMS
+    // in between, with the Bradford adaptation carrying the white point between them. Values a
+    // conversion pushes outside the screen's gamut are clamped, the way a screen shows them anyway.
+    const srgbToLinear = (c) => {
+      const x = c / 255;
+      return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+    };
+    const linearToSrgb = (c) => {
+      const v = c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+      return Math.round(255 * Math.min(1, Math.max(0, v)));
+    };
+    const rgbToOklab = ({ r, g, b }) => {
+      const R = srgbToLinear(r), G = srgbToLinear(g), B = srgbToLinear(b);
+      const l = Math.cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B);
+      const m = Math.cbrt(0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B);
+      const s = Math.cbrt(0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B);
+      return {
+        L: 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+        a: 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+        b: 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+      };
+    };
+    const oklabToRgb = ({ L, a, b }) => {
+      const l = Math.pow(L + 0.3963377774 * a + 0.2158037573 * b, 3);
+      const m = Math.pow(L - 0.1055613458 * a - 0.0638541728 * b, 3);
+      const s = Math.pow(L - 0.0894841775 * a - 1.2914855480 * b, 3);
+      return {
+        r: linearToSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+        g: linearToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+        b: linearToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s),
+      };
+    };
+    const oklabToOklch = ({ L, a, b }) => {
+      const c = Math.hypot(a, b);
+      const h = c === 0 ? 0 : ((Math.atan2(b, a) * 180 / Math.PI) + 360) % 360;
+      return { L, c, h };
+    };
+    const oklchToOklab = ({ L, c, h }) => ({
+      L,
+      a: c * Math.cos(h * Math.PI / 180),
+      b: c * Math.sin(h * Math.PI / 180),
+    });
+    // The Bradford adaptation, D65 working space to D50 and back, as one matched pair.
+    const XYZ_D65_TO_D50 = [
+      1.0479297915140704, 0.0229468706321804, -0.0501922831793276,
+      0.0296278151846624, 0.9904344721834283, -0.017073827245855946,
+      -0.009243058152591178, 0.015055197948169076, 0.751874318543098,
+    ];
+    const XYZ_D50_TO_D65 = [
+      0.9554734214880753, -0.02309845494876471, 0.06325924320057072,
+      -0.0283697093338637, 1.0099953980813041, 0.021041441191917723,
+      0.012314014864481998, -0.020507696298364545, 1.3303659366080753,
+    ];
+    const LAB_E = 216 / 24389;
+    const LAB_K = 24389 / 27;
+    const LAB_WHITE_X = 0.9642956764292477;
+    const LAB_WHITE_Z = 0.8251046025544017;
+    const rgbToLab = ({ r, g, b }) => {
+      const R = srgbToLinear(r), G = srgbToLinear(g), B = srgbToLinear(b);
+      const x = 0.4124564 * R + 0.3575761 * G + 0.1804375 * B;
+      const y = 0.2126729 * R + 0.7151522 * G + 0.0721750 * B;
+      const z = 0.0193339 * R + 0.1191920 * G + 0.9503041 * B;
+      const x5 = XYZ_D65_TO_D50[0] * x + XYZ_D65_TO_D50[1] * y + XYZ_D65_TO_D50[2] * z;
+      const y5 = XYZ_D65_TO_D50[3] * x + XYZ_D65_TO_D50[4] * y + XYZ_D65_TO_D50[5] * z;
+      const z5 = XYZ_D65_TO_D50[6] * x + XYZ_D65_TO_D50[7] * y + XYZ_D65_TO_D50[8] * z;
+      const f = (t) => t > LAB_E ? Math.cbrt(t) : (LAB_K * t + 16) / 116;
+      const fx = f(x5 / LAB_WHITE_X), fy = f(y5), fz = f(z5 / LAB_WHITE_Z);
+      return { L: 116 * fy - 16, a: 500 * (fx - fy), b: 200 * (fy - fz) };
+    };
+    const labToRgb = ({ L, a, b }) => {
+      const fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200;
+      const xr = fx * fx * fx > LAB_E ? fx * fx * fx : (116 * fx - 16) / LAB_K;
+      const yr = L > 8 ? fy * fy * fy : L / LAB_K;
+      const zr = fz * fz * fz > LAB_E ? fz * fz * fz : (116 * fz - 16) / LAB_K;
+      // Lab's numbers live beside a white point of exactly one, so the stored coordinates come
+      // back into absolute terms before the adaptation and the screen's own matrix see them.
+      const X = xr * LAB_WHITE_X, Y = yr, Z = zr * LAB_WHITE_Z;
+      const x = XYZ_D50_TO_D65[0] * X + XYZ_D50_TO_D65[1] * Y + XYZ_D50_TO_D65[2] * Z;
+      const y = XYZ_D50_TO_D65[3] * X + XYZ_D50_TO_D65[4] * Y + XYZ_D50_TO_D65[5] * Z;
+      const z = XYZ_D50_TO_D65[6] * X + XYZ_D50_TO_D65[7] * Y + XYZ_D50_TO_D65[8] * Z;
+      return {
+        r: linearToSrgb(x * 3.2404542 + y * -1.5371385 + z * -0.4985314),
+        g: linearToSrgb(x * -0.9692660 + y * 1.8760108 + z * 0.0415560),
+        b: linearToSrgb(x * 0.0556434 + y * -0.2040259 + z * 1.0572252),
+      };
+    };
+    const rgbToLch = (rgb) => oklabToOklch(rgbToOklab(rgb));
+    const lchToRgb = (lch) => oklabToRgb(oklchToOklab(lch));
+    // CIE LCH is Lab's polar form, a different cylinder from OkLCH with its own ranges - the two
+    // must never share numbers, or one of them spells a colour nobody asked for.
+    const rgbToCielch = (rgb) => {
+      const { L, a, b } = rgbToLab(rgb);
+      const c = Math.hypot(a, b);
+      const h = c === 0 ? 0 : ((Math.atan2(b, a) * 180 / Math.PI) + 360) % 360;
+      return { L, c, h };
+    };
+    const cielchToRgb = ({ L, c, h }) =>
+      labToRgb({ L, a: c * Math.cos(h * Math.PI / 180), b: c * Math.sin(h * Math.PI / 180) });
+
+    // Any colour CSS accepts, read back as bytes. A canvas resolves literal colours, colour
+    // functions and wide-gamut forms the way the surface the colour will finally be painted on
+    // does, but the cascade lives outside it: var(), currentColor and light-dark() resolve only
+    // in a real element, so a probe computes them and the canvas reads the answer back as bytes.
+    // The probe sits in the canvas, not on the body, so variables the component itself defines
+    // resolve to what they mean on the component. A value nothing can resolve comes back null
+    // rather than as a lie about black.
+    // Canvas pixels come back premultiplied by alpha, so reading a translucent colour off the
+    // bitmap smears its channels toward black the lower the alpha falls. The canvas's own
+    // serialisation of the assigned colour is lossless, so it is parsed back out and the pixel
+    // read remains only for the wide-gamut forms the serialisation cannot spell, un-premultiplied
+    // as far as the bytes allow.
+    const parseSerialColour = (text) => {
+      const s = text.trim();
+      if (s.startsWith('#')) {
+        const hex = s.slice(1);
+        const pair = (i) => parseInt(hex.slice(i, i + 2), 16);
+        if (hex.length === 6) return { r: pair(0), g: pair(2), b: pair(4), a: 1 };
+        if (hex.length === 8) return { r: pair(0), g: pair(2), b: pair(4), a: pair(6) / 255 };
+        return null;
+      }
+      const match = /^rgba?\(([^)]+)\)$/i.exec(s);
+      if (!match) return null;
+      const parts = match[1].split(/[\s,/]+/).filter(Boolean);
+      const channel = (t) => Math.round(parseFloat(t) * (t.endsWith('%') ? 2.55 : 1));
+      if (parts.length !== 3 && parts.length !== 4) return null;
+      if (parts.slice(0, 3).some((t) => !Number.isFinite(channel(t)))) return null;
+      return {
+        r: channel(parts[0]),
+        g: channel(parts[1]),
+        b: channel(parts[2]),
+        a: parts.length === 4 ? clamp01(parseFloat(parts[3])) : 1,
+      };
+    };
+    const readColourBytes = (css) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      // A colour the canvas cannot resolve leaves each marker untouched, while a real one
+      // serializes the same way twice - so a failed assignment cannot be mistaken for a colour
+      // that happens to spell the marker, and fully transparent spellings stay colours.
+      const put = (value) => {
+        ctx.fillStyle = value;
+        return ctx.fillStyle;
+      };
+      const first = put('rgb(1 2 3 / 0.5)');
+      const attempted = put(css.trim());
+      const second = put('rgb(4 5 6 / 0.5)');
+      const again = put(css.trim());
+      if (attempted === first && again === second) return null;
+      const fromSerial = parseSerialColour(again);
+      if (fromSerial) return fromSerial;
+      ctx.fillRect(0, 0, 1, 1);
+      const { data } = ctx.getImageData(0, 0, 1, 1);
+      const a = data[3] / 255;
+      const channel = (v) => a === 0 ? 0 : Math.min(255, Math.round(v / a));
+      return { r: channel(data[0]), g: channel(data[1]), b: channel(data[2]), a };
+    };
+    const parseColour = (css) => {
+      if (!css) return null;
+      // currentColor and inherit are canvas-resolved to a fake black, yet the cascade computes
+      // them to exactly what they mean here, so they go straight to the probe.
+      const cascadeKeyword = /^(currentColor|inherit)$/i.test(css.trim());
+      const direct = cascadeKeyword ? null : readColourBytes(css);
+      if (direct) return direct;
+      const probe = document.createElement('span');
+      const twin = document.createElement('span');
+      probe.style.color = css.trim();
+      (canvas.isConnected ? canvas : document.body).append(probe, twin);
+      const computed = getComputedStyle(probe).color;
+      const inherited = getComputedStyle(twin).color;
+      probe.remove();
+      twin.remove();
+      // An unresolvable variable leaves the probe at its inherited colour, which is what the bare
+      // twin shows; mistaking that for a resolved black would be the lie the null is for. For the
+      // keywords, resolving to the inherited colour is not a failure but the answer itself.
+      if (!computed || (!cascadeKeyword && computed === inherited)) return null;
+      return readColourBytes(computed);
+    };
+
+    // The colour keywords CSS knows by name. They are the shortest, most readable way to spell a
+    // colour - a stylesheet that says `tomato` says more than one that says `#ff6347` - so the
+    // picker offers them as a mode of its own rather than leaving them to be typed from memory.
+    // Alphabetical, so where two names share one colour the first is the one spelled back: aqua
+    // over cyan, gray over grey.
+    const CSS_COLOUR_NAMES = [ 'aliceblue', 'antiquewhite', 'aqua', 'aquamarine', 'azure',
+      'beige', 'bisque', 'black', 'blanchedalmond', 'blue', 'blueviolet', 'brown', 'burlywood',
+      'cadetblue', 'chartreuse', 'chocolate', 'coral', 'cornflowerblue', 'cornsilk', 'crimson',
+      'cyan', 'darkblue', 'darkcyan', 'darkgoldenrod', 'darkgray', 'darkgreen', 'darkgrey',
+      'darkkhaki', 'darkmagenta', 'darkolivegreen', 'darkorange', 'darkorchid', 'darkred',
+      'darksalmon', 'darkseagreen', 'darkslateblue', 'darkslategray', 'darkslategrey',
+      'darkturquoise', 'darkviolet', 'deeppink', 'deepskyblue', 'dimgray', 'dimgrey',
+      'dodgerblue', 'firebrick', 'floralwhite', 'forestgreen', 'fuchsia', 'gainsboro',
+      'ghostwhite', 'gold', 'goldenrod', 'gray', 'green', 'greenyellow', 'grey', 'honeydew',
+      'hotpink', 'indianred', 'indigo', 'ivory', 'khaki', 'lavender', 'lavenderblush',
+      'lawngreen', 'lemonchiffon', 'lightblue', 'lightcoral', 'lightcyan', 'lightgoldenrodyellow',
+      'lightgray', 'lightgreen', 'lightgrey', 'lightpink', 'lightsalmon', 'lightseagreen',
+      'lightskyblue', 'lightslategray', 'lightslategrey', 'lightsteelblue', 'lightyellow', 'lime',
+      'limegreen', 'linen', 'magenta', 'maroon', 'mediumaquamarine', 'mediumblue', 'mediumorchid',
+      'mediumpurple', 'mediumseagreen', 'mediumslateblue', 'mediumspringgreen', 'mediumturquoise',
+      'mediumvioletred', 'midnightblue', 'mintcream', 'mistyrose', 'moccasin', 'navajowhite',
+      'navy', 'oldlace', 'olive', 'olivedrab', 'orange', 'orangered', 'orchid', 'palegoldenrod',
+      'palegreen', 'paleturquoise', 'palevioletred', 'papayawhip', 'peachpuff', 'peru', 'pink',
+      'plum', 'powderblue', 'purple', 'rebeccapurple', 'red', 'rosybrown', 'royalblue',
+      'saddlebrown', 'salmon', 'sandybrown', 'seagreen', 'seashell', 'sienna', 'silver',
+      'skyblue', 'slateblue', 'slategray', 'slategrey', 'snow', 'springgreen', 'steelblue', 'tan',
+      'teal', 'thistle', 'tomato', 'turquoise', 'violet', 'wheat', 'white', 'whitesmoke',
+      'yellow', 'yellowgreen',
+    ];
+
+    // Each name is resolved through the same canvas the rest of the picker parses with, so the
+    // browser's own table is the authority and nothing here can drift from it. Built once.
+    let namedColourHexes = null;
+    const namedColourHex = () => {
+      namedColourHexes ??= CSS_COLOUR_NAMES.map((name) => {
+        const parsed = parseColour(name);
+        return [name, parsed ? hex2(parsed.r) + hex2(parsed.g) + hex2(parsed.b) : ''];
+      });
+      return namedColourHexes;
+    };
+    const nameForRgb = ({ r, g, b }) => {
+      const key = hex2(r) + hex2(g) + hex2(b);
+      return namedColourHex().find(([, hex]) => hex === key)?.[0] ?? null;
+    };
+
+    // The form a colour is spelled in follows the mode its editor shows, so experimenting in a
+    // space stores that space. A fully opaque colour drops the alpha it does not need; hex spells
+    // it as an eighth pair.
+    const COLOUR_MODES = ['hex', 'name', 'rgb', 'hsl', 'lab', 'lch', 'oklab', 'oklch'];
+    // Spelled the way the specification spells them rather than shouted, so the list reads as a
+    // list of names instead of a row of acronyms competing with each other.
+    const COLOUR_MODE_NAMES = {
+      hex: 'Hex', name: 'Named', rgb: 'RGB', hsl: 'HSL',
+      lab: 'Lab', lch: 'LCH', oklab: 'OKLab', oklch: 'OKLCH',
+    };
+    const guessColourMode = (text) => {
+      const t = text.trim().toLowerCase();
+      if (t.startsWith('#')) return 'hex';
+      if (CSS_COLOUR_NAMES.includes(t)) return 'name';
+      for (const mode of ['oklch', 'oklab', 'lab', 'lch', 'hsl', 'rgb']) {
+        if (t.startsWith(mode + '(')) return mode;
+      }
+      // A named colour or anything else the picker cannot spell back keeps the most common form.
+      return 'hex';
+    };
+    const formatColour = ({ r, g, b, a }, mode) => {
+      a = clamp01(a);
+      if (mode === 'hex') {
+        return '#' + hex2(r) + hex2(g) + hex2(b) + (a < 0.9995 ? hex2(a * 255) : '');
+      }
+      // Only a colour that is exactly a keyword is spelled as one. Nudge it off the keyword, or
+      // make it translucent - no keyword carries opacity - and it falls back to hex rather than
+      // rounding to the nearest name and quietly changing the colour that was picked.
+      if (mode === 'name') {
+        const name = a < 0.9995 ? null : nameForRgb({ r, g, b });
+        return name ?? '#' + hex2(r) + hex2(g) + hex2(b) + (a < 0.9995 ? hex2(a * 255) : '');
+      }
+      const alpha = a < 0.9995 ? ` / ${round3(a)}` : '';
+      if (mode === 'rgb') return `rgb(${Math.round(r)} ${Math.round(g)} ${Math.round(b)}${alpha})`;
+      if (mode === 'hsl') {
+        const { h, s, l } = rgbToHsl({ r, g, b });
+        return `hsl(${Math.round(h)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%${alpha})`;
+      }
+      if (mode === 'lab') {
+        const { L, a: aa, b: bb } = rgbToLab({ r, g, b });
+        return `lab(${round1(L)}% ${round2(aa)} ${round2(bb)}${alpha})`;
+      }
+      if (mode === 'lch') {
+        const { L, c, h } = rgbToCielch({ r, g, b });
+        return `lch(${round1(L)}% ${round2(c)} ${round1(h)}${alpha})`;
+      }
+      if (mode === 'oklab') {
+        const { L, a: aa, b: bb } = rgbToOklab({ r, g, b });
+        return `oklab(${round1(L * 100)}% ${round3(aa)} ${round3(bb)}${alpha})`;
+      }
+      const { L, c, h } = rgbToLch({ r, g, b });
+      return `oklch(${round1(L * 100)}% ${round3(c)} ${round1(h)}${alpha})`;
+    };
+
+    // A colour model is a way of thinking about a colour, so each one gets the editor that suits
+    // it rather than one square for all seven. A model names its three channels, says how to read
+    // them off an sRGB triple and how to spell one back. The sliders are built from that single
+    // description, while the editable New preview holds the complete CSS literal.
+    const MODEL_SPACES = {
+      rgb: {
+        channels: [
+          { label: 'R', min: 0, max: 255, step: 1, round: Math.round },
+          { label: 'G', min: 0, max: 255, step: 1, round: Math.round },
+          { label: 'B', min: 0, max: 255, step: 1, round: Math.round },
+        ],
+        from: ({ r, g, b }) => [r, g, b],
+        to: ([r, g, b]) => ({ r, g, b }),
+      },
+      hsl: {
+        channels: [
+          { label: 'H', min: 0, max: 360, step: 1, round: Math.round, wrap: true },
+          { label: 'S', min: 0, max: 100, step: 1, round: Math.round },
+          { label: 'L', min: 0, max: 100, step: 1, round: Math.round },
+        ],
+        from: (rgb) => { const { h, s, l } = rgbToHsl(rgb); return [h, s * 100, l * 100]; },
+        to: ([h, s, l]) => hslToRgb(((h % 360) + 360) % 360, clamp01(s / 100), clamp01(l / 100)),
+      },
+      lab: {
+        channels: [
+          { label: 'L', min: 0, max: 100, step: 1, round: round1 },
+          { label: 'a', min: -125, max: 125, step: 1, round: round2 },
+          { label: 'b', min: -125, max: 125, step: 1, round: round2 },
+        ],
+        from: (rgb) => { const { L, a, b } = rgbToLab(rgb); return [L, a, b]; },
+        to: ([L, a, b]) => labToRgb({ L, a, b }),
+      },
+      lch: {
+        channels: [
+          { label: 'L', min: 0, max: 100, step: 1, round: round1 },
+          { label: 'C', min: 0, max: 150, step: 1, round: round2 },
+          { label: 'H', min: 0, max: 360, step: 1, round: round1, wrap: true },
+        ],
+        from: (rgb) => { const { L, c, h } = rgbToCielch(rgb); return [L, c, h]; },
+        to: ([L, c, h]) => cielchToRgb({ L, c, h: ((h % 360) + 360) % 360 }),
+      },
+      oklab: {
+        channels: [
+          { label: 'L', min: 0, max: 100, step: 1, round: round1 },
+          { label: 'a', min: -0.4, max: 0.4, step: 0.005, round: round3 },
+          { label: 'b', min: -0.4, max: 0.4, step: 0.005, round: round3 },
+        ],
+        from: (rgb) => { const { L, a, b } = rgbToOklab(rgb); return [L * 100, a, b]; },
+        to: ([L, a, b]) => oklabToRgb({ L: L / 100, a, b }),
+      },
+      oklch: {
+        channels: [
+          { label: 'L', min: 0, max: 100, step: 1, round: round1 },
+          { label: 'C', min: 0, max: 0.4, step: 0.005, round: round3 },
+          { label: 'H', min: 0, max: 360, step: 1, round: round1, wrap: true },
+        ],
+        from: (rgb) => { const { L, c, h } = rgbToLch(rgb); return [L * 100, c, h]; },
+        to: ([L, c, h]) => lchToRgb({ L: L / 100, c, h: ((h % 360) + 360) % 360 }),
+      },
+    };
+
+    // A track shows the colours it can reach: one channel is swept across its range while the
+    // other two hold still, and the result is painted along it. Colours the screen cannot show
+    // clamp into it, so a Lab or LCH track flattens at the end where the gamut runs out, which is
+    // the honest picture of what moving further actually buys.
+    const channelGradient = (space, values, index) => {
+      const channel = space.channels[index];
+      const steps = channel.wrap ? 24 : 16;
+      const byte = (c) => Math.min(255, Math.max(0, Math.round(c)));
+      const stops = [];
+      for (let i = 0; i <= steps; i += 1) {
+        const next = values.slice();
+        next[index] = channel.min + ((channel.max - channel.min) * i) / steps;
+        const { r, g, b } = space.to(next);
+        stops.push(`rgb(${byte(r)} ${byte(g)} ${byte(b)}) ${round2((i / steps) * 100)}%`);
+      }
+      return `linear-gradient(to right, ${stops.join(', ')})`;
+    };
+
+    let colourPicker = null;
+    const openColourPicker = (options) => {
+      colourPicker ??= buildColourPicker();
+      colourPicker.open(options);
+    };
+    // The popover lives on the body and outlives a panel rebuild, so anything that rebuilds the
+    // panel - a new selection, another component, another tab - has to close it first, or it stays
+    // open writing picks into a model that is no longer on the canvas.
+    const closeColourPicker = () => colourPicker?.close();
+    // Closing hides; disposing also takes the body-mounted element back, so a closed designer
+    // leaves neither a visible popover nor a detached one holding its closures.
+    const disposeColourPicker = () => {
+      colourPicker?.dispose();
+      colourPicker = null;
+    };
+    // Bumped whenever the sheets change, because a resolved var() is only as good as the styles
+    // that were current when it was resolved.
+    let colourGeneration = 0;
+
+    function buildColourPicker() {
+      const picker = { h: 0, s: 0, v: 0, a: 1, mode: 'hex', name: null };
+      let onPick = null;
+      let currentCss = '';
+      let currentColour = null;
+      let openAnchor = null;
+      let visible = false;
+
+      const rgb = () => hsvToRgb(picker.h, picker.s, picker.v);
+      // Greys have no hue of their own; editing into one must not throw away the hue it came from.
+      const setRgb = (next) => {
+        // Typed numbers arrive unclamped - a number input's min and max are advisory - and a
+        // channel past the top would push brightness past one and spell colours no browser reads.
+        const clamp = (c) => Math.min(255, Math.max(0, Math.round(c)));
+        const rgb = { r: clamp(next.r), g: clamp(next.g), b: clamp(next.b) };
+        const hsv = rgbToHsv(rgb);
+        if (hsv.s !== 0) picker.h = hsv.h;
+        picker.s = hsv.s;
+        picker.v = hsv.v;
+        picker.name = null;
+      };
+      const formatted = () => picker.mode === 'name' && picker.name
+        ? picker.name : formatColour({ ...rgb(), a: picker.a }, picker.mode);
+      const emit = (value = formatted()) => {
+        onPick?.(value);
+      };
+
+      const svCursor = h('div', { class: 'gfd-cp-cursor' });
+      const sv = h('div', {
+        class: 'gfd-cp-sv', tabindex: '0', role: 'slider',
+        'aria-label': 'Saturation and brightness',
+      }, svCursor);
+      const hueCursor = h('div', { class: 'gfd-cp-rail-cursor' });
+      const hue = h('div', {
+        class: 'gfd-cp-rail gfd-cp-hue', tabindex: '0', role: 'slider',
+        'aria-label': 'Hue', 'aria-valuemin': '0', 'aria-valuemax': '360',
+      }, hueCursor);
+      const alphaCursor = h('div', { class: 'gfd-cp-rail-cursor' });
+      const alpha = h('div', {
+        class: 'gfd-cp-rail gfd-cp-alpha', tabindex: '0', role: 'slider',
+        'aria-label': 'Opacity', 'aria-valuemin': '0', 'aria-valuemax': '100',
+        'data-testid': 'gfd-cp-alpha',
+      }, alphaCursor);
+
+      // Dragging anywhere on a rail or the field jumps to the point under the hand and follows it,
+      // pointer capture keeping the drag alive when the hand leaves the strip, as a slider should.
+      // The rectangle is read per move: the popover can scroll under a drag on a short screen,
+      // and a rectangle captured once would keep answering for where the strip used to be.
+      const drag = (element, onDrag) => {
+        element.addEventListener('pointerdown', (down) => {
+          // Only the primary button drags: a right-click opens its menu and must not jump the
+          // cursor, write a colour, or swallow the pointerup the menu's own handling expects.
+          if (down.button !== 0) return;
+          element.setPointerCapture(down.pointerId);
+          const moveTo = (event) => {
+            const rect = element.getBoundingClientRect();
+            onDrag(clamp01((event.clientX - rect.left) / rect.width),
+              clamp01((event.clientY - rect.top) / rect.height));
+          };
+          moveTo(down);
+          const stop = () => {
+            element.removeEventListener('pointermove', moveTo);
+            element.removeEventListener('pointerup', stop);
+            element.removeEventListener('pointercancel', stop);
+          };
+          element.addEventListener('pointermove', moveTo);
+          element.addEventListener('pointerup', stop);
+          element.addEventListener('pointercancel', stop);
+        });
+      };
+      const nudge = (event) => {
+        const step = { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -1, ArrowRight: 1 }[event.key];
+        return step ? (event.shiftKey ? step * 10 : step) : 0;
+      };
+      drag(sv, (x, y) => {
+        picker.s = x;
+        picker.v = 1 - y;
+        repaint();
+        emit();
+      });
+      sv.addEventListener('keydown', (event) => {
+        const step = nudge(event);
+        if (!step) return;
+        event.preventDefault();
+        if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+          picker.v = clamp01(picker.v - step / 100);
+        } else picker.s = clamp01(picker.s + step / 100);
+        repaint();
+        emit();
+      });
+      drag(hue, (_x, y) => {
+        picker.h = y * 360;
+        repaint();
+        emit();
+      });
+      hue.addEventListener('keydown', (event) => {
+        const step = nudge(event);
+        if (!step) return;
+        event.preventDefault();
+        picker.h = (picker.h + step + 360) % 360;
+        repaint();
+        emit();
+      });
+      drag(alpha, (_x, y) => {
+        picker.a = 1 - y;
+        repaint();
+        emit();
+      });
+      alpha.addEventListener('keydown', (event) => {
+        const step = nudge(event);
+        if (!step) return;
+        event.preventDefault();
+        picker.a = clamp01(picker.a - step / 100);
+        repaint();
+        emit();
+      });
+
+      // Hex has no channels of its own, so it keeps the square-and-rails editor. Every other mode
+      // is three named channels, and is shown as three named channels: one track each, painted
+      // with the colours that channel can reach, plus opacity on a fourth. The tracks are built
+      // once and relabelled as the mode turns, the way the number boxes are.
+      const makeTrack = (testid) => {
+        const cursor = h('div', { class: 'gfd-cp-track-cursor' });
+        const track = h('div', Object.assign({
+          class: 'gfd-cp-track', tabindex: '0', role: 'slider',
+        }, testid ? { 'data-testid': testid } : {}), cursor);
+        const label = h('span', { class: 'gfd-cp-track-label' });
+        return { row: h('div', { class: 'gfd-cp-track-row' }, label, track), track, cursor, label };
+      };
+      const channelTracks = [0, 1, 2].map((index) => makeTrack(`gfd-cp-track-${index}`));
+      const alphaTrack = makeTrack('gfd-cp-alpha-track');
+      alphaTrack.label.textContent = 'A';
+      alphaTrack.track.setAttribute('aria-label', 'Opacity');
+      alphaTrack.track.setAttribute('aria-valuemin', '0');
+      alphaTrack.track.setAttribute('aria-valuemax', '100');
+
+      channelTracks.forEach((entry, index) => {
+        // A drag lands on the fraction of the range under the hand; the keys step by the same
+        // grain the channel's number box does, so the two editors move a colour at one pace.
+        const write = (values) => {
+          setRgb(MODEL_SPACES[picker.mode].to(values));
+          repaint();
+          emit();
+        };
+        drag(entry.track, (x) => {
+          const space = MODEL_SPACES[picker.mode];
+          if (!space) return;
+          const values = space.from(rgb());
+          const channel = space.channels[index];
+          values[index] = channel.min + (channel.max - channel.min) * x;
+          write(values);
+        });
+        entry.track.addEventListener('keydown', (event) => {
+          const step = nudge(event);
+          const space = MODEL_SPACES[picker.mode];
+          if (!step || !space) return;
+          event.preventDefault();
+          const channel = space.channels[index];
+          const values = space.from(rgb());
+          // Left and up both mean less, which is the sign nudge already carries.
+          const next = values[index] + step * channel.step;
+          values[index] = channel.wrap ? next
+            : Math.min(channel.max, Math.max(channel.min, next));
+          write(values);
+        });
+      });
+      drag(alphaTrack.track, (x) => {
+        picker.a = x;
+        repaint();
+        emit();
+      });
+      alphaTrack.track.addEventListener('keydown', (event) => {
+        const step = nudge(event);
+        if (!step) return;
+        event.preventDefault();
+        picker.a = clamp01(picker.a + step / 100);
+        repaint();
+        emit();
+      });
+
+
+      // The keyword list: a swatch and its name on every row, filtered as you type. Names are what
+      // this editor is for, so they are spelled out rather than left to a grid of guessable
+      // squares. A keyword is an opaque literal, and the exact name picked is the one stored -
+      // synonyms such as cyan and aqua must not be silently exchanged.
+      const nameSearch = h('input', {
+        class: 'gfd-cp-name-search', type: 'search', spellcheck: 'false', autocomplete: 'off',
+        placeholder: 'Search names', 'aria-label': 'Search colour names',
+        'data-testid': 'gfd-cp-name-search',
+      });
+      const nameList = h('div', { class: 'gfd-cp-name-list', role: 'listbox', 'aria-label': 'Named colours' });
+      const nameRows = namedColourHex().map(([name, hex]) => {
+        const row = h('button', {
+          type: 'button', class: 'gfd-cp-name', role: 'option', title: `#${hex}`,
+          onclick: () => {
+            const parsed = parseColour(name);
+            if (!parsed) return;
+            setRgb(parsed);
+            picker.a = 1;
+            picker.name = name;
+            repaint();
+            emit();
+          },
+        }, h('span', { class: 'gfd-cp-name-swatch', style: `background: ${name}` }),
+          h('span', { class: 'gfd-cp-name-text', text: name }));
+        return { name, hex, row };
+      });
+      nameList.append(...nameRows.map((entry) => entry.row));
+      nameSearch.addEventListener('input', () => {
+        const query = nameSearch.value.trim().toLowerCase();
+        for (const entry of nameRows) entry.row.hidden = !entry.name.includes(query);
+      });
+      const nameView = h('div', { class: 'gfd-cp-name-view' }, nameSearch, nameList);
+
+      const squareView = h('div', { class: 'gfd-cp-square-view' },
+        sv, h('div', { class: 'gfd-cp-rails' }, hue, alpha));
+      const trackView = h('div', { class: 'gfd-cp-track-view' },
+        ...channelTracks.map((entry) => entry.row), alphaTrack.row);
+
+      // The value as it will be written to the document - `lab(63% 59.37 47.89 / 0.5)`, not a
+      // colour to be reconstructed from three boxes. It stays an input rather than a caption
+      // because anything CSS spells a colour with can be pasted straight back into it.
+      const hexField = h('input', {
+        class: 'gfd-cp-hex', type: 'text', spellcheck: 'false', autocomplete: 'off',
+        'aria-label': 'CSS value', 'data-testid': 'gfd-cp-hex',
+      });
+      hexField.addEventListener('input', () => {
+        const literal = hexField.value.trim();
+        const parsed = parseColour(literal);
+        if (!parsed) return;
+        const literalName = literal.toLowerCase();
+        setRgb(parsed);
+        picker.a = parsed.a;
+        picker.name = picker.mode === 'name' && CSS_COLOUR_NAMES.includes(literalName)
+          ? literalName : null;
+        repaint();
+        emit(literal);
+      });
+
+      // Eight editors is a list to choose from, not eight buttons to weigh against each other:
+      // they are mutually exclusive, only one is ever in use, and a row of them takes more of the
+      // eye than the colour does. So the mode is a dropdown, and the room it gives back is the
+      // colour's.
+      const modeSelect = h('select', {
+        class: 'gfd-cp-mode-select', 'aria-label': 'Colour mode',
+        'data-testid': 'gfd-cp-mode',
+        onchange: () => {
+          picker.mode = modeSelect.value;
+          if (document.activeElement === hexField) hexField.blur();
+          if (picker.mode === 'name') {
+            picker.a = 1;
+            picker.name = nameForRgb(rgb());
+          } else {
+            picker.name = null;
+          }
+          repaint();
+        },
+      }, ...COLOUR_MODES.map((mode) => h('option', { value: mode, text: COLOUR_MODE_NAMES[mode] })));
+
+      // A small palette that travels with the designer: a favourite is saved once and stays a
+      // click away for every swatch in every component. Right-click takes one back out.
+      const FAVOURITES_KEY = 'gridlet.designer.colourFavourites';
+      const readFavourites = () => {
+        try {
+          const list = JSON.parse(localStorage.getItem(FAVOURITES_KEY) || '[]');
+          // Only strings the parser accepts come back: a mangled entry would render an invisible
+          // dead swatch at best and smuggle declarations into its inline style at worst.
+          return Array.isArray(list)
+            ? list.filter((c) => typeof c === 'string' && parseColour(c)) : [];
+        } catch {
+          return [];
+        }
+      };
+      const writeFavourites = (list) => {
+        try {
+          localStorage.setItem(FAVOURITES_KEY, JSON.stringify(list.slice(0, 16)));
+        } catch { /* storage full or unavailable; the palette just does not persist */ }
+      };
+      const favouritesRow = h('div', { class: 'gfd-cp-favs', role: 'group', 'aria-label': 'Favourite colours' });
+      const renderFavourites = () => {
+        const buttons = readFavourites().map((css) => h('button', {
+          type: 'button',
+          class: 'gfd-cp-fav',
+          title: `${css} - click to use, right-click to remove`,
+          'aria-label': `Use favourite colour ${css}`,
+          style: `background: ${css}`,
+          onclick: () => {
+            const parsed = parseColour(css);
+            if (!parsed) return;
+            picker.mode = guessColourMode(css);
+            setRgb(parsed);
+            picker.a = parsed.a;
+            const literalName = css.trim().toLowerCase();
+            picker.name = picker.mode === 'name' && CSS_COLOUR_NAMES.includes(literalName)
+              ? literalName : null;
+            repaint();
+            emit(css);
+          },
+          oncontextmenu: (event) => {
+            event.preventDefault();
+            writeFavourites(readFavourites().filter((c) => c !== css));
+            renderFavourites();
+          },
+        }));
+        buttons.push(h('button', {
+          type: 'button',
+          class: 'gfd-cp-fav-add',
+          text: '+',
+          title: 'Save the new colour to favourites',
+          'aria-label': 'Save the new colour to favourites',
+          onclick: () => {
+            // Preserve the form being edited. A favourite made in HSL or OKLCH should come back
+            // in that mode rather than being flattened to hex on its way into storage.
+            const literal = hexField.value.trim();
+            const css = parseColour(literal) ? literal : formatted();
+            writeFavourites([css, ...readFavourites().filter((c) => c !== css)]);
+            renderFavourites();
+          },
+        }));
+        favouritesRow.replaceChildren(...buttons);
+      };
+
+      const newPreview = h('div', { class: 'gfd-cp-preview' }, hexField);
+      const currentValue = h('span', { class: 'gfd-cp-preview-value' });
+      const currentPreview = h('button', {
+        type: 'button',
+        class: 'gfd-cp-preview',
+        title: 'Back to the colour this opened with',
+        'aria-label': 'Back to the colour this opened with',
+        onclick: () => {
+          applyCss(currentCss, guessColourMode(currentCss || '#'));
+          emit(currentCss);
+        },
+      }, currentValue);
+      let dropper = null;
+      if ('EyeDropper' in window) {
+        dropper = h('button', {
+          type: 'button',
+          class: 'gfd-cp-dropper',
+          title: 'Pick a colour from anywhere on the screen',
+          'aria-label': 'Pick a colour from anywhere on the screen',
+          onclick: () => {
+            new window.EyeDropper().open()
+              .then((result) => {
+                const parsed = parseColour(result.sRGBHex);
+                if (!parsed) return;
+                setRgb(parsed);
+                picker.a = 1;
+                repaint();
+                emit();
+              })
+              .catch(() => { /* the operator cancelled the pick */ });
+          },
+        }, svgIcon(ICONS['color-picker'], 'gfd-cp-dropper-icon'));
+      }
+
+      const pop = h('div', {
+        class: 'gfd-cp', role: 'dialog', 'aria-label': 'Colour picker', hidden: '',
+        'data-testid': 'gfd-colour-pop',
+      },
+        modeSelect,
+        h('div', { class: 'gfd-cp-grid' },
+          h('div', { class: 'gfd-cp-visual' }, squareView, trackView, nameView),
+          h('div', { class: 'gfd-cp-previews' },
+            h('span', { class: 'gfd-cp-preview-label', text: 'Current' }), currentPreview,
+            h('div', { class: 'gfd-cp-new-label' },
+              h('span', { class: 'gfd-cp-preview-label', text: 'New' }), ...(dropper ? [dropper] : [])),
+            newPreview),
+          favouritesRow));
+
+      const setField = (input, value) => {
+        if (document.activeElement === input) return;
+        input.value = value;
+      };
+
+      // Preview text is laid over the colour it spells. Composite translucent colours over the
+      // picker panel before choosing black or white, so the text follows what is actually seen.
+      const previewTextColour = ({ r, g, b, a = 1 }) => {
+        const panel = parseSerialColour(getComputedStyle(pop).backgroundColor)
+          || { r: 24, g: 27, b: 35, a: 1 };
+        const mix = (channel, behind) => channel * a + behind * (1 - a);
+        const rr = mix(r, panel.r), gg = mix(g, panel.g), bb = mix(b, panel.b);
+        const luminance = (0.299 * rr + 0.587 * gg + 0.114 * bb) / 255;
+        return luminance > 0.58 ? '#111318' : '#ffffff';
+      };
+
+      function repaint() {
+        const { r, g, b } = rgb();
+        const full = `rgb(${r} ${g} ${b})`;
+        sv.style.background = 'linear-gradient(to top, #000, rgb(255 255 255 / 0)), '
+          + `linear-gradient(to right, #fff, hsl(${picker.h} 100% 50%))`;
+        svCursor.style.left = `${picker.s * 100}%`;
+        svCursor.style.top = `${(1 - picker.v) * 100}%`;
+        hueCursor.style.top = `${(picker.h / 360) * 100}%`;
+        alphaCursor.style.top = `${(1 - picker.a) * 100}%`;
+        // Opaque at the top, fading downward, the way the cursor and every image editor read it:
+        // the rail's top is fully opaque and its bottom is fully transparent.
+        alpha.style.background = `linear-gradient(to bottom, ${full}, ${full.replace(')', ' / 0)')}),`
+          + ' repeating-conic-gradient(#777 0 25%, #c9c9c9 0 50%) 0 0 / 8px 8px';
+        sv.setAttribute('aria-valuetext',
+          `saturation ${Math.round(picker.s * 100)}%, brightness ${Math.round(picker.v * 100)}%`);
+        hue.setAttribute('aria-valuenow', String(Math.round(picker.h)));
+        alpha.setAttribute('aria-valuenow', String(Math.round(picker.a * 100)));
+        modeSelect.value = picker.mode;
+        const space = MODEL_SPACES[picker.mode];
+        squareView.hidden = picker.mode !== 'hex';
+        trackView.hidden = !space;
+        nameView.hidden = picker.mode !== 'name';
+        if (picker.mode === 'name') {
+          // The keyword the colour is currently on, if it is on one, so the list says where it is.
+          const key = hex2(r) + hex2(g) + hex2(b);
+          for (const entry of nameRows) {
+            entry.row.classList.toggle('active', entry.hex === key);
+            entry.row.setAttribute('aria-selected', entry.hex === key ? 'true' : 'false');
+          }
+        }
+        if (space) {
+          const values = space.from({ r, g, b });
+          channelTracks.forEach((entry, index) => {
+            const channel = space.channels[index];
+            const span = channel.max - channel.min;
+            entry.label.textContent = channel.label;
+            entry.track.style.background = channelGradient(space, values, index);
+            entry.cursor.style.left = `${clamp01((values[index] - channel.min) / span) * 100}%`;
+            entry.track.setAttribute('aria-label', `${channel.label} (${picker.mode})`);
+            entry.track.setAttribute('aria-valuemin', String(channel.min));
+            entry.track.setAttribute('aria-valuemax', String(channel.max));
+            entry.track.setAttribute('aria-valuenow', String(channel.round(values[index])));
+          });
+          // The same rail turned on its side: transparent on the left, opaque on the right.
+          alphaTrack.track.style.background = `linear-gradient(to right, ${full.replace(')', ' / 0)')}, ${full}),`
+            + ' repeating-conic-gradient(#777 0 25%, #c9c9c9 0 50%) 0 0 / 8px 8px';
+          alphaTrack.cursor.style.left = `${picker.a * 100}%`;
+          alphaTrack.track.setAttribute('aria-valuenow', String(Math.round(picker.a * 100)));
+        }
+        const css = formatted();
+        newPreview.style.background = css;
+        newPreview.style.color = previewTextColour({ r, g, b, a: picker.a });
+        // Assigning invalid CSS leaves the previous inline value in place, so clear first: an
+        // undefined or invalid current value must never borrow the last picker's preview.
+        currentPreview.style.background = 'transparent';
+        currentPreview.style.color = '';
+        if (currentColour) {
+          currentPreview.style.background = currentCss;
+          currentPreview.style.color = previewTextColour(currentColour);
+        }
+        currentValue.textContent = currentCss || 'Not defined';
+        setField(hexField, css);
+        // The column cannot always be as wide as a colour is long, so the whole value
+        // is on the box itself for the times it is cut off.
+        hexField.title = css;
+      }
+
+      const applyCss = (css, mode) => {
+        picker.mode = COLOUR_MODES.includes(mode) ? mode : guessColourMode(css || '#');
+        const parsed = parseColour(css);
+        if (parsed) {
+          setRgb(parsed);
+          picker.a = parsed.a;
+          const literalName = css.trim().toLowerCase();
+          picker.name = picker.mode === 'name' && CSS_COLOUR_NAMES.includes(literalName)
+            ? literalName : null;
+        } else {
+          picker.h = 0;
+          picker.s = 0;
+          picker.v = 0;
+          picker.a = 1;
+          picker.name = null;
+        }
+        repaint();
+      };
+
+      const close = () => {
+        if (!visible) return;
+        visible = false;
+        document.removeEventListener('pointerdown', outside, true);
+        document.removeEventListener('keydown', escapeCloses, true);
+        document.removeEventListener('focusin', focusFollowsPanel, true);
+        pop.hidden = true;
+        openAnchor = null;
+        onPick = null;
+      };
+      const outside = (event) => {
+        // A popover whose anchor has gone away - its designer tab closed, or another tab taken
+        // over the screen - has nobody left to serve, so any click anywhere dismisses it.
+        if (openAnchor && (!openAnchor.isConnected || openAnchor.offsetParent === null)) {
+          close();
+          return;
+        }
+        if (pop.contains(event.target)
+          || (openAnchor && (event.target === openAnchor || openAnchor.contains(event.target)))) {
+          return;
+        }
+        close();
+      };
+      // Focus escaping the popover without any pointerdown - the keyboard switching a designer
+      // tab, say - dismisses it the same way a click outside would.
+      const focusFollowsPanel = (event) => {
+        if (pop.contains(event.target)
+          || (openAnchor && openAnchor.contains(event.target))) return;
+        close();
+      };
+      const escapeCloses = (event) => {
+        if (event.key === 'Escape') close();
+      };
+
+      return {
+        open({ anchor, css, mode, onPick: pick }) {
+          if (!pop.isConnected) document.body.append(pop);
+          // Clicking the swatch that opened the popover closes it again, the way a toggle should.
+          if (visible && anchor === openAnchor) {
+            close();
+            return;
+          }
+          visible = true;
+          onPick = pick;
+          currentCss = css || '';
+          currentColour = parseColour(currentCss);
+          openAnchor = anchor;
+          applyCss(currentCss, mode);
+          renderFavourites();
+          // A search left over from the last colour would open the list already filtered to
+          // something nobody asked for, so each opening starts on the whole list - scrolled to
+          // the keyword the colour is on, when it is on one.
+          nameSearch.value = '';
+          for (const entry of nameRows) entry.row.hidden = false;
+          pop.hidden = false;
+          // Scrolled by hand rather than through scrollIntoView, which would also move whatever
+          // else happens to be scrollable around the popover.
+          const active = nameRows.find((entry) => entry.row.classList.contains('active'))?.row;
+          nameList.scrollTop = active
+            ? Math.max(0, active.offsetTop - (nameList.clientHeight - active.offsetHeight) / 2)
+            : 0;
+          const box = anchor.getBoundingClientRect();
+          const width = pop.offsetWidth;
+          const height = pop.offsetHeight;
+          // The panel the swatches live in usually docks at the right edge, so the popover opens
+          // to the left of the swatch and falls back to the right, then to whatever fits.
+          let x = box.left - width - 8;
+          if (x < 8) x = box.right + 8;
+          if (x + width > window.innerWidth - 8) x = Math.max(8, window.innerWidth - width - 8);
+          // A picker taller than the viewport cannot be fully shown; keep its top on screen and
+          // let the stylesheet scroll the overflow rather than opening it half above the page.
+          const highest = Math.max(8, window.innerHeight - height - 8);
+          const y = Math.min(Math.max(8, box.top), highest);
+          pop.style.left = `${x}px`;
+          pop.style.top = `${y}px`;
+          document.addEventListener('pointerdown', outside, true);
+          document.addEventListener('keydown', escapeCloses, true);
+          document.addEventListener('focusin', focusFollowsPanel, true);
+        },
+        close,
+        dispose() {
+          close();
+          pop.remove();
+        },
+      };
+    }
 
     function colourEditor(target, key, hint) {
       const text = h('input', {
@@ -3174,11 +4188,32 @@ export default class ${CLASS_NAME(name)} {
         },
       }, '×');
 
-      // The swatch says what the colour came out as, so it is rebuilt whenever that changes rather
-      // than once when the panel was drawn. It swaps between a picker, a not-defined marker and an
-      // invalid marker, which are different elements rather than attributes to toggle — so it lives
-      // in a slot of its own, and the text box keeps the cursor through all of it.
+      // The swatch says what the colour came out as, so it follows the value rather than being
+      // drawn once when the panel was. Its three looks - a colour, a not-defined slash, an invalid
+      // cross - are classes, titles and one test id on one stable element rather than elements
+      // swapped in a slot, and every update below happens in place: a pick redraws the panel, and
+      // a swatch rebuilt under the popover it just opened would leave that popover pointing at a
+      // detached element. The text box keeps its cursor through all of it the same way.
       const slot = h('span', { class: 'gfd-swatch-slot' });
+      const mark = h('span', { class: 'gfd-swatch-mark', 'aria-hidden': 'true', text: '✕' });
+      const shell = h('button', { type: 'button', class: 'gfd-swatch' }, mark);
+      slot.append(shell);
+      // The swatch sits in the panel, where a component-scoped variable means nothing; painting
+      // the resolved bytes instead of the raw value keeps the swatch honest, and the parse runs
+      // once per distinct value rather than on every expression check.
+      let lastKey = '';
+      let lastPaint = '';
+      shell.addEventListener('click', () => {
+        openColourPicker({
+          anchor: shell,
+          css: asText(pass.read(target, key)),
+          mode: guessColourMode(storedText(target, key, 'text') || '#'),
+          onPick: (next) => {
+            writeProperty(target, key, next, { kind: 'text' });
+            text.value = next;
+          },
+        });
+      });
 
       const sync = () => {
         const formula = isFormula(target.bind?.[key]);
@@ -3188,51 +4223,41 @@ export default class ${CLASS_NAME(name)} {
           || mixed(target, key);
         clear.disabled = !defined;
 
-        const choose = (event) => {
-          writeProperty(target, key, event.target.value, { kind: 'text' });
-          text.value = event.target.value;
-        };
-        const picker = (value, title) => h('input', {
-          type: 'color',
-          class: 'gfd-swatch-picker',
-          'data-testid': 'colour-picker-' + key,
-          'aria-label': `Choose ${hint.toLowerCase()}`,
-          title,
-          value: isHex(value) ? value : '#000000',
-          oninput: choose,
-        });
-
-        let swatch;
-        if (isColour(resolved)) {
-          swatch = h('input', {
-            type: 'color',
-            class: 'gfd-swatch',
-            'data-testid': 'colour-swatch-' + key,
-            title: formula ? `${hint} — ${resolved}, from the formula` : hint,
-            value: isHex(resolved) ? resolved : '#000000',
-            // A formula decides the colour; dragging the picker would only be overwritten on the
-            // next draw, so it shows the answer and does not pretend to take one.
-            disabled: formula ? '' : null,
-            oninput: choose,
-          });
-        } else if (resolved) {
-          // Invalid text is an error; unlike an undefined value, it deserves an error treatment.
-          swatch = h('span', {
-            class: 'gfd-swatch gfd-swatch-bad',
-            'data-testid': 'colour-bad-' + key,
-            title: `${hint} — "${resolved}" is not a colour`,
-          }, h('span', { class: 'gfd-swatch-mark', 'aria-hidden': 'true', text: '✕' }),
-          picker('', `${hint} — choose a colour to replace "${resolved}"`));
-        } else {
-          // Empty means the colour is not defined here. A quiet slash communicates that without
-          // borrowing the red outline used for an invalid value.
-          swatch = h('span', {
-            class: 'gfd-swatch gfd-swatch-not-defined',
-            'data-testid': 'colour-not-defined-' + key,
-            title: `${hint} — not defined; uses the component default`,
-          }, picker('', `${hint} — choose a colour`));
+        // The cache key carries the style generation: a var() whose definition the stylesheets
+        // just gained or lost must re-resolve even though its text never changed.
+        const cacheKey = `${resolved}
+${colourGeneration}`;
+        if (cacheKey !== lastKey) {
+          lastKey = cacheKey;
+          const bytes = isColour(resolved) ? parseColour(resolved) : null;
+          lastPaint = bytes
+            ? `rgba(${bytes.r}, ${bytes.g}, ${bytes.b}, ${round3(bytes.a)})` : '';
         }
-        slot.replaceChildren(swatch);
+        // A value CSS accepts but nothing here can resolve - a variable defined nowhere the
+        // panel can see - is not painted from the raw text, which would render an empty swatch
+        // labelled as a colour; it joins the crossed-out state with a title of its own.
+        const unresolvable = isColour(resolved) && !lastPaint;
+        const colour = isColour(resolved) && !unresolvable ? lastPaint : '';
+        shell.className = 'gfd-swatch' + (colour ? ''
+          : resolved || unresolvable ? ' gfd-swatch-bad' : ' gfd-swatch-not-defined');
+        // The shell paints the colour the value resolved to; the markers keep the transparent
+        // background their stylesheet gives them. The test id follows the look, so a test reads
+        // the swatch by the name of what it currently shows.
+        shell.style.background = colour;
+        shell.style.backgroundClip = colour ? 'content-box' : '';
+        shell.title = colour
+          ? (formula ? `${hint} - ${resolved}, from the formula` : hint)
+          : unresolvable ? `${hint} - "${resolved}" does not resolve to a colour here`
+            : resolved ? `${hint} - "${resolved}" is not a colour`
+              : `${hint} - not defined; uses the component default`;
+        shell.setAttribute('aria-label', shell.title);
+        shell.setAttribute('data-testid',
+          (colour ? 'colour-swatch-'
+            : resolved || unresolvable ? 'colour-bad-' : 'colour-not-defined-') + key);
+        // A formula decides the colour, so the swatch shows the answer and does not take one. An
+        // invalid or missing value keeps a working picker, because picking is the way out of it.
+        shell.disabled = Boolean(colour) && formula;
+        mark.hidden = Boolean(colour) || !resolved && !unresolvable;
       };
       expressionChecks.push(sync);
       sync();
@@ -3254,7 +4279,7 @@ export default class ${CLASS_NAME(name)} {
       return h('div', {
         class: 'gfd-colour-slot' + (formula ? ' bound' : '') + (differs ? ' mixed' : ''),
         'data-property': key,
-        title: differs ? `${hint} — the selected controls differ here` : null,
+        title: differs ? `${hint} - the selected controls differ here` : null,
       }, colourEditor(target, key, hint));
     }
 
@@ -3572,7 +4597,7 @@ export default class ${CLASS_NAME(name)} {
       }
 
       // A plain coordinate is not an anchor: it says where an edge is, not what it follows. The
-      // difference is the whole of what anchoring the far edge does — with the near edge anchored
+      // difference is the whole of what anchoring the far edge does - with the near edge anchored
       // the control stretches to reach, and with nothing holding it the control moves.
       let near = null;
       if (posText) {
@@ -3801,7 +4826,7 @@ export default class ${CLASS_NAME(name)} {
     // through a chain of others.
     //
     // This is not only about #CIRC!. A control being dragged carries its followers with it, so a
-    // follower's edges are moving too — and an edge that moves with the drag is an edge the drag
+    // follower's edges are moving too - and an edge that moves with the drag is an edge the drag
     // can chase. Snapping onto one moves the control, which moves the follower, which moves the
     // edge again: the control shakes instead of settling. Leaving descendants out of the targets
     // is what stops that, and the followers still keep up because they are the ones following.
@@ -3850,7 +4875,7 @@ export default class ${CLASS_NAME(name)} {
     // Anchoring is a drawing act, so it is done on the drawing. With Anchors on, the one selected
     // control grows a handle in the middle of each edge; drag one onto an edge of the frame or of
     // another control and that edge is anchored to it. Every anchor in force is drawn as a CAD
-    // dimension — a witness line, arrows both ways and the offset — which is how the layout is
+    // dimension - a witness line, arrows both ways and the offset - which is how the layout is
     // read as well as how an anchor is retyped or taken off.
 
     const SVG = 'http://www.w3.org/2000/svg';
@@ -3979,7 +5004,7 @@ export default class ${CLASS_NAME(name)} {
         const hit = h('div', { class: 'gfd-dim-hit gfd-dim-' + span.axis });
         // Never so short there is nothing to put the pointer on: two edges aligned to each other
         // measure zero, and that is still a dimension somebody has to be able to reach. The room
-        // that needs is taken outwards, away from the control the dimension starts on — a strip
+        // that needs is taken outwards, away from the control the dimension starts on - a strip
         // reaching into it would be a band of the control that could no longer be pressed, and
         // which way is "into it" is decided by which edge this is, not by where the target sits.
         const outwards = edge === axisFor(edge).near ? -1 : 1;
@@ -3999,7 +5024,7 @@ export default class ${CLASS_NAME(name)} {
 
         // A chain link rather than a cross, because the button is not about deleting a row of the
         // panel: it says this edge is linked to something. Under the pointer it becomes the broken
-        // link, which is the whole sentence — linked, and about to be unlinked.
+        // link, which is the whole sentence - linked, and about to be unlinked.
         const release = h('button', {
           type: 'button',
           class: 'gfd-dim-release',
@@ -4153,8 +5178,8 @@ export default class ${CLASS_NAME(name)} {
         showGuide();
 
         // A handle is a thing to drag, not a thing to click. Anchoring on a bare press would
-        // anchor whatever happened to be within reach of the handle — and the frame's own edge is
-        // within reach of any control near it — so a press that goes nowhere is not a drop.
+        // anchor whatever happened to be within reach of the handle - and the frame's own edge is
+        // within reach of any control near it - so a press that goes nowhere is not a drop.
         let moved = false;
 
         const onMove = (moveEvent) => {
@@ -4176,7 +5201,7 @@ export default class ${CLASS_NAME(name)} {
           canvas.removeEventListener('pointercancel', onUp);
           canvas.removeEventListener('lostpointercapture', onUp);
           const drop = moved && (candidate || nearest(upEvent.clientX, upEvent.clientY));
-          // Let go of an anchor over nothing — or without having gone anywhere — and nothing
+          // Let go of an anchor over nothing - or without having gone anywhere - and nothing
           // happens, which is how a drag started by accident is called off.
           if (!drop) { renderCanvas(); return; }
           // The offset is whatever gap the control already has, so anchoring does not move it.
@@ -4242,13 +5267,13 @@ export default class ${CLASS_NAME(name)} {
       }, { hint });
 
       return [
-        field('Left', side('x'), 'The left edge of everything selected — moves them together',
+        field('Left', side('x'), 'The left edge of everything selected - moves them together',
           (next, from) => moveSelection(next - from, 0)),
-        field('Top', side('y'), 'The top edge of everything selected — moves them together',
+        field('Top', side('y'), 'The top edge of everything selected - moves them together',
           (next, from) => moveSelection(0, next - from)),
-        field('Width', side('w'), 'The width of the whole selection — scales it',
+        field('Width', side('w'), 'The width of the whole selection - scales it',
           (next, from) => from > 0 && scaleSelection(next / from, 1)),
-        field('Height', side('h'), 'The height of the whole selection — scales it',
+        field('Height', side('h'), 'The height of the whole selection - scales it',
           (next, from) => from > 0 && scaleSelection(1, next / from)),
       ];
     }
@@ -4297,7 +5322,7 @@ export default class ${CLASS_NAME(name)} {
           cssSection('component-custom', model.doc, `${componentSelector()} {\n  \n}`),
           // The component's own rule, not the whole sheet: a control's rules belong to that control.
           // The reset an isolated component adds is the component's too, and it is shown in the layer it is
-          // really in — a rule that loses to everything you write reads very differently from one
+          // really in - a rule that loses to everything you write reads very differently from one
           // that does not.
           section('component-generated', 'Generated CSS',
             generatedBlock('generated-sheet', () => {
@@ -4422,7 +5447,7 @@ export default class ${CLASS_NAME(name)} {
         rows.push(h('div', { class: 'gfd-code-problems' }, problems.map((problem) =>
           h('div', { class: 'gfd-code-problem' },
             h('strong', { text: problem.name }),
-            h('span', { text: ' — ' + problem.message })))));
+            h('span', { text: ' - ' + problem.message })))));
       }
 
       return rows;
@@ -4465,21 +5490,21 @@ export default class ${CLASS_NAME(name)} {
 
     // The HTML id and classes the component or control carries, so an operator's own CSS can address it
     // the way they would address any other element, and the tooltip it shows. All three are plain
-    // HTML attributes, and all three take an expression like everything else — a tip that names the
+    // HTML attributes, and all three take an expression like everything else - a tip that names the
     // value it is explaining is the reason to want one.
     //
-    // On a control they land on the element itself — the button, the input — rather than on the box
+    // On a control they land on the element itself - the button, the input - rather than on the box
     // the designer positions it with, so a rule written against them styles what it looks like it
     // is styling. So does the control's name: `[data-name="button2"]` is the button. The box the
     // designer positions is `[data-control-box="button2"]`.
     const identityRows = (target, group = false) => [
       // An id has to be unique in the page, so a group does not get to set one.
       ...(group ? [] : [row(target, 'elementId', 'Id', textEditor(target, 'elementId'),
-        { hint: 'The HTML id of the control itself — what a <label for> points at' })]),
+        { hint: 'The HTML id of the control itself - what a <label for> points at' })]),
       row(target, 'classes', 'Class', textEditor(target, 'classes'),
         { hint: 'HTML classes on the control itself, space separated' }),
       row(target, 'tip', 'Tip', textEditor(target, 'tip'),
-        { hint: 'Tooltip shown when the pointer rests here — the HTML title attribute' }),
+        { hint: 'Tooltip shown when the pointer rests here - the HTML title attribute' }),
     ];
 
     // A component reads through a published endpoint, never through SQL of its own. That keeps the
@@ -4488,7 +5513,7 @@ export default class ${CLASS_NAME(name)} {
     function dataSourceEditors() {
       // Matched on the route, because the route is what the document stores and what the component
       // actually calls. An endpoint's id is Gridlet's own and does not belong in a document that is
-      // readable by whoever opens the component — and a document that named one would stop matching
+      // readable by whoever opens the component - and a document that named one would stop matching
       // the moment it was copied to another environment.
       const chosen = model.endpoints.find((e) => e.route === model.doc.source?.route) || null;
 
@@ -4542,7 +5567,7 @@ export default class ${CLASS_NAME(name)} {
         editors.push(model.columns.length
           ? h('div', { class: 'gfd-chips' }, model.columns.map((column) =>
             h('span', { class: 'gfd-chip static', text: column })))
-          : note('Read the source to discover its columns — open Preview, or fill in the parameters above.'));
+          : note('Read the source to discover its columns - open Preview, or fill in the parameters above.'));
       }
 
       return editors;
@@ -4750,10 +5775,10 @@ export default class ${CLASS_NAME(name)} {
     }
 
     // The value slot and everything that can feed it. The value is an expression
-    // by nature — there is no literal behind it — so the box is always the expression box, and the
+    // by nature - there is no literal behind it - so the box is always the expression box, and the
     // columns are chips because clicking one is faster than typing it and cannot misspell it.
     // The property the whole selection displays its value in, or nothing. Where a value lives
-    // differs by kind — a label's is its text, a text box's is its own slot — so a mixed selection
+    // differs by kind - a label's is its text, a text box's is its own slot - so a mixed selection
     // has no single property to write, and says so instead of writing to whichever kind happened
     // to be picked first.
     function sharedValueKey(spec, group) {
@@ -4766,8 +5791,8 @@ export default class ${CLASS_NAME(name)} {
 
     function controlValueEditors(control, spec, group = false) {
       // A kind that displays nothing has nothing to bind. Most say so by having no Value group at
-      // all; one with something worth explaining — a pager follows the component's rows rather than a
-      // value of its own — says that instead.
+      // all; one with something worth explaining - a pager follows the component's rows rather than a
+      // value of its own - says that instead.
       if (!spec.bindable) return spec.dataNote ? [note(spec.dataNote)] : [];
 
       const valueKey = sharedValueKey(spec, group);
@@ -4776,7 +5801,7 @@ export default class ${CLASS_NAME(name)} {
       }
 
       // For a label the value is its Text: one property, and now one row for it, under the name
-      // its own kind gives it. A kind whose value has no property of its own — a text box's — is
+      // its own kind gives it. A kind whose value has no property of its own - a text box's - is
       // shown as Value.
       const own = spec.properties.find((property) => property.key === valueKey);
       const editors = [
@@ -4817,14 +5842,14 @@ export default class ${CLASS_NAME(name)} {
             onclick: () => pick(dataReference(column)),
           }, column))));
       } else {
-        editors.push(note('Read the source to discover its columns — open Preview, or fill in its parameters on the component\'s own Settings page.'));
+        editors.push(note('Read the source to discover its columns - open Preview, or fill in its parameters on the component\'s own Settings page.'));
       }
 
       return editors;
     }
 
-    // Formulas set somewhere other than here — a width that follows another control, a colour that
-    // follows a value — gathered so this page answers "what on this control follows something
+    // Formulas set somewhere other than here - a width that follows another control, a colour that
+    // follows a value - gathered so this page answers "what on this control follows something
     // else?" without sending anyone hunting through the other one. A property with its own row
     // above is not repeated: it is already showing its formula.
     function elsewhereFormulaRows(control, spec, group) {
@@ -4860,7 +5885,7 @@ export default class ${CLASS_NAME(name)} {
     const quoted = (value) => value.replace(/["\\]/g, '\\$&');
 
     // The positioned box. It is the designer's own, so it carries the name under an attribute of
-    // the designer's own — leaving the plain `[data-name]` to mean the control itself.
+    // the designer's own - leaving the plain `[data-name]` to mean the control itself.
     const selectorFor = (control) => control.name
       ? `[data-control-box="${quoted(control.name)}"]`
       : `[data-id="${control.id}"]`;
@@ -4876,7 +5901,7 @@ export default class ${CLASS_NAME(name)} {
       const view = pass.viewOf(control);
 
       // An isolated component deliberately has no default appearance: reinstating it here would undo
-      // the reset the component just asked for. Colours chosen in the panel still apply — they are the
+      // the reset the component just asked for. Colours chosen in the panel still apply - they are the
       // operator's own decision, not Gridlet's styling. The fallback for a theme left empty is a
       // colour, never a keyword: see themedColor.
       const style = model.doc.isolated ? {} : styleOf(CATALOGUE[control.type], view);
@@ -4926,6 +5951,11 @@ export default class ${CLASS_NAME(name)} {
         '  box-sizing: border-box;',
         '  width: 100%;',
         '  height: 100%;',
+        // Appearance is repeated here, outside the defaults layer. The host workspace has shared
+        // unlayered selectors for tables, and those must not make a panel-selected control colour
+        // disappear. Custom CSS is in the following stylesheet, so it still wins at equal specificity.
+        ...(text ? ['  color: var(--gfd-color);'] : []),
+        ...(background ? ['  background-color: var(--gfd-fill);'] : []),
         ...Object.entries(structure).map(([property, value]) => `  ${property}: ${value};`),
         '}',
       ].join('\n'));
@@ -4938,7 +5968,7 @@ export default class ${CLASS_NAME(name)} {
     //
     // These go in a cascade layer, and that is the whole point of them being separate. An unlayered
     // rule beats a layered one however weak its selector is, so `.btn { border: 1px solid red }`
-    // does what it says — the class is on the button, and it no longer has to out-specify a
+    // does what it says - the class is on the button, and it no longer has to out-specify a
     // selector Gridlet wrote. Structure and geometry stay out of the layer: a default border is
     // Gridlet's opinion, but a control filling its own box is not.
     function defaultCssFor(control) {
@@ -4991,14 +6021,14 @@ export default class ${CLASS_NAME(name)} {
 
     // What an isolated component starts from: the browser's own styling, with Gridlet's taken back off.
     //
-    // `revert` drops every author-level rule — Gridlet's and the designer's — and it is aimed at
+    // `revert` drops every author-level rule - Gridlet's and the designer's - and it is aimed at
     // the element inside each control and its contents, never at the control box, so positioning
     // and the designer's selection chrome survive. The system colours track the component's colour
     // scheme, so the theme switch still works.
     //
     // It goes in the same layer as the kind defaults, and for the same reason. `all: revert` on a
     // selector Gridlet wrote would otherwise outrank a plain `.btn { border: 1px solid red }` and
-    // undo it — asking for a clean slate would quietly mean losing the CSS you wrote on top of it.
+    // undo it - asking for a clean slate would quietly mean losing the CSS you wrote on top of it.
     function isolationResetCss() {
       if (!model.doc.isolated) return '';
       return [
@@ -5059,6 +6089,7 @@ export default class ${CLASS_NAME(name)} {
     let expressionChecks = [];
 
     function applyStyles() {
+      colourGeneration++;
       pass = resolveAll();
       // Scoped first and wrapped afterwards: the scoper reads selectors, and an @layer block is not
       // one. What comes out is a layer holding rules that are still confined to this component.
@@ -5374,8 +6405,8 @@ export default class ${CLASS_NAME(name)} {
       // A coordinate driven by an expression is not the pointer's to change: writing to the
       // literal underneath it would move nothing and quietly edit a value nobody is reading.
       const onMove = (moveEvent) => {
-        // A drag lasts exactly as long as the button is down. Losing the pointer — a capture taken
-        // away, a release the canvas never saw because the window was not focused — used to leave
+        // A drag lasts exactly as long as the button is down. Losing the pointer - a capture taken
+        // away, a release the canvas never saw because the window was not focused - used to leave
         // this listener attached, and the control then followed the bare pointer around with
         // nothing held down. The button state is on every move event, so ask it rather than trust
         // that the matching release will arrive.
@@ -5504,7 +6535,7 @@ export default class ${CLASS_NAME(name)} {
           class: 'gfd-palette-item',
           type: 'button',
           draggable: 'true',
-          title: `${spec.title} — drag onto the component, or click to add one`,
+          title: `${spec.title} - drag onto the component, or click to add one`,
           'data-type': type,
           onclick: () => {
             const bounds = canvas.getBoundingClientRect();
@@ -5548,7 +6579,7 @@ export default class ${CLASS_NAME(name)} {
     }
 
     // Closing the tab is what loses the work, so that is when it is worth asking. Switching to
-    // another tab — the module this component runs, most of all — leaves the component open exactly as it
+    // another tab - the module this component runs, most of all - leaves the component open exactly as it
     // was, and being asked to save on the way to the code is a question about nothing.
     tab.beforeClose = async () => {
       if (!tab.hasUnsavedDefinition) return true;
@@ -5596,7 +6627,7 @@ export default class ${CLASS_NAME(name)} {
       // The icon says which of the three the component is on; the tooltip says what a click does,
       // because a cycle is not something an icon can state on its own.
       themeButton.replaceChildren(svgIcon(current.icon, 'gfd-theme-icon'));
-      const label = `Component theme: ${current.state} — click for ${next.choice}`;
+      const label = `Component theme: ${current.state} - click for ${next.choice}`;
       themeButton.title = label;
       themeButton.setAttribute('aria-label', label);
       themeButton.dataset.themeMode = theme;
@@ -5755,7 +6786,7 @@ export default class ${CLASS_NAME(name)} {
     // uses and holds no code and no event wiring of its own, so the layout stays something the
     // designer can draw and the behaviour stays something a developer can lint, diff and review.
     //
-    // A module is handed one object — the component — and does whatever it likes with it. There is
+    // A module is handed one object - the component - and does whatever it likes with it. There is
     // nothing to import from Gridlet, nothing to register, and no framework to learn: a module is a
     // class that receives the component it belongs to.
 
@@ -5804,7 +6835,7 @@ export default class ${CLASS_NAME(name)} {
 
     // Listeners are delegated from the canvas, because the canvas is redrawn whenever the row or
     // the document changes and a listener bound to an element would go with it. Capture is on, so
-    // events that do not bubble — focus, blur — arrive as well.
+    // events that do not bubble - focus, blur - arrive as well.
     function delegate(match, type, handler) {
       const listener = (event) => {
         const box = event.target instanceof Element ? event.target.closest('.gfd-control') : null;
@@ -5919,7 +6950,7 @@ export default class ${CLASS_NAME(name)} {
       },
 
       // Component-level events: 'row' when the record changes, 'load' when rows are read again, and
-      // whatever a module emits for another module to hear. Neither fires on startup — being
+      // whatever a module emits for another module to hear. Neither fires on startup - being
       // started is what connected() means, and a module that wants the first row reads component.row.
       on(type, handler) {
         if (!behaviour.handlers.has(type)) behaviour.handlers.set(type, new Set());
@@ -6047,8 +7078,8 @@ export default class ${CLASS_NAME(name)} {
             continue;
           }
 
-          // Writing over a built-in is allowed — being unable to replace `json` with your own would
-          // make the built-in a rule rather than a default — and it is also the kind of thing to
+          // Writing over a built-in is allowed - being unable to replace `json` with your own would
+          // make the built-in a rule rather than a default - and it is also the kind of thing to
           // find out about from the component rather than from an expression that stopped doing what it
           // used to. Gridlet's own is still there, under the name of the library it came from.
           if (Object.hasOwn(FUNCTIONS, exported.toLowerCase())) {
@@ -6070,7 +7101,7 @@ export default class ${CLASS_NAME(name)} {
     }
 
     // Qualifiers share one namespace, because `tax.vat()` has to mean one thing. Whichever asked
-    // second keeps its names — they are still callable when nothing else defines them — and loses
+    // second keeps its names - they are still callable when nothing else defines them - and loses
     // only the spelling that would have been ambiguous.
     function reportQualifierClash(name, label) {
       if (!QUALIFIER.test(label)) return;
@@ -6182,7 +7213,7 @@ export default class ${CLASS_NAME(name)} {
     // A module's class is this component's behaviour, and it is constructed while the component is being
     // designed as well as while it runs: its public methods are names a formula calls, and a name
     // that worked in Preview and not in Design would read as a bug in the component. What the class
-    // does is still held back — the constructor stores what it is given, connected() acts on it,
+    // does is still held back - the constructor stores what it is given, connected() acts on it,
     // and connected() belongs to a component that is running.
     // The entries this component holds for one file: the file itself, and any of its classes.
     const attachmentsOf = (name) =>
@@ -6285,7 +7316,7 @@ export default class ${CLASS_NAME(name)} {
     }
 
     // Loaded fresh every time. The version in the URL is what gets past the browser's module cache,
-    // and because relative imports resolve beside the module they carry the same version — so a
+    // and because relative imports resolve beside the module they carry the same version - so a
     // shared module that has just been edited is re-read too.
     async function loadModules() {
       // One import per file: a component that runs two classes out of one module reads that module once,
@@ -6318,7 +7349,7 @@ export default class ${CLASS_NAME(name)} {
 
     // ---- handlers ----
     // A handler is a formula run for what it does rather than for what it returns. It names the
-    // same things a property's formula names — the row, the controls, the component — and it calls the
+    // same things a property's formula names - the row, the controls, the component - and it calls the
     // same functions, so there is one language on the component and not two.
     //
     // A handler's function is called exactly like any other: with no `this`, and with what it needs
@@ -6558,11 +7589,11 @@ export default class ${CLASS_NAME(name)} {
         h('h4', { text: title }), ...rows);
 
       modal('Binding a property', h('div', { class: 'gfd-help-body' },
-        h('p', { text: 'Every property in this panel can hold an expression instead of a fixed value. Click the ƒ beside it and write one: the property then follows whatever the expression names, live, in Design and in Preview. Click ƒ again to go back to a fixed value — whatever the expression last worked out to is kept, so nothing jumps.' }),
+        h('p', { text: 'Every property in this panel can hold an expression instead of a fixed value. Click the ƒ beside it and write one: the property then follows whatever the expression names, live, in Design and in Preview. Click ƒ again to go back to a fixed value - whatever the expression last worked out to is kept, so nothing jumps.' }),
 
         group('What an expression can name',
           term('data.Email', 'A column of the component\'s data source, on the row being shown. Write data["Order Date"] for a name with a space in it.'),
-          term('data', 'The whole row. A row is an object, and an object shown as text is JSON — turn Multiline on for a text box to hold it.'),
+          term('data', 'The whole row. A row is an object, and an object shown as text is JSON - turn Multiline on for a text box to hold it.'),
           term('component.rows', 'Every row the source returned, again as JSON.'),
           term('self.h', 'Another property of this same control: x, y, w, h, and the control\'s own properties.'),
           term('button1.w', 'The same, on any control in the component, by the name it carries on its Settings page.'),
@@ -6605,7 +7636,7 @@ export default class ${CLASS_NAME(name)} {
           term('iferror(x, 0)', 'Your own answer to a failure, in place of the code.'),
           h('p', { class: 'field-note' },
             'An error travels: anything built on #VALUE! is #VALUE! too. A property that has no room '
-            + 'for a code — a position, a size, a tick — keeps the value it last worked out to, and '
+            + 'for a code - a position, a size, a tick - keeps the value it last worked out to, and '
             + 'the code is shown here beside the formula.')),
 
         group('For example',
@@ -6617,9 +7648,9 @@ export default class ${CLASS_NAME(name)} {
           term('json(data, 2)', 'The whole row as indented JSON, in a multiline text box.')),
 
         group('When an expression is not enough',
-          term('Code', 'Modules are listed in the sidebar and open in their own tab. A module is ordinary JavaScript — import, export, classes, #private fields — and a component runs the ones it names on its Settings page.'),
+          term('Code', 'Modules are listed in the sidebar and open in their own tab. A module is ordinary JavaScript - import, export, classes, #private fields - and a component runs the ones it names on its Settings page.'),
           term('constructor(component, services)', 'What a module is given. A class is instantiated with the component; a plain default-exported function is called with it. The second argument is optional and holds services.notify, services.http.get / .post inside this workspace, and services.storage.read / .write / .clear for a little state per component.'),
-          term('export const services', 'A module can offer services of its own — { audit: { note(what) {} } } — and every class this component runs is handed them. Two modules offering one name is a clash, said on this component, and neither is used.'),
+          term('export const services', 'A module can offer services of its own - { audit: { note(what) {} } } - and every class this component runs is handed them. Two modules offering one name is a clash, said on this component, and neither is used.'),
           term('export class Two', 'A module can hold several classes. The component\'s Settings page lists them under the file and each has its own tick, so one file can carry the behaviour of more than one component.'),
           term('connected()', 'Called once the component is running and its rows have loaded. disconnected() is called when it stops.'),
           term('component.field(name)', 'A control by its designer name: .value, .enabled, .visible, .focus(), .element, and .on(type, handler) for its DOM events.'),
@@ -6627,10 +7658,10 @@ export default class ${CLASS_NAME(name)} {
           term('component.row / component.rows', 'The row on screen and every row the source returned. component.goTo(i), next(), previous() and reload() move around them.')),
 
         h('p', { class: 'field-note' },
-          'Several controls can be selected at once — drag a box around them, or hold Ctrl or Shift '
-          + 'while clicking — and anything set here is set on all of them. '
+          'Several controls can be selected at once - drag a box around them, or hold Ctrl or Shift '
+          + 'while clicking - and anything set here is set on all of them. '
           + 'A coordinate driven by an expression cannot be dragged or nudged: the expression decides it. '
-          + 'A box marked in red could not be worked out — rest the pointer on it for the reason, '
+          + 'A box marked in red could not be worked out - rest the pointer on it for the reason, '
           + 'and the property falls back to its fixed value until it is put right.')),
         [{ label: 'Close', primary: true, onClick: (close) => close() }]);
     }
@@ -6656,7 +7687,7 @@ export default class ${CLASS_NAME(name)} {
     const helpButton = h('button', {
       class: 'ghost gfd-help',
       type: 'button',
-      title: 'How binding works — the ƒ beside a property',
+      title: 'How binding works - the ƒ beside a property',
       'aria-label': 'How binding works',
       'data-testid': 'binding-help',
       onclick: showBindingHelp,
@@ -6709,7 +7740,7 @@ export default class ${CLASS_NAME(name)} {
       }
     }
 
-    // Collapsed, the whole rail is the way back — the same bargain the object sidebar makes.
+    // Collapsed, the whole rail is the way back - the same bargain the object sidebar makes.
     rail.addEventListener('click', (event) => {
       if (event.target.closest('.gfd-rail-toggle')) return;
       if (rail.classList.contains('collapsed')) setRail(false, true);
@@ -6774,6 +7805,9 @@ export default class ${CLASS_NAME(name)} {
     tab.onClose = () => {
       themeWatcher.disconnect();
       canvasSizeWatch?.disconnect();
+      // The popover lives on the body outliving the panel on purpose, but when the designer that
+      // opened it goes, both the open popover and its detached element go with it.
+      disposeColourPicker();
       runningComponents.delete(running);
       openComponents.delete(running);
       // The stylesheet tabs edit this document, so they close with the component they belong to.
@@ -6825,7 +7859,7 @@ export default class ${CLASS_NAME(name)} {
     load: async () => { components = await api('api/components'); },
     items: () => components.map((component) => ({
       name: component.name,
-      title: `${component.name} — updated ${new Date(component.updatedAtUtc).toLocaleString()}`,
+      title: `${component.name} - updated ${new Date(component.updatedAtUtc).toLocaleString()}`,
       definition: component.html,
       onOpen: () => openDesigner(component),
       contextItems: () => [
@@ -6884,8 +7918,8 @@ export default class ${CLASS_NAME(name)} {
     items: () => scripts.map((script) => ({
       name: script.name,
       title: script.readOnly
-        ? `${script.name} — part of Gridlet, and importable from your own modules`
-        : `${script.name} — updated ${new Date(script.updatedAtUtc).toLocaleString()}`,
+        ? `${script.name} - part of Gridlet, and importable from your own modules`
+        : `${script.name} - updated ${new Date(script.updatedAtUtc).toLocaleString()}`,
       definition: script.source,
       onOpen: () => openCodeTab(script.name),
       contextItems: () => [

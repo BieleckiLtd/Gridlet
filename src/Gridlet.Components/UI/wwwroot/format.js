@@ -8,7 +8,7 @@
 //
 // What the format is trying to be: a file somebody who knows HTML can open, read, diff in review
 // and edit by hand without knowing anything about Gridlet. Everything that has an HTML spelling
-// uses it — `id`, `class`, `title`, `placeholder`, `readonly`, the element's own text. Only what
+// uses it - `id`, `class`, `title`, `placeholder`, `readonly`, the element's own text. Only what
 // HTML has no word for is a `data-` attribute, and those are named so their meaning is legible:
 // `data-bind-text`, `data-on-click`, `data-fill-dark`.
 //
@@ -16,7 +16,7 @@
 // and no `<script>` is written or read. A component document stays a description of a component;
 // the code it runs lives in the module files it names. That separation is what lets a document be
 // stored, copied between environments and rendered without the document itself being a thing that
-// runs — see the note on modules in GridletComponentScript.cs.
+// runs - see the note on modules in GridletComponentScript.cs.
 
 (() => {
   'use strict';
@@ -68,7 +68,7 @@
     // The root is an ordinary element marked by an attribute, not a tag with meaning of its own. A
     // `<form>` was tempting because a component is a form in the everyday sense, but the HTML
     // element is not that: it submits, it makes Enter a submit, it owns the fields inside it, and it
-    // may not contain another one — which would stop a component ever holding a component. What
+    // may not contain another one - which would stop a component ever holding a component. What
     // makes this a component is `data-gridlet`, and a host that shows a top-level component as a
     // real form is free to wrap it in one at that point.
     const root = document.createElement('div');
@@ -246,7 +246,7 @@
       }
       case 'grid': {
         // The columns are the document's; the rows are not. A grid shows the component's own
-        // collection, so what is stored is which fields to show and in what order — written as the
+        // collection, so what is stored is which fields to show and in what order - written as the
         // header they are, because that is what a table's columns are in HTML.
         const table = document.createElement('table');
         table.setAttribute('data-role', 'grid');
@@ -390,7 +390,7 @@
 
   // Splits the stylesheet back into the component's own CSS and each control's, on the markers the
   // writer left. Anything before the first marker is the component's, which is also what a
-  // stylesheet written by hand with no markers at all comes back as — so hand-editing degrades to
+  // stylesheet written by hand with no markers at all comes back as - so hand-editing degrades to
   // "it is all the component's CSS" rather than to losing it.
   function readStyleSheet(text) {
     const source = String(text || '');
@@ -449,7 +449,7 @@
   }
 
   // Which kind an element is. The tag decides it wherever a tag is enough, and `data-role` decides
-  // it where one tag serves two kinds — a `<textarea>` is a multi-line text box unless it says it
+  // it where one tag serves two kinds - a `<textarea>` is a multi-line text box unless it says it
   // is the retired kind, and a `<div>` is nothing at all unless it says what it is.
   function kindOf(element) {
     const tag = element.tagName.toLowerCase();

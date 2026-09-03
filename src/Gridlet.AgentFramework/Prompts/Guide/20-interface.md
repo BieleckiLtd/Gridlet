@@ -17,8 +17,8 @@ Rows stream in progressively rather than loading all at once, and the grid is ca
 host's `MaxQueryResultRows` limit so a careless `SELECT *` cannot exhaust the browser or the
 server.
 
-The grid's `⧩ Filter` button adds conditions on a column — equals, contains, starts with, a
-comparison, or is null — and they run in the database, over every row of the table, not over the
+The grid's `⧩ Filter` button adds conditions on a column - equals, contains, starts with, a
+comparison, or is null - and they run in the database, over every row of the table, not over the
 rows already fetched. The row count reflects the filter. Several conditions combine with AND, and
 each one can be removed on its own. This is the answer to "find the row where…" without leaving the
 grid for the query editor.

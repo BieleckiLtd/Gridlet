@@ -98,7 +98,7 @@ internal sealed class GridletDatabaseAgentTools(
     /// <summary>
     /// Puts the parameter descriptions from a prompt file into the schema the model is shown.
     /// <see cref="AIFunctionFactory"/> reads those from <see cref="DescriptionAttribute"/>, which a
-    /// file cannot supply, so the generated schema is amended instead of being replaced — the
+    /// file cannot supply, so the generated schema is amended instead of being replaced - the
     /// types, requiredness, and defaults it inferred from the method all stay authoritative.
     /// </summary>
     private sealed class DescribedParameters : DelegatingAIFunction
@@ -643,7 +643,7 @@ internal sealed class GridletDatabaseAgentTools(
             },
             guidance = "Show the person the URL you called and the response body verbatim in a " +
                        "json code block. Do not tidy, reformat, or summarise away the actual " +
-                       "values — seeing the real shape is the point.",
+                       "values - seeing the real shape is the point.",
         });
     }
 

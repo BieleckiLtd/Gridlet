@@ -1080,7 +1080,7 @@ internal static partial class GridletApiEndpoints
         }
 
         // The route carries the host authorization policy, so the schema route may never open data
-        // access — neither up front nor by an access prompt answered later in the turn. API access
+        // access - neither up front nor by an access prompt answered later in the turn. API access
         // grants no direct query access, but an invoked endpoint may return rows, so it uses the
         // route carrying the same host authorization policy.
         if (mode == GridletAgentMode.Schema && (body.ShareData || body.ShareApi))

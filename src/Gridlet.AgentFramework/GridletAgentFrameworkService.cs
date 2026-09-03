@@ -121,7 +121,7 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
     /// Streams one turn. Events are produced onto a channel rather than yielded directly, because a
     /// tool call can now block while it waits for the person to answer an access prompt. A tool runs
     /// inside the provider's own streaming enumeration, so anything yielded from that loop would sit
-    /// behind the blocked call — and the prompt the person must answer to unblock it would never
+    /// behind the blocked call - and the prompt the person must answer to unblock it would never
     /// reach the browser. The producer writes from wherever it happens to be running; the consumer
     /// keeps flushing.
     /// </summary>

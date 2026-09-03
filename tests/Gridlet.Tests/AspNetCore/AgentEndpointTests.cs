@@ -351,8 +351,8 @@ public class AgentEndpointTests
     }
 
     /// <summary>
-    /// Calling a published endpoint returns rows, so the API scope is bound to the same route — and
-    /// therefore the same host authorization policy — as the data scope. The schema route may not
+    /// Calling a published endpoint returns rows, so the API scope is bound to the same route - and
+    /// therefore the same host authorization policy - as the data scope. The schema route may not
     /// open it, otherwise it would be a way to reach row values under the weaker policy.
     /// </summary>
     [Fact]

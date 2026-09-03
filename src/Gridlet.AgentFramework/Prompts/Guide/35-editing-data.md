@@ -24,15 +24,15 @@ these are the things to check in order:
 
 1. The object is a **table**. Views, procedures, and functions are read-only in the grid.
 2. The connection has **`AllowWrites` enabled**. It is on by default, but a developer may have
-   turned it off for this connection — `describe_gridlet_deployment` reports which.
+   turned it off for this connection - `describe_gridlet_deployment` reports which.
 3. Gridlet can **identify a single row**. It uses the primary key when there is one. Without one it
    falls back to a unique key over non-nullable columns on SQL Server, and to the `rowid` on SQLite,
-   so heaps and rowid tables are editable too. A table where none of those exist — a SQL Server heap
-   with no unique key, or a WITHOUT ROWID table with no usable primary key — gets a read-only grid
+   so heaps and rowid tables are editable too. A table where none of those exist - a SQL Server heap
+   with no unique key, or a WITHOUT ROWID table with no usable primary key - gets a read-only grid
    even when writes are allowed. Adding a primary key is a designer or DDL change.
 
 The SQL editor is the other route, and the one to use when the change is not a handful of rows a
-person can point at — a conditional update across many rows, a delete driven by a subquery, or
+person can point at - a conditional update across many rows, a delete driven by a subquery, or
 anything they want to keep and re-run. It runs whatever it is given on any connection where SQL
 execution is enabled, including statements that change or destroy data, so a statement offered for
 that editor carries the responsibilities described in your instructions: a `WHERE` clause, a plain

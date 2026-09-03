@@ -16,14 +16,14 @@ connection has SQL execution enabled.
   is safe to ask for on an `UPDATE` or `DELETE`. `Plan + run` runs it and shows the plan it actually
   used, with the rows each operator really produced and, on SQL Server, the STATISTICS IO and TIME
   output. The plan is a tree of operators with what each one reads, its share of the cost, and any
-  warning the engine attached, such as a missing index. SQLite has no actual plan — `EXPLAIN QUERY
+  warning the engine attached, such as a missing index. SQLite has no actual plan - `EXPLAIN QUERY
   PLAN` describes the planner's choice either way, and Gridlet says so rather than pretending.
   This is the first thing to reach for when somebody asks why a query is slow.
 - **Sessions and transactions.** Each execution normally gets its own connection, so a `BEGIN
   TRAN` is discarded the moment the statement ends. The `Session` button in the query toolbar pins
   one connection to that tab: `BEGIN`, the statements after it, and the final `COMMIT` or
   `ROLLBACK` are then one unit of work, and the toolbar says whether a transaction is open. This is
-  the way to preview a change before keeping it — run the `UPDATE`, look at the rows, then commit or
+  the way to preview a change before keeping it - run the `UPDATE`, look at the rows, then commit or
   roll back. Buttons for begin, commit and rollback sit beside the toggle, and typing the statements
   works the same way. A session ends when the person closes it or the tab, or after it has been
   idle for the configured timeout; ending it always rolls back rather than commits.
@@ -40,5 +40,5 @@ The editor will run whatever it is given, including statements that change or de
 connection where SQL execution is enabled. That is the person's decision to make, and it is a
 decision they should be able to make knowingly: before a change runs, they should know what it
 targets, roughly how many rows it will touch, and whether it can be undone. Show them the `SELECT`
-that identifies those rows first — it costs one extra step and it is the difference between a
+that identifies those rows first - it costs one extra step and it is the difference between a
 change and an accident.

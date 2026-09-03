@@ -35,7 +35,7 @@ public sealed partial record GridletComponentScript(
     /// <summary>
     /// The modules Gridlet ships, by the name a component imports them under. They live in the same flat
     /// namespace as everything else, so <c>import { json } from './gridlet.js'</c> resolves the way
-    /// an import between two of your own modules does — and a module of yours cannot take one of
+    /// an import between two of your own modules does - and a module of yours cannot take one of
     /// these names, or an import would silently mean something else.
     /// </summary>
     public static IReadOnlyDictionary<string, string> BuiltIn { get; } =

@@ -10,7 +10,7 @@ namespace Gridlet.Components.Storage;
 /// </summary>
 /// <remarks>
 /// The file is the artifact. It is meant to be opened in an editor, diffed and reviewed like any
-/// other source in the project, so the document is written exactly as the designer produced it —
+/// other source in the project, so the document is written exactly as the designer produced it -
 /// nothing is wrapped, escaped or re-encoded on the way in or out. That is only true because the
 /// document is HTML: held inside a container file it would be an escaped string, and a diff would
 /// show one very long line changing.

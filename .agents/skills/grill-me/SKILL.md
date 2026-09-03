@@ -1,9 +1,9 @@
 ---
 name: grill-me
 description: >
-  Interview the user relentlessly about a Gridlet plan or design — a new
+  Interview the user relentlessly about a Gridlet plan or design - a new
   feature, SQL provider behavior, API shape, architecture change, or release
-  decision — one question at a time, until reaching shared understanding. Use
+  decision - one question at a time, until reaching shared understanding. Use
   when the user says "grill me", "ask me questions", "stress-test my plan", or
   wants a plan sharpened before implementation.
 ---
