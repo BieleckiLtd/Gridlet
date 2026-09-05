@@ -35,6 +35,30 @@ public sealed partial record GridletComponent(
     public const int CurrentDocumentVersion = 2;
 
     /// <summary>
+    /// Whether this component has a consumer-facing page. New components created through the
+    /// management API are embedded-only unless the caller opts in; the <c>true</c> initializer is
+    /// retained for components constructed by older custom stores that predate publication metadata.
+    /// </summary>
+    public bool Routable { get; init; } = true;
+
+    /// <summary>
+    /// Optional page route relative to the configured component-public path. When omitted, the
+    /// component id is used, preserving the legacy URL.
+    /// </summary>
+    public string? Route { get; init; }
+
+    /// <summary>Optional browser title for the consumer-facing page.</summary>
+    public string? Title { get; init; }
+
+    /// <summary>The route and title exposed to a consumer page after compatibility defaults.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string EffectiveRoute => string.IsNullOrWhiteSpace(Route) ? Id : Route;
+
+    /// <summary>The title exposed to a consumer page after compatibility defaults.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string EffectiveTitle => string.IsNullOrWhiteSpace(Title) ? Name : Title;
+
+    /// <summary>
     /// The version a document claims, or <c>null</c> when it does not claim one and so is not a
     /// component document at all.
     /// </summary>
@@ -79,6 +103,12 @@ public sealed partial record GridletComponent(
     private static partial Regex DocumentName();
 }
 
+/// <summary>Portable sidecar representation of component publication settings.</summary>
+public sealed record GridletComponentPublication(
+    bool Routable,
+    string? Route,
+    string? Title);
+
 /// <summary>
 /// Persistence for designed components. The default implementation stores one HTML file per
 /// component in a folder; replace the registration to persist elsewhere.
@@ -92,6 +122,26 @@ public interface IComponentStore
     Task<GridletComponent> SaveAsync(GridletComponent component, CancellationToken cancellationToken = default);
 
     Task<bool> DeleteAsync(string id, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Optional publication metadata persistence for custom component stores. Keeping this separate
+/// from <see cref="IComponentStore"/> means stores written against the original HTML-only contract
+/// continue to load and save documents; the default file store implements this through its adjacent
+/// sidecar file.
+/// </summary>
+public interface IComponentPublicationStore
+{
+    /// <summary>Saves metadata for an existing component.</summary>
+    Task SavePublicationAsync(
+        string componentId,
+        bool routable,
+        string? route,
+        string? title,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Deletes metadata for a component.</summary>
+    Task<bool> DeletePublicationAsync(string componentId, CancellationToken cancellationToken = default);
 }
 
 /// <summary>Host configuration for the components designer.</summary>
@@ -108,4 +158,25 @@ public sealed class GridletComponentsOptions
     /// </para>
     /// </summary>
     public string Path { get; set; } = "gridlet-components";
+
+    /// <summary>
+    /// Route prefix for consumer-facing component pages, relative to the Gridlet mount. The
+    /// default keeps the legacy <c>{mount}/components/{id}</c> URL. Multiple safe segments are
+    /// supported; an empty value maps pages directly beneath the mount.
+    /// </summary>
+    public string PublicRoutePrefix { get; set; } = "components";
+
+    /// <summary>Alias for <see cref="PublicRoutePrefix"/> for hosts that configure paths by name.</summary>
+    public string PublicPath
+    {
+        get => PublicRoutePrefix;
+        set => PublicRoutePrefix = value;
+    }
+
+    /// <summary>Alias for <see cref="PublicRoutePrefix"/>.</summary>
+    public string ComponentPublicPath
+    {
+        get => PublicRoutePrefix;
+        set => PublicRoutePrefix = value;
+    }
 }

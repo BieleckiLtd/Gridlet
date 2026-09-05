@@ -405,6 +405,13 @@ internal sealed class GridletDatabaseAgentTools(
             ? string.Empty
             : environment.BaseAddress.TrimEnd('/') + environment.MountPath;
 
+    private string PublishedApiUrl()
+        => environment is null
+            ? string.Empty
+            : environment.PublishedApiPath is { Length: > 0 } configuredPath
+                ? environment.BaseAddress.TrimEnd('/') + "/" + configuredPath.Trim('/')
+                : $"{MountUrl()}/{environment.PublishedApiSegment.Trim('/')}";
+
     private static bool TryParseScope(string? value, out GridletAgentAccessScope scope)
     {
         scope = GridletAgentAccessScope.Schema;
@@ -509,8 +516,9 @@ internal sealed class GridletDatabaseAgentTools(
                 mountPath = environment.MountPath,
                 gridletUrl = MountUrl(),
                 publishedApiSegment = environment.PublishedApiSegment,
+                publishedApiPath = environment.PublishedApiPath,
                 publishedEndpointUrlPattern =
-                    $"{MountUrl()}/{environment.PublishedApiSegment}/{{route}}",
+                    $"{PublishedApiUrl()}/{{route}}",
             },
             note = GridletPrompts.Section(
                 "Notes/deployment",
@@ -563,7 +571,7 @@ internal sealed class GridletDatabaseAgentTools(
                     endpoint.AuthorizationPolicy,
                     url = environment is null
                         ? null
-                        : $"{MountUrl()}/{environment.PublishedApiSegment}/{endpoint.Route.TrimStart('/')}",
+                        : $"{PublishedApiUrl()}/{endpoint.Route.TrimStart('/')}",
                 }).ToArray();
             },
             cancellationToken);

@@ -167,9 +167,14 @@ internal sealed class GridletPublishedEndpointInvoker(
         IReadOnlyDictionary<string, string?> query)
     {
         var request = httpContext.Request;
-        var path = string.Concat(
-            request.PathBase.ToString(), mountPath.Value,
-            "/", options.CurrentValue.PublishedApiSegment, "/", route.TrimStart('/'));
+        var configuredPath = options.CurrentValue.PublishedApiPath;
+        var path = configuredPath is { Length: > 0 }
+            ? string.Concat(
+                request.PathBase.ToString(), "/", configuredPath.Trim('/'),
+                "/", route.TrimStart('/'))
+            : string.Concat(
+                request.PathBase.ToString(), mountPath.Value,
+                "/", options.CurrentValue.PublishedApiSegment, "/", route.TrimStart('/'));
         var url = new UriBuilder(request.Scheme, request.Host.Host)
         {
             Path = path,
@@ -247,7 +252,7 @@ internal sealed class GridletPublishedEndpointInvoker(
 /// The route prefix <c>MapGridlet</c> was actually called with. It is chosen by the host at mapping
 /// time, after services are built, so it is published here rather than through options.
 /// </summary>
-internal sealed class GridletMountPath
+public sealed class GridletMountPath
 {
     /// <summary>The prefix, without a trailing slash. Defaults to the documented default.</summary>
     public string Value { get; private set; } = "/gridlet";

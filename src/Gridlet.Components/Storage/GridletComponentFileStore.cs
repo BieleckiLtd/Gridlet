@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -20,7 +21,7 @@ namespace Gridlet.Components.Storage;
 /// modified time is the file's own.
 /// </para>
 /// </remarks>
-internal sealed partial class GridletComponentFileStore : IComponentStore
+internal sealed partial class GridletComponentFileStore : IComponentStore, IComponentPublicationStore
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly string _directory;
@@ -106,10 +107,14 @@ internal sealed partial class GridletComponentFileStore : IComponentStore
             var path = PathFor(component.Id);
 
             // Written beside the target and moved into place, so a crash mid-write cannot leave a
-            // half-written document where a working component used to be.
+            // half-written document where a working component used to be. Metadata lives in its
+            // own sidecar so the HTML remains portable and hand-editable.
             var temporary = path + ".tmp";
             await File.WriteAllTextAsync(temporary, component.Html, cancellationToken);
             File.Move(temporary, path, overwrite: true);
+
+            await WritePublicationAsync(
+                component.Id, component.Routable, component.Route, component.Title, cancellationToken);
 
             return component with { UpdatedAtUtc = File.GetLastWriteTimeUtc(path) };
         }
@@ -130,13 +135,19 @@ internal sealed partial class GridletComponentFileStore : IComponentStore
         try
         {
             var path = PathFor(id);
-            if (!File.Exists(path))
+            var existed = File.Exists(path);
+            if (existed)
             {
-                return false;
+                File.Delete(path);
             }
 
-            File.Delete(path);
-            return true;
+            var metadata = PublicationPathFor(id);
+            if (File.Exists(metadata))
+            {
+                File.Delete(metadata);
+            }
+
+            return existed;
         }
         finally
         {
@@ -155,14 +166,141 @@ internal sealed partial class GridletComponentFileStore : IComponentStore
             return null;
         }
 
+        var publication = await ReadPublicationAsync(id, cancellationToken);
         return new GridletComponent(
             id,
             GridletComponent.NameOf(html) is { Length: > 0 } name ? name : id,
             html,
-            File.GetLastWriteTimeUtc(path));
+            File.GetLastWriteTimeUtc(path))
+        {
+            // A missing sidecar is an old component. Keep its legacy page available, while every
+            // newly-created component gets an explicit embedded-only sidecar on its first save.
+            Routable = publication?.Routable ?? true,
+            Route = publication?.Route,
+            Title = publication?.Title,
+        };
+    }
+
+    public async Task SavePublicationAsync(
+        string componentId,
+        bool routable,
+        string? route,
+        string? title,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsValidId(componentId))
+        {
+            throw new ArgumentException($"'{componentId}' is not a usable component id.", nameof(componentId));
+        }
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            await WritePublicationAsync(componentId, routable, route, title, cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<bool> DeletePublicationAsync(
+        string componentId, CancellationToken cancellationToken = default)
+    {
+        if (!IsValidId(componentId))
+        {
+            return false;
+        }
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var path = PublicationPathFor(componentId);
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            File.Delete(path);
+            return true;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task WritePublicationAsync(
+        string componentId,
+        bool routable,
+        string? route,
+        string? title,
+        CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(_directory);
+        var path = PublicationPathFor(componentId);
+        var temporary = path + ".tmp";
+        var json = JsonSerializer.Serialize(
+            new GridletComponentPublication(routable, route, title),
+            JsonSerializerOptions.Web);
+        // Publication values are validated at the endpoint boundary. This final bound protects
+        // direct/custom callers from accidentally turning a sidecar into an unbounded write.
+        if (json.Length > 4096)
+        {
+            throw new ArgumentException("Component publication metadata is too large.");
+        }
+
+        await File.WriteAllTextAsync(temporary, json, cancellationToken);
+        File.Move(temporary, path, overwrite: true);
+    }
+
+    private async Task<GridletComponentPublication?> ReadPublicationAsync(
+        string componentId, CancellationToken cancellationToken)
+    {
+        var path = PublicationPathFor(componentId);
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        // Never deserialize an unbounded sidecar supplied by an editor or another process. The
+        // writer caps the JSON at 4096 characters, and an oversized file is treated as damaged
+        // metadata while the portable HTML remains available.
+        if (new FileInfo(path).Length > 4096)
+        {
+            return null;
+        }
+
+        try
+        {
+            await using var stream = File.OpenRead(path);
+            var publication = await JsonSerializer.DeserializeAsync<GridletComponentPublication>(
+                stream, JsonSerializerOptions.Web, cancellationToken);
+            if (publication is null)
+            {
+                return null;
+            }
+
+            var route = string.IsNullOrWhiteSpace(publication.Route)
+                ? null
+                : GridletRoutePath.TryNormalize(publication.Route, out var normalized)
+                    ? normalized
+                    : null;
+            var title = publication.Title is { Length: <= 256 } ? publication.Title : null;
+            return publication with { Route = route, Title = title };
+        }
+        catch (JsonException)
+        {
+            // A damaged sidecar must not make an otherwise portable HTML document disappear. It
+            // falls back to the compatibility behavior and is repaired by the next save.
+            return null;
+        }
     }
 
     private string PathFor(string id) => System.IO.Path.Combine(_directory, id + ".html");
+
+    private string PublicationPathFor(string id)
+        => System.IO.Path.Combine(_directory, id + ".publication.json");
 
     // The id is a file name, so it is held to what a file name may safely be: no directories, no
     // traversal, nothing that means something to a path or a URL.

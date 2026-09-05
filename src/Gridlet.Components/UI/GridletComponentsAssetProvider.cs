@@ -24,7 +24,14 @@ internal sealed class GridletComponentsAssetProvider : IGridletUiAssetProvider
     /// <summary>The standalone component viewer uses this without loading it into the designer shell.</summary>
     public string RuntimeScript => "runtime.js";
 
-    public IReadOnlyList<string> Styles { get; } = ["designer.css"];
+    // component.css first: it declares the layer order everything else is written against, and a
+    // layer named for the first time later would be added at the end of that order rather than in
+    // its place. It is also the one stylesheet the standalone runtime links, so a rule that paints
+    // a component is written once and cannot say two different things in two places.
+    public IReadOnlyList<string> Styles { get; } = ["component.css", "designer.css"];
+
+    /// <summary>The stylesheet that paints a component, shared by the designer and the viewer.</summary>
+    public string ComponentStylesheet => "component.css";
 
     public Stream? Open(string relativePath)
     {

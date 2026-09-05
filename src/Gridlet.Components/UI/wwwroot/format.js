@@ -23,6 +23,57 @@
 
   const SCHEMA = 2;
 
+  // Root dimensions are authored CSS sizes. Controls remain pixel geometry because the designer
+  // positions them on a fixed coordinate plane, but a component itself may fill its parent or
+  // viewport. Keep this grammar deliberately small: no URLs, variables, strings or declarations
+  // can cross the document boundary, while the useful responsive units and bounded math remain.
+  const CSS_SIZE_UNIT = '(?:px|%|em|rem|ch|vw|vh|vmin|vmax|vi|vb|svw|svh|lvw|lvh|dvw|dvh)';
+  const CSS_SIZE_TERM = `(?:0|(?:\\d+(?:\\.\\d+)?|\\.\\d+)${CSS_SIZE_UNIT})`;
+  // `auto` is one way a component says "as wide as what I am in, less my own margin"; see
+  // `fillingCssSize` for the other, which is what `100%` is taken to mean.
+  const CSS_SIZE = new RegExp(
+    `^(?:auto|${CSS_SIZE_TERM}|(?:calc|min|max|clamp)\\(\\s*[0-9a-zA-Z %+*/().-]+\\s*\\))$`, 'i');
+
+  function cssSize(value, fallback = '0px') {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return `${Math.max(0, value)}px`;
+    }
+    const text = String(value ?? '').trim();
+    // Legacy editors accepted a bare non-negative number. Treat it as pixels while storing the
+    // explicit unit so old documents and existing keyboard workflows keep their meaning.
+    if (/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(text)) return `${Number(text)}px`;
+    if (!text || /[;{}<>\[\]"'\\]/.test(text)
+      || /(?:url|var|expression|javascript)\s*\(/i.test(text)
+      || !CSS_SIZE.test(text)
+      || (typeof CSS !== 'undefined' && CSS.supports && !CSS.supports('width', text))) return fallback;
+    return text;
+  }
+
+  // What a component means when it says it fills its container: as wide, or as tall, as the space
+  // it is in, less its own margin. A percentage cannot say that. `100%` resolves against the
+  // container and the margin is then added on top of it, so a component that fills and keeps a
+  // margin overflows by exactly its margin - a scrollbar under content that fits, which is what
+  // an operator sees and reports as a bug rather than as arithmetic.
+  //
+  // `stretch` is the keyword for the size that is meant. It is recent, so the older spelling of
+  // the same idea is used where it is not known, and a browser that knows neither keeps the
+  // percentage it was given.
+  const FILL_SIZE = (() => {
+    if (typeof CSS === 'undefined' || !CSS.supports) return '100%';
+    for (const candidate of ['stretch', '-webkit-fill-available', '-moz-available']) {
+      if (CSS.supports('width', candidate)) return candidate;
+    }
+    return '100%';
+  })();
+
+  // A root size as it is written into the CSS that paints the component. Authored `100%` is stored
+  // as `100%` - it is what the operator typed and what the panel shows - and only becomes the
+  // filling size at the point where it is applied to an element.
+  const fillingCssSize = (value, fallback = '0px') => {
+    const size = cssSize(value, fallback);
+    return size === '100%' ? FILL_SIZE : size;
+  };
+
   // The kinds, by the markup each one is. A kind is recognised on the way in by its tag and, where
   // one tag serves two kinds, by `data-role`. Everything else about a control is read off the
   // element the way a browser would read it, which is the point of the format.
@@ -57,10 +108,88 @@
     ['data-color-dark', 'dark', 'text'],
     ['data-fill-light', 'light', 'background'],
     ['data-fill-dark', 'dark', 'background'],
+    ['data-border-light', 'light', 'border'],
+    ['data-border-dark', 'dark', 'border'],
+  ];
+
+  // The component's own box, written as the CSS it is. These do not vary with the theme - only the
+  // border's colour does, and that is a colour like any other - so they live in the style attribute
+  // beside the width and height rather than as attributes of their own to learn.
+  const BOX = [
+    ['borderWidth', 'border-width'],
+    ['borderStyle', 'border-style'],
+    ['borderRadius', 'border-radius'],
+    ['padding', 'padding'],
+    ['margin', 'margin'],
   ];
 
   const px = (value) => `${Math.round(Number(value) || 0)}px`;
   const unpx = (value) => Math.round(parseFloat(value) || 0);
+  // Keep this grammar identical to the designer, runtime and server: every slash separates two
+  // non-empty route segments. The first starts with an ASCII letter or digit for compatibility;
+  // later segments may also begin with '_' or '-', as older published routes allowed.
+  const PUBLISHED_ROUTE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]*)(?:\/[A-Za-z0-9_-]+)*$/;
+  const PUBLISHED_SEGMENT = /^[A-Za-z0-9._-]+$/;
+  const PARAMETER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  const ACTION_NAMES = new Set(['add', 'update', 'delete']);
+
+  function normalizeActionIdentifier(value) {
+    const operation = String(value ?? '').trim().toLowerCase();
+    return ACTION_NAMES.has(operation) ? operation : '';
+  }
+
+  function normalizePublishedRoute(value) {
+    const route = String(value ?? '').trim().replace(/^\/+|\/+$/g, '');
+    if (!PUBLISHED_ROUTE.test(route)) throw new Error('The published route is unsafe or malformed.');
+    return route;
+  }
+
+  function typedLiteral(value, type, context) {
+    if (type === null) return value;
+    const kind = type.trim().toLowerCase();
+    if (kind === 'boolean') {
+      if (value.toLowerCase() === 'true') return true;
+      if (value.toLowerCase() === 'false') return false;
+      throw new Error(`${context} must be true or false.`);
+    }
+    if (kind === 'number' || kind === 'integer') {
+      if (!value.trim()) throw new Error(`${context} must be a finite ${kind}.`);
+      const number = Number(value);
+      if (!Number.isFinite(number) || (kind === 'integer' && !Number.isInteger(number))) {
+        throw new Error(`${context} must be a finite ${kind}.`);
+      }
+      return number;
+    }
+    throw new Error(`${context} has an unsupported type.`);
+  }
+
+  function actionParameter(parameter, operation) {
+    const name = parameter.getAttribute('name');
+    if (!name || !PARAMETER_NAME.test(name)) {
+      throw new Error(`${operation} action has an invalid parameter name.`);
+    }
+    const hasControl = parameter.hasAttribute('control');
+    const hasValue = parameter.hasAttribute('value');
+    const hasNull = parameter.hasAttribute('null');
+    if (Number(hasControl) + Number(hasValue) + Number(hasNull) !== 1) {
+      throw new Error(`${operation} action parameter '${name}' must have exactly one mapping.`);
+    }
+    if (hasControl) {
+      const control = parameter.getAttribute('control') || '';
+      if (!control.trim()) throw new Error(`${operation} action parameter '${name}' has an empty control mapping.`);
+      return { name, mapping: { control } };
+    }
+    if (hasNull) return { name, mapping: { value: null } };
+    return {
+      name,
+      mapping: {
+        value: typedLiteral(
+          parameter.getAttribute('value') ?? '',
+          parameter.getAttribute('data-type'),
+          `${operation} action parameter '${name}'`,),
+      },
+    };
+  }
 
   // ---- writing --------------------------------------------------------------
 
@@ -75,8 +204,12 @@
     root.setAttribute('data-gridlet', String(SCHEMA));
     root.setAttribute('data-name', name || 'component');
     root.setAttribute('data-layout', doc.layout || 'free');
-    root.style.width = px(doc.width);
-    root.style.height = px(doc.height);
+    root.style.width = cssSize(doc.width, '720px');
+    root.style.height = cssSize(doc.height, '460px');
+    for (const [key, property] of BOX) {
+      const value = (doc[key] ?? '').trim();
+      if (value) root.style.setProperty(property, value);
+    }
 
     // Only what is on gets written. A document full of `data-isolated="false"` reads as a list of
     // settings; a document that mentions isolation only when it is isolated reads as a component.
@@ -120,7 +253,7 @@
     // does.
     if (doc.source && doc.source.route) {
       const source = document.createElement('gridlet-source');
-      source.setAttribute('href', doc.source.route);
+      source.setAttribute('href', normalizePublishedRoute(doc.source.route));
       for (const [key, value] of Object.entries(doc.source.parameters || {})) {
         if (value !== '' && value !== null && value !== undefined) {
           const parameter = document.createElement('param');
@@ -130,6 +263,40 @@
         }
       }
       root.append(source);
+    }
+
+    // Writes are declarations of published endpoints, never inferred from the data source. Each
+    // operation carries its own HTTP method and route, and every parameter says whether it comes
+    // from a named control or is a literal value. Keeping these as sibling elements makes a saved
+    // document readable and prevents a GET source from becoming a write merely because a button
+    // happens to be nearby.
+    for (const operation of ['add', 'update', 'delete']) {
+      const action = doc.actions?.[operation];
+      if (!action?.route || !action.method) continue;
+      const declaration = document.createElement('gridlet-action');
+      declaration.setAttribute('name', operation);
+      declaration.setAttribute('method', action.method);
+      declaration.setAttribute('href', normalizePublishedRoute(action.route));
+      for (const [name, mapping] of Object.entries(action.parameters || {})) {
+        if (!mapping || typeof mapping !== 'object') continue;
+        const parameter = document.createElement('param');
+        parameter.setAttribute('name', name);
+        if (typeof mapping.control === 'string' && mapping.control.trim()) {
+          parameter.setAttribute('control', mapping.control);
+        } else if (Object.hasOwn(mapping, 'value')) {
+          if (mapping.value === null) parameter.setAttribute('null', '');
+          else {
+            parameter.setAttribute('value', String(mapping.value));
+            if (typeof mapping.value !== 'string') parameter.setAttribute('data-type', typeof mapping.value);
+          }
+        } else {
+          // An unmapped parameter is deliberately not written. A declaration without an explicit
+          // mapping must fail closed rather than silently submitting an invented value.
+          continue;
+        }
+        declaration.append(parameter);
+      }
+      root.append(declaration);
     }
 
     const styles = styleSheetFor(doc);
@@ -232,6 +399,7 @@
         const button = document.createElement('button');
         button.setAttribute('type', 'button');
         button.textContent = props.text ?? '';
+        if (props.action) button.setAttribute('data-action', props.action);
         return button;
       }
       case 'pager': {
@@ -342,13 +510,16 @@
 
     const doc = {
       layout: root.getAttribute('data-layout') || 'free',
-      width: unpx(root.style.width) || 720,
-      height: unpx(root.style.height) || 460,
+      // Numbers in old files were always pixels. Preserve a valid authored CSS value verbatim;
+      // invalid hand edits fall back to the legacy canvas size instead of entering the stylesheet.
+      width: cssSize(root.style.width, '720px'),
+      height: cssSize(root.style.height, '460px'),
       css: '',
       showScrollbars: root.hasAttribute('data-scrollbars'),
       resizable: root.hasAttribute('data-resizable'),
       isolated: root.hasAttribute('data-isolated'),
       source: null,
+      actions: {},
       elementId: root.id || '',
       classes: root.getAttribute('class') || '',
       tip: root.getAttribute('title') || '',
@@ -357,6 +528,8 @@
       events: readHandlers(root),
       modules: [],
       controls: [],
+      ...Object.fromEntries(BOX.map(([key, property]) =>
+        [key, root.style.getPropertyValue(property).trim()])),
     };
 
     for (const code of root.querySelectorAll(':scope > gridlet-code[src]')) {
@@ -374,7 +547,31 @@
       for (const parameter of source.querySelectorAll(':scope > param[name]')) {
         parameters[parameter.getAttribute('name')] = parameter.getAttribute('value') || '';
       }
-      doc.source = { route: source.getAttribute('href'), parameters };
+      doc.source = { route: normalizePublishedRoute(source.getAttribute('href')), parameters };
+    }
+
+    for (const declaration of root.querySelectorAll(':scope > gridlet-action')) {
+      const operation = normalizeActionIdentifier(declaration.getAttribute('name'));
+      if (!operation) continue;
+      if (Object.hasOwn(doc.actions, operation)) {
+        throw new Error(`${operation} action is declared more than once.`);
+      }
+      const method = declaration.getAttribute('method');
+      const href = declaration.getAttribute('href');
+      if (!method || !href) throw new Error(`${operation} action needs a method and published route.`);
+      const parameters = Object.create(null);
+      for (const parameter of declaration.querySelectorAll(':scope > param')) {
+        const parsed = actionParameter(parameter, operation);
+        if (Object.keys(parameters).some((name) => name.toLowerCase() === parsed.name.toLowerCase())) {
+          throw new Error(`${operation} action parameter '${parsed.name}' is declared more than once.`);
+        }
+        parameters[parsed.name] = parsed.mapping;
+      }
+      doc.actions[operation] = {
+        route: normalizePublishedRoute(href),
+        method: method.toUpperCase(),
+        parameters,
+      };
     }
 
     const sheet = root.querySelector(':scope > style');
@@ -385,6 +582,19 @@
       const control = readControl(child, sections.byControl);
       if (control) doc.controls.push(control);
     }
+
+    // A button's action is only meaningful when its sibling declaration exists. Preserve the
+    // authored name as a non-serialized diagnostic so the designer can show an explicit invalid
+    // state, but clear the executable property immediately: saving and reopening this document must
+    // not leave a latent binding that springs back to life if somebody later adds a declaration.
+    walk(doc.controls, (control) => {
+      if (control.type !== 'button') return;
+      const authored = String(control.props?.action || '').trim();
+      const operation = normalizeActionIdentifier(authored);
+      if (!authored || (operation && Object.hasOwn(doc.actions, operation))) return;
+      control.invalidAction = authored;
+      control.props.action = '';
+    });
     return doc;
   }
 
@@ -456,7 +666,7 @@
     const role = element.getAttribute('data-role');
     // The document's own furniture: not controls, and never mistaken for one.
     if (tag === 'link' || tag === 'style' || tag === 'param') return null;
-    if (tag === 'gridlet-source' || tag === 'gridlet-code') return null;
+    if (tag === 'gridlet-source' || tag === 'gridlet-code' || tag === 'gridlet-action') return null;
     if (role && KINDS[role]) return role;
     switch (tag) {
       case 'textarea': return 'textbox';
@@ -491,7 +701,7 @@
             .map((option) => option.textContent).join('\n'),
         };
       case 'button':
-        return { text: element.textContent ?? '' };
+        return { text: element.textContent ?? '', action: element.getAttribute('data-action') || '' };
       case 'pager':
         return {
           edges: element.hasAttribute('data-edges'),
@@ -515,7 +725,10 @@
   }
 
   function readColors(element) {
-    const colors = { light: { text: '', background: '' }, dark: { text: '', background: '' } };
+    const colors = {
+      light: { text: '', background: '', border: '' },
+      dark: { text: '', background: '', border: '' },
+    };
     for (const [attribute, theme, slot] of COLORS) {
       colors[theme][slot] = element.getAttribute(attribute) || '';
     }
@@ -601,5 +814,5 @@
   const escapeText = (value) => String(value)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  window.GridletComponentFormat = { SCHEMA, toHtml, fromHtml };
+  window.GridletComponentFormat = { SCHEMA, toHtml, fromHtml, cssSize, fillingCssSize, isCssSize: (value) => cssSize(value, '') === String(value ?? '').trim() };
 })();

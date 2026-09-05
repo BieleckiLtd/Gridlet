@@ -77,6 +77,16 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GotoAsync("/gridlet/");
 
         await Assertions.Expect(page.Locator("#diagram-btn")).ToHaveCountAsync(0);
+        // The sidebar builds its sections once the workspace has loaded. Read the row after the two
+        // sections this is about are in it: an empty tree puts both of them nowhere, and nowhere is
+        // one position before nowhere, which is a comparison that passes for the wrong reason as
+        // easily as it fails.
+        foreach (var section in new[] { "Triggers", "Diagrams" })
+        {
+            await Assertions.Expect(page.Locator("#tree > details > summary")
+                .Filter(new() { HasTextString = section })).ToBeAttachedAsync();
+        }
+
         var sidebarSections = await page.Locator("#tree > details > summary")
             .EvaluateAllAsync<string[]>("summaries => summaries.map(summary => summary.firstChild.textContent.trim())");
         Assert.Equal(Array.IndexOf(sidebarSections, "Triggers") + 1,
@@ -4321,6 +4331,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.Locator("html")).ToHaveAttributeAsync("data-theme", "light");
         var themeButton = page.Locator("#theme-btn");
         await Assertions.Expect(themeButton).ToHaveAttributeAsync("aria-label", "Switch to dark theme");
+        // The topbar puts a placeholder in the row for each button it can move into the overflow
+        // menu, and it does that on its own layout pass. Both have to be there before their order
+        // means anything: reading the row too early finds one of them missing and compares against
+        // a position that does not exist.
+        await Assertions.Expect(page.Locator("[data-overflow-for='theme-btn']")).ToBeAttachedAsync();
+        await Assertions.Expect(page.Locator("[data-overflow-for='apis-btn']")).ToBeAttachedAsync();
         Assert.True(await page.EvaluateAsync<bool>("""
             () => {
                 const children = [...document.querySelector('#topbar').children];

@@ -90,13 +90,18 @@
   --privacy: #c65a16;
 }
 
-* { box-sizing: border-box; scrollbar-color: var(--scroll-thumb) var(--panel); scrollbar-width: thin; }
+* { box-sizing: border-box; }
 
-*::-webkit-scrollbar { width: 10px; height: 10px; }
-*::-webkit-scrollbar-track { background: var(--panel); }
-*::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border: 2px solid var(--panel); border-radius: 8px; }
-*::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
-*::-webkit-scrollbar-corner { background: var(--panel); }
+/* Scrollbars are chrome like any other, and a component canvas gets its own in the `gridlet-chrome`
+   layer so an isolated component can be left the browser's. A scrollbar the workspace styled here
+   would reach into the canvas and make the same grid 5px wider in Preview than on its public page. */
+*:not(:where(.gfd-canvas, .gfd-canvas *)) { scrollbar-color: var(--scroll-thumb) var(--panel); scrollbar-width: thin; }
+
+*:not(:where(.gfd-canvas, .gfd-canvas *))::-webkit-scrollbar { width: 10px; height: 10px; }
+*:not(:where(.gfd-canvas, .gfd-canvas *))::-webkit-scrollbar-track { background: var(--panel); }
+*:not(:where(.gfd-canvas, .gfd-canvas *))::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border: 2px solid var(--panel); border-radius: 8px; }
+*:not(:where(.gfd-canvas, .gfd-canvas *))::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
+*:not(:where(.gfd-canvas, .gfd-canvas *))::-webkit-scrollbar-corner { background: var(--panel); }
 
 html, body {
   margin: 0;
@@ -220,7 +225,11 @@ html, body {
 }
 .select-option[aria-disabled="true"] { opacity: 0.45; cursor: default; }
 
-select, input, textarea {
+/* A component canvas paints itself. The designer restates the chrome below inside the `gridlet`
+   layer, where an isolated component's reset can take it back off again; leaving these unlayered
+   rules to reach into a canvas is what made Preview ignore isolation while the published page
+   applied it. `:where()` keeps the guard weightless, so nothing outside a canvas moves. */
+select:not(:where(.gfd-canvas *)), input:not(:where(.gfd-canvas *)), textarea:not(:where(.gfd-canvas *)) {
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border);
@@ -230,12 +239,12 @@ select, input, textarea {
   font-size: 13px;
 }
 
-input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
-input[type="checkbox"] { accent-color: var(--accent); }
+input:not(:where(.gfd-canvas *))::placeholder, textarea:not(:where(.gfd-canvas *))::placeholder { color: var(--muted); opacity: 1; }
+input[type="checkbox"]:not(:where(.gfd-canvas *)) { accent-color: var(--accent); }
 
-select:focus, input:focus, textarea:focus, button:focus-visible { outline: 1px solid var(--accent); outline-offset: 0; }
+select:not(:where(.gfd-canvas *)):focus, input:not(:where(.gfd-canvas *)):focus, textarea:not(:where(.gfd-canvas *)):focus, button:not(:where(.gfd-canvas *)):focus-visible { outline: 1px solid var(--accent); outline-offset: 0; }
 
-button {
+button:not(:where(.gfd-canvas *)) {
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border);
@@ -246,8 +255,8 @@ button {
   cursor: pointer;
 }
 
-button:hover { border-color: var(--accent-dim); }
-button:disabled { opacity: 0.4; cursor: default; }
+button:not(:where(.gfd-canvas *)):hover { border-color: var(--accent-dim); }
+button:not(:where(.gfd-canvas *)):disabled { opacity: 0.4; cursor: default; }
 button.primary { background: var(--accent-dim); border-color: var(--accent-dim); }
 button.primary:hover { background: var(--primary-hover); }
 button.ghost { background: transparent; }
@@ -493,7 +502,30 @@ button.ghost { background: transparent; }
 }
 
 .tree-item:hover { background: var(--panel-2); }
-.item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-item-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.tree-item-action:hover,
+.tree-item-action:focus-visible { color: var(--text); background: var(--panel-2); }
+.tree-item-action-icon {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 
 .badge {
   flex: none;
@@ -527,6 +559,10 @@ button.ghost { background: transparent; }
    a letter colour that a database object type already uses. */
 .badge-module { width: auto; min-width: 17px; padding: 0 3px; background: #3d3a52; color: #c3bbe8; }
 
+/* A stylesheet among the modules. It is the one file in Code that is not JavaScript, so it does not
+   wear the module tone: a glance at the list should say which of them is the odd one. */
+.badge-stylesheet { width: auto; min-width: 17px; padding: 0 3px; background: #4d4326; color: #f0cf7a; }
+
 :root[data-theme="light"] .badge-T { background: #dcefe3; color: #23663c; }
 :root[data-theme="light"] .badge-V { background: #dce8fa; color: #285b9f; }
 :root[data-theme="light"] .badge-P { background: #f6e8d8; color: #8b5319; }
@@ -543,6 +579,7 @@ button.ghost { background: transparent; }
 :root[data-theme="light"] .badge-I { background: #eee3e3; color: #704848; }
 :root[data-theme="light"] .badge-VT { background: #d8eef1; color: #246674; }
 :root[data-theme="light"] .badge-module { background: #e6e4f2; color: #4b4470; }
+:root[data-theme="light"] .badge-stylesheet { background: #f7ecd2; color: #7a5c14; }
 
 /* ---- content / tabs ---- */
 #content { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; overflow: hidden; }
@@ -1030,9 +1067,9 @@ button.ghost { background: transparent; }
 .data-grid tbody tr.virtual-spacer { height: 0; }
 .virtual-spacer td { padding: 0 !important; border: 0 !important; }
 
-table.grid { border-collapse: collapse; width: max-content; min-width: 100%; font-size: 13px; }
+table.grid:not(:where(.gfd-canvas *)) { border-collapse: collapse; width: max-content; min-width: 100%; font-size: 13px; }
 
-table.grid th, table.grid td {
+table.grid:not(:where(.gfd-canvas *)) th, table.grid:not(:where(.gfd-canvas *)) td {
   padding: 3px 7px;
   text-align: left;
   border-bottom: 1px solid var(--border);
@@ -1042,7 +1079,7 @@ table.grid th, table.grid td {
   white-space: nowrap;
 }
 
-table.grid th {
+table.grid:not(:where(.gfd-canvas *)) th {
   position: sticky;
   top: 0;
   background: var(--panel-2);
@@ -1052,14 +1089,14 @@ table.grid th {
 
 table.grid th.sortable { cursor: pointer; user-select: none; }
 table.grid th.sortable:hover { color: var(--accent); }
-.coltype { display: block; font-size: 10.5px; font-weight: 400; color: var(--muted); font-family: var(--mono); }
+.coltype:not(:where(.gfd-canvas *)) { display: block; font-size: 10.5px; font-weight: 400; color: var(--muted); font-family: var(--mono); }
 .sort-arrow { color: var(--accent); }
 
-table.grid tbody tr:hover { background: rgba(79, 140, 255, 0.06); }
-table.grid td { font-family: var(--mono); font-size: 12.5px; }
-.data-grid { outline: none; }
-.data-grid tbody tr { height: 27px; }
-.data-grid tbody td { height: 27px; }
+table.grid:not(:where(.gfd-canvas *)) tbody tr:hover { background: rgba(79, 140, 255, 0.06); }
+table.grid:not(:where(.gfd-canvas *)) td { font-family: var(--mono); font-size: 12.5px; }
+.data-grid:not(:where(.gfd-canvas *)) { outline: none; }
+.data-grid:not(:where(.gfd-canvas *)) tbody tr { height: 27px; }
+.data-grid:not(:where(.gfd-canvas *)) tbody td { height: 27px; }
 .data-grid tbody tr.selected { background: rgba(79, 140, 255, 0.14); }
 .data-grid tbody tr.selected:hover { background: rgba(79, 140, 255, 0.18); }
 .data-grid .row-selector {
@@ -2836,9 +2873,9 @@ button.danger { background: var(--danger-button); border-color: var(--danger-but
 button.danger:hover { background: var(--danger-button-hover); border-color: var(--danger-button-border-hover); }
 
 /* ---- column resizing ---- */
-table.grid th { position: sticky; }
+table.grid:not(:where(.gfd-canvas *)) th { position: sticky; }
 
-.col-grip {
+.col-grip:not(:where(.gfd-canvas *)) {
   position: absolute;
   top: 0;
   right: -4px;
@@ -2848,7 +2885,7 @@ table.grid th { position: sticky; }
   z-index: 3;
 }
 
-.col-grip:hover { background: var(--accent-dim); }
+.col-grip:not(:where(.gfd-canvas *)):hover { background: var(--accent-dim); }
 
 /* ---- inline row / structure actions ---- */
 .mini-btn {

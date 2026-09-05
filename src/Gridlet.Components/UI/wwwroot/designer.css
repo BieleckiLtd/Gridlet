@@ -1,3 +1,72 @@
+/* Layer order for everything a component canvas is painted with, lowest first. This statement has to
+   be the document's first mention of these names: a layer named for the first time later is added
+   at the end of the order, which would make the reset the strongest thing on the page instead of
+   the weakest.
+
+   A component is a styling root: the top-level one, and every component that asks to be isolated.
+   A root gets `gridlet-reset` - `all: revert`, so it starts from the browser's own styling and
+   inherits nothing from what surrounds it - and then `gridlet-chrome`, the basic style, and
+   `gridlet`, each control kind's defaults. Those cascade down through the root's own controls and
+   through any component nested inside it, until a nested component asks to be isolated in its turn
+   and the same thing happens again from there.
+
+   Isolating is therefore a boundary against what surrounds a component, not a way to have no
+   appearance: an isolated component looks like a Gridlet component, it just does not inherit one.
+   The component's own CSS is unlayered and beats all three layers. */
+/* Declared in component.css, which loads first. Repeated here so this file reads on its own; the
+   two statements agree, and the first mention is what fixes the order. */
+@layer gridlet-reset, gridlet-chrome, gridlet;
+
+
+
+/* A component's scrollbars: slim, over a track the component shows through. They belong to the
+   component's own frame rather than to the controls inside it, so an isolated component keeps them
+   - isolating hands the primitives back to the browser, not the box they sit in. That is why this
+   is the one rule in the chrome layer with no isolation guard on it.
+
+   It has to be above the reset rather than in it: `scrollbar-width` is not inherited, so `all:
+   revert` on a control would put it back to `auto` from a rule of higher specificity in the same
+   layer. Stating it here is also what stops a canvas taking the workspace's scrollbars from the
+   page around it, `scrollbar-color` being inherited. The component's own CSS is unlayered and
+   still wins.
+
+   Standard properties alone - a browser that is told scrollbar-color ignores the -webkit- pseudo
+   elements entirely, so keeping both would only be two ways to say one thing. */
+@layer gridlet-chrome {
+  .gfd-canvas,
+  .gfd-canvas * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) transparent;
+  }
+
+  /* No bounce, no glow, and no scroll that carries on past the end of what is being scrolled. A
+     component is a surface with an edge, and one that keeps moving after the edge is reached reads
+     as one with more to show. The surface the canvas sits on is included: overscrolling that is
+     the designer's own frame moving, which is the same lie in the same place.
+
+     Named surfaces, never every element: overscroll-behavior applies to anything that is a scroll
+     container, and a control with hidden overflow is one of those even though nobody can scroll it.
+     Saying it there would stop a wheel over a table cell from reaching the grid underneath it. */
+  .gfd-surface,
+  .gfd-canvas,
+  .gfd-canvas .gfd-grid-viewport,
+  .gfd-canvas textarea {
+    overscroll-behavior: none;
+  }
+
+  /* And scrolling that settles rather than jumps: a grid paged from the keyboard or the pager, a
+     control brought into view. Wheel and touch scrolling stay the browser's own. Only where motion
+     is welcome - the same movement is what somebody who asked for less of it means. */
+  @media (prefers-reduced-motion: no-preference) {
+    .gfd-surface,
+    .gfd-canvas,
+    .gfd-canvas .gfd-grid-viewport,
+    .gfd-canvas textarea {
+      scroll-behavior: smooth;
+    }
+  }
+}
+
 /* Gridlet components designer.
    Uses the shell's own custom properties, so the designer follows the workspace theme without
    restating any colours of its own. */
@@ -438,6 +507,27 @@
 /* Preview hands the whole width to the component: the property sheet is a design-time tool. */
 .gfd-designer.previewing .gfd-properties { display: none; }
 
+/* A malformed saved document is represented by a temporary fallback model. Keep every design
+   affordance inert until the raw document is repaired in Code, so fallback edits cannot be lost. */
+.gfd-designer.gfd-document-invalid .gfd-surface,
+.gfd-designer.gfd-document-invalid .gfd-palette,
+.gfd-designer.gfd-document-invalid .gfd-properties-body { cursor: not-allowed; }
+
+.gfd-action-status {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 2;
+  margin: 0;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+}
+.gfd-action-status.error { color: var(--danger, #b42318); }
+.gfd-action-status.success { color: var(--success, #067647); }
+
 /* The control catalogue is a bar along the bottom of the canvas: the toolbar above acts on the
    component that is already drawn, and the catalogue is where a new one comes from. It wraps rather
    than scrolls, so a narrow workspace pushes the catalogue onto a second row instead of hiding half
@@ -527,11 +617,13 @@
 
 /* ---- canvas ---- */
 
+/* No padding of its own: the space around a component is the component's margin, which it carries
+   wherever it is used. A gutter here as well would be space the designer shows and the published
+   page does not, and against a component sized in per cent it is space that has to be scrolled to. */
 .gfd-surface {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 24px;
   background: var(--bg);
 }
 
@@ -542,6 +634,10 @@
   width: var(--gfd-component-width);
   height: var(--gfd-component-height);
   position: relative;
+  /* How far past the edge the canvas still paints when it is clipping. Enough for the selection
+     handles, which sit five pixels outside the control they belong to; not enough for a control
+     placed outside to be mistaken for part of the component. */
+  overflow-clip-margin: 12px;
   background: var(--panel);
   border: 1px solid var(--border);
   box-shadow: 0 2px 12px var(--shadow);
@@ -835,28 +931,151 @@
    CSS, so it is visible in the panel and overridable by order. Only structure stays here.
    The shell already styles every input, select, textarea and button, so controls inherit those. */
 
-.gfd-checkbox input { width: auto; height: auto; }
+/* Everything a canvas is painted with before the component says anything lives in `gridlet-chrome`,
+   the layer declared at the top of this file below `gridlet`. That is what makes isolation real:
+   the reset an isolated component emits into `gridlet` can take this chrome back off, which an
+   unlayered rule would always outrank however the reset was written. The workspace's own control
+   and table chrome is excluded from a canvas in app.css and restated here at the weight it had
+   there, so the order these rules settle among themselves is unchanged. The standalone runtime
+   layers its own chrome the same way, so Preview and the published page agree either way. */
+@layer gridlet-chrome {
 
-/* The pager's own parts. The box it sits in is styled by the generated sheet like every other
-   control; these are the pieces inside it, kept plain so the workspace theme - or the browser, in
-   an isolated component - decides how they look. */
-.gfd-pager {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-}
 
-.gfd-pager-btn {
-  min-width: 22px;
-  padding: 2px 6px;
-  line-height: 1.2;
-}
+  :where(.gfd-canvas) select,
+  :where(.gfd-canvas) input,
+  :where(.gfd-canvas) textarea {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-family: inherit;
+    font-size: 13px;
+  }
 
-.gfd-pager-position {
-  padding: 0 6px;
-  font-size: 12px;
-  white-space: nowrap;
+  :where(.gfd-canvas) input::placeholder,
+  :where(.gfd-canvas) textarea::placeholder { color: var(--muted); opacity: 1; }
+  :where(.gfd-canvas) input[type="checkbox"] { accent-color: var(--accent); }
+
+  :where(.gfd-canvas) button {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  :where(.gfd-canvas) button:disabled { opacity: 0.4; cursor: default; }
+
+  :where(.gfd-canvas) select:focus,
+  :where(.gfd-canvas) input:focus,
+  :where(.gfd-canvas) textarea:focus,
+  :where(.gfd-canvas) button:focus-visible { outline: 1px solid var(--accent); outline-offset: 0; }
+
+  /* The component grid, restated from the workspace's data grid. The runtime carries the same
+     metrics, so a component reads the same in both places until it says otherwise. */
+  :where(.gfd-canvas) table.grid {
+    border-collapse: collapse;
+    width: max-content;
+    min-width: 100%;
+    font-size: 13px;
+  }
+
+  :where(.gfd-canvas) table.grid th,
+  :where(.gfd-canvas) table.grid td {
+    padding: 3px 7px;
+    text-align: left;
+    /* The whole box, not just the edge that is wanted: the reset below draws all four, and a rule
+       that only names the bottom would leave the other three showing through. */
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    max-width: 420px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  :where(.gfd-canvas) table.grid th {
+    position: sticky;
+    top: 0;
+    background: var(--panel-2);
+    font-weight: 600;
+    z-index: 1;
+  }
+
+  :where(.gfd-canvas) table.grid td { font-family: var(--mono); font-size: 12.5px; }
+  :where(.gfd-canvas) .data-grid tbody tr { height: 27px; }
+  :where(.gfd-canvas) .data-grid tbody td { height: 27px; }
+
+  :where(.gfd-canvas) .gfd-checkbox input {
+    /* A drawn box rather than the browser's, so the tick is ours to place. It is centred here: the
+       generated content is laid out inside this box, and left to itself it sits in the top-left
+       corner rather than in the middle of the box it is meant to be a tick in. */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 13px;
+    height: 13px;
+    appearance: none;
+    -webkit-appearance: none;
+    margin: 3px 3px 3px 4px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--panel-2);
+  }
+
+  :where(.gfd-canvas) .gfd-checkbox input:checked {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+
+  :where(.gfd-canvas) .gfd-checkbox input:checked::after {
+    content: '';
+    width: 6px;
+    height: 3px;
+    border-left: 1.5px solid var(--panel);
+    border-bottom: 1.5px solid var(--panel);
+    transform: translateY(-1px) rotate(-45deg);
+  }
+
+  :where(.gfd-canvas) .gfd-checkbox input:focus-visible,
+  :where(.gfd-canvas) .gfd-pager-btn:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 0;
+  }
+
+  :where(.gfd-canvas) .gfd-checkbox input:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  /* The pager's own parts. The box it sits in is styled by the generated sheet like every other
+     control; these are the pieces inside it, kept plain so the workspace theme - or the browser, in
+     an isolated component - decides how they look. */
+  :where(.gfd-canvas) .gfd-pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+  }
+
+  :where(.gfd-canvas) .gfd-pager-btn {
+    min-width: 22px;
+    padding: 2px 6px;
+    line-height: 1.2;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+
+  :where(.gfd-canvas) .gfd-pager-position {
+    padding: 0 6px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
 }
 
 .gfd-panel-title {
@@ -1492,6 +1711,8 @@
 /* .field-note carries the colour and size; this is only the spacing between notes. */
 .gfd-note { margin: 4px 0 6px; font-size: 11px; line-height: 1.45; }
 
+.gfd-publication-control { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+
 .module-action-icon {
   display: inline-flex;
   align-items: center;
@@ -1511,22 +1732,25 @@
    What a component adds is the box: a grid is placed at a chosen size and the number of rows that
    arrive is not the document's to predict, so it scrolls inside that size rather than growing out
    of the layout it was placed in. */
-.gfd-grid { width: 100%; }
+@layer gridlet-chrome {
+  :where(.gfd-canvas) .gfd-grid { width: 100%; }
+  :where(.gfd-canvas) th > .col-grip:hover { background: var(--accent-dim); }
 
-/* Keep the component box and its selection handles fixed while the table scrolls inside it. */
-.gfd-grid-viewport {
-  box-sizing: border-box;
-  width: 100%;
-  height: 100%;
-  overflow: auto;
-}
+  /* Keep the component box and its selection handles fixed while the table scrolls inside it. */
+  :where(.gfd-canvas) .gfd-grid-viewport {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+  }
 
-/* The shared table stylesheet supplies its own header background. In the designer, grid cells
-   must reflect the configured grid text and fill instead of the containing component theme. */
-.gfd-grid-viewport .gfd-grid th,
-.gfd-grid-viewport .gfd-grid td {
-  color: inherit;
-  background-color: var(--gfd-fill);
+  /* The shared table stylesheet supplies its own header background. In the designer, grid cells
+     must reflect the configured grid text and fill instead of the containing component theme. */
+  :where(.gfd-canvas) .gfd-grid-viewport .gfd-grid th,
+  :where(.gfd-canvas) .gfd-grid-viewport .gfd-grid td {
+    color: inherit;
+    background-color: var(--gfd-fill);
+  }
 }
 
 /* The document, edited as itself. It fills the surface the canvas would have used: the two are the

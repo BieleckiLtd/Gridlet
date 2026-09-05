@@ -35,8 +35,9 @@ public static class GridletEndpointRouteBuilderExtensions
         var api = group.MapGroup("/api");
         GridletApiEndpoints.Map(api, options);
         MapModuleEndpoints(endpoints, api);
+        MapPublishedEndpoints(endpoints, group, options, normalizedPattern);
         MapRuntimeEndpoints(endpoints, group);
-        GridletPublishedEndpoints.Map(group, options.PublishedApiSegment);
+        MapRootRuntimeEndpoints(endpoints, options, normalizedPattern);
 
         return group;
     }
@@ -58,7 +59,7 @@ public static class GridletEndpointRouteBuilderExtensions
         var api = group.MapGroup("/api");
         GridletApiEndpoints.Map(api, options);
         MapModuleEndpoints(endpoints, api);
-        GridletPublishedEndpoints.Map(group, options.PublishedApiSegment);
+        MapPublishedEndpoints(endpoints, group, options, normalizedPattern: "/" + pattern.Trim('/'));
 
         return group;
     }
@@ -71,7 +72,9 @@ public static class GridletEndpointRouteBuilderExtensions
     /// <param name="endpoints">The application's endpoint route builder.</param>
     /// <param name="pattern">
     /// Route prefix containing the published-endpoint runtime, which is served from
-    /// <see cref="GridletOptions.PublishedApiRoutePrefix"/> beneath it. Defaults to <c>/gridlet</c>.
+    /// <see cref="GridletOptions.PublishedApiRoutePrefix"/> beneath it, unless
+    /// <see cref="GridletOptions.PublishedApiPath"/> selects an application-root path. Defaults
+    /// to <c>/gridlet</c>.
     /// </param>
     /// <returns>The mapped route group, allowing additional endpoint conventions to be applied.</returns>
     public static IEndpointConventionBuilder MapGridletPublished(
@@ -81,7 +84,7 @@ public static class GridletEndpointRouteBuilderExtensions
         var (group, options, _) = CreateGroup(
             endpoints, pattern, validateAgentService: false);
 
-        GridletPublishedEndpoints.Map(group, options.PublishedApiSegment);
+        MapPublishedEndpoints(endpoints, group, options, normalizedPattern: "/" + pattern.Trim('/'));
 
         return group;
     }
@@ -103,6 +106,99 @@ public static class GridletEndpointRouteBuilderExtensions
         foreach (var contributor in endpoints.ServiceProvider.GetServices<IGridletRuntimeContributor>())
         {
             contributor.Map(group);
+        }
+    }
+
+    private static void MapRootRuntimeEndpoints(
+        IEndpointRouteBuilder endpoints, GridletOptions options, string normalizedMount)
+    {
+        if (!GridletRoutePath.TryNormalize(normalizedMount, out var managementPath, allowEmpty: true))
+        {
+            throw new InvalidOperationException(
+                "The Gridlet management mount must be a safe route path.");
+        }
+
+        foreach (var contributor in endpoints.ServiceProvider
+                     .GetServices<IGridletRootRuntimeContributor>())
+        {
+            if (contributor.RootPath is not { Length: > 0 } configuredPath)
+            {
+                continue;
+            }
+
+            if (!GridletRoutePath.TryNormalize(configuredPath, out var path))
+            {
+                throw new InvalidOperationException(
+                    "A root runtime contributor must expose a safe, non-empty absolute route path.");
+            }
+
+            if (GridletRoutePath.IsEqualOrAncestor(path, managementPath) ||
+                GridletRoutePath.IsEqualOrAncestor(managementPath, path))
+            {
+                throw new InvalidOperationException(
+                    $"Root runtime path '/{path}' collides with Gridlet's management mount " +
+                    $"'/{managementPath}'.");
+            }
+
+            var root = CreateAuthorizedGroup(endpoints, path, options);
+            contributor.MapAtRoot(root);
+        }
+    }
+
+    private static void MapPublishedEndpoints(
+        IEndpointRouteBuilder endpoints,
+        RouteGroupBuilder group,
+        GridletOptions options,
+        string normalizedPattern)
+    {
+        if (options.PublishedApiPath is null)
+        {
+            GridletPublishedEndpoints.Map(group, options.PublishedApiSegment);
+            return;
+        }
+
+        if (!GridletRoutePath.TryNormalize(normalizedPattern, out var managementPath, allowEmpty: true))
+        {
+            throw new InvalidOperationException(
+                "The Gridlet management mount must be a safe route path.");
+        }
+
+        if (!GridletRoutePath.TryNormalize(options.PublishedApiPath, out var path))
+        {
+            throw new InvalidOperationException(
+                "PublishedApiPath must be a safe absolute route path.");
+        }
+
+        if (GridletRoutePath.IsEqualOrAncestor(path, managementPath) ||
+            GridletRoutePath.IsEqualOrAncestor(managementPath, path))
+        {
+            throw new InvalidOperationException(
+                $"PublishedApiPath '/{path}' collides with Gridlet's management mount " +
+                $"'/{managementPath}'.");
+        }
+
+        var root = CreateAuthorizedGroup(endpoints, path, options);
+        GridletPublishedEndpoints.Map(root, string.Empty);
+    }
+
+    private static RouteGroupBuilder CreateAuthorizedGroup(
+        IEndpointRouteBuilder endpoints, string path, GridletOptions options)
+    {
+        var root = endpoints.MapGroup("/" + path.Trim('/'));
+        root.AddEndpointFilter(GridletEndpointHelpers.PublishRequestLogger);
+        ApplyAuthorization(root, options);
+        return root;
+    }
+
+    private static void ApplyAuthorization(RouteGroupBuilder group, GridletOptions options)
+    {
+        if (options.Security.AuthorizationPolicy is { Length: > 0 } policy)
+        {
+            group.RequireAuthorization(policy);
+        }
+        else if (!options.Security.AllowAnonymous)
+        {
+            group.RequireAuthorization();
         }
     }
 
@@ -147,17 +243,7 @@ public static class GridletEndpointRouteBuilderExtensions
         // Unexpected endpoint failures are returned to the caller and logged as well. The filter
         // runs for every endpoint in the group and supplies the request's own logger factory.
         group.AddEndpointFilter(GridletEndpointHelpers.PublishRequestLogger);
-
-        if (options.Security.AuthorizationPolicy is { Length: > 0 } policy)
-        {
-            // An explicitly selected policy is the strongest signal and always wins, even if
-            // AllowAnonymous was also set (for example by a development configuration layer).
-            group.RequireAuthorization(policy);
-        }
-        else if (!options.Security.AllowAnonymous)
-        {
-            group.RequireAuthorization();
-        }
+        ApplyAuthorization(group, options);
 
         return (group, options, pattern);
     }

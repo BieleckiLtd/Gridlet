@@ -50,6 +50,32 @@ public class PublishedEndpointTests
         Assert.Equal(HttpStatusCode.NotFound, original.StatusCode);
     }
 
+    [Theory]
+    [InlineData(".pub")]
+    [InlineData("pub.")]
+    [InlineData("v1..2")]
+    public async Task Published_endpoints_accept_valid_dot_prefixes(string prefix)
+    {
+        var (app, client) = await GridletTestHost.StartAsync(options =>
+        {
+            options.AddConnection("Main", "Server=x;", FakeGridletProvider.Name);
+            options.Security.AllowAnonymous = true;
+            options.PublishedApiRoutePrefix = prefix;
+        });
+        await using var _ = app;
+
+        var publish = await Publish(client, new
+        {
+            name = "Dot prefix", method = "GET", route = "answers", connectionName = "Main", sql = "SELECT 42",
+        });
+        Assert.Equal(HttpStatusCode.OK, publish.StatusCode);
+
+        var invoke = await client.GetAsync($"/gridlet/{prefix}/answers");
+
+        Assert.Equal(HttpStatusCode.OK, invoke.StatusCode);
+        Assert.Contains("\"rows\"", await invoke.Content.ReadAsStringAsync());
+    }
+
     /// <summary>The browser builds published URLs from the server's answer, never from the default.</summary>
     [Fact]
     public async Task Meta_reports_the_configured_route_prefix_to_the_browser()
@@ -531,6 +557,131 @@ public class PublishedEndpointTests
         });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("sales//top")]
+    [InlineData("/sales//top/")]
+    public async Task Routes_with_empty_internal_segments_are_rejected(string route)
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var response = await Publish(client, new
+        {
+            name = "Bad route", method = "GET", route, connectionName = "Main", sql = "SELECT 1",
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("Route", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("sales/_top")]
+    [InlineData("sales/-top")]
+    [InlineData("sales/_top/-next")]
+    public async Task Routes_with_leading_punctuation_in_later_segments_remain_accepted(string route)
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var response = await Publish(client, new
+        {
+            name = "Legacy-compatible route", method = "GET", route, connectionName = "Main", sql = "SELECT 1",
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/gridlet/pub/{route}")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Published_catalogue_exposes_only_consumer_validation_metadata()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+
+        var publish = await Publish(client, new
+        {
+            name = "Catalogue secret",
+            method = "POST",
+            route = "catalogue-secret",
+            connectionName = "Main",
+            database = "HiddenDatabase",
+            sql = "SELECT SECRET_VALUE FROM dbo.SecretTable",
+            authorizationPolicy = "SecretPolicy",
+            parameters = new[] { new { name = "Value", required = true, type = "integer" } },
+        });
+        Assert.Equal(HttpStatusCode.OK, publish.StatusCode);
+
+        var response = await client.GetAsync("/gridlet/api/published/catalogue");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var endpoint = Assert.Single(document.RootElement.EnumerateArray());
+        Assert.Equal(
+            ["method", "route", "enabled", "parameters"],
+            endpoint.EnumerateObject().Select(property => property.Name).ToArray());
+        Assert.Equal("POST", endpoint.GetProperty("method").GetString());
+        Assert.Equal("catalogue-secret", endpoint.GetProperty("route").GetString());
+        Assert.True(endpoint.GetProperty("enabled").GetBoolean());
+
+        var parameter = Assert.Single(endpoint.GetProperty("parameters").EnumerateArray());
+        Assert.Equal(
+            ["name", "required", "type"],
+            parameter.EnumerateObject().Select(property => property.Name).ToArray());
+        Assert.Equal("Value", parameter.GetProperty("name").GetString());
+        Assert.True(parameter.GetProperty("required").GetBoolean());
+        Assert.Equal("integer", parameter.GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task Existing_legacy_route_may_be_resaved_unchanged_but_not_changed()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var store = app.Services.GetRequiredService<IPublishedEndpointStore>();
+        var legacy = new PublishedEndpoint(
+            "legacy-route", "Legacy route", "GET", "sales//top", "Main", "HiddenDatabase",
+            "SELECT 1", [], null, true, DateTimeOffset.UtcNow);
+        await store.SaveAsync(legacy);
+
+        var unchanged = await Publish(client, new
+        {
+            id = legacy.Id,
+            name = legacy.Name,
+            method = legacy.Method,
+            route = "/sales//top/",
+            connectionName = legacy.ConnectionName,
+            database = legacy.Database,
+            sql = legacy.Sql,
+            enabled = legacy.Enabled,
+        });
+        Assert.Equal(HttpStatusCode.OK, unchanged.StatusCode);
+
+        var repaired = await Publish(client, new
+        {
+            id = legacy.Id,
+            name = legacy.Name,
+            method = legacy.Method,
+            route = "sales/top",
+            connectionName = legacy.ConnectionName,
+            database = legacy.Database,
+            sql = legacy.Sql,
+            enabled = legacy.Enabled,
+        });
+        Assert.Equal(HttpStatusCode.OK, repaired.StatusCode);
+
+        var changed = await Publish(client, new
+        {
+            id = legacy.Id,
+            name = legacy.Name,
+            method = legacy.Method,
+            route = "sales///top",
+            connectionName = legacy.ConnectionName,
+            database = legacy.Database,
+            sql = legacy.Sql,
+            enabled = legacy.Enabled,
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, changed.StatusCode);
     }
 
     [Fact]

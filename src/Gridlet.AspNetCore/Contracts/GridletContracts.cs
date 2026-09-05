@@ -11,7 +11,9 @@ public sealed record GridletMetaResponse(
     GridletAgentInfo? Agent = null,
     string PublishedApiSegment = "pub",
     GridletVoiceInfo? Voice = null,
-    IReadOnlyList<GridletUiModuleInfo>? Modules = null);
+    IReadOnlyList<GridletUiModuleInfo>? Modules = null,
+    string? PublishedApiPath = null,
+    string? ComponentPublicPath = null);
 
 /// <summary>
 /// An optional package that is installed and contributes browser assets. The shell loads these

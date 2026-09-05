@@ -309,7 +309,19 @@ public sealed class ResultExportEndpointTests
             Content = content,
         };
         request.Headers.ExpectContinue = true;
-        var response = await client.SendAsync(request);
+
+        // Wait as long as it takes for the server's verdict on the headers. A client gives up on the
+        // continue after a second by default and starts sending the body it promised - and then
+        // fails on its own promise, having only a byte to send, rather than on the server's answer,
+        // which is what this test is about. Whether that second is enough depends on the machine.
+        using var patient = new HttpClient(new SocketsHttpHandler
+        {
+            Expect100ContinueTimeout = TimeSpan.FromSeconds(30),
+        })
+        {
+            BaseAddress = client.BaseAddress,
+        };
+        var response = await patient.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
     }

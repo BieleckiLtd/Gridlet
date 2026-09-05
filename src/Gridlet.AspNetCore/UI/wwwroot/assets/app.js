@@ -37,6 +37,7 @@
     'arrow-up': ['M12 5l0 14', 'M18 11l-6 -6', 'M6 11l6 -6'],
     'chevron-right': ['M9 6l6 6l-6 6'],
     copy: ['M7 9.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667l0 -8.666', 'M4.012 16.737a2.005 2.005 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1'],
+    'external-link': ['M14 5h5v5', 'M19 5l-8 8', 'M18 13v5a1 1 0 0 1 -1 1h-10a1 1 0 0 1 -1 -1v-10a1 1 0 0 1 1 -1h5'],
     'info-circle': ['M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0', 'M12 9h.01', 'M11 12h1v4h1'],
     lock: ['M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-6', 'M11 16a1 1 0 1 0 2 0a1 1 0 0 0 -2 0', 'M8 11v-4a4 4 0 1 1 8 0v4'],
     microphone: ['M9 5a3 3 0 0 1 3 -3a3 3 0 0 1 3 3v5a3 3 0 0 1 -3 3a3 3 0 0 1 -3 -3l0 -5', 'M5 10a7 7 0 0 0 14 0', 'M8 21l8 0', 'M12 17l0 4'],
@@ -2193,12 +2194,31 @@
             ? (event) => showContextMenu(event, item.contextItems())
             : null,
         },
-          h('span', {
-            class: 'badge badge-module',
-            text: section.badge || 'M',
-            title: section.label,
+          item.hideBadge ? null : h('span', {
+            class: `badge ${item.badgeClass || 'badge-module'}`,
+            text: item.badge || section.badge || 'M',
+            title: item.badgeTitle || section.label,
           }),
-          h('span', { class: 'item-name', text: item.name })))), !!filter));
+          h('span', { class: 'item-name', text: item.name }),
+          item.trailingAction ? h('span', {
+            class: 'tree-item-action',
+            role: 'button',
+            tabindex: '0',
+            title: item.trailingAction.title,
+            'aria-label': item.trailingAction.label,
+            'data-testid': item.trailingAction.testId || null,
+            onclick: (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              item.trailingAction.onClick();
+            },
+            onkeydown: (event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              event.preventDefault();
+              event.stopPropagation();
+              item.trailingAction.onClick();
+            },
+          }, icon(item.trailingAction.icon || 'external-link', 'tree-item-action-icon')) : null))), !!filter));
     }
   }
 

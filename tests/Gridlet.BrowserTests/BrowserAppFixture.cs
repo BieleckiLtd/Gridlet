@@ -90,6 +90,29 @@ public sealed class BrowserAppFixture : IAsyncLifetime
         return new BrowserTestPage(context, page);
     }
 
+    /// <summary>
+    /// Opens a stable visual-test context. Both views use this same Chromium configuration so a
+    /// parity failure describes the component render, not a viewport, scale factor, theme or
+    /// locale difference between the two pages. The colour scheme is a parameter because a
+    /// component may name a colour for one scheme only, and the fallback for the other is exactly
+    /// the sort of thing the two surfaces can disagree about.
+    /// </summary>
+    public async Task<BrowserTestPage> NewVisualPageAsync(ColorScheme scheme = ColorScheme.Light)
+    {
+        var context = await Browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            AcceptDownloads = true,
+            BaseURL = BaseAddress.ToString(),
+            ViewportSize = new ViewportSize { Width = 1280, Height = 900 },
+            DeviceScaleFactor = 1,
+            ColorScheme = scheme,
+            Locale = "en-GB",
+            ReducedMotion = ReducedMotion.Reduce,
+        });
+        var page = await context.NewPageAsync();
+        return new BrowserTestPage(context, page);
+    }
+
     public async Task DisposeAsync()
     {
         if (Browser is not null)
@@ -285,6 +308,8 @@ public sealed class BrowserTestPage : IAsyncDisposable
     }
 
     public IPage Page { get; }
+
+    public IBrowserContext Context => context;
 
     public void AssertNoUnexpectedErrors(params string[] expectedErrorFragments)
     {

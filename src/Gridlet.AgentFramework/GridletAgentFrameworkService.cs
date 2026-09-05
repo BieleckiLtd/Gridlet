@@ -445,14 +445,19 @@ internal sealed class GridletAgentFrameworkService : IGridletAgentService, IDisp
         if (baseAddress.Length == 0 || mountPath.Length == 0) return string.Empty;
 
         var mount = baseAddress.TrimEnd('/') + mountPath;
-        var segment = NormalizeSystemInfoValue(environment.PublishedApiSegment, "pub").Trim('/');
+        var published = environment.PublishedApiPath is { Length: > 0 } configuredPath
+            ? baseAddress.TrimEnd('/') + "/" + configuredPath.Trim('/')
+            : string.Concat(
+                mount,
+                "/",
+                NormalizeSystemInfoValue(environment.PublishedApiSegment, "pub").Trim('/'));
         return string.Concat(
             "\n",
             GridletPrompts.Text(
                 "Instructions/installation",
                 ("base_address", baseAddress),
                 ("mount", mount),
-                ("published_pattern", $"{mount}/{segment}/{{route}}")),
+                ("published_pattern", $"{published}/{{route}}")),
             "\n");
     }
 

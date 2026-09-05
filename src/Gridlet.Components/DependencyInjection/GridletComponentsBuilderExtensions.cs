@@ -5,6 +5,7 @@ using Gridlet.Components.Endpoints;
 using Gridlet.Components.Storage;
 using Gridlet.Components.UI;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 // ReSharper disable once CheckNamespace; conventional namespace for DI extensions.
 namespace Microsoft.Extensions.DependencyInjection;
@@ -25,10 +26,14 @@ public static class GridletComponentsBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
 
         builder.Services.Configure(configure ?? (_ => { }));
+        builder.Services.TryAddEnumerable(
+            ServiceDescriptor.Singleton<IValidateOptions<GridletComponentsOptions>, GridletComponentsOptionsValidator>());
         builder.Services.TryAddSingleton<IComponentStore, GridletComponentFileStore>();
         builder.Services.TryAddSingleton<IComponentScriptStore, GridletComponentScriptFileStore>();
         builder.Services.AddSingleton<IGridletEndpointContributor, GridletComponentEndpoints>();
         builder.Services.AddSingleton<IGridletRuntimeContributor, GridletComponentEndpoints>();
+        builder.Services.AddSingleton<IGridletRootRuntimeContributor, GridletComponentEndpoints>();
+        builder.Services.AddSingleton<IGridletRuntimeRouteMetadata, GridletComponentEndpoints>();
         builder.Services.AddSingleton<IGridletUiAssetProvider, GridletComponentsAssetProvider>();
         return builder;
     }

@@ -48,7 +48,9 @@ internal static partial class GridletApiEndpoints
         SupportsUniqueConstraints: false,
         SupportsIndexes: false);
 
-    [GeneratedRegex(@"^[a-zA-Z0-9][a-zA-Z0-9\-_/]*$")]
+    // Published routes are shared with the component designer and runtime. The first segment
+    // keeps its historical letter/digit start; later non-empty segments may begin '_' or '-'.
+    [GeneratedRegex(@"^[A-Za-z0-9](?:[A-Za-z0-9_-]*)(?:/[A-Za-z0-9_-]+)*$")]
     private static partial Regex RoutePattern();
 
     public static void Map(RouteGroupBuilder api, GridletOptions options)
@@ -155,6 +157,7 @@ internal static partial class GridletApiEndpoints
         api.MapDelete("/queries/{id}", DeleteSavedQuery);
 
         // Published endpoint administration (invocation lives in GridletPublishedEndpoints).
+        api.MapGet("/published/catalogue", GetPublishedEndpointCatalogue);
         api.MapGet("/published", GetPublishedEndpoints);
         api.MapPost("/published", SavePublishedEndpoint);
         api.MapDelete("/published/{id}", DeletePublishedEndpoint);
@@ -191,7 +194,12 @@ internal static partial class GridletApiEndpoints
             services.GetService<IGridletVoiceService>()?.Info,
             services.GetServices<IGridletUiAssetProvider>()
                 .Select(m => new GridletUiModuleInfo(m.Name, m.Scripts, m.Styles))
-                .ToArray()));
+                .ToArray(),
+            options.CurrentValue.PublishedApiPath is { } publishedApiPath &&
+                GridletRoutePath.TryNormalize(publishedApiPath, out var normalizedPublishedApiPath)
+                    ? "/" + normalizedPublishedApiPath
+                    : null,
+            services.GetService<IGridletRuntimeRouteMetadata>()?.ComponentPublicPath));
     }
 
     private static Task<IResult> GetDatabases(
@@ -1359,9 +1367,14 @@ internal static partial class GridletApiEndpoints
             request.Scheme, "://", request.Host.ToUriComponent(),
             request.PathBase.HasValue ? request.PathBase.ToUriComponent() : string.Empty, "/");
         var mountPath = httpContext.RequestServices.GetService<GridletMountPath>()?.Value ?? "/gridlet";
-        var published = httpContext.RequestServices
-            .GetService<IOptionsMonitor<GridletOptions>>()?.CurrentValue.PublishedApiSegment ?? "pub";
-        return new GridletAgentEnvironment(baseAddress, mountPath, published);
+        var configuredOptions = httpContext.RequestServices
+            .GetService<IOptionsMonitor<GridletOptions>>()?.CurrentValue;
+        var published = configuredOptions?.PublishedApiSegment ?? "pub";
+        var publishedPath = configuredOptions?.PublishedApiPath is { } configuredPath &&
+            GridletRoutePath.TryNormalize(configuredPath, out var normalizedPath)
+                ? "/" + normalizedPath
+                : null;
+        return new GridletAgentEnvironment(baseAddress, mountPath, published, publishedPath);
     }
 
     private static GridletAgentUserContext AgentUser(HttpContext httpContext)
@@ -2031,11 +2044,32 @@ internal static partial class GridletApiEndpoints
     private static Task<IResult> GetPublishedEndpoints(IPublishedEndpointStore store, CancellationToken cancellationToken)
         => Execute(async () => Results.Ok(await store.GetAllAsync(cancellationToken)));
 
+    // The standalone consumer only needs enough metadata to verify its explicit CRUD declarations.
+    // Keep this projection separate from the designer's full administration list so SQL text,
+    // connection details, authorization policy and other configuration never cross that boundary.
+    private static Task<IResult> GetPublishedEndpointCatalogue(
+        IPublishedEndpointStore store, CancellationToken cancellationToken)
+        => Execute(async () => Results.Ok((await store.GetAllAsync(cancellationToken)).Select(endpoint => new
+        {
+            method = endpoint.Method,
+            route = endpoint.Route,
+            enabled = endpoint.Enabled,
+            parameters = endpoint.Parameters.Select(parameter => new
+            {
+                name = parameter.Name,
+                required = parameter.Required,
+                type = parameter.Type,
+            }),
+        })));
+
     private static Task<IResult> SavePublishedEndpoint(
         PublishRequest body, IPublishedEndpointStore store, IGridletConnectionResolver resolver,
         CancellationToken cancellationToken)
         => Execute(async () =>
         {
+            var existing = string.IsNullOrWhiteSpace(body.Id)
+                ? null
+                : (await store.GetAllAsync(cancellationToken)).FirstOrDefault(endpoint => endpoint.Id == body.Id);
             var method = body.Method?.ToUpperInvariant();
             if (method is not ("GET" or "POST" or "PUT" or "PATCH" or "DELETE"))
             {
@@ -2043,7 +2077,10 @@ internal static partial class GridletApiEndpoints
             }
 
             var route = (body.Route ?? "").Trim('/', ' ');
-            if (route.Length == 0 || !RoutePattern().IsMatch(route))
+            var unchangedLegacyRoute = existing is not null
+                && string.Equals(existing.Route, route, StringComparison.OrdinalIgnoreCase)
+                && LegacyRoutePattern().IsMatch(route);
+            if (route.Length == 0 || (!RoutePattern().IsMatch(route) && !unchangedLegacyRoute))
             {
                 throw new GridletValidationException(
                     "Route must contain only letters, digits, '-', '_' and '/' segments (e.g. sales/top-customers).");
@@ -2091,6 +2128,12 @@ internal static partial class GridletApiEndpoints
 
     [System.Text.RegularExpressions.GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]*$")]
     private static partial System.Text.RegularExpressions.Regex ParameterNamePattern();
+
+    // Only an existing endpoint with this exact route may use the compatibility escape hatch above.
+    // It retains the old character set and permits empty internal segments, but still rejects dots,
+    // traversal and any newly introduced punctuation.
+    [System.Text.RegularExpressions.GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9_/-]*$")]
+    private static partial System.Text.RegularExpressions.Regex LegacyRoutePattern();
 
     private static Task<IResult> DeletePublishedEndpoint(
         string id, IPublishedEndpointStore store, CancellationToken cancellationToken)

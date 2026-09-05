@@ -32,6 +32,8 @@ public class ComponentEndpointTests
         bool withComponents = true,
         bool apiOnly = false,
         string? publishedApiRoutePrefix = null,
+        string? publishedApiPath = null,
+        string? componentPublicPath = null,
         bool allowAnonymous = true,
         string pattern = "/gridlet")
     {
@@ -49,12 +51,23 @@ public class ComponentEndpointTests
             {
                 options.PublishedApiRoutePrefix = publishedApiRoutePrefix;
             }
+            if (publishedApiPath is not null)
+            {
+                options.PublishedApiPath = publishedApiPath;
+            }
         });
 
         if (withComponents)
         {
-            gridlet.AddComponents(components => components.Path = Path.Combine(
-                Path.GetTempPath(), $"gridlet-components-tests-{Guid.NewGuid():n}"));
+            gridlet.AddComponents(components =>
+            {
+                components.Path = Path.Combine(
+                    Path.GetTempPath(), $"gridlet-components-tests-{Guid.NewGuid():n}");
+                if (componentPublicPath is not null)
+                {
+                    components.PublicRoutePrefix = componentPublicPath;
+                }
+            });
         }
 
         builder.Services.AddSingleton<IGridletProvider, FakeGridletProvider>();
@@ -111,13 +124,135 @@ public class ComponentEndpointTests
     }
 
     [Fact]
+    public async Task New_components_are_embedded_only_until_explicitly_made_routable()
+    {
+        var (app, client) = await StartAsync();
+        await using var _ = app;
+
+        var saved = await (await client.PostAsJsonAsync("/gridlet/api/components",
+                new { name = "Embedded", html = Document() }))
+            .Content.ReadFromJsonAsync<GridletComponent>();
+
+        Assert.NotNull(saved);
+        Assert.False(saved!.Routable);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await client.GetAsync($"/gridlet/components/{saved.Id}")).StatusCode);
+
+        var update = await client.PostAsJsonAsync("/gridlet/api/components",
+            new { id = saved.Id, name = "Embedded", html = Document(), routable = true,
+                route = "forms/customer", title = "Customer <page>" });
+        Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+
+        var page = await client.GetAsync("/gridlet/components/forms/customer");
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        var html = await page.Content.ReadAsStringAsync();
+        Assert.Contains("<title>Customer &lt;page&gt;</title>", html, StringComparison.Ordinal);
+        Assert.Contains("data-gridlet-component-route=\"forms/customer\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Component_metadata_is_preserved_when_an_update_omits_it()
+    {
+        var (app, client) = await StartAsync();
+        await using var _ = app;
+
+        var saved = await (await client.PostAsJsonAsync("/gridlet/api/components",
+                new { name = "Preserve", html = Document(), routable = true,
+                    route = "forms/preserve", title = "Preserve me" }))
+            .Content.ReadFromJsonAsync<GridletComponent>();
+
+        await client.PostAsJsonAsync("/gridlet/api/components",
+            new { id = saved!.Id, name = "Preserve renamed", html = Document() });
+        var reread = await client.GetFromJsonAsync<GridletComponent>(
+            $"/gridlet/api/components/{saved.Id}");
+
+        Assert.True(reread!.Routable);
+        Assert.Equal("forms/preserve", reread.Route);
+        Assert.Equal("Preserve me", reread.Title);
+    }
+
+    [Fact]
+    public async Task Component_routes_are_case_insensitive_and_unique_among_routable_components()
+    {
+        var (app, client) = await StartAsync();
+        await using var _ = app;
+
+        var first = await (await client.PostAsJsonAsync("/gridlet/api/components",
+                new { name = "One", html = Document(), routable = true, route = "Forms/Customer" }))
+            .Content.ReadFromJsonAsync<GridletComponent>();
+        var duplicate = await client.PostAsJsonAsync("/gridlet/api/components",
+            new { name = "Two", html = Document(), routable = true, route = "forms/customer" });
+
+        Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
+        Assert.Equal(HttpStatusCode.OK,
+            (await client.GetAsync("/gridlet/components/forms/CUSTOMER")).StatusCode);
+        Assert.NotNull(first);
+    }
+
+    [Theory]
+    [InlineData("../escape")]
+    [InlineData("forms//customer")]
+    [InlineData("forms/%2Fcustomer")]
+    [InlineData("forms/customer?x=1")]
+    public async Task Unsafe_component_routes_are_rejected(string route)
+    {
+        var (app, client) = await StartAsync();
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/gridlet/api/components",
+            new { name = "Unsafe", html = Document(), routable = true, route });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Absolute_public_paths_keep_management_at_gridlet_and_reserve_the_api_subtree()
+    {
+        var (app, client) = await StartAsync(
+            publishedApiPath: "/pub/api", componentPublicPath: "/pub");
+        await using var _ = app;
+
+        var saved = await (await client.PostAsJsonAsync("/gridlet/api/components",
+                new { name = "Public form", html = Document(), routable = true,
+                    route = "customer/form" }))
+            .Content.ReadFromJsonAsync<GridletComponent>();
+        Assert.NotNull(saved);
+
+        Assert.Equal(HttpStatusCode.OK,
+            (await client.GetAsync("/pub/customer/form")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await client.GetAsync("/pub/api/does-not-exist")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await client.GetAsync("/pub/api")).StatusCode);
+
+        var published = await client.PostAsJsonAsync("/gridlet/api/published", new
+        {
+            name = "Public API", method = "GET", route = "answer",
+            connectionName = "Main", sql = "SELECT 42",
+        });
+        Assert.Equal(HttpStatusCode.OK, published.StatusCode);
+        var apiResponse = await client.GetAsync("/pub/api/answer");
+        Assert.Equal(HttpStatusCode.OK, apiResponse.StatusCode);
+        Assert.Contains("\"rows\"", await apiResponse.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+        var reserved = await client.PostAsJsonAsync("/gridlet/api/components",
+            new { name = "Reserved", html = Document(), routable = true, route = "api/pretend" });
+        Assert.Equal(HttpStatusCode.BadRequest, reserved.StatusCode);
+        Assert.Equal(HttpStatusCode.OK,
+            (await client.GetAsync("/gridlet/api/components")).StatusCode);
+
+        var meta = await client.GetFromJsonAsync<JsonElement>("/gridlet/api/meta");
+        Assert.Equal("/pub/api", meta.GetProperty("publishedApiPath").GetString());
+        Assert.Equal("/pub", meta.GetProperty("componentPublicPath").GetString());
+    }
+
+    [Fact]
     public async Task A_saved_component_has_a_consumer_facing_runtime_page()
     {
         var (app, client) = await StartAsync();
         await using var _ = app;
 
         var saved = await (await client.PostAsJsonAsync("/gridlet/api/components",
-                new { name = "Ignored request name", html = Document(name: "%RUNTIME_SCRIPT%") }))
+                new { name = "Ignored request name", html = Document(name: "%RUNTIME_SCRIPT%"), routable = true }))
             .Content.ReadFromJsonAsync<GridletComponent>();
 
         var response = await client.GetAsync($"/gridlet/components/{saved!.Id}");
@@ -143,13 +278,27 @@ public class ComponentEndpointTests
     }
 
     [Fact]
+    public async Task Independent_published_api_path_cannot_overlap_the_management_mount()
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => StartAsync(publishedApiPath: "/gridlet/api"));
+    }
+
+    [Fact]
+    public async Task Independent_component_path_cannot_overlap_the_management_mount()
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => StartAsync(componentPublicPath: "/gridlet/components"));
+    }
+
+    [Fact]
     public async Task A_component_runtime_page_uses_a_custom_gridlet_mount()
     {
         var (app, client) = await StartAsync(pattern: "/admin/tools");
         await using var _ = app;
 
         var saved = await (await client.PostAsJsonAsync("/admin/tools/api/components",
-                new { name = "Custom mount", html = Document() }))
+                new { name = "Custom mount", html = Document(), routable = true }))
             .Content.ReadFromJsonAsync<GridletComponent>();
 
         var response = await client.GetAsync($"/admin/tools/components/{saved!.Id}");

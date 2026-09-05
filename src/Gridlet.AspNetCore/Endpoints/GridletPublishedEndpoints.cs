@@ -17,7 +17,8 @@ using static Gridlet.AspNetCore.GridletEndpointHelpers;
 namespace Gridlet.AspNetCore;
 
 /// <summary>
-/// Invokes published API endpoints at <c>{mount}/pub/{route}</c>. Routes are dispatched
+/// Invokes published API endpoints at <c>{mount}/pub/{route}</c> (or an independent configured
+/// path). Routes are dispatched
 /// dynamically from the store, so publishing needs no application restart. The dispatcher
 /// sits inside the Gridlet route group and therefore inherits its authorization; endpoints
 /// can additionally demand their own policy.
@@ -28,13 +29,27 @@ internal static class GridletPublishedEndpoints
 
     public static void Map(RouteGroupBuilder group, string segment)
     {
+        if (string.IsNullOrWhiteSpace(segment))
+        {
+            group.MapMethods(
+                    "/{**route}", ["GET", "POST", "PUT", "PATCH", "DELETE"], Invoke)
+                .ExcludeFromDescription();
+            return;
+        }
+
+        if (!GridletRoutePath.TryNormalize(segment, out var normalized))
+        {
+            throw new InvalidOperationException(
+                "PublishedApiRoutePrefix must contain safe, non-empty route segments.");
+        }
+
         group.MapMethods(
-                $"/{segment}/{{**route}}", ["GET", "POST", "PUT", "PATCH", "DELETE"], Invoke)
+                $"/{normalized}/{{**route}}", ["GET", "POST", "PUT", "PATCH", "DELETE"], Invoke)
             .ExcludeFromDescription();
     }
 
     private static async Task Invoke(
-        string route,
+        string? route,
         HttpContext httpContext,
         IPublishedEndpointStore store,
         IGridletConnectionResolver resolver,
@@ -45,6 +60,17 @@ internal static class GridletPublishedEndpoints
     {
         var stopwatch = Stopwatch.StartNew();
         var useNdjson = AcceptsNdjson(httpContext.Request);
+        var requestedRoute = route?.Trim('/');
+        if (string.IsNullOrEmpty(requestedRoute))
+        {
+            await WriteErrorAsync(
+                httpContext,
+                StatusCodes.Status404NotFound,
+                "A published endpoint route is required.",
+                useNdjson,
+                cancellationToken);
+            return;
+        }
 
         PublishedEndpoint endpoint;
         ResolvedConnection resolved;
@@ -56,11 +82,11 @@ internal static class GridletPublishedEndpoints
         // These are not audited (they never reach the database), matching the previous behaviour.
         try
         {
-            var found = await store.FindAsync(httpContext.Request.Method, route.Trim('/'), cancellationToken);
+            var found = await store.FindAsync(httpContext.Request.Method, requestedRoute, cancellationToken);
             if (found is null || !found.Enabled)
             {
                 await WriteErrorAsync(httpContext, StatusCodes.Status404NotFound,
-                    $"No published endpoint at '{route}'.", useNdjson, cancellationToken);
+                    $"No published endpoint at '{requestedRoute}'.", useNdjson, cancellationToken);
                 return;
             }
 
