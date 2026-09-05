@@ -1,6 +1,6 @@
 ---
 name: cross-cli-code-review
-description: "Run independent, read-only code reviews through external coding CLIs such as Codex, Claude Code, Grok, and GitHub Copilot CLI while honoring an exact requested model and reasoning effort, verifying the effective backend model, filtering stale findings against current code and discussion, and optionally repeating review after fixes. Use when the user asks for a second opinion, adversarial review, review with Codex, Claude, Grok, or Copilot, comparison across CLI providers, or a fix-and-rereview loop."
+description: "Get a requested independent code review through Codex, Claude, Grok, or Copilot CLI, verifying model identity and triaging findings. Supports fix-and-rereview requests."
 ---
 
 # Cross-CLI code review

@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut and publish a Gridlet release by reviewing release contents on dev, bumping the shared version, testing, promoting dev to main through a pull request, and monitoring the NuGet publication workflow. Use for requests such as release, publish, cut a version, bump and publish, or ship Gridlet.
+description: "Cut and publish a requested Gridlet package release through a version bump, dev-to-main PR, and NuGet workflow."
 ---
 
 # Gridlet release
@@ -19,16 +19,22 @@ Publish Gridlet through GitHub Actions. Merging the protected `dev` branch into 
 
 1. Confirm the branch is `dev`, inspect `git status --short`, review the full diff, and read the current version.
 2. If the tree contains work intended for the release, include it in the release commit. Preserve unrelated user changes. The tree must be clean before promotion.
-3. Run `dotnet test --configuration Release`. Stop if any test fails.
+3. Review release contents and resolve the intended version before final validation.
 4. Compute the semantic version bump and edit only `<Version>` in `Directory.Build.props`.
-5. Re-run release tests when the version or release contents changed after the first run.
+5. Run `dotnet test --configuration Release` on the final version and contents.
+   Diagnose failures and repair release-related defects; failing tests block
+   promotion, not repair. Rerun after relevant changes, not after unchanged checks.
 6. Stage the intended release contents, inspect the staged diff, and commit with a concise message that describes the shipped work. Use `Prepare Gridlet <version>` only for a version-only release commit. Follow the authorship rule in `AGENTS.md`: never attribute an AI agent as author, co-author, or contributor anywhere in the commit, pull request, or release notes.
 7. Push `dev` and open a `dev` to `main` pull request. Never push release changes or tags directly to `main`.
-8. Before merging, state that the merge irreversibly publishes the public NuGet packages and obtain explicit confirmation unless the user already explicitly requested both merge and publish in the current turn.
+8. Before merging, verify that the user authorized public package publication
+   in this session. An explicit request to release or publish Gridlet includes
+   the required promotion merge; a version-bump-only request does not. When
+   authorization is missing, present the prepared PR and explain that merging
+   publishes public NuGet packages before asking for confirmation.
 9. Wait for the required CI and promotion-policy checks, then merge using a merge commit so `main` remains a descendant of `dev`.
 10. Find and watch the `Publish` workflow with `gh run list --workflow=publish.yml --limit 1` and `gh run watch <run-id> --exit-status`.
 11. On failure, inspect and report the failing logs. Never delete or move a published tag blindly.
-12. On success, report the commit, version, tag, workflow URL, and five package URLs:
+12. On success, report the commit, version, tag, workflow URL, and seven package URLs:
     - `https://www.nuget.org/packages/Gridlet.Core/<version>`
     - `https://www.nuget.org/packages/Gridlet.SqlServer/<version>`
     - `https://www.nuget.org/packages/Gridlet.Sqlite/<version>`
@@ -41,6 +47,6 @@ Publish Gridlet through GitHub Actions. Merging the protected `dev` branch into 
 
 - Never manually tag or push directly to `main`; the publish workflow creates the tag after package publication succeeds.
 - Never merge a release after failed tests.
-- Check that the tag and NuGet version do not already exist before creating the tag.
+- Check that the intended tag and NuGet version do not already exist before promotion; the workflow owns tag creation.
 - NuGet publication is irreversible; an existing version cannot be overwritten.
 - A transient workflow failure may be rerun because publishing uses `--skip-duplicate`, but inspect the failure first.

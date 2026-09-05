@@ -1,6 +1,6 @@
 ---
 name: orchestrate-improvements
-description: "Orchestrate a repository-wide improvement session with parallel subagents: establish a test baseline, audit disjoint areas, reject weak ideas, implement high-value fixes in isolated worktrees without staging or committing by default, peer-review and integrate them onto the original branch, validate the combined result, clean temporary worktrees, and produce a decision-ready summary. Use when the user asks Codex to spin off agents to find bugs, improve a codebase overnight, spend an available usage window on autonomous improvements, target many fixes or features, or act only as orchestrator and reviewer while leaving changes for later approval."
+description: "Run repository-wide improvement sessions with parallel agents and isolated worktrees when requested. Leave reviewed changes uncommitted by default."
 ---
 
 # Orchestrate improvements
@@ -15,8 +15,8 @@ Run a disciplined codebase improvement exercise. Optimize for verified value, no
 4. Record the original worktree's resolved path, current branch, HEAD, and `git status --short`. This is the integration target; do not let implementation agents work in it.
 5. Inspect repository instructions, recent history, and the project structure.
 6. Preserve pre-existing changes. Do not assign work that overlaps them. If an improvement depends on uncommitted baseline changes, defer it or obtain direction instead of copying user changes into temporary worktrees.
-7. Run the broadest practical baseline test suite and record exact counts.
-8. If the user requests persistence until a terminal condition, use the available goal or continuation mechanism.
+7. Run `dotnet test --configuration Release` as the baseline and record results and unavailable checks.
+8. Define completion from the requested scope and time window. Use a goal or continuation mechanism only when the user requested one.
 
 ## Audit in parallel
 
@@ -30,6 +30,11 @@ Partition the repository by stable ownership boundaries such as UI, runtime/inte
 - explicit rejection of speculative, broad, or low-value ideas.
 
 Keep the primary agent in the orchestrator role. It should establish baselines, triage evidence, review diffs, route follow-ups, and run final validation rather than independently implementing a parallel feature.
+
+Delegate bounded assignments only when they can advance independently. Give each
+agent the relevant paths, constraints, expected evidence, and completion condition;
+avoid copying the whole session. Reuse existing agents and results, and stop
+dispatching new work when the remaining window is needed for review and integration.
 
 If subagents are unavailable, follow the same phases sequentially and disclose that limitation.
 
@@ -98,8 +103,8 @@ The orchestrator alone integrates accepted work. Return to the recorded original
 The orchestrator must independently:
 
 1. Read the important combined diffs rather than trusting agent summaries.
-2. Run all unit and browser/integration tests.
-3. Run a Release build when the repository supports one.
+2. Run `dotnet test --configuration Release` on the combined change, including relevant browser/integration coverage. Report skipped or unavailable checks.
+3. Reuse the build performed by the test command; run a separate build only for configurations it does not cover. Repeat passing checks only after relevant changes or new evidence.
 4. Run `git diff --check`.
 5. Confirm the original branch is still checked out and there are no staged changes or commits from the exercise unless explicitly authorized.
 6. Record the final modified/untracked file count and compare test counts with baseline.
