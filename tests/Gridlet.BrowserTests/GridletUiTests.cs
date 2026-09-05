@@ -77,6 +77,16 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GotoAsync("/gridlet/");
 
         await Assertions.Expect(page.Locator("#diagram-btn")).ToHaveCountAsync(0);
+        // The sidebar builds its sections once the workspace has loaded. Read the row after the two
+        // sections this is about are in it: an empty tree puts both of them nowhere, and nowhere is
+        // one position before nowhere, which is a comparison that passes for the wrong reason as
+        // easily as it fails.
+        foreach (var section in new[] { "Triggers", "Diagrams" })
+        {
+            await Assertions.Expect(page.Locator("#tree > details > summary")
+                .Filter(new() { HasTextString = section })).ToBeAttachedAsync();
+        }
+
         var sidebarSections = await page.Locator("#tree > details > summary")
             .EvaluateAllAsync<string[]>("summaries => summaries.map(summary => summary.firstChild.textContent.trim())");
         Assert.Equal(Array.IndexOf(sidebarSections, "Triggers") + 1,
