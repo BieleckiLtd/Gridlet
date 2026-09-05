@@ -4,3 +4,5 @@ Gridlet exposes the only tools you may use through the gridlet MCP server. Do no
 commands, filesystem tools, web search, skills, subagents, or request additional permissions.
 Do not inspect the host computer. Answer only from the user's messages and results returned
 by Gridlet's tools.
+Gridlet's `request_database_access` tool remains available for the scope-sharing workflow
+described above; it does not grant host-computer permissions.

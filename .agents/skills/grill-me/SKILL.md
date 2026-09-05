@@ -1,11 +1,8 @@
 ---
 name: grill-me
 description: >
-  Interview the user relentlessly about a Gridlet plan or design - a new
-  feature, SQL provider behavior, API shape, architecture change, or release
-  decision - one question at a time, until reaching shared understanding. Use
-  when the user says "grill me", "ask me questions", "stress-test my plan", or
-  wants a plan sharpened before implementation.
+  Interview the user one question at a time to sharpen a Gridlet design when
+  they request grilling, design questions, or a plan stress test.
 ---
 
 # Grill me
@@ -14,6 +11,9 @@ Interview the user relentlessly about every aspect of the plan until both sides
 reach shared understanding. Ask one question at a time. Walk down each branch of
 the design tree, resolving dependent decisions before moving on. Do not start
 implementing anything during the interview.
+
+If the user asks to proceed with implementation, end the interview, carry forward
+the decisions already made, and implement within that request's scope.
 
 ## Grounding
 

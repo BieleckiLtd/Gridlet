@@ -1,12 +1,8 @@
 ---
 name: ship-issue-item
 description: >
-  Ship the next remaining item from a ranked Gridlet backlog issue (default #64)
-  by implementing one slice, reviewing it through a different coding CLI
-  (Codex, Claude Code, or Grok), fixing until host and reviewer agree, then
-  opening a PR into dev, waiting for CI, and merging. Use when the user asks
-  to work the next issue 64 item, drain the SQL coverage backlog, ship one
-  backlog item, close the next coverage gap, or runs /ship-issue-item.
+  Ship a requested Gridlet backlog item (default issue #64) through implementation,
+  independent CLI review, CI, and merge to dev. One item per PR.
 ---
 
 # Ship one issue item
@@ -24,8 +20,8 @@ same run unless the user asked to keep going after the first merge.
 
 ## Inventory
 
-1. Confirm a clean worktree on latest `origin/dev`. Preserve unrelated local
-   changes; do not mix them into this branch.
+1. Fetch `origin/dev` and use a clean worktree based on it. If the current tree
+   has unrelated changes, create a separate linked worktree and preserve them.
 2. Fetch the issue body and every comment with `gh`.
 3. Collect numbered items from the issue body.
 4. Mark an item done when a later comment reports it shipped, completed, or
@@ -35,9 +31,11 @@ same run unless the user asked to keep going after the first merge.
 
 ## Implement
 
-1. Branch from `origin/dev` as `issue-<n>-item-<id>-<slug>`.
+1. Branch from `origin/dev` as `codex/issue-<n>-item-<id>-<slug>`.
 2. Implement the smallest complete slice, matching existing code and tests.
-3. Run `dotnet test --configuration Release`. Stop on failure.
+3. Run `dotnet test --configuration Release`. Diagnose failures, fix those caused
+   by this slice, and rerun affected checks. Do not publish with failing checks;
+   report unrelated or externally blocked failures with evidence.
 4. Record exact test counts for the review prompt.
 
 ## Independent review
@@ -67,5 +65,6 @@ The host agent must not review its own work through its own CLI. Follow
 4. On green CI, merge with a merge commit and delete the branch.
 5. Comment on the issue with what shipped, the PR number, and the validation
    result.
-6. Stop, unless the user asked to keep going. Then fetch `origin/dev` and start
-   the next remaining item.
+6. Follow `AGENTS.md` post-merge cleanup: fast-forward `dev`, remove the merged
+   branch, and prune stale refs. Preserve any pre-existing dirty worktree.
+7. Finish unless the user asked to keep going; then inventory the next item.
