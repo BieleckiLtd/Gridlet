@@ -3937,9 +3937,23 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     /// Where a control's box sits inside the component, in the component's own pixels - read off
     /// the box rather than out of the document, so it is what the designer actually drew.
     /// </summary>
-    private static Task<double> OffsetAsync(IPage page, string name, string edge) =>
-        Box(page, name).EvaluateAsync<double>(
-            $"element => parseFloat(getComputedStyle(element).{edge})");
+    private static async Task<double> OffsetAsync(IPage page, string name, string edge)
+    {
+        // Read again if there is nothing to read. The designer replaces its control elements every
+        // time it redraws, and an element that has just been replaced reports no geometry at all -
+        // an empty computed style, which parses to NaN rather than to the number the control has.
+        // Each attempt resolves the box again, so a retry reads the live element rather than the
+        // one that went away. Waiting cannot turn a wrong value into a right one: a control that
+        // is genuinely somewhere else still reports where it genuinely is.
+        for (var attempt = 1; ; attempt += 1)
+        {
+            var value = await Box(page, name).EvaluateAsync<double>(
+                $"element => parseFloat(getComputedStyle(element).{edge})");
+            if (!double.IsNaN(value)) return value;
+            if (attempt >= 40) return value;
+            await Task.Delay(50);
+        }
+    }
 
     /// <summary>
     /// A module's exports are the component's functions. Nothing registers them: writing

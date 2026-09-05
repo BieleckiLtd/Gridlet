@@ -4321,6 +4321,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.Locator("html")).ToHaveAttributeAsync("data-theme", "light");
         var themeButton = page.Locator("#theme-btn");
         await Assertions.Expect(themeButton).ToHaveAttributeAsync("aria-label", "Switch to dark theme");
+        // The topbar puts a placeholder in the row for each button it can move into the overflow
+        // menu, and it does that on its own layout pass. Both have to be there before their order
+        // means anything: reading the row too early finds one of them missing and compares against
+        // a position that does not exist.
+        await Assertions.Expect(page.Locator("[data-overflow-for='theme-btn']")).ToBeAttachedAsync();
+        await Assertions.Expect(page.Locator("[data-overflow-for='apis-btn']")).ToBeAttachedAsync();
         Assert.True(await page.EvaluateAsync<bool>("""
             () => {
                 const children = [...document.querySelector('#topbar').children];
