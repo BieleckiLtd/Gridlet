@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pixel Preview"
+  short_description: "Compare Preview and public rendering"
+  default_prompt: "Use $pixel-preview to compare Gridlet Preview and published component rendering."

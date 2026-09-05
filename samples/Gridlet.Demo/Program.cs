@@ -17,6 +17,9 @@ var gridlet = builder.Services
 
         options.Limits.MaxQueryResultRows = 100_000;
         options.Security.AllowAnonymousAgentCredentials = true;
+        // Keep Gridlet management at /gridlet while the demo's consumer surfaces use a short
+        // public namespace. Component pages are configured separately below at /pub.
+        options.PublishedApiPath = "/pub/api";
     })
     .AddSqlite(
         builder.Configuration,
@@ -44,7 +47,7 @@ if (OperatingSystem.IsWindows())
         });
 }
 
-gridlet.AddComponents();
+gridlet.AddComponents(components => components.PublicPath = "/pub");
 
 gridlet.AddAgentFramework(agents =>
     {

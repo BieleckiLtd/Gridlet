@@ -33,15 +33,22 @@ public sealed partial record GridletComponentScript(
     bool ReadOnly = false)
 {
     /// <summary>
-    /// The modules Gridlet ships, by the name a component imports them under. They live in the same flat
-    /// namespace as everything else, so <c>import { json } from './gridlet.js'</c> resolves the way
-    /// an import between two of your own modules does - and a module of yours cannot take one of
-    /// these names, or an import would silently mean something else.
+    /// The files Gridlet ships into the Code section, by the name they are listed and imported under.
+    /// They live in the same flat namespace as everything else, so <c>import { json } from
+    /// './gridlet.js'</c> resolves the way an import between two of your own modules does - and a
+    /// module of yours cannot take one of these names, or an import would silently mean something
+    /// else. All of them are read-only: they are part of the build, so an edit would be lost on the
+    /// next upgrade.
+    ///
+    /// component.css is here to be read rather than imported. It is the stylesheet every component
+    /// is rendered with, in the designer and on a published page alike, so what a control looks like
+    /// before anybody says otherwise is something you can open and read rather than infer.
     /// </summary>
     public static IReadOnlyDictionary<string, string> BuiltIn { get; } =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["gridlet.js"] = "standard.js",
+            ["component.css"] = "component.css",
         };
 
     public static bool IsBuiltIn(string? name) => name is not null && BuiltIn.ContainsKey(name);

@@ -32,7 +32,8 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         int x = 10,
         int y = 10,
         int w = 300,
-        int h = 24)
+        int h = 24,
+        object? colors = null)
     {
         var properties = Values(props ?? new { text = "literal" });
         var attributes = new List<string>
@@ -40,6 +41,14 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             $"data-name=\"{Escape(name)}\"",
             $"style=\"left: {x}px; top: {y}px; width: {w}px; height: {h}px;\"",
         };
+
+        // colorLight / fillDark and so on, written as the panel writes them. A colour named for one
+        // scheme only is the interesting case: the other scheme has to fall back to the same place
+        // in Preview and on the public page.
+        foreach (var (key, value) in Values(colors))
+        {
+            attributes.Add($"data-{Dashed(key)}=\"{Escape(value)}\"");
+        }
 
         foreach (var (key, value) in Values(bind))
         {
@@ -136,16 +145,22 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         bool isolated = false,
         bool resizable = false,
         string css = "",
-        string? source = null)
+        string? source = null,
+        string? route = null,
+        object? colors = null,
+        string box = "")
     {
         var page = browserPage.Page;
+
+        // The component's own box, if it has one, beside the size every component has.
+        var boxStyle = string.IsNullOrWhiteSpace(box) ? string.Empty : " " + box.Trim();
 
         var attributes = new List<string>
         {
             @"data-gridlet=""2""",
             $"data-name=\"{Escape(name)}\"",
             @"data-layout=""free""",
-            @"style=""width: 720px; height: 460px;""",
+            $"style=\"width: 720px; height: 460px;{boxStyle}\"",
         };
 
         if (isolated)
@@ -156,6 +171,13 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         if (resizable)
         {
             attributes.Add("data-resizable");
+        }
+
+        // The component's own colours. A control that names none must still reach its kind default
+        // rather than inheriting these, which is the difference the two surfaces used to disagree on.
+        foreach (var (key, value) in Values(colors))
+        {
+            attributes.Add($"data-{Dashed(key)}=\"{Escape(value)}\"");
         }
 
         foreach (var (key, value) in Values(componentBind))
@@ -206,7 +228,9 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
         {
-            DataObject = new { name, html },
+            // Existing consumer fixtures intentionally exercise a public route. New components
+            // default to embedded-only; tests for that behavior opt out explicitly at the call site.
+            DataObject = new { name, html, routable = true, route },
         });
         Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
 
@@ -240,6 +264,1273 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     private static Task OpenPanelTabAsync(IPage page, string tab) =>
         page.Locator($".gfd-tabs button[title='{tab}']").ClickAsync();
 
+    private static async Task PublishEndpointAsync(
+        IPage page,
+        string name,
+        string method,
+        string route,
+        string sql,
+        object[]? parameters = null)
+    {
+        var response = await page.APIRequest.PostAsync("/gridlet/api/published", new APIRequestContextOptions
+        {
+            DataObject = new
+            {
+                name,
+                method,
+                route,
+                connectionName = "Main",
+                sql,
+                parameters = parameters ?? [],
+                enabled = true,
+            },
+        });
+        Assert.True(response.Ok, $"Publishing the endpoint failed: {response.Status}");
+    }
+
+    private static async Task<string> SaveComponentAsync(
+        IPage page,
+        string name,
+        string html,
+        bool routable = true,
+        string? route = null,
+        string? title = null)
+    {
+        var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
+        {
+            // Existing consumer fixtures intentionally exercise a public route. New components
+            // default to embedded-only; tests for that behavior opt out explicitly at the call site.
+            DataObject = new { name, html, routable, route, title },
+        });
+        Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
+        var saved = await response.JsonAsync();
+        return saved!.Value.GetProperty("id").GetString()!;
+    }
+
+    [Fact]
+    public async Task Component_sidebar_uses_a_compact_public_form_action_without_resolved_settings()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var publicName = $"Public sidebar component {suffix}";
+        var embeddedName = $"Embedded sidebar component {suffix}";
+        var route = $"sidebar-public-{suffix}";
+        var publicHtml = $"<div data-gridlet=\"2\" data-name=\"{publicName}\" data-layout=\"free\" style=\"width: 240px; height: 80px;\"></div>";
+        var embeddedHtml = $"<div data-gridlet=\"2\" data-name=\"{embeddedName}\" data-layout=\"free\" style=\"width: 240px; height: 80px;\"></div>";
+        await SaveComponentAsync(page, publicName, publicHtml, routable: true,
+            route: route, title: "Public sidebar form");
+        await SaveComponentAsync(page, embeddedName, embeddedHtml, routable: false);
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+
+        var publicItem = page.Locator("button.tree-item").Filter(
+            new LocatorFilterOptions { HasTextString = publicName });
+        var embeddedItem = page.Locator("button.tree-item").Filter(
+            new LocatorFilterOptions { HasTextString = embeddedName });
+        await Assertions.Expect(publicItem).ToBeVisibleAsync();
+        await Assertions.Expect(embeddedItem).ToBeVisibleAsync();
+
+        // Component rows no longer spend width on publication-state badges. Only a routable
+        // component with a safe resolved URL gets the compact trailing action.
+        await Assertions.Expect(publicItem.Locator(".badge")).ToHaveCountAsync(0);
+        await Assertions.Expect(embeddedItem.Locator(".badge")).ToHaveCountAsync(0);
+        await Assertions.Expect(publicItem.GetByTestId("component-public-open")).ToHaveCountAsync(1);
+        await Assertions.Expect(embeddedItem.GetByTestId("component-public-open")).ToHaveCountAsync(0);
+
+        // The trailing action must not bubble into the row's designer-opening handler.
+        var publicForm = page.WaitForPopupAsync();
+        await publicItem.GetByTestId("component-public-open").ClickAsync();
+        var popup = await publicForm;
+        await popup.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+        Assert.EndsWith($"/gridlet/components/{route}", new Uri(popup.Url).AbsolutePath, StringComparison.Ordinal);
+        Assert.Equal("/gridlet/", new Uri(page.Url).AbsolutePath);
+        await Assertions.Expect(page.Locator(".gfd-designer")).ToHaveCountAsync(0);
+        await popup.CloseAsync();
+
+        // The same icon is keyboard-operable and still leaves the designer row untouched.
+        var keyboardForm = page.WaitForPopupAsync();
+        await publicItem.GetByTestId("component-public-open").FocusAsync();
+        await page.Keyboard.PressAsync("Enter");
+        var keyboardPopup = await keyboardForm;
+        await keyboardPopup.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+        Assert.EndsWith($"/gridlet/components/{route}", new Uri(keyboardPopup.Url).AbsolutePath, StringComparison.Ordinal);
+        await keyboardPopup.CloseAsync();
+
+        await publicItem.ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-designer")).ToBeVisibleAsync();
+        await OpenPanelTabAsync(page, "Settings");
+        await Assertions.Expect(page.GetByTestId("component-routable")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("component-route")).ToHaveValueAsync(route);
+        await Assertions.Expect(page.GetByTestId("component-title")).ToHaveValueAsync("Public sidebar form");
+        await Assertions.Expect(page.GetByTestId("component-copy-public-url")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByText("Resolved URL", new() { Exact = true })).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByText("This component is available for embedding only.", new() { Exact = true }))
+            .ToHaveCountAsync(0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Preview_and_published_component_have_pixel_parity_at_the_same_viewport()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var page = browserPage.Page;
+        var suffix = Guid.NewGuid().ToString("n");
+        var name = $"Pixel parity component {suffix}";
+        var sourceRoute = $"pixel-parity-source-{suffix}";
+        var componentRoute = $"pixel-parity-component-{suffix}";
+
+        await PublishEndpointAsync(page, $"Pixel parity source {suffix}", "GET", sourceRoute, "SELECT 1");
+        await OpenComponentAsync(
+            browserPage,
+            name,
+            [
+                Control("caption", "label", props: new { text = "Answer" }, x: 16, y: 16, w: 130, h: 30),
+                Control("value", "textbox", bind: new { value = "=data.Answer" }, x: 160, y: 16, w: 280, h: 30),
+                Control("choice", "checkbox", props: new { text = "Accept" }, x: 16, y: 54, w: 280, h: 30),
+                Control("save", "button", props: new { text = "Save" }, x: 16, y: 96, w: 280, h: 34),
+                Control("records", "grid", props: new { columns = "Answer", header = true }, x: 16, y: 146, w: 420, h: 160),
+                Control("pager", "pager", x: 16, y: 320, w: 420, h: 34),
+            ],
+            source: sourceRoute,
+            route: componentRoute);
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas.preview")).ToBeVisibleAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas.preview [data-name='records'] tbody tr"))
+            .ToHaveCountAsync(1);
+        var preview = page.Locator(".gfd-canvas.preview");
+        await BrowserPixelParity.StabilizeAsync(page, preview);
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator("#gridlet-component-host .gridlet-component-runtime"))
+                .ToBeVisibleAsync();
+            await Assertions.Expect(published.Locator("[data-name='records'] tbody tr")).ToHaveCountAsync(1);
+            var publishedRoot = published.Locator("#gridlet-component-host .gridlet-component-runtime");
+            await BrowserPixelParity.StabilizeAsync(published, publishedRoot);
+
+            var comparison = await BrowserPixelParity.CompareAsync(
+                preview,
+                publishedRoot,
+                $"preview-published-{suffix}");
+            Assert.True(comparison.IsMatch, comparison.ToString());
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Isolated_preview_and_published_component_have_pixel_parity()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var page = browserPage.Page;
+        var suffix = Guid.NewGuid().ToString("n");
+        var name = $"Isolated parity component {suffix}";
+        var sourceRoute = $"isolated-parity-source-{suffix}";
+        var componentRoute = $"isolated-parity-component-{suffix}";
+
+        await PublishEndpointAsync(page, $"Isolated parity source {suffix}", "GET", sourceRoute, "SELECT 1");
+        await OpenComponentAsync(
+            browserPage,
+            name,
+            [
+                Control("caption", "label", props: new { text = "Answer" }, x: 16, y: 16, w: 130, h: 30),
+                Control("value", "textbox", bind: new { value = "=data.Answer" }, x: 160, y: 16, w: 280, h: 30),
+                Control("choice", "checkbox", props: new { text = "Accept" }, x: 16, y: 54, w: 280, h: 30),
+                Control("records", "grid", props: new { columns = "Answer", header = true }, x: 16, y: 96, w: 420, h: 160),
+                Control("pager", "pager", x: 16, y: 270, w: 420, h: 34),
+            ],
+            isolated: true,
+            source: sourceRoute,
+            route: componentRoute);
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas.preview [data-name='records'] tbody tr"))
+            .ToHaveCountAsync(1);
+        var preview = page.Locator(".gfd-canvas.preview");
+        await BrowserPixelParity.StabilizeAsync(page, preview);
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator("#gridlet-component-host .gridlet-component-runtime"))
+                .ToBeVisibleAsync();
+            await Assertions.Expect(published.Locator("[data-name='records'] tbody tr")).ToHaveCountAsync(1);
+            var publishedRoot = published.Locator("#gridlet-component-host .gridlet-component-runtime");
+            await BrowserPixelParity.StabilizeAsync(published, publishedRoot);
+
+            // Structure first, because it names the control that moved when something drifts.
+            var structure = await BrowserPixelParity.CompareStructureAsync(preview, publishedRoot);
+            Assert.True(structure.IsMatch, structure.ToString());
+
+            // Then the pixels. Isolation hands the controls back to the browser, and the browser
+            // draws them the same way in both documents, so this is a full comparison and not a
+            // weaker stand-in for one.
+            var pixels = await BrowserPixelParity.CompareAsync(
+                preview,
+                publishedRoot,
+                $"isolated-preview-published-{suffix}");
+            Assert.True(pixels.IsMatch, pixels.ToString());
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A grid is placed as a box and scrolls a table inside it. The published runtime moves the
+    /// authored geometry onto that box, so a geometry binding has to move with it: writing the
+    /// bound size to the table instead left the table sized independently of the box that clips it,
+    /// which showed up as a second set of scrollbars and rows cut off part way down.
+    /// </summary>
+    [Fact]
+    public async Task Published_grid_geometry_bindings_size_the_scrolling_viewport()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var page = browserPage.Page;
+        var suffix = Guid.NewGuid().ToString("n");
+        var name = $"Grid geometry component {suffix}";
+        var sourceRoute = $"grid-geometry-source-{suffix}";
+        var componentRoute = $"grid-geometry-component-{suffix}";
+
+        await PublishEndpointAsync(page, $"Grid geometry source {suffix}", "GET", sourceRoute, "SELECT 1");
+        await OpenComponentAsync(
+            browserPage,
+            name,
+            [
+                Control(
+                    "records",
+                    "grid",
+                    props: new { columns = "Answer", header = true },
+                    bind: new
+                    {
+                        x = "=16",
+                        w = "=component.width - 32 - self.x",
+                        h = "=component.height - 60 - self.y",
+                        y = "=120",
+                    },
+                    x: 16,
+                    y: 120,
+                    w: 672,
+                    h: 280),
+            ],
+            source: sourceRoute,
+            route: componentRoute);
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator("[data-name='records'] tbody tr")).ToHaveCountAsync(1);
+
+            var geometry = await published.EvaluateAsync<JsonElement>("""
+                () => {
+                  const table = document.querySelector('[data-role="grid"]');
+                  const viewport = table.parentElement;
+                  return {
+                    viewportClass: viewport.className,
+                    left: viewport.style.left,
+                    top: viewport.style.top,
+                    width: viewport.style.width,
+                    height: viewport.style.height,
+                    tableWidth: table.style.width,
+                    tableHeight: table.style.height,
+                    scrollWidth: viewport.scrollWidth,
+                    clientWidth: viewport.clientWidth,
+                  };
+                }
+                """);
+
+            // The bound box is the viewport's, worked out from the component's own size and the
+            // grid's resolved position: 720 - 32 - 16 wide and 460 - 60 - 120 tall.
+            Assert.Equal("gridlet-grid-viewport", geometry.GetProperty("viewportClass").GetString());
+            Assert.Equal("16px", geometry.GetProperty("left").GetString());
+            Assert.Equal("120px", geometry.GetProperty("top").GetString());
+            Assert.Equal("672px", geometry.GetProperty("width").GetString());
+            Assert.Equal("280px", geometry.GetProperty("height").GetString());
+
+            // The table keeps sizing itself to its content inside that box, and the box therefore
+            // never scrolls sideways over a table narrower than it is.
+            Assert.Equal("max-content", geometry.GetProperty("tableWidth").GetString());
+            Assert.Equal("auto", geometry.GetProperty("tableHeight").GetString());
+            Assert.Equal(
+                geometry.GetProperty("clientWidth").GetInt32(),
+                geometry.GetProperty("scrollWidth").GetInt32());
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Preview resolves each bound property when something asks for it, so the order controls happen
+    /// to be written in does not matter. The published runtime evaluated in document order instead,
+    /// and a formula naming a field declared below it read that field before its own value binding
+    /// had run.
+    /// </summary>
+    [Fact]
+    public async Task A_published_binding_reads_a_control_declared_after_it()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var page = browserPage.Page;
+        var suffix = Guid.NewGuid().ToString("n");
+        var name = $"Forward reference component {suffix}";
+        var sourceRoute = $"forward-reference-source-{suffix}";
+        var componentRoute = $"forward-reference-component-{suffix}";
+
+        await PublishEndpointAsync(
+            page,
+            $"Forward reference source {suffix}",
+            "GET",
+            sourceRoute,
+            "SELECT 42");
+
+        await OpenComponentAsync(
+            browserPage,
+            name,
+            [
+                // The button is written above the field it names, which is the case that failed.
+                Control(
+                    "save",
+                    "button",
+                    bind: new { text = "=(\"Save \" + answer.value)" },
+                    x: 16,
+                    y: 16,
+                    w: 280,
+                    h: 34),
+                Control("answer", "textbox", bind: new { value = "=data.Answer" }, x: 16, y: 60, w: 280, h: 30),
+            ],
+            source: sourceRoute,
+            route: componentRoute);
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas.preview [data-name='save']"))
+            .ToHaveTextAsync("Save 42");
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator("[data-name='save']")).ToHaveTextAsync("Save 42");
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The colours a component does not name. Preview falls back to each control kind's default -
+    /// a label's text colour, a field's fill - because the designer emits those defaults into the
+    /// generated sheet. The published runtime had no such defaults and made an unnamed colour
+    /// inherit the component's own instead, so a component with a pale text colour published every
+    /// label, its pager and its grid heading in that colour. A colour named for one scheme only was
+    /// dropped as well: the light rule carried four more :not()s than the dark one, so in dark mode
+    /// it still won and read a variable nobody had set.
+    /// </summary>
+    [Fact]
+    public async Task Preview_and_published_component_resolve_the_same_control_colours_in_dark_mode()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync(ColorScheme.Dark);
+        var page = browserPage.Page;
+        var suffix = Guid.NewGuid().ToString("n");
+        var name = $"Colour parity component {suffix}";
+        var sourceRoute = $"colour-parity-source-{suffix}";
+        var componentRoute = $"colour-parity-component-{suffix}";
+
+        await PublishEndpointAsync(page, $"Colour parity source {suffix}", "GET", sourceRoute, "SELECT 1");
+        await OpenComponentAsync(
+            browserPage,
+            name,
+            [
+                // Named for neither scheme: both surfaces have to reach the same kind default.
+                Control("plain", "label", props: new { text = "Plain" }, x: 16, y: 16, w: 130, h: 30),
+                Control("field", "textbox", bind: new { value = "=data.Answer" }, x: 160, y: 16, w: 280, h: 30),
+                Control("notes", "textbox", props: new { multiline = "true" }, x: 160, y: 56, w: 280, h: 60),
+                // Named for dark only: the light variable stays unset, and must not win.
+                Control("tinted", "label", props: new { text = "Tinted" }, x: 16, y: 56, w: 130, h: 30,
+                    colors: new { colorDark = "#9acd32" }),
+                Control("choice", "checkbox", props: new { text = "Accept" }, x: 16, y: 130, w: 280, h: 30,
+                    colors: new { fillDark = "#0a1ffc9e" }),
+                Control("records", "grid", props: new { columns = "Answer", header = true }, x: 16, y: 170, w: 420, h: 140,
+                    colors: new { colorDark = "#9acd32", fillDark = "#0e0e1ab1" }),
+            ],
+            source: sourceRoute,
+            route: componentRoute,
+            resizable: true,
+            // The component's own text colour, deliberately nothing like a control default, so a
+            // control that wrongly inherits it is unmistakable rather than accidentally right.
+            colors: new { colorDark = "#83a1ff57" });
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas.preview [data-name='records'] tbody tr"))
+            .ToHaveCountAsync(1);
+        var previewColours = await ControlColoursAsync(page, ".gfd-canvas.preview");
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator("[data-name='records'] tbody tr")).ToHaveCountAsync(1);
+            var publishedColours = await ControlColoursAsync(published, ".gridlet-component-runtime");
+
+            Assert.Equal(previewColours, publishedColours);
+
+            // The dark-only colours actually took, rather than both surfaces agreeing on nothing.
+            Assert.Contains("rgb(154, 205, 50)", previewColours, StringComparison.Ordinal);
+            Assert.Contains("rgba(10, 31, 252, 0.62)", previewColours, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// What a reader can do to a component, rather than how it looks: a component the document marks
+    /// resizable is resizable where it is read, a field is sized by the component rather than dragged
+    /// by the reader, and a grid's columns can be widened. Preview had all three and the published
+    /// page none of them.
+    /// </summary>
+    [Fact]
+    public async Task A_published_component_resizes_and_its_grid_columns_can_be_dragged()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var page = browserPage.Page;
+        var suffix = Guid.NewGuid().ToString("n");
+        var name = $"Resize parity component {suffix}";
+        var sourceRoute = $"resize-parity-source-{suffix}";
+        var componentRoute = $"resize-parity-component-{suffix}";
+
+        await PublishEndpointAsync(page, $"Resize parity source {suffix}", "GET", sourceRoute, "SELECT 1");
+        await OpenComponentAsync(
+            browserPage,
+            name,
+            [
+                Control("notes", "textbox", props: new { multiline = "true" }, x: 16, y: 16, w: 280, h: 60),
+                Control("records", "grid", props: new { columns = "Answer", header = true }, x: 16, y: 96, w: 420, h: 140),
+            ],
+            source: sourceRoute,
+            route: componentRoute,
+            resizable: true);
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator("[data-name='records'] tbody tr")).ToHaveCountAsync(1);
+
+            await Assertions.Expect(published.Locator(".gridlet-component-runtime"))
+                .ToHaveCSSAsync("resize", "both");
+            await Assertions.Expect(published.Locator("[data-name='notes']"))
+                .ToHaveCSSAsync("resize", "none");
+
+            var resize = await published.EvaluateAsync<JsonElement>("""
+                () => {
+                  const table = document.querySelector('[data-role="grid"]');
+                  const cell = table.querySelector('thead th');
+                  const grip = cell.querySelector('.col-grip');
+                  const before = cell.offsetWidth;
+                  const at = grip.getBoundingClientRect();
+                  grip.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: at.left + 4, clientY: at.top + 4 }));
+                  document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: at.left + 64, clientY: at.top + 4 }));
+                  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                  return {
+                    grips: table.querySelectorAll('thead .col-grip').length,
+                    headings: [...table.querySelectorAll('thead th')].map((th) => th.textContent),
+                    before,
+                    after: cell.offsetWidth,
+                  };
+                }
+                """);
+
+            Assert.Equal(1, resize.GetProperty("grips").GetInt32());
+            // The grip is a child of the heading cell, so it must not become part of the column name
+            // the grid reads back out of its own header.
+            Assert.Equal("Answer", resize.GetProperty("headings")[0].GetString());
+            Assert.Equal(
+                resize.GetProperty("before").GetInt32() + 60,
+                resize.GetProperty("after").GetInt32());
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The resolved colours of the controls a colour-parity comparison cares about, in one string so
+    /// a mismatch names the control and the property rather than failing on the first difference.
+    /// </summary>
+    private static async Task<string> ControlColoursAsync(IPage page, string root) =>
+        await page.EvaluateAsync<string>("""
+            (root) => {
+              const surface = document.querySelector(root);
+              const read = (name) => {
+                const element = surface.querySelector(`[data-name="${name}"]`);
+                const style = getComputedStyle(element);
+                return `${name}: ${style.color} on ${style.backgroundColor}`;
+              };
+              return ['plain', 'field', 'notes', 'tinted', 'choice', 'records'].map(read).join('\n');
+            }
+            """, root);
+
+    /// <summary>
+    /// Anchoring is a formula, and a formula written against the component's size is only true of
+    /// the size it was read at. Preview redraws its canvas whenever the box changes; the published
+    /// page resolved its bindings once at load, so a reader who dragged a resizable component's
+    /// corner got a bigger box with every control still sized for the old one.
+    /// </summary>
+    [Fact]
+    public async Task A_published_component_re_anchors_its_controls_when_it_is_resized()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var page = browserPage.Page;
+        var suffix = Guid.NewGuid().ToString("n");
+        var name = $"Anchor parity component {suffix}";
+        var sourceRoute = $"anchor-parity-source-{suffix}";
+        var componentRoute = $"anchor-parity-component-{suffix}";
+
+        await PublishEndpointAsync(page, $"Anchor parity source {suffix}", "GET", sourceRoute, "SELECT 1");
+        await OpenComponentAsync(
+            browserPage,
+            name,
+            [
+                // Stretched against the right edge, pinned to the bottom, and a field that reports
+                // the width it was last resolved at.
+                Control("stretch", "textbox", bind: new { x = "=16", w = "=component.width - 32 - self.x" },
+                    x: 16, y: 16, w: 672, h: 30),
+                Control("footer", "label", bind: new { y = "=component.height - 40" },
+                    props: new { text = "Footer" }, x: 16, y: 420, w: 130, h: 30),
+                Control("reported", "textbox", bind: new { value = "=component.width" },
+                    x: 16, y: 56, w: 200, h: 30),
+                Control("records", "grid", props: new { columns = "Answer", header = true },
+                    bind: new { h = "=component.height - 200" }, x: 16, y: 96, w: 420, h: 260),
+            ],
+            source: sourceRoute,
+            route: componentRoute,
+            resizable: true);
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator("[data-name='records'] tbody tr")).ToHaveCountAsync(1);
+
+            var layout = await published.EvaluateAsync<JsonElement>("""
+                async () => {
+                  const root = document.querySelector('.gridlet-component-runtime');
+                  const read = () => ({
+                    stretch: document.querySelector('[data-name="stretch"]').style.width,
+                    footer: document.querySelector('[data-name="footer"]').style.top,
+                    reported: document.querySelector('[data-name="reported"]').value,
+                    grid: document.querySelector('.gridlet-grid-viewport').style.height,
+                    rows: document.querySelectorAll('[data-name="records"] tbody tr').length,
+                  });
+                  const before = read();
+                  root.style.width = '900px';
+                  root.style.height = '600px';
+                  await new Promise((done) => setTimeout(done, 300));
+                  return { before, after: read() };
+                }
+                """);
+
+            var before = layout.GetProperty("before");
+            var after = layout.GetProperty("after");
+
+            // The authored size the component was saved at.
+            Assert.Equal("672px", before.GetProperty("stretch").GetString());
+            Assert.Equal("420px", before.GetProperty("footer").GetString());
+            Assert.Equal("720", before.GetProperty("reported").GetString());
+            Assert.Equal("260px", before.GetProperty("grid").GetString());
+
+            // 900 - 32 - 16 wide, pinned 40 up from 600, and the grid 200 short of it.
+            Assert.Equal("852px", after.GetProperty("stretch").GetString());
+            Assert.Equal("560px", after.GetProperty("footer").GetString());
+            Assert.Equal("900", after.GetProperty("reported").GetString());
+            Assert.Equal("400px", after.GetProperty("grid").GetString());
+
+            // Laying out again must not rebuild rows the reader is looking at.
+            Assert.Equal(before.GetProperty("rows").GetInt32(), after.GetProperty("rows").GetInt32());
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Two things an isolated grid keeps, because neither belongs to the primitives isolation hands
+    /// back to the browser. Resizing a column is something the reader does, so the handle survives
+    /// the reset - it lived in the chrome layer and an isolated public grid had no hit area at all.
+    /// The scrollbars are the component's own frame, so they stay Gridlet's slim ones; and because
+    /// `scrollbar-color` is inherited, stating them is also what stops a canvas taking the
+    /// workspace's from the page around it and scrolling one way in Preview and another on its own.
+    /// </summary>
+    [Fact]
+    public async Task An_isolated_grid_keeps_its_column_handles_and_the_browser_s_scrollbars()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var page = browserPage.Page;
+        var suffix = Guid.NewGuid().ToString("n");
+        var name = $"Isolated grid component {suffix}";
+        var sourceRoute = $"isolated-grid-source-{suffix}";
+        var componentRoute = $"isolated-grid-component-{suffix}";
+
+        await PublishEndpointAsync(page, $"Isolated grid source {suffix}", "GET", sourceRoute, "SELECT 1");
+        await OpenComponentAsync(
+            browserPage,
+            name,
+            [
+                Control("records", "grid", props: new { columns = "Answer", header = true },
+                    x: 16, y: 16, w: 300, h: 120),
+            ],
+            isolated: true,
+            source: sourceRoute,
+            route: componentRoute);
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas.preview [data-name='records'] tbody tr"))
+            .ToHaveCountAsync(1);
+        var preview = await GridHandleStateAsync(page, ".gfd-canvas.preview", ".gfd-grid-viewport");
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator("[data-name='records'] tbody tr")).ToHaveCountAsync(1);
+            var runtime = await GridHandleStateAsync(
+                published, ".gridlet-component-runtime", ".gridlet-grid-viewport");
+
+            Assert.Equal(preview, runtime);
+
+            // And the handle is real on both, rather than both agreeing on an unusable one.
+            Assert.Contains("grip absolute 8px", preview, StringComparison.Ordinal);
+            Assert.Contains("scrollbar rgb(170, 180, 195) rgba(0, 0, 0, 0) thin", preview, StringComparison.Ordinal);
+            Assert.Contains("resized true", preview, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// How a grid's column handle is laid out, what its viewport asks of the scrollbar, and whether
+    /// dragging the handle actually moves the column - as one string, so a mismatch says which.
+    /// </summary>
+    private static async Task<string> GridHandleStateAsync(IPage page, string root, string viewport) =>
+        await page.EvaluateAsync<string>("""
+            ([root, viewport]) => {
+              const surface = document.querySelector(root);
+              const view = surface.querySelector(viewport);
+              const cell = surface.querySelector('thead th');
+              const grip = cell.querySelector('.col-grip');
+              const gripStyle = getComputedStyle(grip);
+              const viewStyle = getComputedStyle(view);
+              const before = cell.offsetWidth;
+              const at = grip.getBoundingClientRect();
+              grip.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: at.left + 4, clientY: at.top + 4 }));
+              document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: at.left + 54, clientY: at.top + 4 }));
+              document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+              return [
+                `grip ${gripStyle.position} ${gripStyle.width} ${gripStyle.right}`,
+                `cell ${getComputedStyle(cell).position}`,
+                `scrollbar ${viewStyle.scrollbarColor} ${viewStyle.scrollbarWidth}`,
+                `resized ${cell.offsetWidth === before + 50}`,
+              ].join('; ');
+            }
+            """, new[] { root, viewport });
+
+    /// <summary>
+    /// The stylesheet every component is rendered with is a file in the Code section, beside
+    /// Gridlet's own module, and opens in its own tab. Read-only, because it is part of the build:
+    /// an edit would be lost on the next upgrade. It is shown as it was written rather than as the
+    /// browser reparses it - `all: revert` comes back out of the CSSOM as every longhand it stands
+    /// for, which is the same rule and unreadable.
+    /// </summary>
+    [Fact]
+    public async Task The_code_section_lists_the_component_stylesheet_and_opens_it_read_only()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var listed = await page.APIRequest.GetAsync("/gridlet/api/components/scripts");
+        Assert.True(listed.Ok, $"Listing the Code section failed: {listed.Status}");
+        var files = await listed.JsonAsync();
+        var stylesheet = files!.Value.EnumerateArray()
+            .Single(file => file.GetProperty("name").GetString() == "component.css");
+        Assert.True(stylesheet.GetProperty("readOnly").GetBoolean(), "the stylesheet must not be editable");
+
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Code" }) });
+        await section.Locator("summary").First.ClickAsync();
+
+        var item = page.Locator("button.tree-item[title^='component.css']");
+        await Assertions.Expect(item).ToBeVisibleAsync();
+        // The section is called Code and mostly holds modules, but not everything in it is one, and
+        // the list should say so at a glance rather than only in the file name.
+        await Assertions.Expect(item.Locator(".badge")).ToHaveTextAsync("CSS");
+        Assert.Contains("badge-stylesheet",
+            await item.Locator(".badge").GetAttributeAsync("class") ?? string.Empty,
+            StringComparison.Ordinal);
+        // It is read, not imported, and the sidebar says which.
+        Assert.Contains("the stylesheet every component is rendered with",
+            await item.GetAttributeAsync("title") ?? string.Empty, StringComparison.Ordinal);
+
+        await item.ClickAsync();
+        var editor = page.GetByTestId("component-code-editor");
+        await Assertions.Expect(editor).ToBeVisibleAsync();
+        Assert.True(await editor.EvaluateAsync<bool>("element => element.readOnly"));
+
+        var source = await editor.InputValueAsync();
+        Assert.Contains("@layer gridlet-reset, gridlet-chrome, gridlet;", source, StringComparison.Ordinal);
+        Assert.Contains("all: revert;", source, StringComparison.Ordinal);
+        // Both surfaces are named in it, which is what stops one rule meaning two different things.
+        Assert.Contains(".gfd-canvas .gfd-control", source, StringComparison.Ordinal);
+        Assert.Contains(".gridlet-component-runtime [data-name]", source, StringComparison.Ordinal);
+        // The file as written, not a reparse: the CSSOM would have expanded the shorthand away.
+        Assert.DoesNotContain("accent-color: revert", source, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A component's own box - its border, its corners, the space inside its edge and the space
+    /// outside it. The designer paints the canvas with them through the generated sheet; the runtime
+    /// reads them off the document's own style attribute. Two routes to the same rendering, so this
+    /// checks they arrive at one.
+    /// </summary>
+    [Fact]
+    public async Task Preview_and_published_component_render_the_same_box()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync(ColorScheme.Dark);
+        var page = browserPage.Page;
+        var suffix = Guid.NewGuid().ToString("n");
+        var name = $"Box parity component {suffix}";
+        var sourceRoute = $"box-parity-source-{suffix}";
+        var componentRoute = $"box-parity-component-{suffix}";
+
+        await PublishEndpointAsync(page, $"Box parity source {suffix}", "GET", sourceRoute, "SELECT 1");
+        await OpenComponentAsync(
+            browserPage,
+            name,
+            [Control("caption", "label", props: new { text = "Answer" }, x: 16, y: 16, w: 130, h: 30)],
+            source: sourceRoute,
+            route: componentRoute,
+            // A border colour named for one scheme only, so the fallback is exercised too.
+            colors: new { borderDark = "#ff9800" },
+            box: "border-width: 3px; border-style: dashed; border-radius: 12px; padding: 10px; margin: 16px;");
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas.preview")).ToBeVisibleAsync();
+        var preview = await BoxOfAsync(page, ".gfd-canvas.preview");
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator(".gridlet-component-runtime")).ToBeVisibleAsync();
+            var runtime = await BoxOfAsync(published, ".gridlet-component-runtime");
+
+            Assert.Equal(preview, runtime);
+
+            // And the values actually took, rather than both surfaces agreeing on nothing.
+            Assert.Contains("border 3px dashed rgb(255, 152, 0)", preview, StringComparison.Ordinal);
+            Assert.Contains("radius 12px", preview, StringComparison.Ordinal);
+            Assert.Contains("padding 10px", preview, StringComparison.Ordinal);
+            Assert.Contains("margin 16px", preview, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>The component's own box, as one string, so a mismatch names the property.</summary>
+    private static async Task<string> BoxOfAsync(IPage page, string root) =>
+        await page.EvaluateAsync<string>("""
+            (root) => {
+              const style = getComputedStyle(document.querySelector(root));
+              return [
+                `border ${style.borderTopWidth} ${style.borderTopStyle} ${style.borderTopColor}`,
+                `radius ${style.borderRadius}`,
+                `padding ${style.padding}`,
+                `margin ${style.margin}`,
+              ].join('; ');
+            }
+            """, root);
+
+    /// <summary>
+    /// A component sized in per cent rather than pixels. `component.width` is then not a number until
+    /// something has measured it, and Design used the authored value regardless - so `100%` was read
+    /// as a hundred pixels and every anchored control was laid out against a component a fraction of
+    /// its real width. Preview was right because it measured, which is why this only showed in Design.
+    /// </summary>
+    [Fact]
+    public async Task Design_lays_out_anchored_controls_against_a_measured_percentage_width()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        // Named uniquely, because the store outlives one run and the sidebar is looked up by name.
+        var page = await OpenComponentAsync(browserPage, $"Responsive component {Guid.NewGuid():n}",
+            [
+                Control("stretch", "textbox", bind: new { x = "=20", w = "=component.width - 40 - self.x" },
+                    x: 20, y: 20, w: 300, h: 30),
+            ],
+            // A later declaration in the same attribute, which is how the panel writes a size the
+            // document already carries.
+            box: "width: 100%;");
+
+        // A percentage is only a number once the canvas has been laid out, so the first render can
+        // be a frame early and the size observer corrects it. Poll for the settled answer: what
+        // matters is where the control ends up, not which frame it got there on.
+        JsonElement layout = default;
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            layout = await page.EvaluateAsync<JsonElement>("""
+                () => {
+                  const canvas = document.querySelector('.gfd-canvas');
+                  const control = canvas?.querySelector('[data-name="stretch"]')?.closest('.gfd-control');
+                  if (!canvas || !control) return { canvas: 0, control: 0, settled: false };
+                  // A percentage canvas is a fractional width; the two boxes round independently.
+                  const canvasWidth = canvas.getBoundingClientRect().width;
+                  const controlWidth = control.getBoundingClientRect().width;
+                  return {
+                    canvas: Math.round(canvasWidth),
+                    control: Math.round(controlWidth),
+                    settled: Math.abs(controlWidth - (canvasWidth - 60)) <= 1,
+                  };
+                }
+                """);
+            if (layout.GetProperty("settled").GetBoolean()) break;
+            await Task.Delay(100);
+        }
+
+        var canvas = layout.GetProperty("canvas").GetInt32();
+        var control = layout.GetProperty("control").GetInt32();
+
+        // The canvas really is being measured rather than collapsed, so the check below means
+        // something: a hundred-pixel reading of "100%" would leave it far narrower than this.
+        Assert.True(canvas > 400, $"the canvas measured {canvas}px, too narrow to tell the two readings apart");
+        Assert.True(layout.GetProperty("settled").GetBoolean(),
+            $"the control settled at {control}px against a {canvas}px canvas; expected {canvas - 60}px");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A component's edge is where the component ends: a control placed past it is clipped where the
+    /// component is read, in Preview and on its published page alike.
+    /// </summary>
+    /// <remarks>
+    /// Design deliberately does not clip. A resize handle sits five pixels outside the control it
+    /// belongs to, so clipping the canvas would cut the handles off a control on the boundary and
+    /// leave it impossible to drag back - which is a worse lie about the component than showing what
+    /// is outside it. The clipping that matters is the clipping a reader sees, and this checks both
+    /// places a reader sees one.
+    /// </remarks>
+    [Fact]
+    public async Task A_control_beyond_the_edge_is_clipped_wherever_the_component_is_read()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var suffix = Guid.NewGuid().ToString("n");
+        var componentRoute = $"clipping-component-{suffix}";
+        var page = await OpenComponentAsync(browserPage, $"Clipping component {suffix}",
+            [
+                Control("inside", "label", props: new { text = "Inside" }, x: 16, y: 16, w: 130, h: 30),
+                // Placed well past the 720px edge the component was given.
+                Control("outside", "button", props: new { text = "Outside" }, x: 900, y: 16, w: 160, h: 30),
+            ],
+            route: componentRoute);
+
+        // Design: clipped, and clipped in a way that does not make the surface scroll to reach what
+        // is outside the component.
+        Assert.Equal("clip", await ClipOfAsync(page, ".gfd-canvas"));
+        // The surface may scroll a little for the component's own margin, but it must not scroll out
+        // to reach the control at x=900: that would be the component's overflow dragging the whole
+        // surface along with it, which is how a stray control put a scrollbar under everything.
+        var surfaceScrollWidth = await page.EvaluateAsync<int>(
+            "() => document.querySelector('.gfd-surface').scrollWidth");
+        Assert.True(surfaceScrollWidth < 900,
+            $"the surface scrolled to {surfaceScrollWidth}px, far enough to reach a control outside the component");
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas.preview")).ToBeVisibleAsync();
+        Assert.Equal("hidden", await ClipOfAsync(page, ".gfd-canvas.preview"));
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator(".gridlet-component-runtime")).ToBeVisibleAsync();
+            Assert.Equal("hidden", await ClipOfAsync(published, ".gridlet-component-runtime"));
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// How a surface treats what is placed past its edge - and a check that there really is
+    /// something out there, so "hidden" means something.
+    /// </summary>
+    private static async Task<string> ClipOfAsync(IPage page, string root) =>
+        await page.EvaluateAsync<string>("""
+            (root) => {
+              const surface = document.querySelector(root);
+              const outside = surface.querySelector('[data-name="outside"]');
+              if (!outside) return 'the control is not there at all';
+              const past = outside.getBoundingClientRect().right
+                > surface.getBoundingClientRect().right + 1;
+              if (!past) return 'nothing was placed past the edge';
+              return getComputedStyle(surface).overflow;
+            }
+            """, root);
+
+    /// <summary>
+    /// A bound size that works out negative - `=component.width - 600` on a component narrower than
+    /// that - is not a width a browser can use, and an invalid one falls back to `auto`. The control
+    /// then sizes itself to its content and hangs past the edge it was measured against, which is
+    /// the opposite of what the binding asked for. Nothing that wide is nothing wide.
+    /// </summary>
+    [Fact]
+    public async Task A_bound_size_that_works_out_negative_is_no_size_at_all()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var suffix = Guid.NewGuid().ToString("n");
+        var componentRoute = $"negative-size-component-{suffix}";
+        var page = await OpenComponentAsync(browserPage, $"Negative size component {suffix}",
+            [
+                Control("squeezed", "button", props: new { text = "Squeezed" },
+                    bind: new { w = "=component.width - 900" }, x: 16, y: 16, w: 160, h: 30),
+            ],
+            route: componentRoute);
+
+        var designWidth = await page.EvaluateAsync<int>("""
+            () => Math.round(document.querySelector('.gfd-canvas [data-name="squeezed"]')
+              .getBoundingClientRect().width)
+            """);
+        // A border-box cannot shrink below its own padding and border, so the floor is those rather
+        // than nought. What matters is that it is the floor, and not the width the button would take
+        // if it sized itself to the word inside it.
+        Assert.InRange(designWidth, 0, 30);
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator("[data-name='squeezed']")).ToBeAttachedAsync();
+            var publishedWidth = await published.EvaluateAsync<int>("""
+                () => Math.round(document.querySelector('[data-name="squeezed"]').getBoundingClientRect().width)
+                """);
+            Assert.InRange(publishedWidth, 0, 30);
+            Assert.Equal(designWidth, publishedWidth);
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A component that fills what it is placed in and keeps a margin around itself fits inside it:
+    /// no scrollbar under content that fits, wherever the component is shown. `100%` cannot say that
+    /// on its own - a percentage resolves against the container and the margin is then added on top
+    /// of it, so filling and keeping a margin would overflow by exactly the margin - so both
+    /// surfaces apply the filling size in its place, and this checks the box that comes out.
+    /// </summary>
+    [Fact]
+    public async Task A_component_that_fills_its_container_keeps_its_margin_inside_it()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var suffix = Guid.NewGuid().ToString("n");
+        var componentRoute = $"filling-component-{suffix}";
+        var page = await OpenComponentAsync(browserPage, $"Filling component {suffix}",
+            [Control("caption", "label", props: new { text = "Answer" }, x: 16, y: 16, w: 130, h: 30)],
+            // Later declarations in the same attribute, which is how the panel writes them.
+            box: "width: 100%; margin: 1em;",
+            route: componentRoute);
+
+        Assert.Equal(0, await FillGapAsync(page, ".gfd-surface", ".gfd-canvas"));
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator(".gridlet-component-runtime")).ToBeVisibleAsync();
+            Assert.Equal(0, await FillGapAsync(published, "#gridlet-component-host", ".gridlet-component-runtime"));
+
+            // And the page does not scroll under it either: a margin that escaped the host would
+            // push the host down the page by exactly that margin.
+            Assert.Equal(0, await published.EvaluateAsync<int>("""
+                () => document.documentElement.scrollHeight - document.documentElement.clientHeight
+                """));
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A grid wider than its columns has room to spare, and widening a column spends that room
+    /// before it asks the reader for a scrollbar. The scrollbar is what says "there is more of this
+    /// grid than you can see", so one under a grid that still fits inside its own box is a grid
+    /// telling the reader something untrue about itself.
+    /// </summary>
+    [Fact]
+    public async Task Widening_a_column_uses_the_room_a_grid_already_has_before_it_scrolls()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var suffix = Guid.NewGuid().ToString("n");
+        var componentRoute = $"column-room-component-{suffix}";
+        await OpenComponentAsync(browserPage, $"Column room component {suffix}",
+            [
+                Control("records", "grid", props: new { columns = "One\nTwo", header = true },
+                    x: 16, y: 16, w: 520, h: 200),
+            ],
+            route: componentRoute);
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator(".gridlet-grid-viewport")).ToBeVisibleAsync();
+
+            var room = await GridRoomAsync(published);
+            Assert.True(room.GetProperty("spare").GetInt32() > 60,
+                $"the grid had no room to spend: {room}");
+            Assert.Equal(0, room.GetProperty("scroll").GetInt32());
+
+            // Widen the first column by less than the room the grid has.
+            var grip = published.Locator(".gridlet-grid-viewport th").First.Locator(".col-grip");
+            var box = await grip.BoundingBoxAsync() ?? throw new Xunit.Sdk.XunitException("no grip to drag");
+            // The grip straddles the header cell's own clip edge, so its centre is outside what can
+            // be clicked. Two pixels in from its left edge is on the half that is drawn.
+            var x = box.X + 2;
+            var y = box.Y + box.Height / 2;
+            await published.Mouse.MoveAsync(x, y);
+            await published.Mouse.DownAsync();
+            await published.Mouse.MoveAsync(x + 40, y, new() { Steps = 4 });
+            await published.Mouse.UpAsync();
+
+            var widened = await GridRoomAsync(published);
+            Assert.Equal(room.GetProperty("first").GetInt32() + 40, widened.GetProperty("first").GetInt32());
+            Assert.Equal(0, widened.GetProperty("scroll").GetInt32());
+
+            // And past the room it has, where a scrollbar is the truth.
+            await published.EvaluateAsync("""
+                () => {
+                  // Every column at the widest a column is allowed to be, which no longer fits.
+                  for (const cell of document.querySelectorAll('.gridlet-grid-viewport th')) {
+                    cell.style.width = '420px';
+                  }
+                }
+                """);
+            Assert.True(await GridRoomAsync(published) is var overflowing
+                && overflowing.GetProperty("scroll").GetInt32() > 0, "the grid did not scroll when its columns stopped fitting");
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// What a grid has room for: the width of its first column, the space its columns leave unused
+    /// inside the viewport, and how far the viewport can be scrolled sideways.
+    /// </summary>
+    private static async Task<JsonElement> GridRoomAsync(IPage page) =>
+        await page.EvaluateAsync<JsonElement>("""
+            () => {
+              const viewport = document.querySelector('.gridlet-grid-viewport');
+              const cells = [...viewport.querySelectorAll('th')];
+              const columns = cells.reduce((total, cell) => total + cell.offsetWidth, 0);
+              const table = viewport.querySelector('[data-role="grid"]');
+              return {
+                first: cells[0].offsetWidth,
+                spare: Math.round(viewport.clientWidth - columns),
+                scroll: viewport.scrollWidth - viewport.clientWidth,
+                asked: cells[0].style.width,
+                layout: getComputedStyle(table).tableLayout,
+                display: getComputedStyle(table).display,
+                tableWidth: table.offsetWidth,
+                viewportWidth: viewport.clientWidth,
+              };
+            }
+            """);
+
+    /// <summary>
+    /// A component stops where it ends. Scrolling past the end of it does not bounce, glow, or
+    /// carry on into the page around it - on the canvas, on the surface the canvas sits on, on the
+    /// published page, and inside anything within a component that scrolls on its own, a grid being
+    /// the one that scrolls most. What scrolling it does do settles rather than jumps.
+    /// </summary>
+    [Fact]
+    public async Task Scrolling_past_the_end_of_a_component_does_not_carry_on_past_it()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var suffix = Guid.NewGuid().ToString("n");
+        var componentRoute = $"overscroll-component-{suffix}";
+        var page = await OpenComponentAsync(browserPage, $"Overscroll component {suffix}",
+            [
+                Control("caption", "label", props: new { text = "Answer" }, x: 16, y: 16, w: 130, h: 30),
+                Control("records", "grid", props: new { columns = "Answer", header = true },
+                    x: 16, y: 66, w: 420, h: 160),
+            ],
+            route: componentRoute);
+
+        // The surfaces that scroll, and a control that does not. The control matters: a control has
+        // hidden overflow, which makes it a scroll container nobody can scroll, and telling one of
+        // those not to chain stops a wheel over it from ever reaching the surface underneath.
+        string[] canvasScrollers = [".gfd-surface", ".gfd-canvas", ".gfd-canvas .gfd-grid-viewport"];
+        const string canvasCaption = ".gfd-canvas [data-name=\"caption\"]";
+
+
+        // The tests run with motion turned down, which is where the smooth scrolling is meant to be
+        // off: somebody who asked for less movement meant this movement too.
+        Assert.Equal(["none/auto", "none/auto", "none/auto"], await ScrollStyleAsync(page, canvasScrollers));
+        Assert.Equal(["auto/auto"], await ScrollStyleAsync(page, canvasCaption));
+        
+
+        await page.EmulateMediaAsync(new() { ReducedMotion = ReducedMotion.NoPreference });
+        Assert.Equal(["none/smooth", "none/smooth", "none/smooth"], await ScrollStyleAsync(page, canvasScrollers));
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator(".gridlet-component-runtime")).ToBeVisibleAsync();
+            string[] pageScrollers =
+            [
+                "html", "body", "#gridlet-component-host",
+                ".gridlet-component-runtime .gridlet-grid-viewport",
+            ];
+
+            Assert.Equal(["none/auto", "none/auto", "none/auto", "none/auto"],
+                await ScrollStyleAsync(published, pageScrollers));
+            Assert.Equal(["auto/auto"],
+                await ScrollStyleAsync(published, ".gridlet-component-runtime [data-name=\"caption\"]"));
+
+            await published.EmulateMediaAsync(new() { ReducedMotion = ReducedMotion.NoPreference });
+            Assert.Equal(["none/smooth", "none/smooth", "none/smooth", "none/smooth"],
+                await ScrollStyleAsync(published, pageScrollers));
+
+            // And the grid scrolls under a wheel that is over its own rows, which is where a reader
+            // puts the pointer to scroll them.
+            var scrolled = await published.EvaluateAsync<JsonElement>("""
+                () => {
+                  const viewport = document.querySelector('.gridlet-grid-viewport');
+                  const table = viewport.querySelector('[data-role="grid"]');
+                  const body = table.tBodies[0] || table.createTBody();
+                  for (let row = 0; row < 40; row += 1) {
+                    body.insertRow(-1).insertCell(-1).textContent = `Row ${row}`;
+                  }
+                  const cell = body.rows[body.rows.length - 1].cells[0].getBoundingClientRect();
+                  const over = viewport.getBoundingClientRect();
+                  return {
+                    scrollable: viewport.scrollHeight > viewport.clientHeight,
+                    // A point over a row rather than over the empty part of the viewport.
+                    x: Math.round(over.left + Math.min(over.width, cell.width) / 2),
+                    y: Math.round(over.top + over.height / 2),
+                  };
+                }
+                """);
+
+            Assert.True(scrolled.GetProperty("scrollable").GetBoolean(), "the grid was not filled enough to scroll");
+            await published.Mouse.MoveAsync(scrolled.GetProperty("x").GetInt32(), scrolled.GetProperty("y").GetInt32());
+            await published.Mouse.WheelAsync(0, 200);
+            await Assertions.Expect(published.Locator(".gridlet-grid-viewport")).Not.ToHaveJSPropertyAsync("scrollTop", 0);
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// What each of these elements does when a scroll reaches its end, and how it moves when it is
+    /// scrolled by something other than a wheel - read as one string so a missing element is
+    /// reported as the element it is rather than as a mismatched pair.
+    /// </summary>
+    private static async Task<string[]> ScrollStyleAsync(IPage page, params string[] selectors) =>
+        await page.EvaluateAsync<string[]>("""
+            (selectors) => selectors.map((selector) => {
+              const element = document.querySelector(selector);
+              if (!element) return `no ${selector}`;
+              const style = getComputedStyle(element);
+              return `${style.overscrollBehavior}/${style.scrollBehavior}`;
+            })
+            """, selectors);
+
+    /// <summary>
+    /// How far a filling component is from filling its container exactly: what is left over, plus
+    /// anything it overflows by. Zero is the component sitting inside its container with its own
+    /// margin around it and nothing to scroll to.
+    /// </summary>
+    private static async Task<int> FillGapAsync(IPage page, string container, string component)
+    {
+        var measured = await page.EvaluateAsync<JsonElement>("""
+            ([container, component]) => {
+              const outer = document.querySelector(container);
+              const inner = document.querySelector(component);
+              const margin = parseFloat(getComputedStyle(inner).marginLeft);
+              return {
+                margin: Math.round(margin),
+                left: Math.round(outer.clientWidth - margin * 2 - inner.getBoundingClientRect().width),
+                overflow: outer.scrollWidth - outer.clientWidth,
+              };
+            }
+            """, new[] { container, component });
+
+        Assert.True(measured.GetProperty("margin").GetInt32() > 0, "the component kept no margin to test");
+        return Math.Abs(measured.GetProperty("left").GetInt32()) + measured.GetProperty("overflow").GetInt32();
+    }
+
     [Fact]
     public async Task A_saved_component_can_be_given_to_a_consumer_without_the_designer()
     {
@@ -265,7 +1556,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
         {
-            DataObject = new { name = "Consumer component", html },
+            DataObject = new { name = "Consumer component", html, routable = true },
         });
         Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
         var saved = await response.JsonAsync();
@@ -298,7 +1589,12 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         Assert.True(await page.Locator("[data-name='disabled-input']").IsDisabledAsync());
         await Assertions.Expect(page.Locator("[data-name='isolated-grid']"))
             .ToHaveCSSAsync("display", "block");
+        // The scrolling box is the viewport the runtime wraps a grid in, exactly as the designer
+        // places one, and the table inside it grows to its content. An isolated grid that scrolled
+        // itself as well gave the published page a second set of scrollbars Preview never showed.
         await Assertions.Expect(page.Locator("[data-name='isolated-grid']"))
+            .ToHaveCSSAsync("overflow", "visible");
+        await Assertions.Expect(page.Locator(".gridlet-grid-viewport"))
             .ToHaveCSSAsync("overflow", "auto");
         await Assertions.Expect(page.Locator("[data-name='isolated-grid']"))
             .ToHaveCSSAsync("color", "rgb(6, 118, 71)");
@@ -324,7 +1620,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
         {
-            DataObject = new { name = "Styled consumer", html },
+            DataObject = new { name = "Styled consumer", html, routable = true },
         });
         Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
         var saved = await response.JsonAsync();
@@ -368,7 +1664,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
         {
-            DataObject = new { name = "Interaction consumer", html },
+            DataObject = new { name = "Interaction consumer", html, routable = true },
         });
         Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
         var saved = await response.JsonAsync();
@@ -446,7 +1742,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
         {
-            DataObject = new { name = "Consumer controls", html },
+            DataObject = new { name = "Consumer controls", html, routable = true },
         });
         Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
         var saved = await response.JsonAsync();
@@ -538,7 +1834,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
         {
-            DataObject = new { name = "Bound consumer", html },
+            DataObject = new { name = "Bound consumer", html, routable = true },
         });
         Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
         var saved = await response.JsonAsync();
@@ -584,7 +1880,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         var response = await page.APIRequest.PostAsync("/gridlet/api/components", new APIRequestContextOptions
         {
-            DataObject = new { name = "Source error", html },
+            DataObject = new { name = "Source error", html, routable = true },
         });
         Assert.True(response.Ok, $"Seeding the component failed: {response.Status}");
         var saved = await response.JsonAsync();
@@ -598,6 +1894,1065 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.Locator("[data-name='value']")).ToHaveTextAsync("waiting");
 
         browserPage.AssertNoUnexpectedErrors("Failed to load resource");
+    }
+
+    [Fact]
+    public async Task A_consumer_form_uses_distinct_published_methods_and_current_values()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var getRoute = $"form-read-{suffix}";
+        var addRoute = $"form-add-{suffix}";
+        var updateRoute = $"form-update-{suffix}";
+        var deleteRoute = $"form-delete-{suffix}";
+        var parameters = new object[]
+        {
+            new { name = "Name", required = true, type = "string" },
+            new { name = "Enabled", required = true, type = "boolean" },
+            new { name = "Count", required = true, type = "integer" },
+            new { name = "Empty", required = false, type = "string" },
+        };
+
+        await PublishEndpointAsync(page, "Form read", "GET", getRoute, "SELECT 42");
+        await PublishEndpointAsync(page, "Form add", "POST", addRoute, "ADD", parameters);
+        await PublishEndpointAsync(page, "Form update", "PUT", updateRoute, "UPDATE", parameters[..1]);
+        await PublishEndpointAsync(page, "Form delete", "DELETE", deleteRoute, "DELETE", parameters[..1]);
+
+        var html = $"""
+            <div data-gridlet="2" data-name="Published form" data-layout="free" style="width: 520px; height: 220px;">
+              <gridlet-source href="/{getRoute}/"></gridlet-source>
+              <gridlet-action name="add" method="POST" href="/{addRoute}/">
+                <param name="Name" control="name">
+                <param name="Enabled" control="enabled">
+                <param name="Count" control="count">
+                <param name="Empty" null>
+              </gridlet-action>
+              <gridlet-action name="update" method="PUT" href="/{updateRoute}/">
+                <param name="Name" control="name">
+              </gridlet-action>
+              <gridlet-action name="delete" method="DELETE" href="/{deleteRoute}/">
+                <param name="Name" control="name">
+              </gridlet-action>
+              <input data-name="name" value="before" style="left: 16px; top: 16px; width: 220px; height: 30px;">
+              <input type="checkbox" data-name="enabled" style="left: 16px; top: 52px; width: 220px; height: 30px;">
+              <input data-name="count" value="7" style="left: 16px; top: 88px; width: 220px; height: 30px;">
+              <button type="button" data-name="add" data-action="add" style="left: 260px; top: 16px; width: 110px; height: 30px;">Add</button>
+              <button type="button" data-name="update" data-action="update" style="left: 260px; top: 52px; width: 110px; height: 30px;">Update</button>
+              <button type="button" data-name="delete" data-action="delete" style="left: 260px; top: 88px; width: 110px; height: 30px;">Delete</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Published form", html);
+
+        var publishedRequests = new List<IRequest>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/gridlet/pub/", StringComparison.Ordinal))
+            {
+                publishedRequests.Add(request);
+            }
+        };
+        var sourceResponse = page.WaitForResponseAsync(response =>
+            response.Request.Method == "GET" && response.Url.EndsWith('/' + getRoute, StringComparison.Ordinal));
+        await page.GotoAsync($"/gridlet/components/{id}");
+        await sourceResponse;
+
+        // The source is a read-only GET. Its request is separate from every action and carries no
+        // write body, so merely loading the form cannot select an insert/update/delete endpoint.
+        var sourceRequest = Assert.Single(publishedRequests, request => request.Url.EndsWith('/' + getRoute, StringComparison.Ordinal));
+        Assert.Equal("GET", sourceRequest.Method);
+        Assert.Null(sourceRequest.PostData);
+        Assert.Equal("SELECT 42", fixture.Provider.LastQuerySql);
+
+        await page.Locator("[data-name='name']").FillAsync("edited");
+        await page.Locator("[data-name='enabled']").CheckAsync();
+        await page.Locator("[data-name='enabled']").UncheckAsync();
+        await page.Locator("[data-name='count']").FillAsync("0");
+
+        var addRequestTask = page.WaitForRequestAsync(request =>
+            request.Method == "POST" && request.Url.EndsWith('/' + addRoute, StringComparison.Ordinal));
+        await page.Locator("[data-name='add']").ClickAsync();
+        var addRequest = await addRequestTask;
+        await Assertions.Expect(page.Locator(".gridlet-action-status"))
+            .ToHaveTextAsync("add completed successfully.");
+        using (var body = JsonDocument.Parse(addRequest.PostData!))
+        {
+            Assert.Equal("edited", body.RootElement.GetProperty("Name").GetString());
+            Assert.False(body.RootElement.GetProperty("Enabled").GetBoolean());
+            Assert.Equal("0", body.RootElement.GetProperty("Count").GetString());
+            Assert.Equal(JsonValueKind.Null, body.RootElement.GetProperty("Empty").ValueKind);
+        }
+        Assert.Equal("ADD", fixture.Provider.LastQuerySql);
+        Assert.Equal(0L, fixture.Provider.LastQueryParameters!["Count"]);
+        Assert.False((bool)fixture.Provider.LastQueryParameters["Enabled"]!);
+        Assert.Null(fixture.Provider.LastQueryParameters["Empty"]);
+
+        var updateRequestTask = page.WaitForRequestAsync(request =>
+            request.Method == "PUT" && request.Url.EndsWith('/' + updateRoute, StringComparison.Ordinal));
+        await page.Locator("[data-name='update']").ClickAsync();
+        var updateRequest = await updateRequestTask;
+        await Assertions.Expect(page.Locator(".gridlet-action-status"))
+            .ToHaveTextAsync("update completed successfully.");
+        Assert.Equal("PUT", updateRequest.Method);
+        Assert.Contains('/' + updateRoute, updateRequest.Url, StringComparison.Ordinal);
+        Assert.DoesNotContain('/' + addRoute, updateRequest.Url, StringComparison.Ordinal);
+        Assert.DoesNotContain('/' + getRoute, updateRequest.Url, StringComparison.Ordinal);
+
+        var deleteRequestTask = page.WaitForRequestAsync(request =>
+            request.Method == "DELETE" && request.Url.EndsWith('/' + deleteRoute, StringComparison.Ordinal));
+        await page.Locator("[data-name='delete']").ClickAsync();
+        var deleteRequest = await deleteRequestTask;
+        await Assertions.Expect(page.Locator(".gridlet-action-status"))
+            .ToHaveTextAsync("delete completed successfully.");
+        Assert.Equal("DELETE", deleteRequest.Method);
+        Assert.Contains('/' + deleteRoute, deleteRequest.Url, StringComparison.Ordinal);
+        Assert.DoesNotContain('/' + updateRoute, deleteRequest.Url, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task A_form_fails_closed_for_mismatched_or_unsafe_actions()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var addRoute = $"form-guard-add-{suffix}";
+        await PublishEndpointAsync(page, "Guard add", "POST", addRoute, "GUARD");
+        var providerSqlBeforeGuard = fixture.Provider.LastQuerySql;
+        var publishedRequests = new List<IRequest>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/gridlet/pub/", StringComparison.Ordinal)) publishedRequests.Add(request);
+        };
+
+        // A mismatched declaration remains parseable, but the runtime rejects it before fetch.
+        var mismatchedHtml = $"""
+            <div data-gridlet="2" data-name="Mismatched form" data-layout="free" style="width: 420px; height: 100px;">
+              <gridlet-action name="update" method="POST" href="{addRoute}"></gridlet-action>
+              <input data-name="name" value="value" style="left: 16px; top: 16px; width: 200px; height: 30px;">
+              <button type="button" data-name="wrong" data-action="update" style="left: 230px; top: 16px; width: 80px; height: 30px;">Wrong</button>
+            </div>
+            """;
+        var mismatchedId = await SaveComponentAsync(page, "Mismatched form", mismatchedHtml);
+        await page.GotoAsync($"/gridlet/components/{mismatchedId}");
+
+        await page.Locator("[data-name='wrong']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gridlet-action-status"))
+            .ToContainTextAsync("update failed:");
+        Assert.DoesNotContain("successfully", await page.Locator(".gridlet-action-status").TextContentAsync(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(await page.Locator("[data-name='wrong']").IsDisabledAsync());
+        Assert.Empty(publishedRequests);
+
+        // An unsafe traversal declaration is rejected while parsing the saved consumer document.
+        var unsafeHtml = """
+            <div data-gridlet="2" data-name="Unsafe form" data-layout="free" style="width: 420px; height: 100px;">
+              <gridlet-action name="delete" method="DELETE" href="../api/components"></gridlet-action>
+              <button type="button" data-name="unsafe" data-action="delete" style="left: 16px; top: 16px; width: 80px; height: 30px;">Unsafe</button>
+            </div>
+            """;
+        var unsafeId = await SaveComponentAsync(page, "Unsafe form", unsafeHtml);
+        await page.GotoAsync($"/gridlet/components/{unsafeId}");
+        await Assertions.Expect(page.Locator(".gridlet-runtime-message"))
+            .ToContainTextAsync("published route is unsafe or malformed");
+        Assert.Empty(publishedRequests);
+        Assert.Equal(providerSqlBeforeGuard, fixture.Provider.LastQuerySql);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task A_form_error_reenables_the_button_without_reporting_success()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var route = $"form-error-{Guid.NewGuid():n}";
+        await PublishEndpointAsync(page, "Form error", "POST", route, "stream-boom");
+        var html = $"""
+            <div data-gridlet="2" data-name="Error form" data-layout="free" style="width: 360px; height: 100px;">
+              <gridlet-action name="add" method="POST" href="{route}"></gridlet-action>
+              <button type="button" data-name="submit" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">Submit</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Error form", html);
+        await page.GotoAsync($"/gridlet/components/{id}");
+
+        await page.Locator("[data-name='submit']").ClickAsync();
+        var status = page.Locator(".gridlet-action-status");
+        await Assertions.Expect(status).ToContainTextAsync("add failed: mid-stream kaboom");
+        Assert.DoesNotContain("successfully", await status.TextContentAsync(), StringComparison.OrdinalIgnoreCase);
+        Assert.False(await page.Locator("[data-name='submit']").IsDisabledAsync());
+        Assert.Equal("stream-boom", fixture.Provider.LastQuerySql);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Designer_round_trips_action_endpoint_mappings_and_button_binding()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        var route = $"form-roundtrip-{Guid.NewGuid():n}";
+        await PublishEndpointAsync(page, "Round-trip add", "POST", route, "ROUNDTRIP", [
+            new { name = "Value", required = true, type = "string" },
+            new { name = "Optional", required = false, type = "string" },
+        ]);
+        var html = """
+            <div data-gridlet="2" data-name="Round-trip form" data-layout="free" style="width: 420px; height: 130px;">
+              <input data-name="value" style="left: 16px; top: 16px; width: 220px; height: 30px;">
+              <button type="button" data-name="send" style="left: 250px; top: 16px; width: 100px; height: 30px;">Send</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Round-trip form", html);
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        await page.Locator("button.tree-item[title^='Round-trip form -']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("component-action-add")).ToBeVisibleAsync();
+
+        await page.GetByTestId("component-action-add").SelectOptionAsync(route);
+        await Assertions.Expect(page.GetByTestId("component-action-add-map-Value")).ToBeVisibleAsync();
+        await page.GetByTestId("component-action-add-map-Value").SelectOptionAsync("control:value");
+
+        await Box(page, "send").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("control-action")).ToBeVisibleAsync();
+        await page.GetByTestId("control-action").SelectOptionAsync("add");
+        await page.GetByTestId("component-save").ClickAsync();
+
+        // Preview runs the same explicit action declaration while keeping the value the operator
+        // just entered, so the designer and consumer submit paths cannot drift apart.
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await page.Locator("[data-name='value']").FillAsync("sent from preview");
+        var previewRequestTask = page.WaitForRequestAsync(request =>
+            request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal));
+        await page.Locator("[data-name='send']").ClickAsync();
+        var previewRequest = await previewRequestTask;
+        await Assertions.Expect(page.Locator(".gfd-action-status"))
+            .ToHaveTextAsync("add completed successfully.");
+        using (var previewBody = JsonDocument.Parse(previewRequest.PostData!))
+        {
+            Assert.Equal("sent from preview", previewBody.RootElement.GetProperty("Value").GetString());
+        }
+
+        var saved = await page.APIRequest.GetAsync($"/gridlet/api/components/{id}");
+        Assert.True(saved.Ok, $"Reading the saved component failed: {saved.Status}");
+        var stored = await saved.JsonAsync();
+        var storedHtml = stored!.Value.GetProperty("html").GetString()!;
+        Assert.Contains($"<gridlet-action name=\"add\" method=\"POST\" href=\"{route}\">", storedHtml,
+            StringComparison.Ordinal);
+        Assert.Contains("<param name=\"Value\" control=\"value\">", storedHtml, StringComparison.Ordinal);
+        Assert.Contains("data-action=\"add\"", storedHtml, StringComparison.Ordinal);
+
+        // Read it back through the designer parser, not only through the saved string: both selectors
+        // should still show the declared operation after a fresh document round-trip.
+        await page.Locator(".tab.active .tab-close").ClickAsync();
+        await page.Locator("button.tree-item[title^='Round-trip form -']").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-action-add")).ToHaveValueAsync(route);
+        await Box(page, "send").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("control-action")).ToHaveValueAsync("add");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Designer_surfaces_a_stale_action_mapping_after_the_control_is_renamed_or_deleted()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        var route = $"stale-mapping-{Guid.NewGuid():n}";
+        await PublishEndpointAsync(page, "Stale mapping add", "POST", route, "STALE MAPPING", [
+            new { name = "Value", required = true, type = "string" },
+        ]);
+        var html = $"""
+            <div data-gridlet="2" data-name="Stale mapping" data-layout="free" style="width: 420px; height: 130px;">
+              <gridlet-action name="add" method="POST" href="{route}">
+                <param name="Value" control="value">
+              </gridlet-action>
+              <input data-name="value" style="left: 16px; top: 16px; width: 220px; height: 30px;">
+              <button type="button" data-name="send" data-action="add" style="left: 250px; top: 16px; width: 100px; height: 30px;">Send</button>
+            </div>
+            """;
+        await SaveComponentAsync(page, "Stale mapping", html);
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        await page.Locator("button.tree-item[title^='Stale mapping -']").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-action-add")).ToHaveValueAsync(route);
+        await page.GetByTestId("component-action-add-map-Value").SelectOptionAsync("control:value");
+
+        await Box(page, "value").ClickAsync();
+        await page.GetByTestId("control-name").FillAsync("renamed");
+        await page.Locator(".gfd-canvas").EvaluateAsync("canvas => {\n"
+            + "  canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, buttons: 1 }));\n"
+            + "  canvas.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, buttons: 0 }));\n"
+            + "}");
+        var mapping = page.GetByTestId("component-action-add-map-Value");
+        await Assertions.Expect(mapping).ToContainTextAsync("Missing control: value");
+        await mapping.SelectOptionAsync("control:renamed");
+
+        await Box(page, "renamed").ClickAsync();
+        await page.Locator("button.gfd-delete").ClickAsync();
+        await Assertions.Expect(mapping).ToContainTextAsync("Missing control: renamed");
+        await mapping.SelectOptionAsync("");
+        await Assertions.Expect(mapping).ToHaveValueAsync("");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Designer_matches_published_routes_case_insensitively_and_preserves_authored_casing()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var suffix = Guid.NewGuid().ToString("n");
+        // The first segment keeps its historical alphanumeric start, while legacy routes may
+        // begin '_' or '-' in later segments.
+        var publishedReadRoute = $"CaseRead-{suffix}/_legacy";
+        var publishedAddRoute = $"CaseAdd-{suffix}/-legacy";
+        var authoredReadRoute = publishedReadRoute.ToLowerInvariant();
+        var authoredAddRoute = publishedAddRoute.ToLowerInvariant();
+        await PublishEndpointAsync(page, "Case read", "GET", publishedReadRoute, "CASE READ");
+        await PublishEndpointAsync(page, "Case add", "POST", publishedAddRoute, "CASE ADD");
+
+        var html = $"""
+            <div data-gridlet="2" data-name="Case-sensitive form" data-layout="free" style="width: 420px; height: 130px;">
+              <gridlet-source href="{authoredReadRoute}"></gridlet-source>
+              <gridlet-action name="add" method="POST" href="{authoredAddRoute}"></gridlet-action>
+              <button type="button" data-name="send" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">Send</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Case-sensitive form", html);
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        var sourceRequestTask = page.WaitForRequestAsync(request =>
+            request.Method == "GET" && request.Url.EndsWith('/' + authoredReadRoute, StringComparison.Ordinal));
+        await page.Locator("button.tree-item[title^='Case-sensitive form -']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas")).ToBeVisibleAsync();
+
+        await sourceRequestTask;
+        await Assertions.Expect(page.GetByTestId("component-source")).ToHaveValueAsync(publishedReadRoute);
+        await Assertions.Expect(page.GetByTestId("component-action-add")).ToHaveValueAsync(publishedAddRoute);
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        var actionRequestTask = page.WaitForRequestAsync(request =>
+            request.Method == "POST" && request.Url.EndsWith('/' + authoredAddRoute, StringComparison.Ordinal));
+        await page.Locator("[data-name='send']").ClickAsync();
+        await actionRequestTask;
+        await Assertions.Expect(page.Locator(".gfd-action-status"))
+            .ToHaveTextAsync("add completed successfully.");
+        Assert.Equal("CASE ADD", fixture.Provider.LastQuerySql);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Designer_keeps_an_action_pending_across_preview_redraws()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var route = $"form-pending-{Guid.NewGuid():n}";
+        await PublishEndpointAsync(page, "Pending add", "POST", route, "job-wait");
+        var html = $"""
+            <div data-gridlet="2" data-name="Pending form" data-layout="free" style="width: 420px; height: 130px;">
+              <gridlet-action name="add" method="POST" href="{route}"></gridlet-action>
+              <button type="button" data-name="send" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">Send</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Pending form", html);
+        var actionRequests = new List<IRequest>();
+        page.Request += (_, request) =>
+        {
+            if (request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal))
+            {
+                actionRequests.Add(request);
+            }
+        };
+
+        fixture.Provider.PrepareLongQuery();
+        try
+        {
+            await page.GotoAsync("/gridlet/");
+            var section = page.Locator("details").Filter(
+                new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+            await section.Locator("summary").First.ClickAsync();
+            await page.Locator("button.tree-item[title^='Pending form -']").ClickAsync();
+            await Assertions.Expect(page.Locator(".gfd-canvas")).ToBeVisibleAsync();
+            await page.GetByTestId("component-view-preview").ClickAsync();
+
+            var requestTask = page.WaitForRequestAsync(request =>
+                request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal));
+            await page.Locator("[data-name='send']").ClickAsync();
+            await requestTask;
+            await Assertions.Expect(page.Locator(".gfd-action-status"))
+                .ToContainTextAsync("add in progress");
+            await Assertions.Expect(page.Locator("[data-name='send']")).ToBeDisabledAsync();
+
+            // Both a mode switch and the resulting canvas redraw replace the button element. The
+            // operation-level state must keep its replacement disabled while the write is pending.
+            await page.GetByTestId("component-view-design").ClickAsync();
+            await page.GetByTestId("component-view-preview").ClickAsync();
+            await Assertions.Expect(page.Locator("[data-name='send']")).ToBeDisabledAsync();
+            await page.Locator("[data-name='send']").EvaluateAsync(
+                "element => { for (let i = 0; i < 2; i++) element.dispatchEvent(new MouseEvent('click', { bubbles: true })); }");
+            Assert.Single(actionRequests);
+
+            fixture.Provider.ReleaseLongQuery();
+            await Assertions.Expect(page.Locator(".gfd-action-status"))
+                .ToHaveTextAsync("add completed successfully.");
+            Assert.Single(actionRequests);
+        }
+        finally
+        {
+            fixture.Provider.ReleaseLongQuery();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Consumer_runtime_locks_every_button_for_an_operation_until_the_delayed_write_finishes()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var route = $"consumer-pending-{Guid.NewGuid():n}";
+        await PublishEndpointAsync(page, "Consumer pending add", "POST", route, "job-wait");
+        var html = $"""
+            <div data-gridlet="2" data-name="Consumer pending" data-layout="free" style="width: 420px; height: 150px;">
+              <gridlet-action name="add" method="POST" href="{route}"></gridlet-action>
+              <button type="button" data-name="first" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">First</button>
+              <button type="button" data-name="second" data-action="ADD" style="left: 150px; top: 16px; width: 120px; height: 30px;">Second</button>
+              <button type="button" data-name="locked" data-action="add" disabled style="left: 284px; top: 16px; width: 120px; height: 30px;">Locked</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Consumer pending", html);
+        var requests = new List<IRequest>();
+        page.Request += (_, request) =>
+        {
+            if (request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal)) requests.Add(request);
+        };
+
+        fixture.Provider.PrepareLongQuery();
+        try
+        {
+            await page.GotoAsync($"/gridlet/components/{id}");
+            var requestTask = page.WaitForRequestAsync(request =>
+                request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal));
+            await page.Locator("[data-name='first']").ClickAsync();
+            await requestTask;
+
+            await Assertions.Expect(page.Locator("[data-name='first']")).ToBeDisabledAsync();
+            await Assertions.Expect(page.Locator("[data-name='second']")).ToBeDisabledAsync();
+            await Assertions.Expect(page.Locator("[data-name='locked']")).ToBeDisabledAsync();
+            await page.Locator("[data-name='second']").EvaluateAsync(
+                "element => element.dispatchEvent(new MouseEvent('click', { bubbles: true }))");
+            Assert.Single(requests);
+
+            fixture.Provider.ReleaseLongQuery();
+            await Assertions.Expect(page.Locator(".gridlet-action-status"))
+                .ToHaveTextAsync("add completed successfully.");
+            await Assertions.Expect(page.Locator("[data-name='first']")).ToBeEnabledAsync();
+            await Assertions.Expect(page.Locator("[data-name='second']")).ToBeEnabledAsync();
+            await Assertions.Expect(page.Locator("[data-name='locked']")).ToBeDisabledAsync();
+        }
+        finally
+        {
+            fixture.Provider.ReleaseLongQuery();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Unnamed_action_buttons_have_the_same_write_behavior_in_designer_and_consumer()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var route = $"unnamed-action-{Guid.NewGuid():n}";
+        await PublishEndpointAsync(page, "Unnamed add", "POST", route, "UNNAMED ADD");
+        var html = $"""
+            <div data-gridlet="2" data-name="Unnamed action" data-layout="free" style="width: 360px; height: 100px;">
+              <gridlet-action name=" add " method="POST" href="{route}"></gridlet-action>
+              <button type="button" data-action=" ADD " style="left: 16px; top: 16px; width: 120px; height: 30px;">Send</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Unnamed action", html);
+        var actionRequests = new List<IRequest>();
+        page.Request += (_, request) =>
+        {
+            if (request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal)) actionRequests.Add(request);
+        };
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        await page.Locator("button.tree-item[title^='Unnamed action -']").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-action-add")).ToHaveValueAsync(route);
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        var designerRequest = page.WaitForRequestAsync(request =>
+            request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal));
+        await page.Locator("button[data-action='add']").ClickAsync();
+        await designerRequest;
+        await Assertions.Expect(page.Locator(".gfd-action-status"))
+            .ToHaveTextAsync("add completed successfully.");
+
+        await page.GotoAsync($"/gridlet/components/{id}");
+        var consumerRequest = page.WaitForRequestAsync(request =>
+            request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal));
+        await page.Locator("button[data-action=' ADD ']").ClickAsync();
+        await consumerRequest;
+        await Assertions.Expect(page.Locator(".gridlet-action-status"))
+            .ToHaveTextAsync("add completed successfully.");
+        Assert.Equal(2, actionRequests.Count);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Undeclared_action_bindings_are_explicitly_invalid_and_never_reactivate()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        var html = """
+            <div data-gridlet="2" data-name="Undeclared action" data-layout="free" style="width: 360px; height: 100px;">
+              <button type="button" data-name="send" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">Send</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Undeclared action", html);
+
+        await page.GotoAsync($"/gridlet/components/{id}");
+        await Assertions.Expect(page.Locator(".gridlet-runtime-message"))
+            .ToContainTextAsync("add action is undeclared.");
+        await Assertions.Expect(page.Locator("[data-name='send']")).ToBeDisabledAsync();
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        await page.Locator("button.tree-item[title^='Undeclared action -']").ClickAsync();
+        await page.Locator("[data-name='send']").ClickAsync(new LocatorClickOptions { Force = true });
+        await OpenPanelTabAsync(page, "Settings");
+        await Assertions.Expect(page.GetByTestId("control-action"))
+            .ToContainTextAsync("Invalid action \"add\" (undeclared)");
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-action-status"))
+            .ToHaveTextAsync("add action is undeclared.");
+        await page.GetByTestId("component-view-code").ClickAsync();
+        Assert.DoesNotContain("data-action=\"add\"",
+            await page.GetByTestId("component-document-editor").InputValueAsync(), StringComparison.Ordinal);
+
+        await page.GetByTestId("component-view-design").ClickAsync();
+        await page.Locator("[data-name='send']").ClickAsync(new LocatorClickOptions { Force = true });
+        await OpenPanelTabAsync(page, "Settings");
+        await page.GetByTestId("control-action").SelectOptionAsync("");
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-action-status")).ToBeHiddenAsync();
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Designer_disables_every_invalid_action_button_independently()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        var html = """
+            <div data-gridlet="2" data-name="Multiple invalid actions" data-layout="free" style="width: 360px; height: 100px;">
+              <button type="button" data-name="first" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">First</button>
+              <button type="button" data-name="second" data-action="remove" style="left: 150px; top: 16px; width: 120px; height: 30px;">Second</button>
+            </div>
+            """;
+        await SaveComponentAsync(page, "Multiple invalid actions", html);
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        await page.Locator("button.tree-item[title^='Multiple invalid actions -']").ClickAsync();
+        await page.GetByTestId("component-view-preview").ClickAsync();
+
+        await Assertions.Expect(page.Locator("[data-name='first']")).ToBeDisabledAsync();
+        await Assertions.Expect(page.Locator("[data-name='second']")).ToBeDisabledAsync();
+        await Assertions.Expect(page.Locator(".gfd-action-status")).ToContainTextAsync("undeclared");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Designer_reports_endpoint_listing_unavailability_without_calling_a_valid_action_unpublished()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var route = $"listing-unavailable-{Guid.NewGuid():n}";
+        await PublishEndpointAsync(page, "Listing unavailable add", "POST", route, "LISTING UNAVAILABLE");
+        var html = $"""
+            <div data-gridlet="2" data-name="Listing unavailable" data-layout="free" style="width: 360px; height: 100px;">
+              <gridlet-action name="add" method="POST" href="{route}"></gridlet-action>
+              <button type="button" data-name="send" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">Send</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Listing unavailable", html);
+        var actionRequests = new List<IRequest>();
+        page.Request += (_, request) =>
+        {
+            if (request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal)) actionRequests.Add(request);
+        };
+        await page.RouteAsync("**/gridlet/api/published", routeHandler => routeHandler.FulfillAsync(
+            new RouteFulfillOptions { Status = 503, ContentType = "application/json", Body = "{\"error\":\"temporary listing failure\"}" }));
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        await page.Locator("button.tree-item[title^='Listing unavailable -']").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-action-add"))
+            .ToContainTextAsync($"Not verified (POST {route})");
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await page.Locator("[data-name='send']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-action-status"))
+            .ToHaveTextAsync("add failed: add action could not verify the published endpoint list.");
+        Assert.Empty(actionRequests);
+
+        browserPage.AssertNoUnexpectedErrors("Failed to load resource");
+    }
+
+    [Fact]
+    public async Task Consumer_caches_the_published_endpoint_catalogue_across_action_clicks()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        var suffix = Guid.NewGuid().ToString("n");
+        var addRoute = $"cached-add-{suffix}";
+        var updateRoute = $"cached-update-{suffix}";
+        await PublishEndpointAsync(page, "Cached add", "POST", addRoute, "CACHED ADD");
+        await PublishEndpointAsync(page, "Cached update", "PATCH", updateRoute, "CACHED UPDATE");
+        var html = $"""
+            <div data-gridlet="2" data-name="Cached catalogue" data-layout="free" style="width: 360px; height: 100px;">
+              <gridlet-action name="add" method="POST" href="{addRoute}"></gridlet-action>
+              <gridlet-action name="update" method="PATCH" href="{updateRoute}"></gridlet-action>
+              <button type="button" data-name="add" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">Add</button>
+              <button type="button" data-name="update" data-action="update" style="left: 150px; top: 16px; width: 120px; height: 30px;">Update</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Cached catalogue", html);
+        var catalogueRequests = 0;
+        page.Request += (_, request) =>
+        {
+            if (request.Method == "GET" && request.Url.EndsWith("/gridlet/api/published/catalogue", StringComparison.Ordinal))
+            {
+                catalogueRequests++;
+            }
+        };
+
+        await page.GotoAsync($"/gridlet/components/{id}");
+        await page.Locator("[data-name='add']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gridlet-action-status"))
+            .ToHaveTextAsync("add completed successfully.");
+        await page.Locator("[data-name='update']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gridlet-action-status"))
+            .ToHaveTextAsync("update completed successfully.");
+        Assert.Equal(1, catalogueRequests);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Consumer_retries_the_published_endpoint_catalogue_after_a_transient_failure()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        var suffix = Guid.NewGuid().ToString("n");
+        var route = $"retry-catalogue-{suffix}";
+        await PublishEndpointAsync(page, "Retry catalogue add", "POST", route, "RETRY CATALOGUE");
+        var html = $"""
+            <div data-gridlet="2" data-name="Retry catalogue" data-layout="free" style="width: 360px; height: 100px;">
+              <gridlet-action name="add" method="POST" href="{route}"></gridlet-action>
+              <button type="button" data-name="send" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">Send</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Retry catalogue", html);
+        var catalogueRequests = 0;
+        await page.RouteAsync("**/gridlet/api/published/catalogue", async routeHandler =>
+        {
+            catalogueRequests++;
+            if (catalogueRequests == 1)
+            {
+                await routeHandler.FulfillAsync(new RouteFulfillOptions
+                {
+                    Status = 503,
+                    ContentType = "application/json",
+                    Body = "{\"error\":\"temporary catalogue failure\"}",
+                });
+                return;
+            }
+
+            await routeHandler.FulfillAsync(new RouteFulfillOptions
+            {
+                ContentType = "application/json",
+                Body = JsonSerializer.Serialize(new[]
+                {
+                    new
+                    {
+                        method = "POST",
+                        route,
+                        enabled = true,
+                        parameters = Array.Empty<object>(),
+                    },
+                }),
+            });
+        });
+
+        await page.GotoAsync($"/gridlet/components/{id}");
+        await page.Locator("[data-name='send']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gridlet-action-status"))
+            .ToHaveTextAsync("add failed: temporary catalogue failure");
+        await page.Locator("[data-name='send']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gridlet-action-status"))
+            .ToHaveTextAsync("add completed successfully.");
+        Assert.Equal(2, catalogueRequests);
+
+        browserPage.AssertNoUnexpectedErrors("Failed to load resource");
+    }
+
+    [Fact]
+    public async Task Designer_can_open_and_repair_a_saved_document_with_a_legacy_invalid_route()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var validRoute = $"repair-source-{suffix}";
+        var invalidRoute = $"repair//source-{suffix}";
+        await PublishEndpointAsync(page, "Repair source", "GET", validRoute, "REPAIR SOURCE");
+        var html = $"""
+            <div data-gridlet="2" data-name="Repairable legacy component" data-layout="free" style="width: 360px; height: 100px;">
+              <gridlet-source href="{invalidRoute}"></gridlet-source>
+              <span data-name="status" style="left: 16px; top: 16px; width: 200px; height: 24px;">Repair me</span>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Repairable legacy component", html);
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        await page.Locator("button.tree-item[title^='Repairable legacy component -']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas")).ToBeVisibleAsync();
+
+        // A malformed saved document keeps the design surface inert until Code repair succeeds;
+        // otherwise a canvas edit could appear to work and then be silently discarded.
+        var controlCountBeforeRepair = await page.Locator(".gfd-control").CountAsync();
+        await page.Locator(".gfd-palette-item[data-type='label']").EvaluateAsync("button => button.click()");
+        Assert.Equal(controlCountBeforeRepair, await page.Locator(".gfd-control").CountAsync());
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-document-editor")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("component-code-error"))
+            .ToContainTextAsync("published route is unsafe or malformed");
+        Assert.Contains(invalidRoute, await page.GetByTestId("component-document-editor").InputValueAsync(),
+            StringComparison.Ordinal);
+
+        var repaired = html.Replace(invalidRoute, validRoute, StringComparison.Ordinal);
+        await page.GetByTestId("component-document-editor").FillAsync(repaired);
+        await Assertions.Expect(page.GetByTestId("component-code-error")).ToBeHiddenAsync();
+
+        await page.GetByTestId("component-view-design").ClickAsync();
+        var saveResponse = page.WaitForResponseAsync(response =>
+            response.Request.Method == "POST" && response.Url.EndsWith("/gridlet/api/components", StringComparison.Ordinal));
+        await page.GetByTestId("component-save").ClickAsync();
+        await saveResponse;
+
+        var saved = await page.APIRequest.GetAsync($"/gridlet/api/components/{id}");
+        Assert.True(saved.Ok, $"Reading the repaired component failed: {saved.Status}");
+        var storedHtml = (await saved.JsonAsync())!.Value.GetProperty("html").GetString()!;
+        Assert.Contains($"<gridlet-source href=\"{validRoute}\">", storedHtml, StringComparison.Ordinal);
+        Assert.DoesNotContain(invalidRoute, storedHtml, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Designer_filters_legacy_invalid_routes_from_source_and_crud_selectors()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var readRoute = $"selector-read-{suffix}";
+        var addRoute = $"selector-add-{suffix}";
+        await PublishEndpointAsync(page, "Selector read", "GET", readRoute, "SELECTOR READ");
+        await PublishEndpointAsync(page, "Selector add", "POST", addRoute, "SELECTOR ADD");
+        var html = $"""
+            <div data-gridlet="2" data-name="Filtered selectors" data-layout="free" style="width: 360px; height: 100px;">
+              <gridlet-source href="{readRoute}"></gridlet-source>
+              <gridlet-action name="add" method="POST" href="{addRoute}"></gridlet-action>
+              <button type="button" data-name="send" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">Send</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Filtered selectors", html);
+
+        var listing = JsonSerializer.Serialize(new object[]
+        {
+            new { id = "valid-read", name = "Selector read", method = "GET", route = readRoute, enabled = true, parameters = Array.Empty<object>() },
+            new { id = "valid-add", name = "Selector add", method = "POST", route = addRoute, enabled = true, parameters = Array.Empty<object>() },
+            new { id = "legacy-read", name = "Legacy read", method = "GET", route = "sales//top", enabled = true, parameters = Array.Empty<object>() },
+            new { id = "legacy-add", name = "Legacy add", method = "POST", route = "sales//top", enabled = true, parameters = Array.Empty<object>() },
+        });
+        await page.RouteAsync("**/gridlet/api/published", routeHandler => routeHandler.FulfillAsync(
+            new RouteFulfillOptions { ContentType = "application/json", Body = listing }));
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        await page.Locator("button.tree-item[title^='Filtered selectors -']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("component-source")).ToHaveValueAsync(readRoute);
+        await Assertions.Expect(page.GetByTestId("component-action-add")).ToHaveValueAsync(addRoute);
+
+        var sourceOptions = await page.GetByTestId("component-source").Locator("option").AllTextContentsAsync();
+        var actionOptions = await page.GetByTestId("component-action-add").Locator("option").AllTextContentsAsync();
+        Assert.DoesNotContain(sourceOptions, option => option.Contains("sales//top", StringComparison.Ordinal));
+        Assert.DoesNotContain(actionOptions, option => option.Contains("sales//top", StringComparison.Ordinal));
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Consumer_action_parameter_names_are_case_insensitive_and_unknown_mappings_fail_closed()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var route = $"form-parameter-case-{Guid.NewGuid():n}";
+        await PublishEndpointAsync(page, "Parameter case add", "POST", route, "PARAMETER CASE", [
+            new { name = "Name", required = true, type = "string" },
+        ]);
+        var requests = new List<IRequest>();
+        page.Request += (_, request) =>
+        {
+            if (request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal)) requests.Add(request);
+        };
+
+        var caseHtml = $"""
+            <div data-gridlet="2" data-name="Parameter case form" data-layout="free" style="width: 420px; height: 130px;">
+              <gridlet-action name="add" method="POST" href="{route}">
+                <param name="name" control="name">
+              </gridlet-action>
+              <input data-name="name" value="before" style="left: 16px; top: 16px; width: 220px; height: 30px;">
+              <button type="button" data-name="send" data-action="ADD" style="left: 250px; top: 16px; width: 100px; height: 30px;">Send</button>
+            </div>
+            """;
+        var caseId = await SaveComponentAsync(page, "Parameter case form", caseHtml);
+        await page.GotoAsync($"/gridlet/components/{caseId}");
+        await page.Locator("[data-name='name']").FillAsync("edited");
+        var caseRequestTask = page.WaitForRequestAsync(request =>
+            request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal));
+        await page.Locator("[data-name='send']").ClickAsync();
+        var caseRequest = await caseRequestTask;
+        await Assertions.Expect(page.Locator(".gridlet-action-status"))
+            .ToHaveTextAsync("add completed successfully.");
+        using (var body = JsonDocument.Parse(caseRequest.PostData!))
+        {
+            Assert.Equal("edited", body.RootElement.GetProperty("Name").GetString());
+        }
+
+        var unknownHtml = $"""
+            <div data-gridlet="2" data-name="Unknown mapping form" data-layout="free" style="width: 420px; height: 130px;">
+              <gridlet-action name="add" method="POST" href="{route}">
+                <param name="Unknown" control="name">
+              </gridlet-action>
+              <input data-name="name" value="ignored" style="left: 16px; top: 16px; width: 220px; height: 30px;">
+              <button type="button" data-name="send" data-action="add" style="left: 250px; top: 16px; width: 100px; height: 30px;">Send</button>
+            </div>
+            """;
+        var unknownId = await SaveComponentAsync(page, "Unknown mapping form", unknownHtml);
+        await page.GotoAsync($"/gridlet/components/{unknownId}");
+        await page.Locator("[data-name='send']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gridlet-action-status"))
+            .ToContainTextAsync("add failed: add action maps unknown parameter 'Unknown'.");
+        Assert.Single(requests);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Designer_matches_action_parameter_case_and_rejects_unknown_mappings()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var route = $"designer-parameter-case-{Guid.NewGuid():n}";
+        await PublishEndpointAsync(page, "Designer parameter case", "POST", route, "DESIGNER PARAMETER CASE", [
+            new { name = "Name", required = true, type = "string" },
+        ]);
+        var caseHtml = $"""
+            <div data-gridlet="2" data-name="Designer parameter case" data-layout="free" style="width: 420px; height: 130px;">
+              <gridlet-action name="add" method="POST" href="{route}">
+                <param name="name" control="name">
+              </gridlet-action>
+              <input data-name="name" value="before" style="left: 16px; top: 16px; width: 220px; height: 30px;">
+              <button type="button" data-name="send" data-action="ADD" style="left: 250px; top: 16px; width: 100px; height: 30px;">Send</button>
+            </div>
+            """;
+        var caseId = await SaveComponentAsync(page, "Designer parameter case", caseHtml);
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        await page.Locator("button.tree-item[title^='Designer parameter case -']").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-action-add")).ToHaveValueAsync(route);
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await page.Locator("[data-name='name']").FillAsync("designer value");
+        var caseRequestTask = page.WaitForRequestAsync(request =>
+            request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal));
+        await page.Locator("[data-name='send']").ClickAsync();
+        var caseRequest = await caseRequestTask;
+        await Assertions.Expect(page.Locator(".gfd-action-status"))
+            .ToHaveTextAsync("add completed successfully.");
+        using (var body = JsonDocument.Parse(caseRequest.PostData!))
+        {
+            Assert.Equal("designer value", body.RootElement.GetProperty("Name").GetString());
+        }
+
+        var unknownHtml = $"""
+            <div data-gridlet="2" data-name="Designer unknown mapping" data-layout="free" style="width: 420px; height: 130px;">
+              <gridlet-action name="add" method="POST" href="{route}">
+                <param name="Unknown" control="name">
+              </gridlet-action>
+              <input data-name="name" value="ignored" style="left: 16px; top: 16px; width: 220px; height: 30px;">
+              <button type="button" data-name="send" data-action="add" style="left: 250px; top: 16px; width: 100px; height: 30px;">Send</button>
+            </div>
+            """;
+        await page.GetByTestId("component-view-code").ClickAsync();
+        await page.GetByTestId("component-document-editor").FillAsync(unknownHtml);
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await page.Locator("[data-name='send']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-action-status"))
+            .ToContainTextAsync("add failed: add action maps unknown parameter 'Unknown'.");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Designer_rejects_duplicate_action_declarations_and_malformed_mappings()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Malformed action document",
+            [Control("send", "button", props: new { text = "Send" })]);
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var editor = page.GetByTestId("component-document-editor");
+        var prefix = "<div data-gridlet=\"2\" data-name=\"Malformed action document\" "
+            + "data-layout=\"free\" style=\"width: 360px; height: 100px;\">";
+        var suffix = "<button data-name=\"send\" style=\"left: 16px; top: 16px; "
+            + "width: 120px; height: 30px;\">Send</button></div>";
+
+        var malformedDocuments = new[]
+        {
+            ("<gridlet-action name=\"add\" method=\"POST\" href=\"route\"></gridlet-action>"
+                + "<gridlet-action name=\"add\" method=\"POST\" href=\"route\"></gridlet-action>",
+                "declared more than once"),
+            ("<gridlet-action name=\" add \" method=\"POST\" href=\"route\"></gridlet-action>"
+                + "<gridlet-action name=\"ADD\" method=\"POST\" href=\"route\"></gridlet-action>",
+                "declared more than once"),
+            ("<gridlet-action name=\"add\" method=\"POST\" href=\"route\"><param name=\"Name\" control=\"\"></gridlet-action>",
+                "empty control mapping"),
+            ("<gridlet-action name=\"add\" method=\"POST\" href=\"route\"><param name=\"Name\" value=\"a\"><param name=\"name\" value=\"b\"></gridlet-action>",
+                "declared more than once"),
+            ("<gridlet-action name=\"add\" method=\"POST\" href=\"route\"><param name=\"Count\" value=\"NaN\" data-type=\"number\"></gridlet-action>",
+                "finite number"),
+        };
+
+        foreach (var (actions, error) in malformedDocuments)
+        {
+            await editor.FillAsync(prefix + actions + suffix);
+            await Assertions.Expect(page.GetByTestId("component-code-error"))
+                .ToContainTextAsync(error);
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Consumer_runtime_rejects_malformed_typed_actions_before_fetching()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        var suffix = Guid.NewGuid().ToString("n");
+        var route = $"malformed-runtime-{suffix}";
+        var moduleName = $"malformed-lifecycle-{suffix}.js";
+        await WriteModuleAsync(page, moduleName, """
+            export default class MalformedLifecycle {
+              constructor(component) { this.component = component; }
+              connected() { this.component.on('load', () => this.component.notify('load event survived')); }
+              onLoad() { this.component.field('marker').value = 'load handler survived'; }
+            }
+            """);
+        var html = $"""
+            <div data-gridlet="2" data-name="Malformed runtime action" data-layout="free" data-on-load="=onLoad()" style="width: 360px; height: 100px;">
+              <gridlet-code src="{moduleName}"></gridlet-code>
+              <gridlet-action name="add" method="POST" href="/{route}/">
+                <param name="Count" value="1.5" data-type="integer">
+              </gridlet-action>
+              <input data-name="marker" value="" style="left: 16px; top: 52px; width: 220px; height: 30px;">
+              <button type="button" data-name="send" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">Send</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Malformed runtime action", html);
+        var publishedRequests = new List<IRequest>();
+        page.Request += (_, request) =>
+        {
+            if (request.Url.Contains("/gridlet/pub/", StringComparison.Ordinal)) publishedRequests.Add(request);
+        };
+
+        await page.GotoAsync($"/gridlet/components/{id}");
+        await Assertions.Expect(page.Locator(".gridlet-runtime-message"))
+            .ToContainTextAsync("finite integer");
+        await Assertions.Expect(page.Locator(".gridlet-runtime-notice"))
+            .ToHaveTextAsync("load event survived");
+        await Assertions.Expect(page.Locator("[data-name='marker']"))
+            .ToHaveValueAsync("load handler survived");
+        await Assertions.Expect(page.Locator("[data-name='send']")).ToBeDisabledAsync();
+        Assert.Empty(publishedRequests);
+
+        browserPage.AssertNoUnexpectedErrors();
     }
 
     /// <summary>
@@ -2142,6 +4497,81 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
+    /// Component CSS is scoped without treating nested conditional rules as selectors. Root
+    /// variables still land on the component surface, while keyframes remain global definitions.
+    /// </summary>
+    [Fact]
+    public async Task Scopes_nested_authored_css_at_rules_without_corrupting_them()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Nested CSS component",
+            [Control("go", "button", props: new { text = "Go" })],
+            css: """
+                :root { --nested-text: rgb(4, 5, 6); }
+                .nested { color: var(--nested-text); animation: nested-pulse 1s; }
+                @media (min-width: 0px) {
+                  :root .nested { background-color: rgb(7, 8, 9); }
+                }
+                @supports (display: grid) {
+                  .nested { outline: 2px solid rgb(10, 11, 12); }
+                }
+                @keyframes nested-pulse {
+                  from { opacity: 0.4; }
+                  to { opacity: 1; }
+                }
+                """);
+
+        await Box(page, "go").ClickAsync();
+        await OpenPanelTabAsync(page, "Settings");
+        await page.GetByTestId("expr-classes").FillAsync("nested");
+
+        var button = Canvas(page, "go");
+        await Assertions.Expect(button).ToHaveCSSAsync("color", "rgb(4, 5, 6)");
+        await Assertions.Expect(button).ToHaveCSSAsync("background-color", "rgb(7, 8, 9)");
+        await Assertions.Expect(button).ToHaveCSSAsync("outline-width", "2px");
+        await Assertions.Expect(button).ToHaveCSSAsync("animation-name", "nested-pulse");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Root dimensions are authored CSS values, not only numbers. The designer accepts responsive
+    /// units and writes them back without converting them to the last measured border box.
+    /// </summary>
+    [Fact]
+    public async Task Round_trips_responsive_root_dimensions_as_authored_css()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Responsive component",
+            [Control("go", "button", props: new { text = "Go" })]);
+
+        await page.Locator(".gfd-canvas").ClickAsync(new LocatorClickOptions
+        {
+            Position = new Position { X = 5, Y = 440 },
+        });
+        await OpenPanelTabAsync(page, "Appearance");
+        await page.GetByTestId("expr-width").FillAsync("100vw");
+        await page.GetByTestId("expr-height").FillAsync("calc(100vh - 16px)");
+
+        await Assertions.Expect(page.GetByTestId("expr-width")).ToHaveValueAsync("100vw");
+        await Assertions.Expect(page.GetByTestId("expr-height")).ToHaveValueAsync("calc(100vh - 16px)");
+        await page.GetByTestId("component-save").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("tab-unsaved")).ToHaveCountAsync(0);
+
+        var component = await page.APIRequest.GetAsync("/gridlet/api/components");
+        Assert.True(component.Ok, $"Reading saved components failed: {component.Status}");
+        var saved = (await component.JsonAsync())!.Value.EnumerateArray()
+            .First(item => item.GetProperty("name").GetString() == "Responsive component");
+        var html = saved.GetProperty("html").GetString()!;
+        Assert.Contains("width: 100vw", html, StringComparison.Ordinal);
+        Assert.Contains("height: calc(", html, StringComparison.Ordinal);
+        Assert.Contains("100vh", html, StringComparison.Ordinal);
+        Assert.Contains("16px", html, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// What could come next, offered where the caret is: this component's own selectors, then the
     /// properties CSS has, then what the property being written takes. The list suggests and never
     /// decides - nothing arrives without being chosen.
@@ -2832,6 +5262,22 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    [Fact]
+    public async Task An_isolated_checkbox_keeps_its_label_and_input_structure()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Isolated checkbox component",
+            [Control("consent", "checkbox", props: new { text = "Accept terms" }, w: 220)],
+            isolated: true);
+
+        var checkbox = Canvas(page, "consent");
+        await Assertions.Expect(checkbox).ToHaveCSSAsync("display", "flex");
+        await Assertions.Expect(checkbox.Locator("input")).ToHaveCSSAsync("width", "13px");
+        await Assertions.Expect(checkbox.Locator("span")).ToHaveTextAsync("Accept terms");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     /// <summary>
     /// An unsaved component is only at risk when its tab closes. Switching away leaves it open with the
     /// edit still in it, and a component and the module it runs are two tabs somebody moves between
@@ -3103,8 +5549,10 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     /// </summary>
     /// <remarks>
     /// Isolated is the case that broke: the scroll container used to live in the kind's appearance,
-    /// and an isolated component drops Gridlet's appearance on purpose, so the grid lost the box it
-    /// was placed in along with the styling. Staying where it was put is structure, not styling.
+    /// and isolating once meant dropping that appearance, so the grid lost the box it was placed in
+    /// along with the styling. Staying where it was put is structure, not styling. An isolated
+    /// component now takes the basic style like any other styling root, so its cells are the same
+    /// cells - the point of the test is the box, and that it still has to scroll to fit.
     /// </remarks>
     [Fact]
     public async Task A_data_grid_stays_inside_the_box_it_was_placed_in()
@@ -3141,6 +5589,8 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         // Eight columns and a header cannot fit a 200x60 box, so it has to be scrolling to fit.
         Assert.True(size.GetProperty("scrolls").GetBoolean(), "the grid did not scroll its content");
+        await Assertions.Expect(box.Locator("thead th").First).ToHaveCSSAsync("border-bottom-width", "1px");
+        await Assertions.Expect(box.Locator("thead th").First).ToHaveCSSAsync("padding", "3px 7px");
 
         browserPage.AssertNoUnexpectedErrors();
     }

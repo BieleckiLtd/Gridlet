@@ -28,23 +28,31 @@ public sealed class GridletOptions
     public GridletAuditOptions Audit { get; set; } = new();
 
     /// <summary>
-    /// The single route segment, directly under Gridlet's mount, that published API endpoints are
-    /// served from. Defaults to <c>pub</c>, so a route named <c>customers</c> under the default
-    /// mount answers at <c>/gridlet/pub/customers</c>.
+    /// The route path, directly under Gridlet's mount, that published API endpoints are served
+    /// from. Multiple safe segments are supported. Defaults to <c>pub</c>, so a route named
+    /// <c>customers</c> under the default mount answers at <c>/gridlet/pub/customers</c>.
     /// </summary>
     /// <remarks>
-    /// Change it to fit a host's own URL conventions. It is one segment rather than a path so that
-    /// a published route can never be confused with a deeper part of the mount, and <c>api</c> is
-    /// rejected because Gridlet's own management API already occupies it. Existing published
-    /// endpoints keep their routes; only the segment in front of them moves, so anything already
+    /// Change it to fit a host's own URL conventions. <c>api</c> and paths beneath it are rejected
+    /// because Gridlet's own management API already occupies that subtree. Existing published
+    /// endpoints keep their routes; only the path in front of them moves, so anything already
     /// calling them has to be updated.
     /// </remarks>
     public string PublishedApiRoutePrefix { get; set; } = "pub";
 
     /// <summary>
-    /// <see cref="PublishedApiRoutePrefix"/> as the bare segment used to build a route or a URL,
+    /// Optional application-root path for published APIs. When set, published endpoints are
+    /// mounted there rather than beneath the <c>MapGridlet</c> mount. This is useful when a host
+    /// keeps Gridlet management at <c>/gridlet/api</c> but exposes a public surface at a path such
+    /// as <c>/pub/api</c>. When omitted, <see cref="PublishedApiRoutePrefix"/> remains relative to
+    /// the Gridlet mount for compatibility.
+    /// </summary>
+    public string? PublishedApiPath { get; set; }
+
+    /// <summary>
+    /// <see cref="PublishedApiRoutePrefix"/> as a normalized path used to build a route or a URL,
     /// with any surrounding slashes removed. A blank value falls back to the default so nothing
-    /// builds a URL with an empty segment while validation reports the misconfiguration.
+    /// builds a URL with an empty path while validation reports the misconfiguration.
     /// </summary>
     public string PublishedApiSegment =>
         PublishedApiRoutePrefix?.Trim('/') is { Length: > 0 } segment ? segment : "pub";

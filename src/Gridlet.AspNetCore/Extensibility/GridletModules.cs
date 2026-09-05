@@ -33,6 +33,30 @@ public interface IGridletRuntimeContributor
 }
 
 /// <summary>
+/// Optional extension for a runtime package that can be mounted at an application-root path
+/// instead of beneath the Gridlet management mount. This keeps public URLs independent from
+/// <c>/gridlet/api</c> while retaining the same authorization boundary.
+/// </summary>
+public interface IGridletRootRuntimeContributor
+{
+    /// <summary>
+    /// Application-root path at which the contributor wants to be mounted, or <see langword="null"/>
+    /// when it uses the ordinary Gridlet mount.
+    /// </summary>
+    string? RootPath { get; }
+
+    /// <summary>Maps the contributor's routes into an already-authorized root route group.</summary>
+    void MapAtRoot(IEndpointRouteBuilder root);
+}
+
+/// <summary>Non-secret route metadata a runtime package exposes to the Gridlet designer.</summary>
+public interface IGridletRuntimeRouteMetadata
+{
+    /// <summary>Configured component-public path, relative or application-root.</summary>
+    string ComponentPublicPath { get; }
+}
+
+/// <summary>
 /// Lets an optional Gridlet package ship its own browser assets and have the shell load them.
 /// </summary>
 /// <remarks>

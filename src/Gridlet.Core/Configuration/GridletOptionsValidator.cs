@@ -63,35 +63,43 @@ public sealed class GridletOptionsValidator : IValidateOptions<GridletOptions>
             }
         }
 
-        // The prefix becomes a literal route segment, so anything that would turn it into a route
+        // The prefix becomes a literal route path, so anything that would turn it into a route
         // template, a traversal, or a collision with Gridlet's own API is rejected at startup
         // rather than producing endpoints nobody can reach.
         var publishedPrefix = options.PublishedApiRoutePrefix;
         if (string.IsNullOrWhiteSpace(publishedPrefix))
         {
-            failures.Add("PublishedApiRoutePrefix must be a non-empty route segment, for example 'pub'.");
+            failures.Add("PublishedApiRoutePrefix must be a non-empty route path, for example 'pub'.");
         }
-        else
+        else if (!GridletRoutePath.TryNormalize(publishedPrefix, out var normalizedPublishedPrefix))
         {
-            var prefix = publishedPrefix.Trim('/');
-            if (prefix.Length is 0 or > 64)
-            {
-                failures.Add("PublishedApiRoutePrefix must contain 1-64 characters once surrounding slashes are removed.");
-            }
-            else if (prefix is "." or "..")
-            {
-                failures.Add("PublishedApiRoutePrefix cannot be '.' or '..' because route dot segments may be normalized as traversal.");
-            }
-            else if (!prefix.All(character =>
-                char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.'))
+            failures.Add(
+                $"PublishedApiRoutePrefix '{publishedPrefix}' must contain safe, non-empty route segments " +
+                "using ASCII letters, digits, '.', '-', '_' and '/'.");
+        }
+        else if (GridletRoutePath.FirstSegment(normalizedPublishedPrefix)
+                     .Equals("api", StringComparison.OrdinalIgnoreCase))
+        {
+            failures.Add(
+                "PublishedApiRoutePrefix cannot be 'api' or be beneath it; Gridlet's own management API is mounted there.");
+        }
+        else if (GridletRoutePath.FirstSegment(normalizedPublishedPrefix)
+                     .Equals("assets", StringComparison.OrdinalIgnoreCase))
+        {
+            failures.Add(
+                "PublishedApiRoutePrefix cannot be 'assets' or be beneath it; Gridlet's runtime assets are mounted there.");
+        }
+
+        if (options.PublishedApiPath is not null)
+        {
+            if (!GridletRoutePath.TryNormalize(options.PublishedApiPath, out _))
             {
                 failures.Add(
-                    $"PublishedApiRoutePrefix '{publishedPrefix}' must be a single route segment of ASCII letters, digits, '.', '-', or '_'.");
+                    $"PublishedApiPath '{options.PublishedApiPath}' must contain safe, non-empty route segments " +
+                    "using ASCII letters, digits, '.', '-', '_' and '/'.");
             }
-            else if (prefix.Equals("api", StringComparison.OrdinalIgnoreCase))
-            {
-                failures.Add("PublishedApiRoutePrefix cannot be 'api'; Gridlet's own management API is mounted there.");
-            }
+            // The absolute path may be under /gridlet when a host intentionally maps the whole
+            // application there; the mapping-time check has the real mount and resolves that case.
         }
 
         var limits = options.Limits;

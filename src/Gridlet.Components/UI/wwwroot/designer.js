@@ -25,6 +25,60 @@
   // this file's own URL rather than the page's, so URLs for anything the workspace serves are built
   // from a known root instead of being left to resolve into the module folder.
   const WORKSPACE_ROOT = new URL('../../../', document.currentScript?.src || document.baseURI).href;
+  const PUBLISHED_ROUTE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]*)(?:\/[A-Za-z0-9_-]+)*$/;
+  const PUBLISHED_SEGMENT = /^[A-Za-z0-9._-]+$/;
+  const ACTION_NAMES = new Set(['add', 'update', 'delete']);
+
+  const cssSize = (value, fallback = '0px') => FORMAT?.cssSize
+    ? FORMAT.cssSize(value, fallback) : fallback;
+  // The same size as it is applied to an element rather than as it was typed: a component that
+  // says `100%` is saying it fills what it is placed in, and what it fills is what is left of it
+  // after the component's own margin. See `fillingCssSize` in format.js for why the percentage
+  // cannot say that itself.
+  const fillingCssSize = (value, fallback = '0px') => {
+    const authored = authoredCssSize(value, fallback);
+    return FORMAT?.fillingCssSize ? FORMAT.fillingCssSize(authored, authored) : authored;
+  };
+  const authoredCssSize = (value, fallback = '0px') => {
+    const text = String(value ?? '').trim();
+    return FORMAT?.isCssSize?.(text) ? text : cssSize(value, fallback);
+  };
+
+  function publicPath(prefix, route) {
+    const cleanRoute = normalizePublishedRoute(route);
+    const cleanPrefix = String(prefix ?? '').trim().replace(/\/+$/g, '');
+    if (!cleanPrefix) throw new Error('The public component route is not configured.');
+    const base = cleanPrefix.startsWith('/')
+      ? new URL(`${cleanPrefix}/`, document.baseURI)
+      : new URL(`${cleanPrefix}/`, WORKSPACE_ROOT);
+    return new URL(cleanRoute, base).href;
+  }
+
+  function publicComponentUrl(component) {
+    if (!component?.routable) return null;
+    try {
+      const route = component.route || component.id;
+      return publicPath(state.meta?.componentPublicPath || 'components', route);
+    } catch {
+      return null;
+    }
+  }
+
+  function publishedApiPath(route) {
+    const cleanRoute = normalizePublishedRoute(route);
+    const configured = String(state.meta?.publishedApiPath || '').trim();
+    if (configured) {
+      const prefix = configured.replace(/\/+$/g, '');
+      return `${prefix}/${cleanRoute}`;
+    }
+    const segment = normalizePublishedSegment(state.meta?.publishedApiSegment || 'pub');
+    return `${segment}/${cleanRoute}`;
+  }
+
+  function normalizeActionIdentifier(value) {
+    const operation = String(value ?? '').trim().toLowerCase();
+    return ACTION_NAMES.has(operation) ? operation : '';
+  }
 
   // How a component arranges its controls. A property of the component, not a mode of the editor, so it
   // travels with the document. Grid and flex layouts join this table when they are implemented.
@@ -636,10 +690,14 @@ export default class ${CLASS_NAME(name)} {
   // One module, one tab, the same as everything else in the workspace opens. A component designer and
   // the module it runs are two tabs side by side, and saving here reaches a component that is running.
 
+  // What a file in the Code section is written in. Only Gridlet's own stylesheet is not a module,
+  // and it reads as CSS rather than as JavaScript that happens to parse.
+  const isStylesheet = (name) => name.toLowerCase().endsWith('.css');
+
   function openCodeTab(name) {
     openTab({
       key: 'component-script:' + name,
-      badge: 'JS',
+      badge: isStylesheet(name) ? 'CSS' : 'JS',
       title: name,
       render: (panel, tab) => buildCodeTab(panel, tab, name),
       restore: { kind: 'component-script', id: name },
@@ -672,7 +730,7 @@ export default class ${CLASS_NAME(name)} {
     let readOnly = false;
 
     const { surface, input, refresh } = codeSurface({
-      paint: highlightJs,
+      paint: isStylesheet(name) ? highlightCss : highlightJs,
       label: `${name} source`,
       testId: 'component-code-editor',
       onInput: () => {
@@ -762,7 +820,9 @@ export default class ${CLASS_NAME(name)} {
       surface.classList.add('read-only');
       saveButton.hidden = true;
       deleteButton.hidden = true;
-      note.textContent = `${name} - part of Gridlet. Read it, and import it from your own modules.`;
+      note.textContent = isStylesheet(name)
+        ? `${name} - part of Gridlet. It is the stylesheet every component is rendered with, in the designer and on a published page alike.`
+        : `${name} - part of Gridlet. Read it, and import it from your own modules.`;
     } else {
       note.textContent = `${name} - runs in any component that names it`;
     }
@@ -1394,7 +1454,7 @@ export default class ${CLASS_NAME(name)} {
     button: {
       title: 'Button',
       icon: '⬜',
-      defaults: { w: 110, h: 32, props: { text: 'Button' } },
+      defaults: { w: 110, h: 32, props: { text: 'Button', action: '' } },
       style: { ...FIELD_STYLE, padding: '5px 12px', cursor: 'pointer' },
       properties: [TEXT('text', 'Text')],
       render: (c) => h('button', { class: 'gfd-button', type: 'button', tabindex: '-1' },
@@ -1564,8 +1624,16 @@ export default class ${CLASS_NAME(name)} {
   function newDocument() {
     return {
       layout: 'free',
-      width: 720,
-      height: 460,
+      width: '720px',
+      height: '460px',
+      borderWidth: '',
+      borderStyle: '',
+      borderRadius: '',
+      padding: '',
+      // A component stands off whatever it is placed on rather than butting against it. It is the
+      // component's own margin rather than a gutter on the surface, so what the designer shows is
+      // the space the component will actually take wherever it is put.
+      margin: '1em',
       css: '',
       // A component is a fixed canvas by default: controls placed at coordinates do not reflow, so
       // clipping is the honest behaviour until the operator asks for scrollbars.
@@ -1575,6 +1643,7 @@ export default class ${CLASS_NAME(name)} {
       // it on to start from the browser's own styling instead of Gridlet's.
       isolated: false,
       source: null,
+      actions: {},
       elementId: '',
       classes: '',
       tip: '',
@@ -1622,7 +1691,10 @@ export default class ${CLASS_NAME(name)} {
     }
   }
 
-  const newColors = () => ({ light: { text: '', background: '' }, dark: { text: '', background: '' } });
+  const newColors = () => ({
+    light: { text: '', background: '', border: '' },
+    dark: { text: '', background: '', border: '' },
+  });
 
   // A colour pair becomes one declaration. light-dark() resolves against the element's colour
   // scheme, which the component already sets, so a single generated rule serves both themes and stays
@@ -1646,14 +1718,53 @@ export default class ${CLASS_NAME(name)} {
 
   // Published endpoints answer GET with {"rows":[…],"rowCount":n}. Only GET endpoints can back a
   // read-only component; the others change data, and reading a component must never do that.
-  async function readSource(source) {
+  function publishedSourcePath(segment, route) {
+    const cleanRoute = normalizePublishedRoute(route);
+    const cleanSegment = normalizePublishedSegment(segment);
+    return `${cleanSegment}/${cleanRoute}`;
+  }
+
+  function normalizePublishedRoute(route) {
+    const cleanRoute = String(route ?? '').trim().replace(/^\/+|\/+$/g, '');
+    if (!PUBLISHED_ROUTE.test(cleanRoute)) {
+      throw new Error('The component data source is not a safe published route.');
+    }
+    return cleanRoute;
+  }
+
+  // The endpoint store compares routes ordinally without regard to case. Keep that same lookup
+  // rule in the designer, but leave the authored spelling untouched for the URL it eventually
+  // requests so a component round-trip does not rewrite somebody's route casing.
+  function samePublishedRoute(left, right) {
+    try {
+      return normalizePublishedRoute(left).toLowerCase() === normalizePublishedRoute(right).toLowerCase();
+    } catch {
+      return false;
+    }
+  }
+
+  function normalizePublishedSegment(segment) {
+    const cleanSegment = String(segment ?? '').replace(/^\/+|\/+$/g, '');
+    if (!PUBLISHED_SEGMENT.test(cleanSegment) || cleanSegment.toLowerCase() === 'api') {
+      throw new Error('The published API segment is unsafe.');
+    }
+    return cleanSegment;
+  }
+
+  async function readSource(source, endpoints = null) {
     if (!source?.route) return [];
-    const segment = state.meta?.publishedApiSegment || 'pub';
+    const cleanRoute = normalizePublishedRoute(source.route);
+    if (Array.isArray(endpoints) && !endpoints.some((candidate) =>
+      candidate.enabled && String(candidate.method).toUpperCase() === 'GET' &&
+      samePublishedRoute(candidate.route, cleanRoute))) {
+      throw new Error('The component data source is not a published GET endpoint.');
+    }
     const query = Object.entries(source.parameters || {})
       .filter(([, value]) => value !== '' && value !== null && value !== undefined)
       .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
       .join('&');
-    const body = await api(`${segment}/${source.route}${query ? '?' + query : ''}`);
+    const path = publishedApiPath(source.route);
+    const body = await api(`${path}${query ? '?' + query : ''}`);
     return Array.isArray(body?.rows) ? body.rows : [];
   }
 
@@ -1778,11 +1889,37 @@ export default class ${CLASS_NAME(name)} {
     // A stored component arrives as its document. Parsing it here rather than holding the markup
     // around is what keeps the rest of the designer working on one shape: the model is the same
     // whether a component was just created or read back off disk.
-    const doc = saved ? FORMAT.fromHtml(saved.html) : newDocument();
+    let documentError = '';
+    let documentMarkup = null;
+    let doc;
+    if (!saved) {
+      doc = newDocument();
+    } else {
+      try {
+        doc = FORMAT.fromHtml(saved.html);
+      } catch (error) {
+        // A legacy document can predate a grammar tightened since it was saved. Keep the raw file
+        // in the Code view and give the designer an empty working model so the tab remains useful:
+        // opening a document must not be the one operation that makes repairing it impossible.
+        doc = newDocument();
+        documentMarkup = String(saved.html ?? '');
+        documentError = error?.message || String(error);
+        toast(`This component document could not be opened: ${documentError} Open Code to repair it.`);
+      }
+    }
     const model = {
       id: saved?.id || null,
       name: saved?.name || 'New component',
+      publication: {
+        // New components are embedded-only until the author explicitly publishes them. Legacy
+        // stores return true and retain their old public page through the server compatibility rule.
+        routable: saved?.routable ?? false,
+        route: saved?.route || '',
+        title: saved?.title || '',
+      },
       doc,
+      documentError,
+      documentMarkup,
       // What is selected, in the order it was picked. The first is the one the panel reads its
       // values from; edits made there are pushed to the rest, and geometry works on the box the
       // whole selection occupies.
@@ -1799,6 +1936,10 @@ export default class ${CLASS_NAME(name)} {
       // preview is showing. Columns are learned by reading the source once, so the field pickers
       // offer real names instead of asking the operator to remember them.
       endpoints: [],
+      // An empty list is a successful answer; it is not the same state as a failed or still-running
+      // listing request. Membership checks use this flag so a transient failure cannot misdiagnose a
+      // valid saved route as unpublished.
+      endpointListState: 'loading',
       columns: [],
       rows: [],
       rowIndex: 0,
@@ -1817,6 +1958,10 @@ export default class ${CLASS_NAME(name)} {
       // the component names the ones it runs, and any component can run any of them - so the designer only
       // keeps the list to offer, and each module is edited in its own tab.
       scripts: [],
+      // Pending writes belong to the document operation, not the button element. The canvas is
+      // redrawn for mode changes, row navigation and property edits, so DOM-only state could let a
+      // replacement button submit the same request while the original is still in flight.
+      pendingActions: new Set(),
     };
 
     // Older documents predate these fields; fill them in rather than special-casing every read.
@@ -1824,12 +1969,15 @@ export default class ${CLASS_NAME(name)} {
     doc.resizable ??= false;
     doc.isolated ??= false;
     doc.source ??= null;
+    doc.actions ??= {};
     doc.elementId ??= '';
     doc.classes ??= '';
     doc.tip ??= '';
     doc.modules ??= [];
     doc.colors ??= newColors();
     doc.bind ??= {};
+    doc.width = authoredCssSize(doc.width, '720px');
+    doc.height = authoredCssSize(doc.height, '460px');
     walk(doc.controls, (control) => {
       control.css ??= '';
       control.elementId ??= '';
@@ -2106,6 +2254,8 @@ export default class ${CLASS_NAME(name)} {
       'color.dark': ['dark', 'text'],
       'fill.light': ['light', 'background'],
       'fill.dark': ['dark', 'background'],
+      'border.light': ['light', 'border'],
+      'border.dark': ['dark', 'border'],
     };
 
     // Which fields belong to a control or component itself rather than to its catalogue properties.
@@ -2188,8 +2338,9 @@ export default class ${CLASS_NAME(name)} {
       function storeLastGood(target, key, value) {
         if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') return;
         if (key === 'value') return;
+        const size = target === component && (key === 'width' || key === 'height');
         const numeric = OWN_KEYS.has(key) && key !== 'classes' && key !== 'elementId' && key !== 'tip';
-        setLiteral(target, key, numeric ? asNumber(value) : value);
+        setLiteral(target, key, size ? authoredCssSize(value, '0px') : numeric ? asNumber(value) : value);
       }
 
       // Walking the rest of a path into a plain value, which is all a module's own object is.
@@ -2293,11 +2444,37 @@ export default class ${CLASS_NAME(name)} {
         if (!rest.length) return componentApi;
 
         const key = rest[0].toLowerCase();
-        const size = (name) => {
+        const absolutePixels = (value) => {
+          const text = String(value ?? '').trim();
+          const match = text.match(/^(?:\d+(?:\.\d+)?|\.\d+)px$/i);
+          return match ? Number.parseFloat(text) : null;
+        };
+        const measuredSize = (name) => {
           const living = model.livingSize?.[name];
-          if (typeof living === 'number') return living;
+          if (typeof living === 'number' && Number.isFinite(living) && living > 0) return living;
+          const box = canvas.getBoundingClientRect()[name];
+          return Number.isFinite(box) && box > 0 ? box : null;
+        };
+        const size = (name) => {
+          // Preview is the live component, so its measured border box is authoritative there -
+          // including a resize-grip override, which no authored value knows about.
+          if (model.mode === 'preview') {
+            const living = measuredSize(name);
+            if (living !== null) return living;
+          }
           const value = resolve(component, name);
-          return isError(value) ? value : asNumber(value);
+          if (isError(value)) return value;
+          // An absolute size is a number the moment it is typed, and Design uses it straight away: a
+          // ResizeObserver callback is asynchronous, and waiting for one would leave a freshly typed
+          // size a render behind.
+          const absolute = absolutePixels(value);
+          if (absolute !== null) return absolute;
+          // A responsive size - `100%`, a calc(), anything that depends on what the component is
+          // sitting in - is not a number until something has measured it. Reading the digits out of
+          // it instead is how `100%` came to mean a hundred pixels, and every anchored control was
+          // then laid out against a component a tenth of its real width.
+          const measured = measuredSize(name);
+          return measured !== null ? measured : asNumber(value);
         };
         if (key === 'width') return size('width');
         if (key === 'height') return size('height');
@@ -2359,9 +2536,27 @@ export default class ${CLASS_NAME(name)} {
         for (const [key, [theme, slot]] of Object.entries(COLOUR_KEYS)) {
           colours[theme][slot] = asText(resolve(component, key));
         }
+        // The observer is transient; if the canvas is hidden during a redraw its offset box can be
+        // zero. Do not fall back through componentApi.width here: that getter delegates to this
+        // function and would recurse until a formula receives an invalid geometry value.
+        const authoredPixels = (value, fallback) => {
+          const text = String(value ?? '').trim();
+          const match = text.match(/^(?:\d+(?:\.\d+)?|\.\d+)px$/i);
+          return match ? Number.parseFloat(text) : fallback;
+        };
+        const measured = (name, fallback) => {
+          const living = model.mode === 'preview' ? model.livingSize?.[name] : null;
+          if (typeof living === 'number' && Number.isFinite(living)) return living;
+          const box = canvas.getBoundingClientRect()[name];
+          if (Number.isFinite(box) && box > 0) return box;
+          return authoredPixels(model.doc[name], fallback);
+        };
         return {
-          width: model.livingSize?.width ?? shaped(component, 'width', 'number'),
-          height: model.livingSize?.height ?? shaped(component, 'height', 'number'),
+          // Formula consumers see the measured border-box dimensions. The authored CSS size stays
+          // on doc.width/doc.height, so a 100%/100vw/100vh root can reflow without the observer
+          // turning its last measurement into a new fixed size.
+          width: measured('width', 720),
+          height: measured('height', 460),
           colors: colours,
           classes: asText(resolve(component, 'classes')),
           elementId: asText(resolve(component, 'elementId')),
@@ -2393,6 +2588,22 @@ export default class ${CLASS_NAME(name)} {
     // ---- rendering ----
 
     function renderCanvas() {
+      const documentLocked = Boolean(model.documentError);
+      designer.classList.toggle('gfd-document-invalid', documentLocked);
+      surface.inert = documentLocked;
+      palette.inert = documentLocked;
+      propertyBody.inert = documentLocked;
+      // The status node survives canvas redraws, but an invalid action is recomputed from the
+      // current document. Once the binding is repaired, remove only that diagnostic; pending and
+      // endpoint errors belong to their own operation and must remain visible.
+      let hasInvalidAction = false;
+      walk(model.doc.controls, (control) => { if (control.invalidAction) hasInvalidAction = true; });
+      if (!hasInvalidAction && actionStatus.dataset.state === 'invalid') {
+        actionStatus.dataset.state = '';
+        actionStatus.hidden = true;
+        actionStatus.className = 'gfd-action-status';
+        actionStatus.textContent = '';
+      }
       // The designer's own rules are a real stylesheet, regenerated from the document on every
       // render. It loads before the component's custom CSS, so custom rules of equal specificity win
       // by order, and either the property or the variable behind it can be overridden.
@@ -2401,15 +2612,27 @@ export default class ${CLASS_NAME(name)} {
       canvas.className = ['gfd-canvas', model.mode === 'preview' ? 'preview' : '',
         showGrid ? '' : 'no-grid',
         component.classes || ''].filter(Boolean).join(' ').trim();
+      // The same flag the saved document carries, so a stylesheet can tell an isolated canvas from
+      // one that is still Gridlet's to paint - the reset alone cannot reach scrollbar pseudo-elements.
+      canvas.toggleAttribute('data-isolated', !!model.doc.isolated);
       canvas.id = component.elementId || '';
       canvas.title = component.tip || '';
       canvas.dataset.component = model.name || 'component';
-      // Controls placed beyond the component's edge are clipped rather than spilling onto the page.
-      // Scrollbars are how the operator opts into reaching them instead.
-      canvas.style.overflow = model.mode !== 'preview' ? 'visible'
-        : model.doc.showScrollbars ? 'auto' : 'hidden';
+      // A control placed beyond the component's edge is clipped rather than drawn over the page
+      // around it, and rather than dragging the whole surface's scroll area out with it.
+      //
+      // Design clips with `clip` rather than `hidden`, and with a margin: `clip` creates no scroll
+      // container, so nothing outside the component can be scrolled to by accident, while the margin
+      // leaves room for the selection handles - which sit five pixels outside the control they
+      // belong to, and would otherwise be cut off a control on the boundary and leave it impossible
+      // to drag back. Where the component is read there are no handles, so it clips at its own edge
+      // exactly as the published runtime does. Scrollbars, either way, are how the operator opts
+      // into reaching what is out there.
+      canvas.style.overflow = model.doc.showScrollbars ? 'auto'
+        : model.mode === 'preview' ? 'hidden' : 'clip';
       canvas.style.resize = model.mode === 'preview' && model.doc.resizable ? 'both' : '';
       canvas.replaceChildren(...model.doc.controls.map(renderControl));
+      if (model.mode === 'preview' && actionStatus.dataset.state && !actionStatus.hidden) canvas.append(actionStatus);
       // Last, and measured off what was just drawn: a dimension is only true of the layout it was
       // taken from, so it is read back out of the canvas rather than worked out beside it.
       renderAnchorOverlay();
@@ -2430,7 +2653,8 @@ export default class ${CLASS_NAME(name)} {
       if (typeof ResizeObserver !== 'function') return null;
       let pending = 0;
       const observer = new ResizeObserver(() => {
-        if (model.mode !== 'preview') return;
+        // Responsive authored sizes are meaningful in Design as well as Preview. The measured
+        // value is transient and never written back to doc.width/doc.height.
         // The whole box, which is what the document's own width means: everything here is
         // border-box, so the number the panel shows and the number measured are the same number.
         const width = canvas.offsetWidth;
@@ -2450,6 +2674,12 @@ export default class ${CLASS_NAME(name)} {
     const canvasSizeWatch = watchCanvasSize();
 
     const currentRow = () => model.rows[model.rowIndex] || null;
+    const actionStatus = h('div', {
+      class: 'gfd-action-status',
+      role: 'status',
+      'aria-live': 'polite',
+      hidden: '',
+    });
 
     function renderControl(control) {
       const spec = CATALOGUE[control.type];
@@ -2483,6 +2713,25 @@ export default class ${CLASS_NAME(name)} {
       // The box carries the same name under its own attribute, which is what the geometry rule
       // targets. One name, two attributes, so a rule can never mean both elements at once.
       if (control.name) inner.dataset.name = control.name;
+      const operation = control.type === 'button' ? normalizeActionIdentifier(view.props.action) : '';
+      if (operation) {
+        inner.dataset.action = operation;
+        if (model.mode === 'preview' && model.pendingActions.has(operation)) inner.disabled = true;
+      }
+      if (control.type === 'button' && control.invalidAction) {
+        inner.dataset.actionInvalid = control.invalidAction;
+        if (model.mode === 'preview') {
+          // Every invalid button is independently inert. Only the status message is shared, and
+          // an in-flight or failed valid operation keeps precedence over this diagnostic.
+          inner.disabled = true;
+          if (!model.pendingActions.size && !['pending', 'error'].includes(actionStatus.dataset.state)) {
+            actionStatus.dataset.state = 'invalid';
+            actionStatus.hidden = false;
+            actionStatus.className = 'gfd-action-status error';
+            actionStatus.textContent = `${control.invalidAction} action is undeclared.`;
+          }
+        }
+      }
       if (view.classes.trim()) inner.classList.add(...view.classes.trim().split(/\s+/));
       if (view.elementId) inner.id = view.elementId;
 
@@ -2544,12 +2793,93 @@ export default class ${CLASS_NAME(name)} {
       if (!css || !css.trim()) return '';
       if (!root.dataset.gfdScope) root.dataset.gfdScope = newId();
       const scope = `[data-gfd-scope="${root.dataset.gfdScope}"]`;
-      return css.replace(/(^|\})\s*([^@{}]+)\{/g, (match, brace, selectors) => {
-        const scoped = selectors.split(',')
-          .map((s) => `${scope} ${s.trim()}`)
-          .join(', ');
-        return `${brace} ${scoped} {`;
-      });
+
+      // A regex can only see the first level of braces. It consequently prefixes nested @media
+      // blocks as if their prelude were a selector and corrupts @keyframes. This bounded scanner
+      // tracks strings/comments and recursively scopes only conditional grouping at-rules; font
+      // faces, keyframes and other declaration at-rules remain authored verbatim.
+      const matchingBrace = (source, open) => {
+        let depth = 1;
+        let quote = '';
+        let comment = false;
+        for (let i = open + 1; i < source.length; i += 1) {
+          const character = source[i];
+          const next = source[i + 1];
+          if (comment) { if (character === '*' && next === '/') { comment = false; i += 1; } } else if (quote) {
+            if (character === '\\') i += 1;
+            else if (character === quote) quote = '';
+          } else if (character === '/' && next === '*') { comment = true; i += 1; }
+          else if (character === '"' || character === "'") quote = character;
+          else if (character === '{') depth += 1;
+          else if (character === '}' && --depth === 0) return i;
+        }
+        return -1;
+      };
+
+      const nextOpen = (source, from) => {
+        let quote = '';
+        let comment = false;
+        for (let i = from; i < source.length; i += 1) {
+          const character = source[i];
+          const next = source[i + 1];
+          if (comment) { if (character === '*' && next === '/') { comment = false; i += 1; } }
+          else if (quote) { if (character === '\\') i += 1; else if (character === quote) quote = ''; }
+          else if (character === '/' && next === '*') { comment = true; i += 1; }
+          else if (character === '"' || character === "'") quote = character;
+          else if (character === '{') return i;
+        }
+        return -1;
+      };
+
+      const splitSelectors = (source) => {
+        const parts = [];
+        let start = 0;
+        let quote = '';
+        let depth = 0;
+        for (let i = 0; i < source.length; i += 1) {
+          const character = source[i];
+          if (quote) { if (character === '\\') i += 1; else if (character === quote) quote = ''; continue; }
+          if (character === '"' || character === "'") { quote = character; continue; }
+          if ('(['.includes(character)) depth += 1;
+          else if ([')', ']'].includes(character)) depth = Math.max(0, depth - 1);
+          else if (character === ',' && depth === 0) { parts.push(source.slice(start, i)); start = i + 1; }
+        }
+        parts.push(source.slice(start));
+        return parts;
+      };
+
+      const conditional = /^@(media|supports|container|document|layer|starting-style)\b/i;
+      const transform = (source) => {
+        let output = '';
+        let cursor = 0;
+        while (cursor < source.length) {
+          const open = nextOpen(source, cursor);
+          if (open < 0) { output += source.slice(cursor); break; }
+          const close = matchingBrace(source, open);
+          if (close < 0) { output += source.slice(cursor); break; }
+          const prelude = source.slice(cursor, open);
+          const trimmed = prelude.trim();
+          const leading = prelude.slice(0, prelude.indexOf(trimmed));
+          const body = source.slice(open + 1, close);
+          if (conditional.test(trimmed)) {
+            output += `${leading}${trimmed}{${transform(body)}}`;
+          } else if (trimmed.startsWith('@')) {
+            output += `${prelude}{${body}}`;
+          } else {
+            const selectors = splitSelectors(trimmed).map((selector) => {
+              const value = selector.trim();
+              const scoped = value.replace(/:root\b/g, scope);
+              return scoped === value && !scoped.startsWith(scope)
+                ? `${scope} ${scoped}` : scoped;
+            }).join(', ');
+            output += `${leading}${selectors}{${body}}`;
+          }
+          cursor = close + 1;
+        }
+        return output;
+      };
+
+      return transform(css);
     }
 
     // ---- selection and properties ----
@@ -2987,10 +3317,17 @@ export default class ${CLASS_NAME(name)} {
       boolean: (value) => truthy(value),
       text: (value) => asText(value),
       lines: (value) => asText(value),
+      size: (value) => {
+        const text = authoredCssSize(unescapeText(value), '');
+        if (!text) throw new Error('Size must be a non-negative CSS length or responsive size.');
+        return text;
+      },
     };
 
     function writeProperty(target, key, typed, options = {}) {
       const kind = options.kind || 'text';
+      if (kind === 'size' && !isFormula(typed)
+        && !authoredCssSize(unescapeText(typed), '')) return;
       if (isFormula(typed)) (target.bind ??= {})[key] = typed;
       else {
         delete target.bind?.[key];
@@ -3010,6 +3347,7 @@ export default class ${CLASS_NAME(name)} {
       const literal = literalOf(target, key);
       if (kind === 'boolean') return truthy(literal) ? 'true' : 'false';
       if (kind === 'number') return String(asNumber(literal));
+      if (kind === 'size') return authoredCssSize(literal, '0px');
       return escapeText(asText(literal));
     };
 
@@ -3104,6 +3442,13 @@ export default class ${CLASS_NAME(name)} {
 
     const numberEditor = (target, key, options = {}) => () =>
       propertyBox(target, key, { ...options, kind: 'number' });
+
+    const sizeEditor = (target, key, options = {}) => () =>
+      propertyBox(target, key, {
+        ...options,
+        kind: 'size',
+        placeholder: options.placeholder || '100% or 720px',
+      });
 
     const textEditor = (target, key, options = {}) => () =>
       propertyBox(target, key, { ...options, kind: 'text' });
@@ -4273,6 +4618,10 @@ ${colourGeneration}`;
       ['Fill', 'fill', 'Background'],
     ];
 
+    // A component has an edge of its own to colour; a control's border is part of what its kind
+    // looks like, so the extra row belongs to the component's page rather than to every panel.
+    const COMPONENT_COLOUR_ROWS = [...COLOUR_ROWS, ['Border', 'border', 'Border colour']];
+
     function colourSlot(target, key, hint) {
       const formula = isFormula(target.bind?.[key]);
       const differs = mixed(target, key);
@@ -4294,10 +4643,10 @@ ${colourGeneration}`;
       return heading(`Colours (${themeName} theme)`);
     }
 
-    const colourRows = (target) => {
+    const colourRows = (target, rows = COLOUR_ROWS) => {
       const scheme = activeScheme();
       return [
-        ...COLOUR_ROWS.map(([label, property, hint]) => h('div', { class: 'gfd-row' },
+        ...rows.map(([label, property, hint]) => h('div', { class: 'gfd-row' },
           h('span', { class: 'gfd-row-label', title: hint, text: label }),
           colourSlot(target, `${property}.${scheme}`, `${hint} on the ${scheme} theme`))),
       ];
@@ -5278,14 +5627,47 @@ ${colourGeneration}`;
       ];
     }
 
+    // The component's own box. Each row is the CSS property it sets, taken as typed: a component
+    // that wants `8px 12px` or `1px 0` says so, and there is nothing to learn beyond the CSS. Empty
+    // means the property is not written at all, so the component keeps whatever it had.
+    const BOX_ROWS = [
+      ['borderWidth', 'Border', 'Border width, e.g. 1px', '1px'],
+      ['borderStyle', 'Style', 'Border style, e.g. solid', 'solid'],
+      ['borderRadius', 'Corners', 'Corner radius, e.g. 8px', '8px'],
+      ['padding', 'Padding', 'Space inside the edge, e.g. 8px or 8px 12px', '8px'],
+      ['margin', 'Margin', 'Space outside the edge, e.g. 0 auto', '0'],
+    ];
+
+    function boxRows() {
+      return BOX_ROWS.map(([key, label, hint, placeholder]) =>
+        row(model.doc, null, label, () => {
+          const input = h('input', {
+            type: 'text',
+            class: 'gfd-input',
+            spellcheck: 'false',
+            autocomplete: 'off',
+            placeholder,
+            'data-testid': 'component-box-' + key.toLowerCase(),
+            oninput: (event) => {
+              model.doc[key] = event.target.value;
+              applyStyles();
+              renderCanvas();
+              markDirty();
+            },
+          });
+          input.value = model.doc[key] ?? '';
+          return input;
+        }, { hint }));
+    }
+
     // ---- the component's own pages ----
 
     function componentEditors(which) {
       if (which === 'appearance') {
         return [
           heading('Size'),
-          row(model.doc, 'width', 'Width', numberEditor(model.doc, 'width')),
-          row(model.doc, 'height', 'Height', numberEditor(model.doc, 'height')),
+          row(model.doc, 'width', 'Width', sizeEditor(model.doc, 'width')),
+          row(model.doc, 'height', 'Height', sizeEditor(model.doc, 'height')),
           row(model.doc, null, 'Scroll', () => h('input', {
             type: 'checkbox',
             class: 'gfd-check',
@@ -5316,21 +5698,19 @@ ${colourGeneration}`;
               renderProperties();
               markDirty();
             },
-          }), { hint: 'Ignore workspace styles and start from the browser\'s own' }),
+          }), { hint: 'Start from the browser\'s own styling instead of inheriting from what this component sits in' }),
+          heading('Box'),
+          ...boxRows(),
           colourHeading(),
-          ...colourRows(model.doc),
+          ...colourRows(model.doc, COMPONENT_COLOUR_ROWS),
           cssSection('component-custom', model.doc, `${componentSelector()} {\n  \n}`),
           // The component's own rule, not the whole sheet: a control's rules belong to that control.
-          // The reset an isolated component adds is the component's too, and it is shown in the layer it is
-          // really in - a rule that loses to everything you write reads very differently from one
-          // that does not.
+          // The reset every canvas starts from is shown with it, in the layer it is really in - a
+          // rule that loses to everything you write reads very differently from one that does not.
           section('component-generated', 'Generated CSS',
             generatedBlock('generated-sheet', () => {
-              const reset = isolationResetCss();
-              return [
-                generatedCssForComponent(),
-                ...(reset ? [`@layer gridlet {\n${reset}\n}`] : []),
-              ].join('\n\n');
+              const reset = canvasResetCss();
+              return [generatedCssForComponent(), ...(reset ? [reset] : [])].join('\n\n');
             })),
         ];
       }
@@ -5344,6 +5724,7 @@ ${colourGeneration}`;
       return [
         ...componentSettingsRows(),
         ...dataSourceEditors(),
+        ...actionEditors(),
         heading('Behaviour'),
         ...moduleRows(),
       ];
@@ -5482,9 +5863,56 @@ ${colourGeneration}`;
           input.value = model.name;
           return input;
         }),
+        ...publicationEditors(),
         row(model.doc, null, 'Layout', () => layoutSelect),
         ...identityRows(model.doc),
         ...eventRows(model.doc, COMPONENT_EVENTS),
+      ];
+    }
+
+    function publicationEditors() {
+      const route = h('input', {
+        type: 'text',
+        spellcheck: 'false',
+        placeholder: model.id || 'my-component',
+        'data-testid': 'component-route',
+        oninput: (event) => {
+          model.publication.route = event.target.value;
+          markDirty();
+        },
+      });
+      route.value = model.publication.route;
+
+      const title = h('input', {
+        type: 'text',
+        maxlength: '256',
+        placeholder: model.name || 'Component title',
+        'data-testid': 'component-title',
+        oninput: (event) => {
+          model.publication.title = event.target.value;
+          markDirty();
+        },
+      });
+      title.value = model.publication.title;
+
+      const routable = h('input', {
+        type: 'checkbox',
+        class: 'gfd-check',
+        'data-testid': 'component-routable',
+        checked: model.publication.routable ? '' : null,
+        onchange: (event) => {
+          model.publication.routable = event.target.checked;
+          markDirty();
+        },
+      });
+
+      return [
+        row(model.doc, null, 'Public page', () => h('div', { class: 'gfd-publication-control' }, routable),
+          { hint: 'Expose this component at a consumer-facing route' }),
+        row(model.doc, null, 'Public route', () => route,
+          { hint: 'A safe route relative to the configured component public path' }),
+        row(model.doc, null, 'Page title', () => title,
+          { hint: 'The browser title shown on the public page' }),
       ];
     }
 
@@ -5515,28 +5943,39 @@ ${colourGeneration}`;
       // actually calls. An endpoint's id is Gridlet's own and does not belong in a document that is
       // readable by whoever opens the component - and a document that named one would stop matching
       // the moment it was copied to another environment.
-      const chosen = model.endpoints.find((e) => e.route === model.doc.source?.route) || null;
+      const getEndpoints = model.endpoints.filter((e) =>
+        String(e.method).toUpperCase() === 'GET');
+      const chosen = getEndpoints.find((e) => samePublishedRoute(e.route, model.doc.source?.route)) || null;
 
       const sourceSelect = h('select', {
         'data-testid': 'component-source',
         onchange: (event) => {
-          const endpoint = model.endpoints.find((e) => e.route === event.target.value) || null;
+          const endpoint = getEndpoints.find((e) => samePublishedRoute(e.route, event.target.value)) || null;
           model.doc.source = endpoint ? { route: endpoint.route, parameters: {} } : null;
           markDirty();
           loadRows(true).then(() => { renderProperties(); renderCanvas(); });
         },
       },
         h('option', { value: '', text: 'None', selected: chosen ? null : '' }),
-        model.endpoints.map((endpoint) => h('option', {
+        getEndpoints.map((endpoint) => h('option', {
           value: endpoint.route,
           text: `${endpoint.name} (${endpoint.route})`,
-          selected: chosen?.route === endpoint.route ? '' : null,
-        })));
+            selected: samePublishedRoute(chosen?.route, endpoint.route) ? '' : null,
+        })),
+        model.doc.source?.route && !chosen ? h('option', {
+          value: model.doc.source.route,
+          text: model.endpointListState === 'available'
+            ? `Unavailable (${model.doc.source.route})`
+            : `Not verified (${model.doc.source.route})`,
+          selected: '',
+        }) : null);
 
       const editors = [heading('Source'), row(model.doc, null, 'Endpoint', () => sourceSelect,
         { hint: 'A published GET endpoint' })];
 
-      if (!model.endpoints.length) {
+      if (model.endpointListState !== 'available') {
+        editors.push(note('The published endpoint list is unavailable. The saved source route will be checked when the list is available.'));
+      } else if (!getEndpoints.length) {
         editors.push(note('No GET endpoints are published yet. Publish a query as a GET endpoint to bind a component to it.'));
       }
 
@@ -5571,6 +6010,185 @@ ${colourGeneration}`;
       }
 
       return editors;
+    }
+
+    const ACTIONS = {
+      add: { label: 'Add', methods: ['POST'] },
+      update: { label: 'Update', methods: ['PUT', 'PATCH'] },
+      delete: { label: 'Delete', methods: ['DELETE'] },
+    };
+
+    const actionControlNames = () => {
+      const controls = [];
+      walk(model.doc.controls, (control) => {
+        if (control.name && ['textbox', 'textarea', 'checkbox', 'select'].includes(control.type)) {
+          controls.push(control.name);
+        }
+      });
+      return controls;
+    };
+
+    function actionMappingFor(action, parameterName) {
+      const key = Object.keys(action?.parameters || {})
+        .find((candidate) => candidate.toLowerCase() === parameterName.toLowerCase());
+      return key === undefined ? undefined : action.parameters[key];
+    }
+
+    function setActionMapping(action, parameterName, mapping) {
+      action.parameters ??= {};
+      for (const key of Object.keys(action.parameters)) {
+        if (key.toLowerCase() === parameterName.toLowerCase()) delete action.parameters[key];
+      }
+      if (mapping) action.parameters[parameterName] = mapping;
+    }
+
+    function actionMappingEditor(operation, action, parameter) {
+      const current = actionMappingFor(action, parameter.name);
+      const controlNames = actionControlNames();
+      const mode = current && typeof current === 'object' && typeof current.control === 'string'
+        ? 'control' : current && Object.hasOwn(current, 'value') ? 'value' : '';
+      const missingControl = mode === 'control' && !controlNames.includes(current.control);
+      const map = h('select', {
+        'data-testid': `component-action-${operation}-map-${parameter.name}`,
+        onchange: (event) => {
+          const value = event.target.value;
+          if (!value) setActionMapping(action, parameter.name, null);
+          else if (value === 'value') setActionMapping(action, parameter.name, { value: '' });
+          else setActionMapping(action, parameter.name, { control: value.slice('control:'.length) });
+          markDirty();
+          renderProperties();
+        },
+      },
+        h('option', { value: '', text: 'Not mapped', selected: mode === '' ? '' : null }),
+        h('option', { value: 'value', text: 'Literal value', selected: mode === 'value' ? '' : null }),
+        missingControl ? h('option', {
+          value: `control:${current.control}`,
+          text: `Missing control: ${current.control}`,
+          selected: '',
+        }) : null,
+        ...controlNames.map((name) => h('option', {
+          value: `control:${name}`, text: `Control: ${name}`,
+          selected: mode === 'control' && current.control === name ? '' : null,
+        })));
+
+      if (mode !== 'value') return map;
+      const literal = h('input', {
+        type: 'text',
+        class: 'gfd-action-literal',
+        'data-testid': `component-action-${operation}-value-${parameter.name}`,
+        disabled: current.value === null ? '' : null,
+        oninput: (event) => {
+          setActionMapping(action, parameter.name, { value: event.target.value });
+          markDirty();
+        },
+      });
+      literal.value = current.value === null ? '' : String(current.value ?? '');
+      const nullValue = h('input', {
+        type: 'checkbox', class: 'gfd-check',
+        'data-testid': `component-action-${operation}-null-${parameter.name}`,
+        checked: current.value === null ? '' : null,
+        onchange: (event) => {
+          setActionMapping(action, parameter.name,
+            { value: event.target.checked ? null : literal.value });
+          literal.disabled = event.target.checked;
+          markDirty();
+        },
+      });
+      return [map, literal, h('label', { class: 'gfd-action-null' }, nullValue, 'null')];
+    }
+
+    function actionEditors() {
+      const editors = [heading('Actions'), note('Each action is an explicitly selected published endpoint. Parameters must be mapped to a control or a literal value; the data source is never used for writes.')];
+      for (const [operation, definition] of Object.entries(ACTIONS)) {
+        const action = model.doc.actions?.[operation] || null;
+        const endpoints = model.endpoints.filter((endpoint) =>
+          endpoint.enabled && definition.methods.includes(String(endpoint.method).toUpperCase()));
+        const chosen = endpoints.find((endpoint) => samePublishedRoute(endpoint.route, action?.route) &&
+          String(endpoint.method).toUpperCase() === String(action?.method).toUpperCase()) || null;
+        const select = h('select', {
+          'data-testid': `component-action-${operation}`,
+          onchange: (event) => {
+            const selected = event.target.selectedOptions[0];
+            const endpoint = endpoints.find((candidate) => samePublishedRoute(candidate.route, event.target.value)
+              && String(candidate.method).toUpperCase() === selected?.dataset.method) || null;
+            model.doc.actions ??= {};
+            model.doc.actions[operation] = endpoint
+              ? { route: endpoint.route, method: String(endpoint.method).toUpperCase(), parameters: Object.create(null) }
+              : null;
+            if (!endpoint) {
+              walk(model.doc.controls, (control) => {
+                if (control.type === 'button' && normalizeActionIdentifier(control.props?.action) === operation) {
+                  control.props.action = '';
+                }
+              });
+            }
+            markDirty();
+            renderProperties();
+          },
+        },
+          h('option', { value: '', text: 'None', selected: chosen ? null : '' }),
+          ...endpoints.map((endpoint) => h('option', {
+            value: endpoint.route,
+            'data-method': String(endpoint.method).toUpperCase(),
+            text: `${endpoint.name} (${endpoint.method} ${endpoint.route})`,
+            selected: samePublishedRoute(chosen?.route, endpoint.route)
+              && String(chosen.method).toUpperCase() === String(endpoint.method).toUpperCase() ? '' : null,
+          })),
+          action && !chosen ? h('option', {
+            value: action.route,
+            text: model.endpointListState === 'available'
+              ? `Unavailable (${action.method} ${action.route})`
+              : `Not verified (${action.method} ${action.route})`,
+            selected: ''
+          }) : null);
+        editors.push(row(model.doc, null, definition.label, () => select,
+          { hint: `${definition.label} uses ${definition.methods.join(' or ')} only` }));
+        if (!chosen) continue;
+        const parameters = chosen.parameters || [];
+        if (!parameters.length) {
+          editors.push(note(`${definition.label} has no parameters.`));
+          continue;
+        }
+        editors.push(heading(`${definition.label} parameters`));
+        for (const parameter of parameters) {
+          editors.push(row(model.doc, null, parameter.name,
+            () => actionMappingEditor(operation, action, parameter),
+            { hint: parameter.required ? `${parameter.name} (required)` : parameter.name }));
+        }
+      }
+      if (model.endpointListState !== 'available') {
+        editors.push(note('The published endpoint list is unavailable. Actions remain inert until their endpoints can be verified.'));
+      } else if (!model.endpoints.some((endpoint) => endpoint.enabled && String(endpoint.method).toUpperCase() !== 'GET')) {
+        editors.push(note('No write endpoints are published yet. Publish POST, PUT, PATCH, or DELETE endpoints to enable actions.'));
+      }
+      return editors;
+    }
+
+    function buttonActionEditor(control) {
+      const declared = Object.entries(model.doc.actions || {})
+        .filter(([, action]) => action?.route && action?.method)
+        .map(([operation]) => operation);
+      const invalid = control.invalidAction || '';
+      return h('select', {
+        'data-testid': 'control-action',
+        onchange: (event) => {
+          control.invalidAction = '';
+          control.props.action = event.target.value === '__invalid__' ? '' : event.target.value;
+          markDirty();
+          renderCanvas();
+        },
+      },
+        invalid ? h('option', {
+          value: '__invalid__',
+          text: `Invalid action "${invalid}" (undeclared)`,
+          selected: '',
+        }) : null,
+        h('option', { value: '', text: 'Read only', selected: !control.props.action && !invalid ? '' : null }),
+        ...declared.map((operation) => h('option', {
+          value: operation,
+          text: `${ACTIONS[operation]?.label || operation} action`,
+          selected: normalizeActionIdentifier(control.props.action) === operation ? '' : null,
+        })));
     }
 
     // ---- a control's pages ----
@@ -5648,6 +6266,10 @@ ${colourGeneration}`;
         // What it shows, next to what it is called. A control that displays nothing says so only
         // when its kind has something worth saying about why.
         ...controlValueEditors(control, spec, group),
+        ...(control.type === 'button' && !group
+          ? [heading('Action'), row(control, null, 'On click', () => buttonActionEditor(control),
+            { hint: 'Choose exactly one declared Add, Update, or Delete endpoint; empty is read only' })]
+          : []),
         // The columns a value can be bound to are a group of their own, so what follows them needs
         // a heading of its own or it reads as more of them.
         heading('Element'),
@@ -5904,7 +6526,7 @@ ${colourGeneration}`;
       // the reset the component just asked for. Colours chosen in the panel still apply - they are the
       // operator's own decision, not Gridlet's styling. The fallback for a theme left empty is a
       // colour, never a keyword: see themedColor.
-      const style = model.doc.isolated ? {} : styleOf(CATALOGUE[control.type], view);
+      const style = styleOf(CATALOGUE[control.type], view);
       const text = themedColor(view.colors, 'text', style.color || 'currentColor');
       const background = themedColor(view.colors, 'background', style.background || 'transparent');
 
@@ -5928,8 +6550,12 @@ ${colourGeneration}`;
         `${selectorFor(control)} {`,
         `  --gfd-left: ${view.x}px;`,
         `  --gfd-top: ${view.y}px;`,
-        `  --gfd-width: ${view.w}px;`,
-        `  --gfd-height: ${view.h}px;`,
+        // A size that works out negative - `=component.width - 600` on a component narrower than
+        // that - is not a width the browser can use, and an invalid one falls back to `auto`, which
+        // sizes the control to its content and pushes it past the edge it was measured against.
+        // Nothing is that wide: it is nothing wide.
+        `  --gfd-width: ${Math.max(0, view.w)}px;`,
+        `  --gfd-height: ${Math.max(0, view.h)}px;`,
         ...(text ? [`  --gfd-color: ${text};`] : []),
         ...(background ? [`  --gfd-fill: ${background};`] : []),
         '  position: absolute;',
@@ -5973,7 +6599,7 @@ ${colourGeneration}`;
     // Gridlet's opinion, but a control filling its own box is not.
     function defaultCssFor(control) {
       const view = pass.viewOf(control);
-      const style = model.doc.isolated ? {} : styleOf(CATALOGUE[control.type], view);
+      const style = styleOf(CATALOGUE[control.type], view);
       const text = themedColor(view.colors, 'text', style.color || 'currentColor');
       const background = themedColor(view.colors, 'background', style.background || 'transparent');
 
@@ -5997,52 +6623,73 @@ ${colourGeneration}`;
 
     function generatedCssForComponent() {
       const component = pass.componentView();
-      const surfaceDefault = model.doc.isolated ? 'Canvas' : 'var(--panel)';
-      const textDefault = model.doc.isolated ? 'CanvasText' : 'var(--text)';
-      // An isolated component starts from the browser's own colours, so those are what a colour left
-      // empty falls back to. They belong in this rule, beside the colours that were chosen: a
-      // second rule with the same selector further down the sheet would beat both of them.
-      const text = themedColor(component.colors, 'text', textDefault)
-        ?? (model.doc.isolated ? 'CanvasText' : null);
-      const background = themedColor(component.colors, 'background', surfaceDefault)
-        ?? (model.doc.isolated ? 'Canvas' : null);
+      const width = fillingCssSize(pass.read(model.doc, 'width'), '720px');
+      const height = fillingCssSize(pass.read(model.doc, 'height'), '460px');
+      // A component's surface is Gridlet's whether or not it is isolated: isolating cuts a component
+      // off from what surrounds it, it does not take its appearance away. A colour left empty
+      // therefore falls back to the same place either way.
+      const surfaceDefault = 'var(--panel)';
+      const textDefault = 'var(--text)';
+      const text = themedColor(component.colors, 'text', textDefault);
+      const background = themedColor(component.colors, 'background', surfaceDefault);
+
+      const border = themedColor(component.colors, 'border', 'var(--border)');
 
       const rules = [[
         `${componentSelector()} {`,
-        `  --gfd-component-width: ${component.width}px;`,
-        `  --gfd-component-height: ${component.height}px;`,
+        // A size typed as `100%` is written as the keyword that fills the space left after the
+        // margin, because that is what filling means to whoever typed it. The percentage itself
+        // would be the whole container, with the margin then added on top of it.
+        `  --gfd-component-width: ${width};`,
+        `  --gfd-component-height: ${height};`,
         ...(text ? [`  color: ${text};`] : []),
         ...(background ? [`  background-color: ${background};`] : []),
+        ...(border ? [`  border-color: ${border};`] : []),
+        // Written only when set, so a component that says nothing about its box keeps the one it
+        // had rather than being pinned to a default it never asked for.
+        ...BOX_ROWS.flatMap(([key]) => {
+          const value = (model.doc[key] ?? '').trim();
+          return value ? [`  ${key.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())}: ${value};`] : [];
+        }),
         '}',
       ].join('\n')];
 
       return rules.join('\n\n');
     }
 
-    // What an isolated component starts from: the browser's own styling, with Gridlet's taken back off.
-    //
-    // `revert` drops every author-level rule - Gridlet's and the designer's - and it is aimed at
-    // the element inside each control and its contents, never at the control box, so positioning
-    // and the designer's selection chrome survive. The system colours track the component's colour
-    // scheme, so the theme switch still works.
-    //
-    // It goes in the same layer as the kind defaults, and for the same reason. `all: revert` on a
-    // selector Gridlet wrote would otherwise outrank a plain `.btn { border: 1px solid red }` and
-    // undo it - asking for a clean slate would quietly mean losing the CSS you wrote on top of it.
-    function isolationResetCss() {
-      if (!model.doc.isolated) return '';
-      return [
-        '.gfd-control > :first-child,',
-        '.gfd-control > :first-child * {',
-        '  all: revert;',
-        '  box-sizing: border-box;',
-        '}',
-        '',
-        '.gfd-control > :first-child {',
-        '  width: 100%;',
-        '  height: 100%;',
-        '}',
-      ].join('\n');
+    // The reset out of component.css, for the properties panel to show beside the component's own
+    // rules. Fetched rather than read back from the parsed sheet: the browser serialises
+    // `all: revert` as every longhand it stands for, which is the same rule and ten kilobytes of
+    // it. What is worth reading is what somebody wrote. The whole file opens from the Code section.
+    let resetSource = '';
+
+    function loadComponentStylesheet() {
+      const sheet = [...document.styleSheets]
+        .find((candidate) => candidate.href && candidate.href.endsWith('/component.css'));
+      if (!sheet) return;
+      fetch(sheet.href).then((response) => response.text()).then((text) => {
+        resetSource = layerBlock(text, 'gridlet-reset');
+        cascadeRefresh?.();
+      }).catch(() => { /* the panel simply has nothing to show */ });
+    }
+
+    // One `@layer name { ... }` block, lifted whole. The layer's own closing brace is not the first
+    // one after it, so the braces are counted rather than searched for.
+    function layerBlock(text, name) {
+      const open = text.indexOf(`@layer ${name} {`);
+      if (open < 0) return '';
+      let depth = 0;
+      for (let at = text.indexOf('{', open); at < text.length; at += 1) {
+        if (text[at] === '{') depth += 1;
+        else if (text[at] === '}' && (depth -= 1) === 0) return text.slice(open, at + 1);
+      }
+      return '';
+    }
+
+    loadComponentStylesheet();
+
+    function canvasResetCss() {
+      return resetSource;
     }
 
     // The whole sheet the designer is applying, in document order.
@@ -6055,7 +6702,7 @@ ${colourGeneration}`;
     // What each control looks like before anybody says otherwise, kept apart so it can be put in a
     // layer. Everything in here loses to a rule you write, however plain that rule's selector is.
     function defaultCssSource() {
-      const rules = [isolationResetCss()].filter(Boolean);
+      const rules = [];
       walk(model.doc.controls, (control) => {
         const css = defaultCssFor(control);
         if (css) rules.push(css);
@@ -6151,6 +6798,7 @@ ${colourGeneration}`;
     }
 
     function deleteSelection() {
+      if (model.documentError) return;
       const controls = selectedControls();
       if (!controls.length) return;
       closeCssTabs(controls.map((control) => control.id));
@@ -6197,6 +6845,7 @@ ${colourGeneration}`;
     }
 
     function moveSelection(dx, dy) {
+      if (model.documentError) return;
       if (!dx && !dy) return;
       for (const control of movable()) {
         if (!isBound(control, 'x')) control.x = Math.max(0, control.x + dx);
@@ -6210,6 +6859,7 @@ ${colourGeneration}`;
     // Resizing a group scales it about its own top-left, so the parts keep their proportions and
     // their spacing rather than all becoming the same size.
     function scaleSelection(factorX, factorY) {
+      if (model.documentError) return;
       const box = selectionBox();
       if (!box) return;
 
@@ -6262,6 +6912,7 @@ ${colourGeneration}`;
     }
 
     function placeControl(type, clientX, clientY) {
+      if (model.documentError) return;
       const target = dropTarget(clientX, clientY) || {
         list: model.doc.controls,
         originX: canvas.getBoundingClientRect().left,
@@ -6360,6 +7011,7 @@ ${colourGeneration}`;
     canvas.addEventListener('pointerdown', (event) => {
       // Preview is the component, not a drawing of it: clicks belong to the controls.
       if (model.mode === 'preview') return;
+      if (model.documentError) return;
       const handle = event.target.closest('.gfd-handle');
       // A locked control is not a thing to pick up. Pressing on one falls through to the marquee,
       // the same as pressing the canvas, so a band drawn across it still selects what is around it.
@@ -6487,7 +7139,7 @@ ${colourGeneration}`;
     });
 
     canvas.addEventListener('drop', (event) => {
-      if (model.mode === 'preview') return;
+      if (model.mode === 'preview' || model.documentError) return;
       const type = event.dataTransfer.getData('application/x-gridlet-control');
       if (!type || !CATALOGUE[type]) return;
       event.preventDefault();
@@ -6495,7 +7147,7 @@ ${colourGeneration}`;
     });
 
     canvas.addEventListener('keydown', (event) => {
-      if (model.mode === 'preview') return;
+      if (model.mode === 'preview' || model.documentError) return;
 
       // Select every control in the component. The canvas has focus while designing, so this is the
       // keyboard's way to the same place the rubber band gets to.
@@ -6556,20 +7208,35 @@ ${colourGeneration}`;
         toast('Give the component a name before saving.');
         return;
       }
+      if (model.documentError) {
+        toast('Fix the component document in Code before saving.');
+        return;
+      }
       saveButton.disabled = true;
       try {
         const savedComponent = await post('api/components', {
           id: model.id,
           name: model.name.trim(),
           html: FORMAT.toHtml(model.doc, model.name.trim()),
+          routable: Boolean(model.publication.routable),
+          // An empty route/title intentionally clears an existing override; the server applies
+          // the compatibility default (id/name) when these are null in the response.
+          route: model.publication.route.trim(),
+          title: model.publication.title.trim(),
         });
         model.id = savedComponent.id;
+        model.publication = {
+          routable: savedComponent.routable ?? model.publication.routable,
+          route: savedComponent.route || '',
+          title: savedComponent.title || '',
+        };
         // Saving is keeping. A link the drag landed on has been written to the document now, so
         // it stops being provisional and a later nudge no longer quietly takes it off again.
         autoLinks.clear();
         tab.hasUnsavedDefinition = false;
         tab.title = savedComponent.name;
         refreshTabs();
+        renderProperties();
         await sidebar.refresh();
         toast(`Saved ${savedComponent.name}.`, false);
       } catch (err) {
@@ -6729,14 +7396,25 @@ ${colourGeneration}`;
       onclick: () => setMode(mode),
     }, label)]));
 
-    // Only GET endpoints are offered: a read-only component must not be able to invoke something that
-    // writes just because it was the nearest match in a list.
+    // GET endpoints are offered to the read-only source. Write endpoints remain available separately
+    // to explicit action declarations below; a source can never select one of them.
     async function loadEndpoints() {
       try {
         const published = await api('api/published');
-        model.endpoints = published.filter((e) =>
-          e.enabled && String(e.method).toUpperCase() === 'GET');
+        // A legacy store can contain routes that the current published-route grammar rejects.
+        // Do not offer one in either the read-only source selector or a CRUD action selector.
+        model.endpoints = published.filter((e) => {
+          if (!e?.enabled) return false;
+          try {
+            normalizePublishedRoute(e.route);
+            return true;
+          } catch {
+            return false;
+          }
+        });
+        model.endpointListState = 'available';
       } catch (err) {
+        model.endpointListState = 'unavailable';
         toast('Failed to list published endpoints: ' + err.message);
       }
     }
@@ -6751,7 +7429,10 @@ ${colourGeneration}`;
       model.columns = [];
       if (!model.doc.source) return;
       try {
-        model.rows = await readSource(model.doc.source);
+        if (model.endpointListState !== 'available') {
+          throw new Error('The published endpoint list is unavailable.');
+        }
+        model.rows = await readSource(model.doc.source, model.endpoints);
         if (model.rows.length) model.columns = Object.keys(model.rows[0]);
       } catch (err) {
         if (!quiet) toast(`The component's data source failed: ${err.message}`);
@@ -6830,6 +7511,120 @@ ${colourGeneration}`;
         } catch (err) {
           recordBehaviourError('behaviour', err);
         }
+      }
+    }
+
+    const ACTION_DEFINITIONS = {
+      add: { methods: ['POST'] },
+      update: { methods: ['PUT', 'PATCH'] },
+      delete: { methods: ['DELETE'] },
+    };
+
+    function actionUrl(operation, action) {
+      const definition = ACTION_DEFINITIONS[operation];
+      const method = String(action?.method || '').toUpperCase();
+      const route = normalizePublishedRoute(action?.route);
+      if (!definition || !definition.methods.includes(method)) {
+        throw new Error(`${operation} action has no matching HTTP method.`);
+      }
+      const published = model.endpoints.find((endpoint) => endpoint.enabled &&
+        String(endpoint.method).toUpperCase() === method && samePublishedRoute(endpoint.route, route));
+      if (model.endpointListState !== 'available') {
+        throw new Error(`${operation} action could not verify the published endpoint list.`);
+      }
+      if (!published) throw new Error(`${operation} action is not a published ${method} endpoint.`);
+      return withinPublishedApi(publishedApiPath(route));
+    }
+
+    function actionControlValue(name) {
+      const elements = [...canvas.querySelectorAll('[data-name]')]
+        .filter((candidate) => candidate.dataset.name === name);
+      if (elements.length !== 1) throw new Error(`Action control '${name}' is not unique.`);
+      const element = elements[0];
+      const input = element.matches('input, textarea, select')
+        ? element : element.querySelector('input, textarea, select');
+      if (!input) throw new Error(`Action control '${name}' has no value.`);
+      return input.type === 'checkbox' ? input.checked : input.value;
+    }
+
+    function actionBody(operation, action, endpoint) {
+      const mappings = action.parameters || {};
+      const declared = new Map();
+      for (const parameter of endpoint.parameters || []) {
+        const key = String(parameter.name).toLowerCase();
+        if (declared.has(key)) throw new Error(`${operation} action has duplicate endpoint parameter '${parameter.name}'.`);
+        declared.set(key, parameter);
+      }
+      const mapped = new Map();
+      for (const [name, mapping] of Object.entries(mappings)) {
+        const parameter = declared.get(name.toLowerCase());
+        if (!parameter) throw new Error(`${operation} action maps unknown parameter '${name}'.`);
+        if (mapped.has(parameter.name)) {
+          throw new Error(`${operation} action maps parameter '${parameter.name}' more than once.`);
+        }
+        mapped.set(parameter.name, mapping);
+      }
+      const body = Object.create(null);
+      for (const parameter of endpoint.parameters || []) {
+        const mapping = mapped.get(parameter.name);
+        if (!mapping || typeof mapping !== 'object') {
+          if (!parameter.required) continue;
+          throw new Error(`${operation} action has no mapping for parameter '${parameter.name}'.`);
+        }
+        if (typeof mapping.control === 'string' && mapping.control.trim()) {
+          body[parameter.name] = actionControlValue(mapping.control);
+        } else if (Object.hasOwn(mapping, 'value')) {
+          if (typeof mapping.value === 'number' && !Number.isFinite(mapping.value)) {
+            throw new Error(`${operation} action parameter '${parameter.name}' is not a finite number.`);
+          }
+          body[parameter.name] = mapping.value;
+        } else {
+          throw new Error(`${operation} action has an invalid mapping for parameter '${parameter.name}'.`);
+        }
+      }
+      return body;
+    }
+
+    async function runAction(operation, button) {
+      const actionName = normalizeActionIdentifier(operation);
+      if (!actionName || model.pendingActions.has(actionName)) return;
+      const action = model.doc.actions?.[actionName];
+      const method = String(action?.method || '').toUpperCase();
+      const endpoint = model.endpoints.find((candidate) => candidate.enabled &&
+        String(candidate.method).toUpperCase() === method && samePublishedRoute(candidate.route, action?.route));
+      const wasDisabled = button.disabled;
+      model.pendingActions.add(actionName);
+      button.disabled = true;
+      actionStatus.hidden = false;
+      actionStatus.dataset.state = 'pending';
+      actionStatus.className = 'gfd-action-status pending';
+      actionStatus.textContent = `${actionName} in progress…`;
+      if (!actionStatus.isConnected) canvas.append(actionStatus);
+      try {
+        const target = actionUrl(actionName, action);
+        const body = actionBody(actionName, action, endpoint);
+        const response = await fetch(target, {
+          method,
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const text = await response.text();
+        let result = null;
+        try { result = text ? JSON.parse(text) : null; } catch { /* status explains a non-JSON response */ }
+        if (!response.ok || (result && typeof result === 'object' && Object.hasOwn(result, 'error'))) {
+          throw new Error(result?.error || `The published endpoint returned ${response.status}.`);
+        }
+        actionStatus.className = 'gfd-action-status success';
+        actionStatus.dataset.state = 'success';
+        actionStatus.textContent = `${actionName} completed successfully.`;
+      } catch (err) {
+        actionStatus.className = 'gfd-action-status error';
+        actionStatus.dataset.state = 'error';
+        actionStatus.textContent = `${actionName} failed: ${err?.message || err}`;
+      } finally {
+        model.pendingActions.delete(actionName);
+        if (button.isConnected) button.disabled = wasDisabled;
+        renderCanvas();
       }
     }
 
@@ -6921,8 +7716,16 @@ ${colourGeneration}`;
       // The size the component is drawn at, which is what `component.width` answers in a formula. The two
       // are the same number from the same place, so a method and a formula agree about the component
       // they are both looking at.
-      get width() { return pass ? pass.componentView().width : asNumber(model.doc.width); },
-      get height() { return pass ? pass.componentView().height : asNumber(model.doc.height); },
+      get width() {
+        if (pass) return pass.componentView().width;
+        const text = String(model.doc.width ?? '').trim();
+        return /^\d+(?:\.\d+)?px$/i.test(text) ? Number.parseFloat(text) : asNumber(model.doc.width);
+      },
+      get height() {
+        if (pass) return pass.componentView().height;
+        const text = String(model.doc.height ?? '').trim();
+        return /^\d+(?:\.\d+)?px$/i.test(text) ? Number.parseFloat(text) : asNumber(model.doc.height);
+      },
 
       get fields() {
         const names = [];
@@ -7125,6 +7928,19 @@ ${colourGeneration}`;
       const target = new URL(String(path), WORKSPACE_ROOT);
       if (target.origin !== location.origin || !target.href.startsWith(WORKSPACE_ROOT)) {
         throw new Error(`${path} is outside this workspace.`);
+      }
+      return target.href;
+    };
+
+    const withinPublishedApi = (path) => {
+      const configured = String(state.meta?.publishedApiPath || '').trim();
+      const base = configured
+        ? new URL(configured.replace(/\/+$/g, '') + '/', configured.startsWith('/')
+          ? document.baseURI : WORKSPACE_ROOT)
+        : new URL(normalizePublishedSegment(state.meta?.publishedApiSegment || 'pub') + '/', WORKSPACE_ROOT);
+      const target = new URL(String(path), configured?.startsWith('/') ? document.baseURI : WORKSPACE_ROOT);
+      if (target.origin !== location.origin || !target.pathname.startsWith(base.pathname)) {
+        throw new Error(`${path} is outside the published API.`);
       }
       return target.href;
     };
@@ -7389,8 +8205,20 @@ ${colourGeneration}`;
         delegate(() => true, event, (nativeEvent) => {
           const box = nativeEvent.target instanceof Element
             ? nativeEvent.target.closest('.gfd-control') : null;
-          const control = box?.dataset.controlBox ? controlNamed(box.dataset.controlBox) : null;
-          if (control) runHandler(control, event);
+          const control = box?.dataset.id
+            ? findControl(model.doc, box.dataset.id)
+            : box?.dataset.controlBox ? controlNamed(box.dataset.controlBox) : null;
+          if (control) {
+            runHandler(control, event);
+            const operation = normalizeActionIdentifier(control.props?.action);
+            if (event === 'click' && model.mode === 'preview' && control.type === 'button'
+              && operation && !model.pendingActions.has(operation)) {
+              const button = nativeEvent.target instanceof Element
+                ? nativeEvent.target.closest('button') : null;
+              if (!button || button.disabled) return;
+              void runAction(operation, button);
+            }
+          }
         });
       }
 
@@ -7427,9 +8255,18 @@ ${colourGeneration}`;
     // Code after drawing something has to show the drawing, and re-showing the text somebody left
     // behind would quietly discard it.
     function showDocument() {
-      code.input.value = FORMAT.toHtml(model.doc, model.name);
-      code.refresh();
-      showDocumentError(null);
+      try {
+        code.input.value = model.documentMarkup ?? FORMAT.toHtml(model.doc, model.name);
+        code.refresh();
+        showDocumentError(model.documentError || null);
+      } catch (error) {
+        // Serialization can fail for a malformed legacy model as well as parsing. Keep whatever
+        // text is already in the editor and surface the failure instead of leaving a stale,
+        // apparently-valid Code view or throwing out of the view switcher.
+        model.documentError = error?.message || String(error);
+        model.documentMarkup = code.input.value;
+        showDocumentError(model.documentError);
+      }
     }
 
     function showDocumentError(message) {
@@ -7442,14 +8279,19 @@ ${colourGeneration}`;
     // document that did, which is the same bargain a formula makes: what broke is on screen with
     // what it broke, and nothing behind it has been damaged by a half-typed tag.
     function documentEdited() {
+      const source = code.input.value;
       let parsed;
       try {
-        parsed = FORMAT.fromHtml(code.input.value);
+        parsed = FORMAT.fromHtml(source);
       } catch (err) {
-        showDocumentError(err.message);
+        model.documentError = err?.message || String(err);
+        model.documentMarkup = source;
+        showDocumentError(model.documentError);
         return;
       }
 
+      model.documentError = '';
+      model.documentMarkup = null;
       showDocumentError(null);
       model.doc = parsed;
       model.selection = [];
@@ -7822,6 +8664,7 @@ ${colourGeneration}`;
     setRailWidth(Number(readStored('gridlet.components.railWidth', '280')) || 280, false);
 
     surface.dataset.gfdScope = newId();
+    if (model.documentError) showDocument();
     renderCanvas();
     renderProperties();
 
@@ -7857,35 +8700,43 @@ ${colourGeneration}`;
     createTitle: 'Create component',
     onCreate: () => openDesigner(null),
     load: async () => { components = await api('api/components'); },
-    items: () => components.map((component) => ({
-      name: component.name,
-      title: `${component.name} - updated ${new Date(component.updatedAtUtc).toLocaleString()}`,
-      definition: component.html,
-      onOpen: () => openDesigner(component),
-      contextItems: () => [
+    items: () => components.map((component) => {
+      const publicUrl = publicComponentUrl(component);
+      return {
+        name: component.name,
+        hideBadge: true,
+        trailingAction: publicUrl ? {
+          icon: 'external-link',
+          label: `Open ${component.name} public form in a new tab`,
+          title: 'Open public form in a new tab',
+          testId: 'component-public-open',
+          onClick: () => window.open(publicUrl, '_blank', 'noopener,noreferrer'),
+        } : null,
+        title: `${component.name} - updated ${new Date(component.updatedAtUtc).toLocaleString()}`,
+        definition: component.html,
+        onOpen: () => openDesigner(component),
+        contextItems: () => [
         { label: 'Open', action: () => openDesigner(component) },
-        {
+        ...(publicUrl ? [{
+          // Keep the established menu wording while resolving the link from publication metadata.
           label: 'Open consumer view',
-          action: () => window.open(
-            `${WORKSPACE_ROOT}components/${encodeURIComponent(component.id)}`,
-            '_blank', 'noopener,noreferrer'),
-        },
-        {
+          action: () => window.open(publicUrl, '_blank', 'noopener,noreferrer'),
+        }, {
           label: 'Copy consumer link',
           action: async () => {
-            const url = `${WORKSPACE_ROOT}components/${encodeURIComponent(component.id)}`;
-            if (!navigator.clipboard?.writeText) {
+            const url = publicUrl;
+            if (!url || !navigator.clipboard?.writeText) {
               toast('This browser cannot copy links.');
               return;
             }
             try {
               await navigator.clipboard.writeText(url);
-              toast('Consumer link copied.', false);
+              toast('Public link copied.', false);
             } catch (err) {
-              toast(`Could not copy consumer link: ${err.message}`);
+              toast(`Could not copy public link: ${err.message}`);
             }
           },
-        },
+        }] : []),
         { separator: true },
         {
           label: 'Delete component…',
@@ -7897,9 +8748,19 @@ ${colourGeneration}`;
               await sidebar.refresh();
             }),
         },
-      ],
-    })),
+        ],
+      };
+    }),
   });
+
+  // What Gridlet's own files are for, since the two are not the same kind of thing: one is a module
+  // to import, the other a stylesheet to read.
+  function builtInDescription(script) {
+    if (!script.readOnly) return null;
+    return isStylesheet(script.name)
+      ? `${script.name} - part of Gridlet: the stylesheet every component is rendered with`
+      : `${script.name} - part of Gridlet, and importable from your own modules`;
+  }
 
   // Modules are listed beside the components, because a module is a thing you open and work on rather
   // than a setting inside something else. Any component can name any of them.
@@ -7917,9 +8778,12 @@ ${colourGeneration}`;
     load: async () => { scripts = await scriptApi.list(); },
     items: () => scripts.map((script) => ({
       name: script.name,
-      title: script.readOnly
-        ? `${script.name} - part of Gridlet, and importable from your own modules`
-        : `${script.name} - updated ${new Date(script.updatedAtUtc).toLocaleString()}`,
+      // The section is called Code and mostly holds modules, but not everything in it is one.
+      badge: isStylesheet(script.name) ? 'CSS' : 'JS',
+      badgeClass: isStylesheet(script.name) ? 'badge-stylesheet' : 'badge-module',
+      badgeTitle: isStylesheet(script.name) ? 'Stylesheet' : 'Module',
+      title: builtInDescription(script)
+        ?? `${script.name} - updated ${new Date(script.updatedAtUtc).toLocaleString()}`,
       definition: script.source,
       onOpen: () => openCodeTab(script.name),
       contextItems: () => [

@@ -13,16 +13,15 @@ public class GridletOptionsValidatorTests
     }
 
     /// <summary>
-    /// The prefix becomes a literal route segment, so a value that would turn into a route
-    /// template, a second path segment, or a collision with Gridlet's own API has to fail at
-    /// startup rather than produce endpoints nobody can reach.
+    /// The prefix becomes a literal route path, so a value that would turn into a route template,
+    /// traversal, or a collision with Gridlet's own API has to fail at startup rather than produce
+    /// endpoints nobody can reach.
     /// </summary>
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
     [InlineData("api")]
     [InlineData("API")]
-    [InlineData("published/v1")]
     [InlineData("{route}")]
     [InlineData("pub*")]
     [InlineData(".")]
@@ -44,11 +43,45 @@ public class GridletOptionsValidatorTests
     }
 
     [Theory]
+    [InlineData("/pub/api")]
+    [InlineData("pub/v1/query")]
+    public void Accepts_a_safe_independent_published_api_path(string path)
+    {
+        var result = Validate(options =>
+        {
+            options.AddConnection("Main", "Server=x;", GridletProviderNames.Sqlite);
+            options.PublishedApiPath = path;
+        });
+
+        Assert.True(result.Succeeded);
+    }
+
+    [Theory]
+    [InlineData("/pub//api")]
+    [InlineData("/pub/%2Fapi")]
+    [InlineData("/pub/../api")]
+    public void Rejects_an_unsafe_independent_published_api_path(string path)
+    {
+        var result = Validate(options =>
+        {
+            options.AddConnection("Main", "Server=x;", GridletProviderNames.Sqlite);
+            options.PublishedApiPath = path;
+        });
+
+        Assert.True(result.Failed);
+        Assert.Contains("PublishedApiPath", result.FailureMessage);
+    }
+
+    [Theory]
     [InlineData("pub", "pub")]
     [InlineData("endpoints", "endpoints")]
     [InlineData("/api-v1/", "api-v1")]
     [InlineData("data_api", "data_api")]
-    public void Accepts_a_single_segment_published_api_route_prefix(string prefix, string expected)
+    [InlineData(".pub", ".pub")]
+    [InlineData("pub.", "pub.")]
+    [InlineData("v1..2", "v1..2")]
+    [InlineData("published/v1", "published/v1")]
+    public void Accepts_a_published_api_route_path(string prefix, string expected)
     {
         var options = new GridletOptions();
         options.AddConnection("Main", "Server=x;", GridletProviderNames.Sqlite);

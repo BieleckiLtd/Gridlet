@@ -1,0 +1,158 @@
+/* What paints a component, as opposed to designer.css, which paints the designer around it.
+   Both surfaces load this file: the designer, where a component is a canvas of `.gfd-control`
+   boxes, and the standalone runtime, where it is a `.gridlet-component-runtime` of absolutely
+   positioned `[data-name]` elements. Every rule here therefore names both shapes. That is the point
+   of the file - a rule written once cannot say two different things in two places, which is how
+   Preview and a published page drifted apart in the first place.
+
+   Layer order, lowest first. This has to be the document's first mention of these names: a layer
+   named for the first time later is added at the end of the order, which would make the reset the
+   strongest thing on the page instead of the weakest. */
+@layer gridlet-reset, gridlet-chrome, gridlet;
+
+/* The reset every styling root starts from - the top-level component, and every component that
+   asks to be isolated. `all: revert` hands the primitives back to the browser, so a component
+   inherits nothing from whatever surrounds it.
+
+   Everything after the revert is structure: the shape a control was authored with, which nothing
+   above can put back, because appearance lives in a higher layer that an isolated component may not
+   get. Anything that is only appearance belongs in `gridlet-chrome`, not here. Keep this minimal -
+   every declaration below should be one a component would be visibly broken without. */
+@layer gridlet-reset {
+  .gfd-canvas .gfd-control > :first-child,
+  .gfd-canvas .gfd-control > :first-child *,
+  .gridlet-component-runtime [data-name],
+  .gridlet-component-runtime [data-name] * {
+    all: revert;
+    box-sizing: border-box;
+  }
+
+  /* A control sits where the component put it, at the size it was given. The designer positions the
+     box around the control; the runtime has no such box and positions the control itself. */
+  .gfd-canvas .gfd-control > :first-child {
+    width: 100%;
+    height: 100%;
+  }
+
+  .gridlet-component-runtime [data-name] { position: absolute; }
+
+  .gridlet-component-runtime [data-name]:not([data-role="pager"]):not([data-role="checkbox"]) > input,
+  .gridlet-component-runtime [data-name]:not([data-role="pager"]):not([data-role="checkbox"]) > textarea,
+  .gridlet-component-runtime [data-name]:not([data-role="pager"]):not([data-role="checkbox"]) > select,
+  .gridlet-component-runtime [data-name]:not([data-role="pager"]):not([data-role="checkbox"]) > button {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Only the box model is held on a native control, so a reverted field still fills the geometry
+     the component authored for it. */
+  .gridlet-component-runtime [data-name]:is(input, textarea, select, button),
+  .gridlet-component-runtime [data-name] :is(input, textarea, select, button) {
+    box-sizing: border-box;
+  }
+
+  /* A label is a span, and a reverted span is inline - its authored height would be a no-op. */
+  .gfd-canvas .gfd-control > .gfd-label,
+  .gridlet-component-runtime span[data-name] {
+    display: flex;
+    align-items: center;
+  }
+
+  /* How a checkbox is put together: a box, then a caption that stays inside the control. */
+  .gfd-canvas .gfd-control > .gfd-checkbox,
+  .gfd-canvas .gfd-control > [data-role="checkbox"],
+  .gridlet-component-runtime [data-role="checkbox"] {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .gridlet-component-runtime [data-role="checkbox"] {
+    width: 100%;
+    height: 100%;
+  }
+
+  .gfd-canvas .gfd-control > .gfd-checkbox > input,
+  .gfd-canvas .gfd-control > [data-role="checkbox"] > input,
+  .gridlet-component-runtime [data-role="checkbox"] > input {
+    flex: 0 0 auto;
+    width: auto;
+    height: auto;
+    margin: 0;
+  }
+
+  .gfd-canvas .gfd-control > .gfd-checkbox > span,
+  .gfd-canvas .gfd-control > [data-role="checkbox"] > span,
+  .gridlet-component-runtime [data-role="checkbox"] > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* A grid is placed at a size and scrolls its table inside it, rather than growing out of the
+     layout it was placed in. The designer's viewport fills the control box; the runtime's is the
+     control box. */
+  .gfd-canvas .gfd-control > .gfd-grid-viewport {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+  }
+
+  .gridlet-component-runtime .gridlet-grid-viewport {
+    position: absolute;
+    box-sizing: border-box;
+    overflow: auto;
+  }
+
+  .gfd-canvas .gfd-control > .gfd-grid-viewport > .gfd-grid,
+  .gfd-canvas .gfd-control > .gfd-grid-viewport > [data-role="grid"],
+  .gridlet-component-runtime .gridlet-grid-viewport > [data-role="grid"] {
+    display: block;
+    box-sizing: border-box;
+    width: max-content;
+    min-width: 100%;
+    height: auto;
+    overflow: visible;
+    border-collapse: collapse;
+  }
+
+  .gridlet-component-runtime .gridlet-grid-viewport > [data-role="grid"] {
+    position: static;
+    left: auto;
+    top: auto;
+  }
+
+  .gfd-canvas .gfd-control > .gfd-grid-viewport > .gfd-grid th,
+  .gfd-canvas .gfd-control > .gfd-grid-viewport > .gfd-grid td,
+  .gfd-canvas .gfd-control > .gfd-grid-viewport > [data-role="grid"] th,
+  .gfd-canvas .gfd-control > .gfd-grid-viewport > [data-role="grid"] td,
+  .gridlet-component-runtime [data-role="grid"] th,
+  .gridlet-component-runtime [data-role="grid"] td {
+    box-sizing: border-box;
+  }
+
+  /* What anchors a column handle, and the handle itself: resizing a column is something the reader
+     does, so it survives a reset that takes Gridlet's appearance away. */
+  .gfd-canvas .gfd-control > .gfd-grid-viewport th,
+  .gridlet-component-runtime [data-role="grid"] th { position: relative; }
+
+  .gfd-canvas .gfd-control > .gfd-grid-viewport th > .col-grip,
+  .gridlet-component-runtime [data-role="grid"] th > .col-grip {
+    position: absolute;
+    top: 0;
+    right: -4px;
+    bottom: 0;
+    width: 8px;
+    cursor: col-resize;
+    z-index: 3;
+  }
+
+  /* The document's own declarations are not things to look at. */
+  .gridlet-component-runtime > gridlet-source,
+  .gridlet-component-runtime > gridlet-action,
+  .gridlet-component-runtime > gridlet-code { display: none; }
+}

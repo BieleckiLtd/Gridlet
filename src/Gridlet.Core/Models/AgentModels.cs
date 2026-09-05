@@ -111,15 +111,20 @@ public sealed record GridletDatabaseSystemInfo(string Technology, string? Versio
 /// Route prefix Gridlet is mapped under, without a trailing slash - for example <c>/gridlet</c>.
 /// </param>
 /// <param name="PublishedApiSegment">
-/// The segment beneath the mount that published endpoints answer on, from
+/// The path beneath the mount that published endpoints answer on, from
 /// <see cref="GridletOptions.PublishedApiRoutePrefix"/> - <c>pub</c> unless the host changed it.
 /// It is carried here rather than assumed, because an agent that hands somebody a URL built from
 /// the documented default would be handing them one that resolves to nothing.
 /// </param>
+/// <param name="PublishedApiPath">
+/// Optional application-root path when the host configured independent public routing, for example
+/// <c>/pub/api</c>. When present it takes precedence over <paramref name="PublishedApiSegment"/>.
+/// </param>
 public sealed record GridletAgentEnvironment(
     string BaseAddress,
     string MountPath,
-    string PublishedApiSegment = "pub");
+    string PublishedApiSegment = "pub",
+    string? PublishedApiPath = null);
 
 /// <summary>A provider-neutral request passed to the configured database agent service.</summary>
 public sealed record GridletAgentRequest(
