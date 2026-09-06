@@ -765,8 +765,15 @@
   pointer-events: none;
 }
 
-.gfd-anchor-lines { z-index: 5; width: 100%; height: 100%; overflow: visible; }
-.gfd-anchor-layer { z-index: 6; }
+/* Both layers stop at the component's edge. Everything they hold is scaffolding laid over the
+   component - dimension lines, the strips that reveal them, the readouts - and a positioned box
+   drawn past the canvas is part of what the canvas can be scrolled to, so scaffolding out there
+   puts scrollbars on a component that fits. Clipped rather than clamped in the drawing code
+   because it is a guarantee, not an arrangement: whatever the anchors ask for, the drawing cannot
+   change the size of what is being designed. The pieces that have to be reachable are kept inside
+   where they are placed - see the dimension strip and its readout. */
+.gfd-anchor-lines { z-index: 5; width: 100%; height: 100%; overflow: clip; }
+.gfd-anchor-layer { z-index: 6; overflow: clip; }
 
 .gfd-dim-line,
 .gfd-dim-witness { stroke: var(--accent); stroke-width: 1.2; }
@@ -870,6 +877,13 @@
 /* Clear of the dimension rather than on it, and clear of the anchor handle the line runs into:
    a 6px dimension has its handle at both ends of it, so the control has to step aside rather than
    sit between them. Which way it steps depends on which way the dimension runs. */
+/* Off the line, and then back inside the component by however far that put it outside - which on
+   a dimension against the far edge amounts to sitting on the other side of the line. The drawing
+   code measures the box and sets the two lengths; nothing to correct is nothing to move. */
+.gfd-dim-hit .gfd-dim-control {
+  translate: var(--gfd-dim-nudge-x, 0px) var(--gfd-dim-nudge-y, 0px);
+}
+
 .gfd-dim-hit.gfd-dim-x .gfd-dim-control { transform: translate(-50%, -50%) translateY(-26px); }
 .gfd-dim-hit.gfd-dim-y .gfd-dim-control { transform: translate(-50%, -50%) translateX(38px); }
 
