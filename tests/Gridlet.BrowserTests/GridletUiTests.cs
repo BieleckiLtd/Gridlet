@@ -7123,7 +7123,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await using var browserPage = await fixture.NewPageAsync();
         var page = browserPage.Page;
         await page.GotoAsync("/gridlet/");
-        await page.Locator("#apis-btn").ClickAsync();
+        await OpenPublishedApisAsync(page);
 
         var rows = page.Locator("#panels tr");
         var tabs = page.Locator("#tabbar .tab");
@@ -7189,7 +7189,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await using var browserPage = await fixture.NewPageAsync();
         var page = browserPage.Page;
         await page.GotoAsync("/gridlet/");
-        await page.Locator("#apis-btn").ClickAsync();
+        await OpenPublishedApisAsync(page);
 
         var newRequest = page.GetByTestId("new-api-request");
         var run = page.GetByTestId("run-api-endpoint");
@@ -7239,7 +7239,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await using var browserPage = await fixture.NewPageAsync();
         var page = browserPage.Page;
         await page.GotoAsync("/gridlet/");
-        await page.Locator("#apis-btn").ClickAsync();
+        await OpenPublishedApisAsync(page);
         await page.Locator("#panels tr").Filter(new() { HasText = "Rerouted" })
             .Locator("button[title='Edit endpoint inline']").ClickAsync();
 
@@ -7305,6 +7305,23 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(search).ToBeVisibleAsync();
         await Assertions.Expect(search.GetByTestId("object-search-query")).ToBeFocusedAsync();
         return search;
+    }
+
+    /// <summary>
+    /// The top bar wires its buttons at the end of boot, so a click sent while the page is still
+    /// starting lands on a button that does nothing. Waiting for the database picker to settle
+    /// means boot has finished, and waiting for the endpoint rows means the workspace has loaded
+    /// what it lists rather than still showing its placeholder.
+    /// </summary>
+    private static async Task<ILocator> OpenPublishedApisAsync(IPage page)
+    {
+        await Assertions.Expect(page.Locator("#database-select")).ToHaveValueAsync("FakeDb");
+        await page.Locator("#apis-btn").ClickAsync();
+        await Assertions.Expect(page.Locator("#tabbar .tab.active .tab-title"))
+            .ToHaveTextAsync("Published APIs");
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.Locator("table.grid tbody tr")).Not.ToHaveCountAsync(0);
+        return panel;
     }
 
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
