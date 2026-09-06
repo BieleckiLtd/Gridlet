@@ -183,6 +183,219 @@
       "Enabled": true,
       "UpdatedAtUtc": "2026-08-15T18:28:49.3265475+00:00",
       "MaxRows": null
+    },
+    {
+      "Id": "sample-customer-add-endpoint",
+      "Name": "Add a customer",
+      "Method": "POST",
+      "Route": "customers/add",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "INSERT INTO Customers (FirstName, LastName, Email, LoyaltyPoints, MarketingOptIn) VALUES (trim(@first_name), trim(@last_name), trim(@email), @loyalty_points, @marketing_opt_in) RETURNING CustomerId, FirstName, LastName, Email, LoyaltyPoints, MarketingOptIn;",
+      "Parameters": [
+        {
+          "Name": "first_name",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "last_name",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "email",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "loyalty_points",
+          "Required": true,
+          "Type": "integer"
+        },
+        {
+          "Name": "marketing_opt_in",
+          "Required": true,
+          "Type": "boolean"
+        }
+      ],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-09-05T00:00:00+00:00",
+      "MaxRows": 1
+    },
+    {
+      "Id": "sample-customer-update-endpoint",
+      "Name": "Update a customer",
+      "Method": "PUT",
+      "Route": "customers/update",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "UPDATE Customers SET FirstName = trim(@first_name), LastName = trim(@last_name), Email = trim(@email), LoyaltyPoints = @loyalty_points, MarketingOptIn = @marketing_opt_in WHERE CustomerId = @customer_id RETURNING CustomerId, FirstName, LastName, Email, LoyaltyPoints, MarketingOptIn;",
+      "Parameters": [
+        {
+          "Name": "customer_id",
+          "Required": true,
+          "Type": "integer"
+        },
+        {
+          "Name": "first_name",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "last_name",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "email",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "loyalty_points",
+          "Required": true,
+          "Type": "integer"
+        },
+        {
+          "Name": "marketing_opt_in",
+          "Required": true,
+          "Type": "boolean"
+        }
+      ],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-09-05T00:00:00+00:00",
+      "MaxRows": 1
+    },
+    {
+      "Id": "sample-customer-delete-endpoint",
+      "Name": "Delete a customer",
+      "Method": "DELETE",
+      "Route": "customers/delete",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "DELETE FROM Customers WHERE CustomerId = @customer_id RETURNING CustomerId, FirstName, LastName;",
+      "Parameters": [
+        {
+          "Name": "customer_id",
+          "Required": true,
+          "Type": "integer"
+        }
+      ],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-09-05T00:00:00+00:00",
+      "MaxRows": 1
+    },
+    {
+      "Id": "sample-order-menu-endpoint",
+      "Name": "Menu with prices",
+      "Method": "GET",
+      "Route": "menu/order",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "SELECT p.Name AS Pizza, p.Description, round((p.BasePricePence + (SELECT PriceAdjustmentPence FROM PizzaSizes WHERE Name = 'Personal')) / 100.0, 2) AS Personal, round((p.BasePricePence + (SELECT PriceAdjustmentPence FROM PizzaSizes WHERE Name = 'Medium')) / 100.0, 2) AS Medium, round((p.BasePricePence + (SELECT PriceAdjustmentPence FROM PizzaSizes WHERE Name = 'Large')) / 100.0, 2) AS Large, round((p.BasePricePence + (SELECT PriceAdjustmentPence FROM PizzaSizes WHERE Name = 'Family')) / 100.0, 2) AS Family FROM Pizzas p ORDER BY p.Name;",
+      "Parameters": [],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-09-05T00:00:00+00:00",
+      "MaxRows": null
+    },
+    {
+      "Id": "sample-order-new-endpoint",
+      "Name": "Place a customer order",
+      "Method": "POST",
+      "Route": "orders/new",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "BEGIN;\nINSERT INTO Customers (FirstName, LastName, Email, Phone)\nSELECT trim(@first_name), trim(@last_name), trim(@email), nullif(trim(@phone), '')\nWHERE NOT EXISTS (SELECT 1 FROM Customers WHERE lower(Email) = lower(trim(@email)));\nINSERT INTO Orders (CustomerId, OrderType, Notes)\nVALUES (\n    (SELECT CustomerId FROM Customers WHERE lower(Email) = lower(trim(@email))),\n    @order_type,\n    nullif(trim(@notes), ''));\nINSERT INTO OrderItems (OrderId, PizzaId, PizzaSizeId, Quantity, UnitPricePence)\nVALUES (\n    last_insert_rowid(),\n    (SELECT PizzaId FROM Pizzas WHERE Name = @pizza),\n    (SELECT PizzaSizeId FROM PizzaSizes WHERE Name = @size),\n    @quantity,\n    (SELECT p.BasePricePence + s.PriceAdjustmentPence FROM Pizzas p, PizzaSizes s\n     WHERE p.Name = @pizza AND s.Name = @size));\nCOMMIT;",
+      "Parameters": [
+        {
+          "Name": "first_name",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "last_name",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "email",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "phone",
+          "Required": false,
+          "Type": "string"
+        },
+        {
+          "Name": "pizza",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "size",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "quantity",
+          "Required": true,
+          "Type": "integer"
+        },
+        {
+          "Name": "order_type",
+          "Required": true,
+          "Type": "string"
+        },
+        {
+          "Name": "notes",
+          "Required": false,
+          "Type": "string"
+        }
+      ],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-09-05T00:00:00+00:00",
+      "MaxRows": null
+    },
+    {
+      "Id": "sample-order-queue-endpoint",
+      "Name": "Kitchen queue",
+      "Method": "GET",
+      "Route": "orders/queue",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "SELECT o.OrderId,\n    c.FirstName || ' ' || c.LastName AS Customer,\n    o.OrderType,\n    o.Status,\n    (SELECT group_concat(i.Quantity || ' x ' || s.Name || ' ' || p.Name, ', ')\n     FROM OrderItems i\n     JOIN Pizzas p ON p.PizzaId = i.PizzaId\n     JOIN PizzaSizes s ON s.PizzaSizeId = i.PizzaSizeId\n     WHERE i.OrderId = o.OrderId) AS Items,\n    coalesce(o.Notes, '') AS Notes,\n    cast((julianday('now') - julianday(o.OrderedAtUtc)) * 1440 AS INTEGER) AS WaitingMinutes,\n    CASE o.Status\n        WHEN 'Placed' THEN 'Start preparing'\n        WHEN 'Preparing' THEN 'Put it in the oven'\n        WHEN 'Baking' THEN 'Mark it ready'\n        WHEN 'Ready' THEN CASE o.OrderType WHEN 'Delivery' THEN 'Send it out' ELSE 'Mark it collected' END\n        WHEN 'OutForDelivery' THEN 'Mark it delivered'\n    END AS NextStep\nFROM Orders o\nJOIN Customers c ON c.CustomerId = o.CustomerId\nWHERE o.Status IN ('Placed', 'Preparing', 'Baking', 'Ready', 'OutForDelivery')\nORDER BY o.OrderedAtUtc;",
+      "Parameters": [],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-09-05T00:00:00+00:00",
+      "MaxRows": null
+    },
+    {
+      "Id": "sample-order-advance-endpoint",
+      "Name": "Advance an order",
+      "Method": "PUT",
+      "Route": "orders/advance",
+      "ConnectionName": "BytePizza.db",
+      "Database": "main",
+      "Sql": "UPDATE Orders SET Status = CASE\n        WHEN Status = 'Placed' THEN 'Preparing'\n        WHEN Status = 'Preparing' THEN 'Baking'\n        WHEN Status = 'Baking' THEN 'Ready'\n        WHEN Status = 'Ready' AND OrderType = 'Delivery' THEN 'OutForDelivery'\n        WHEN Status = 'Ready' THEN 'Delivered'\n        WHEN Status = 'OutForDelivery' THEN 'Delivered'\n        ELSE Status\n    END\nWHERE OrderId = @order_id AND Status NOT IN ('Delivered', 'Cancelled')\nRETURNING OrderId, Status;",
+      "Parameters": [
+        {
+          "Name": "order_id",
+          "Required": true,
+          "Type": "integer"
+        }
+      ],
+      "AuthorizationPolicy": null,
+      "Enabled": true,
+      "UpdatedAtUtc": "2026-09-05T00:00:00+00:00",
+      "MaxRows": 1
     }
   ]
 }

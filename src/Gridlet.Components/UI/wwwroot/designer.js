@@ -29,6 +29,30 @@
   const PUBLISHED_SEGMENT = /^[A-Za-z0-9._-]+$/;
   const ACTION_NAMES = new Set(['add', 'update', 'delete']);
 
+  // What each operation is called on screen. The person filling a form in is not the person who
+  // authored it: they know they pressed a button, not that an add action was declared against a
+  // published route, so the status line says what happened to what they were doing. The runtime
+  // carries the same words, so Preview and a published page read the same.
+  const ACTION_WORDING = {
+    add: { pending: 'Adding…', done: 'Added.', failed: 'Could not add.' },
+    update: { pending: 'Saving…', done: 'Saved.', failed: 'Could not save.' },
+    delete: { pending: 'Deleting…', done: 'Deleted.', failed: 'Could not delete.' },
+  };
+
+  // Why a write did not happen, in words worth showing somebody. fetch rejects with a TypeError
+  // when the request never reached a server at all - nothing listening, no connection, a blocked
+  // request - and the browser's own words for that are "Failed to fetch", which names the mechanism
+  // and gives the reader nothing they can act on. Every other reason already arrived as a sentence,
+  // from the endpoint or from the component, so it is passed through: a form that hides why the
+  // database refused a record is worse than one that reads a little technical.
+  function actionFailureReason(err) {
+    if (err instanceof TypeError) return 'The server could not be reached.';
+    const message = String(err?.message ?? err ?? '').trim();
+    if (!message) return 'Something went wrong.';
+    const sentence = /[.!?]$/.test(message) ? message : `${message}.`;
+    return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+  }
+
   const cssSize = (value, fallback = '0px') => FORMAT?.cssSize
     ? FORMAT.cssSize(value, fallback) : fallback;
   // The same size as it is applied to an element rather than as it was typed: a component that
@@ -101,6 +125,9 @@
   const iconPath = (d) => '<path d="' + d + '"></path>';
 
   const ICONS = {
+    // An arrow turning back on itself, and the same arrow turning forward. Undo and redo.
+    'arrow-back-up': ['M9 14l-4 -4l4 -4', 'M5 10h11a4 4 0 1 1 0 8h-1'].map(iconPath).join(''),
+    'arrow-forward-up': ['M15 14l4 -4l-4 -4', 'M19 10h-11a4 4 0 1 0 0 8h1'].map(iconPath).join(''),
     adjustments: [
       'M4 10a2 2 0 1 0 4 0a2 2 0 0 0 -4 0', 'M6 4v4', 'M6 12v8',
       'M10 16a2 2 0 1 0 4 0a2 2 0 0 0 -4 0', 'M12 4v10', 'M12 18v2',
@@ -2227,7 +2254,137 @@ export default class ${CLASS_NAME(name)} {
     const generatedStyle = h('style');
     const customStyle = h('style');
 
-    const markDirty = () => {
+    // ---- undo ----
+    // What can be taken back is the document: the controls, what each one is set to, the
+    // component's own settings and every stylesheet in it. History is whole states of that
+    // document rather than a description of each edit, because a component is a page of controls
+    // and a copy of one is cheap. That is what lets an edit anywhere in this file be undoable
+    // without the code that made it knowing history exists.
+    //
+    // Every edit already ends by saying the document changed, and it says so once per edit: a drag
+    // asks on release rather than on each move, and a keystroke asks on each character. So the
+    // place a state is kept is `markDirty`, and where one edit ends and the next begins has
+    // already been decided correctly everywhere below.
+    //
+    // What is not in a state is not undoable. The component's name and its publication settings sit
+    // beside the document rather than in it, so editing one marks the tab unsaved and records
+    // nothing: a state equal to the one before it is dropped rather than stacked.
+
+    const HISTORY_DEPTH = 100;
+    // How long a run of keystrokes stays one step. A property box writes on every character, and
+    // an undo per character is not an undo anybody wants. A pause ends the run, and so does
+    // clicking somewhere else.
+    const COALESCE_MS = 700;
+
+    // The document is held as its JSON rather than as a copy of the model, which makes a state both
+    // the record and the comparison: two states are the same edit exactly when their text matches.
+    // What is around it - what was selected, and a document too broken to parse - is kept beside it
+    // so that comparison stays about the document alone.
+    const historyState = () => ({
+      doc: JSON.stringify(model.doc),
+      selection: [...model.selection],
+      documentError: model.documentError,
+      documentMarkup: model.documentMarkup,
+    });
+
+    const history = { past: [], future: [], state: null, key: null, at: 0 };
+    history.state = historyState();
+
+    // `coalesce` names the run an edit belongs to - one property box, one stylesheet, one nudged
+    // edge. Edits that name the same run in quick succession are one step. Passing nothing means
+    // the edit stands on its own, which is what a drag, a delete and a placement each want.
+    function recordHistory(coalesce) {
+      const next = historyState();
+      // An edit that left the document as it was is not a step to come back to: a rename, a
+      // publication setting, a property retyped to the value it already had.
+      if (next.doc === history.state.doc) return;
+      const now = Date.now();
+      const continues = Boolean(coalesce) && coalesce === history.key && now - history.at < COALESCE_MS;
+      if (!continues) {
+        history.past.push(history.state);
+        // Older than a hundred steps is history nobody is walking back through by hand, and an
+        // open component should not grow without a bound.
+        if (history.past.length > HISTORY_DEPTH) history.past.shift();
+        history.future.length = 0;
+      }
+      history.state = next;
+      history.key = coalesce || null;
+      history.at = now;
+      syncHistory();
+    }
+
+    // Selecting is not an edit, so it is not a step. It is still part of the state a step restores:
+    // undoing a delete should put back what was selected when the delete happened, rather than what
+    // was selected when the edit before it finished.
+    function noteSelection() {
+      history.state.selection = [...model.selection];
+      // Reaching for another control ends whatever was being typed into the last one.
+      history.key = null;
+    }
+
+    // Undo and redo are the same move in opposite directions: take the state off one stack, put the
+    // one on screen onto the other, and show what came off.
+    function travel(from, to) {
+      const restored = from.pop();
+      if (restored === undefined) return;
+      to.push(history.state);
+      history.key = null;
+      model.doc = JSON.parse(restored.doc);
+      model.documentError = restored.documentError;
+      model.documentMarkup = restored.documentMarkup;
+      // A control the restored document does not have cannot be selected, and a stylesheet tab open
+      // on one is editing something that is no longer there.
+      model.selection = restored.selection.filter((id) => findControl(model.doc, id));
+      closeCssTabs([...cssTabs.keys()]
+        .filter((id) => id !== '@component' && !findControl(model.doc, id)));
+      // Which links a drag made is a note about a document this is not. Keeping the links and
+      // forgetting they were provisional is the safe half of that: a later nudge leaves them alone
+      // instead of quietly taking off a link the restored document says is there.
+      autoLinks.clear();
+      applyStyles();
+      renderCanvas();
+      renderProperties();
+      if (model.mode === 'code') showDocument();
+      else showDocumentError(model.documentError || null);
+      // A restored state can carry a selection it no longer has room for, so what is on screen is
+      // recorded as it now is rather than as it was stacked. The component also differs from what
+      // was saved, whichever direction it was reached from.
+      history.state = historyState();
+      markDirty();
+      syncHistory();
+    }
+
+    const undo = () => travel(history.past, history.future);
+    const redo = () => travel(history.future, history.past);
+
+    function syncHistory() {
+      undoButton.disabled = !history.past.length;
+      redoButton.disabled = !history.future.length;
+    }
+
+    // Undo and redo are one control with two directions, so they are one group rather than two
+    // buttons that happen to be adjacent - the same switcher the views and the canvas switches use,
+    // with the icon button that group already has.
+    const historyButton = (testId, label, shortcut, icon, act) => h('button', {
+      class: 'view-btn gfd-theme-btn gfd-history-btn',
+      type: 'button',
+      disabled: true,
+      title: `${label} (${shortcut})`,
+      'aria-label': label,
+      'data-testid': testId,
+      onclick: act,
+    }, svgIcon(icon, 'gfd-tab-icon'));
+
+    const undoButton = historyButton('component-undo', 'Undo', 'Ctrl+Z',
+      ICONS['arrow-back-up'], () => undo());
+    const redoButton = historyButton('component-redo', 'Redo', 'Ctrl+Shift+Z',
+      ICONS['arrow-forward-up'], () => redo());
+
+    const historySwitcher = h('div',
+      { class: 'view-switcher', role: 'group', 'aria-label': 'History' }, undoButton, redoButton);
+
+    const markDirty = (coalesce = null) => {
+      recordHistory(coalesce);
       // The tab bar shows the unsaved mark, so it is redrawn the once the component becomes dirty and
       // not on every keystroke afterwards.
       if (!tab.hasUnsavedDefinition) {
@@ -2904,6 +3061,7 @@ export default class ${CLASS_NAME(name)} {
       else if (!add) model.selection = [id];
       else if (isSelected(id)) model.selection = model.selection.filter((other) => other !== id);
       else model.selection = [...model.selection, id];
+      noteSelection();
       renderCanvas();
       renderProperties();
     }
@@ -2911,6 +3069,7 @@ export default class ${CLASS_NAME(name)} {
     function selectAll(ids, add = false) {
       const kept = add ? model.selection.filter((id) => !ids.includes(id)) : [];
       model.selection = [...kept, ...ids];
+      noteSelection();
       renderCanvas();
       renderProperties();
     }
@@ -3000,7 +3159,7 @@ export default class ${CLASS_NAME(name)} {
     function cssChanged(target, value, from) {
       target.css = value;
       applyStyles();
-      markDirty();
+      markDirty(`css:${cssTargetId(target)}`);
 
       const id = cssTargetId(target);
       const box = cssBoxes.get(id);
@@ -3336,7 +3495,8 @@ export default class ${CLASS_NAME(name)} {
       options.after?.(target);
       broadcast(target, key);
       renderCanvas();
-      markDirty();
+      // One box is one run: typing a caption is a step, and moving to another box starts the next.
+      markDirty(`property:${cssTargetId(target)}:${key}`);
     }
 
     // What the box shows for a property that has no formula: the value, with the escape it needs if
@@ -3394,7 +3554,7 @@ export default class ${CLASS_NAME(name)} {
           if (typed) (target.events ??= {})[name] = typed;
           else delete target.events?.[name];
           mark(event.target);
-          markDirty();
+          markDirty(`event:${cssTargetId(target)}:${name}`);
         },
       });
       const mark = (element) => {
@@ -4721,7 +4881,7 @@ ${colourGeneration}`;
         }
         renderCanvas();
         renderProperties();
-        markDirty();
+        markDirty(`edge:${control.id}:${edge}`);
       };
 
       const input = h('input', {
@@ -5652,7 +5812,7 @@ ${colourGeneration}`;
               model.doc[key] = event.target.value;
               applyStyles();
               renderCanvas();
-              markDirty();
+              markDirty(`component:${key}`);
             },
           });
           input.value = model.doc[key] ?? '';
@@ -5993,7 +6153,7 @@ ${colourGeneration}`;
                 ...model.doc.source.parameters,
                 [parameter.name]: event.target.value,
               };
-              markDirty();
+              markDirty(`source:${parameter.name}`);
             },
           });
           input.value = model.doc.source.parameters?.[parameter.name] ?? '';
@@ -6079,7 +6239,7 @@ ${colourGeneration}`;
         disabled: current.value === null ? '' : null,
         oninput: (event) => {
           setActionMapping(action, parameter.name, { value: event.target.value });
-          markDirty();
+          markDirty(`action:${operation}:${parameter.name}`);
         },
       });
       literal.value = current.value === null ? '' : String(current.value ?? '');
@@ -6256,7 +6416,7 @@ ${colourGeneration}`;
                 control.name = event.target.value;
                 subjectName.textContent = control.name;
                 renderCanvas();
-                markDirty();
+                markDirty(`name:${control.id}`);
               },
             });
             input.value = control.name;
@@ -6853,7 +7013,8 @@ ${colourGeneration}`;
       }
       renderCanvas();
       renderProperties();
-      markDirty();
+      // A held arrow key is one move, not one per repeat.
+      markDirty('nudge');
     }
 
     // Resizing a group scales it about its own top-left, so the parts keep their proportions and
@@ -7012,6 +7173,12 @@ ${colourGeneration}`;
       // Preview is the component, not a drawing of it: clicks belong to the controls.
       if (model.mode === 'preview') return;
       if (model.documentError) return;
+      // A press that lands on the canvas is what the keyboard should be talking to next. Picking a
+      // control up prevents the default action, and moving focus is part of that default, so the
+      // canvas has to take it: without this, selecting a control by clicking it left focus on the
+      // page body and Delete, the arrow keys and Ctrl+Z all went nowhere. Never scrolling to it -
+      // the thing being focused is already under the pointer.
+      canvas.focus({ preventScroll: true });
       const handle = event.target.closest('.gfd-handle');
       // A locked control is not a thing to pick up. Pressing on one falls through to the marquee,
       // the same as pressing the canvas, so a band drawn across it still selects what is around it.
@@ -7598,7 +7765,7 @@ ${colourGeneration}`;
       actionStatus.hidden = false;
       actionStatus.dataset.state = 'pending';
       actionStatus.className = 'gfd-action-status pending';
-      actionStatus.textContent = `${actionName} in progress…`;
+      actionStatus.textContent = ACTION_WORDING[actionName]?.pending || 'Working…';
       if (!actionStatus.isConnected) canvas.append(actionStatus);
       try {
         const target = actionUrl(actionName, action);
@@ -7616,11 +7783,11 @@ ${colourGeneration}`;
         }
         actionStatus.className = 'gfd-action-status success';
         actionStatus.dataset.state = 'success';
-        actionStatus.textContent = `${actionName} completed successfully.`;
+        actionStatus.textContent = ACTION_WORDING[actionName]?.done || 'Done.';
       } catch (err) {
         actionStatus.className = 'gfd-action-status error';
         actionStatus.dataset.state = 'error';
-        actionStatus.textContent = `${actionName} failed: ${err?.message || err}`;
+        actionStatus.textContent = `${ACTION_WORDING[actionName]?.failed || 'Could not do that.'} ${actionFailureReason(err)}`;
       } finally {
         model.pendingActions.delete(actionName);
         if (button.isConnected) button.disabled = wasDisabled;
@@ -8295,7 +8462,10 @@ ${colourGeneration}`;
       showDocumentError(null);
       model.doc = parsed;
       model.selection = [];
-      markDirty();
+      // The document is reparsed on every character, so a run of typing in Code is one step the
+      // same way a run of typing in a property box is. The text box keeps the browser's own undo
+      // while it has focus; this step is what the designer's undo comes back to afterwards.
+      markDirty('document');
       // Drawn now rather than on the way out, so the canvas behind the switch is already right and
       // Preview runs what the text says.
       renderCanvas();
@@ -8622,6 +8792,7 @@ ${colourGeneration}`;
       h('div', { class: 'gfd-main' },
         h('div', { class: 'viewbar gfd-viewbar' },
           saveButton,
+          historySwitcher,
           h('div', { class: 'view-switcher', role: 'group', 'aria-label': 'Component view' }, ...viewButtons.values()),
           themeButton,
           gridSwitcher),
@@ -8630,6 +8801,30 @@ ${colourGeneration}`;
         codePane,
         palette),
       rail);
+
+    // Undo answers the keyboard whenever this component is the tab on screen, rather than only
+    // while something inside it holds focus. A press lands where the eye is, and after clicking the
+    // sidebar, the tab strip or a toolbar button there is often nothing focused in the designer at
+    // all. The visible panel is the one that acts, so two open components never take the same
+    // press, and it stops listening when the tab closes.
+    //
+    // Inside a text box the browser's own undo is the right one - it is walking back the characters
+    // being typed, where this history holds one step for the whole run of them - so a box keeps the
+    // shortcut and the designer takes it everywhere else. That includes Preview and Code, where
+    // both buttons are on screen and working: a shortcut that answers in one view and silently does
+    // nothing in another is worse than either.
+    const historyShortcut = (event) => {
+      if (panel.hidden || !panel.isConnected) return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key !== 'z' && key !== 'y') return;
+      if (event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+      event.preventDefault();
+      // Ctrl+Y is the other half of the same pair on Windows, and costs one condition to accept.
+      if (key === 'y' || event.shiftKey) redo();
+      else undo();
+    };
+    document.addEventListener('keydown', historyShortcut);
 
     panel.append(defaultStyle, generatedStyle, customStyle, designer);
 
@@ -8647,6 +8842,9 @@ ${colourGeneration}`;
     tab.onClose = () => {
       themeWatcher.disconnect();
       canvasSizeWatch?.disconnect();
+      // The undo shortcut listens on the document rather than on anything inside the panel, so it
+      // is the one listener here that has to be taken back by hand.
+      document.removeEventListener('keydown', historyShortcut);
       // The popover lives on the body outliving the panel on purpose, but when the designer that
       // opened it goes, both the open popover and its detached element go with it.
       disposeColourPicker();

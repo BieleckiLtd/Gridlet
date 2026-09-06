@@ -1,0 +1,56 @@
+<div data-gridlet="2" data-name="Customer form" data-layout="free" data-scrollbars data-resizable style="width: 900px; height: 620px; padding: 0px;">
+  <gridlet-code src="form-actions.js" run="CustomerForm"></gridlet-code>
+  <gridlet-source href="customers"></gridlet-source>
+  <gridlet-action name="add" method="POST" href="customers/add">
+    <param name="first_name" control="firstName">
+    <param name="last_name" control="lastName">
+    <param name="email" control="email">
+    <param name="loyalty_points" control="points">
+    <param name="marketing_opt_in" control="marketing">
+  </gridlet-action>
+  <gridlet-action name="update" method="PUT" href="customers/update">
+    <param name="customer_id" control="customerId">
+    <param name="first_name" control="firstName">
+    <param name="last_name" control="lastName">
+    <param name="email" control="email">
+    <param name="loyalty_points" control="points">
+    <param name="marketing_opt_in" control="marketing">
+  </gridlet-action>
+  <gridlet-action name="delete" method="DELETE" href="customers/delete">
+    <param name="customer_id" control="customerId">
+  </gridlet-action>
+  <style>/* @control title */
+#title {
+  font-size: 1.2em;
+  font-weight: 600;
+}
+
+/* @control hint */
+#hint {
+  opacity: 0.75;
+}</style>
+  <span data-name="title" id="title" style="left: 24px; top: 16px; width: 400px; height: 24px;">Customers</span>
+  <span data-name="idLabel" style="left: 24px; top: 56px; width: 110px; height: 24px;">Customer</span>
+  <input type="text" readonly data-name="customerId" data-bind-value="=data.CustomerId" style="left: 140px; top: 56px; width: 120px; height: 24px;">
+  <span data-name="firstNameLabel" style="left: 24px; top: 88px; width: 110px; height: 24px;">First name</span>
+  <input type="text" data-name="firstName" data-bind-value="=data.FirstName" style="left: 140px; top: 88px; width: 240px; height: 24px;">
+  <span data-name="lastNameLabel" style="left: 24px; top: 120px; width: 110px; height: 24px;">Last name</span>
+  <input type="text" data-name="lastName" data-bind-value="=data.LastName" style="left: 140px; top: 120px; width: 240px; height: 24px;">
+  <span data-name="emailLabel" style="left: 24px; top: 152px; width: 110px; height: 24px;">Email</span>
+  <input type="text" data-name="email" data-bind-value="=data.Email" style="left: 140px; top: 152px; width: 240px; height: 24px;">
+  <span data-name="pointsLabel" style="left: 24px; top: 184px; width: 110px; height: 24px;">Loyalty points</span>
+  <input type="text" data-name="points" data-bind-value="=data.LoyaltyPoints" style="left: 140px; top: 184px; width: 120px; height: 24px;">
+  <span data-name="marketingLabel" style="left: 24px; top: 216px; width: 110px; height: 24px;">Marketing</span>
+  <label data-role="checkbox" data-name="marketing" data-bind-value="=data.MarketingOptIn" style="left: 140px; top: 216px; width: 240px; height: 24px;">
+    <input type="checkbox">
+    <span>Opted in</span>
+  </label>
+  <button type="button" data-name="newButton" style="left: 24px; top: 256px; width: 90px; height: 30px;">New</button>
+  <button type="button" data-name="addButton" data-action="add" style="left: 124px; top: 256px; width: 90px; height: 30px;">Add</button>
+  <button type="button" data-name="updateButton" data-action="update" style="left: 224px; top: 256px; width: 90px; height: 30px;">Update</button>
+  <button type="button" data-name="deleteButton" data-action="delete" style="left: 324px; top: 256px; width: 90px; height: 30px;">Delete</button>
+  <button type="button" data-name="refreshButton" style="left: 424px; top: 256px; width: 90px; height: 30px;">Refresh</button>
+  <span data-name="hint" id="hint" data-bind-w="=component.width - 31 - self.x" style="left: 24px; top: 296px; width: 845px; height: 24px;">New clears the fields, Add inserts them, Update writes them back to the record below, Delete removes it. A customer who has already ordered cannot be deleted.</span>
+  <table data-role="grid" data-name="customerGrid" data-bind-x="=24" data-bind-y="=336" data-bind-w="=component.width - 31 - self.x" data-bind-h="=component.height - 52 - self.y" style="left: 24px; top: 336px; width: 845px; height: 232px;"></table>
+  <div data-role="pager" data-edges data-position data-name="customerPager" data-bind-x="=component.width - 7 - self.w" data-bind-y="=component.height - 6 - self.h" style="left: 741px; top: 584px; width: 152px; height: 30px;"></div>
+</div>

@@ -1,0 +1,48 @@
+<div data-gridlet="2" data-name="Kitchen queue" data-layout="free" data-scrollbars data-resizable style="width: 900px; height: 600px; padding: 0px;">
+  <gridlet-code src="form-actions.js" run="Kitchen"></gridlet-code>
+  <gridlet-source href="orders/queue"></gridlet-source>
+  <gridlet-action name="update" method="PUT" href="orders/advance">
+    <param name="order_id" control="orderId">
+  </gridlet-action>
+  <style>/* @control title */
+#title {
+  font-size: 1.3em;
+  font-weight: 600;
+}
+
+/* @control items */
+#items {
+  font-size: 1.15em;
+  font-weight: 600;
+}
+
+/* @control waiting */
+#waiting {
+  opacity: 0.8;
+}
+
+/* @control advanceButton */
+#advanceButton {
+  font-weight: 600;
+}</style>
+  <span data-name="title" id="title" style="left: 24px; top: 16px; width: 400px; height: 28px;">Kitchen queue</span>
+  <span data-name="ticketLabel" style="left: 24px; top: 56px; width: 110px; height: 24px;">Ticket</span>
+  <input type="text" readonly data-name="orderId" data-bind-value="=data.OrderId" style="left: 140px; top: 56px; width: 100px; height: 24px;">
+  <span data-name="customerLabel" style="left: 24px; top: 88px; width: 110px; height: 24px;">For</span>
+  <span data-name="customer" data-bind-text="=concat(data.Customer, &quot; - &quot;, data.OrderType)" style="left: 140px; top: 88px; width: 380px; height: 24px;"></span>
+  <span data-name="itemsLabel" style="left: 24px; top: 120px; width: 110px; height: 24px;">Order</span>
+  <span data-name="items" id="items" data-bind-text="=data.Items" data-bind-w="=component.width - 31 - self.x" style="left: 140px; top: 120px; width: 729px; height: 28px;"></span>
+  <span data-name="notesLabel" style="left: 24px; top: 156px; width: 110px; height: 24px;">Note</span>
+  <span data-name="notes" data-bind-text="=data.Notes" data-bind-w="=component.width - 31 - self.x" style="left: 140px; top: 156px; width: 729px; height: 24px;"></span>
+  <span data-name="statusLabel" style="left: 24px; top: 188px; width: 110px; height: 24px;">Now</span>
+  <span data-name="waiting" id="waiting" data-bind-text="=concat(data.Status, &quot;, waiting &quot;, data.WaitingMinutes, &quot; minutes&quot;)" style="left: 140px; top: 188px; width: 380px; height: 24px;"></span>
+  <button type="button" data-name="advanceButton" id="advanceButton" data-action="update" data-bind-text="=data.NextStep" style="left: 140px; top: 224px; width: 220px; height: 36px;">Advance</button>
+  <button type="button" data-name="refreshButton" style="left: 372px; top: 224px; width: 100px; height: 36px;">Refresh</button>
+  <span data-name="hint" data-bind-w="=component.width - 31 - self.x" style="left: 24px; top: 276px; width: 845px; height: 20px;">The button says what the next step is because the queue works it out. A finished order leaves the list.</span>
+  <table data-role="grid" data-name="queueGrid" data-bind-x="=24" data-bind-y="=308" data-bind-w="=component.width - 31 - self.x" data-bind-h="=component.height - 52 - self.y" style="left: 24px; top: 308px; width: 845px; height: 240px;">
+    <thead>
+      <tr><th>OrderId</th><th>Customer</th><th>OrderType</th><th>Status</th><th>Items</th><th>WaitingMinutes</th></tr>
+    </thead>
+  </table>
+  <div data-role="pager" data-edges data-position data-name="queuePager" data-bind-x="=component.width - 7 - self.w" data-bind-y="=component.height - 6 - self.h" style="left: 741px; top: 564px; width: 152px; height: 30px;"></div>
+</div>
