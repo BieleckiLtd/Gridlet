@@ -563,19 +563,12 @@
 }
 
 /* Undo and redo sit beside Save because they are about the same thing: what has been done to the
-   component since it was last written. A pair with nothing to take back is disabled rather than
-   hidden, so the toolbar keeps its shape and the shortcut has something on screen to name it. */
-.gfd-history { flex: 0 0 auto; }
-
-.gfd-history-icon svg {
-  display: block;
-  width: 17px;
-  height: 17px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+   component since it was last written. A direction with nothing to go in is disabled rather than
+   hidden, so the toolbar keeps its shape and the shortcut has something on screen to name it - and
+   a disabled one does not light up under the pointer, because there is nothing there to press. */
+.gfd-history-btn:disabled:hover {
+  color: var(--muted);
+  background: transparent;
 }
 
 /* A group marker, not a title: it separates rows without taking a row's worth of space. */

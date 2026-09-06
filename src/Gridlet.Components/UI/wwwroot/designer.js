@@ -2338,20 +2338,26 @@ export default class ${CLASS_NAME(name)} {
       redoButton.disabled = !history.future.length;
     }
 
+    // Undo and redo are one control with two directions, so they are one group rather than two
+    // buttons that happen to be adjacent - the same switcher the views and the canvas switches use,
+    // with the icon button that group already has.
     const historyButton = (testId, label, shortcut, icon, act) => h('button', {
-      class: 'ghost gfd-history',
+      class: 'view-btn gfd-theme-btn gfd-history-btn',
       type: 'button',
       disabled: true,
       title: `${label} (${shortcut})`,
       'aria-label': label,
       'data-testid': testId,
       onclick: act,
-    }, svgIcon(icon, 'gfd-history-icon'));
+    }, svgIcon(icon, 'gfd-tab-icon'));
 
     const undoButton = historyButton('component-undo', 'Undo', 'Ctrl+Z',
       ICONS['arrow-back-up'], () => undo());
     const redoButton = historyButton('component-redo', 'Redo', 'Ctrl+Shift+Z',
       ICONS['arrow-forward-up'], () => redo());
+
+    const historySwitcher = h('div',
+      { class: 'view-switcher', role: 'group', 'aria-label': 'History' }, undoButton, redoButton);
 
     const markDirty = (coalesce = null) => {
       recordHistory(coalesce);
@@ -8756,8 +8762,7 @@ ${colourGeneration}`;
       h('div', { class: 'gfd-main' },
         h('div', { class: 'viewbar gfd-viewbar' },
           saveButton,
-          undoButton,
-          redoButton,
+          historySwitcher,
           h('div', { class: 'view-switcher', role: 'group', 'aria-label': 'Component view' }, ...viewButtons.values()),
           themeButton,
           gridSwitcher),
