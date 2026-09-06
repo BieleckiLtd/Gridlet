@@ -144,6 +144,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         IEnumerable<object>? modules = null,
         bool isolated = false,
         bool resizable = false,
+        bool scrollbars = false,
         string css = "",
         string? source = null,
         string? route = null,
@@ -171,6 +172,11 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         if (resizable)
         {
             attributes.Add("data-resizable");
+        }
+
+        if (scrollbars)
+        {
+            attributes.Add("data-scrollbars");
         }
 
         // The component's own colours. A control that names none must still reach its kind default
@@ -5818,6 +5824,46 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             $"the grid did not expose vertical scrolling: {bounds}");
         Assert.True(bounds.GetProperty("scrollsHorizontally").GetBoolean(),
             $"the grid did not expose horizontal scrolling: {bounds}");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Selecting a control at the component's far edge does not put scrollbars on a component that
+    /// fits. The handles reach five pixels past the control they belong to, and on a component that
+    /// scrolls that overhang used to become somewhere the canvas could be scrolled to, so choosing
+    /// something changed the size of what was being designed.
+    /// </summary>
+    [Fact]
+    public async Task Selecting_a_control_at_the_edge_does_not_scroll_the_component()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Edge handle component",
+            [Control("edge", "label", props: new { text = "Edge" }, x: 600, y: 398, w: 118, h: 58)],
+            scrollbars: true);
+
+        const string measure = """
+            () => {
+              const canvas = document.querySelector('.gfd-canvas');
+              return {
+                overflowX: canvas.scrollWidth - canvas.clientWidth,
+                overflowY: canvas.scrollHeight - canvas.clientHeight,
+              };
+            }
+            """;
+
+        var before = await page.EvaluateAsync<JsonElement>(measure);
+
+        await Box(page, "edge").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-handle")).ToHaveCountAsync(8);
+        // Drawn, not merely present: the clip that keeps them out of the scroll area has a margin
+        // wide enough for the whole handle.
+        await Assertions.Expect(page.Locator(".gfd-handle-se")).ToBeVisibleAsync();
+
+        var after = await page.EvaluateAsync<JsonElement>(measure);
+
+        Assert.Equal(before.GetProperty("overflowX").GetInt32(), after.GetProperty("overflowX").GetInt32());
+        Assert.Equal(before.GetProperty("overflowY").GetInt32(), after.GetProperty("overflowY").GetInt32());
 
         browserPage.AssertNoUnexpectedErrors();
     }

@@ -634,9 +634,9 @@
   width: var(--gfd-component-width);
   height: var(--gfd-component-height);
   position: relative;
-  /* How far past the edge the canvas still paints when it is clipping. Enough for the selection
-     handles, which sit five pixels outside the control they belong to; not enough for a control
-     placed outside to be mistaken for part of the component. */
+  /* How far past the edge the canvas still paints when it is clipping. Enough for what the designer
+     draws around a control on the boundary - the selection outline sits a pixel outside it - and
+     not enough for a control placed outside to be mistaken for part of the component. */
   overflow-clip-margin: 12px;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -726,15 +726,22 @@
 
 /* One per side and one per corner, because a resize is an edge being moved and every edge has to
    be reachable. Without the west and north handles there is no way to move a left or a top edge
-   by dragging, and moving one is a different act from changing the width. */
-.gfd-handle-nw { left: -5px; top: -5px; cursor: nwse-resize; }
-.gfd-handle-n { left: calc(50% - 4px); top: -5px; cursor: ns-resize; }
-.gfd-handle-ne { right: -5px; top: -5px; cursor: nesw-resize; }
-.gfd-handle-e { right: -5px; top: calc(50% - 4px); cursor: ew-resize; }
-.gfd-handle-se { right: -5px; bottom: -5px; cursor: nwse-resize; }
-.gfd-handle-s { bottom: -5px; left: calc(50% - 4px); cursor: ns-resize; }
-.gfd-handle-sw { left: -5px; bottom: -5px; cursor: nesw-resize; }
-.gfd-handle-w { left: -5px; top: calc(50% - 4px); cursor: ew-resize; }
+   by dragging, and moving one is a different act from changing the width.
+
+   Each one sits inside the edge it belongs to rather than straddling it. A box drawn outside the
+   control is still part of what the canvas can be scrolled to - it counts towards the scrollable
+   overflow like anything else positioned in there - so a control against the component's far edge
+   used to put scrollbars on a component that fits, just by being selected. Clipping does not save
+   it: clipped content stops counting, but a clip margin wide enough to keep the handle whole hands
+   the same pixels straight back. Inside is the placement that has nothing to hand back. */
+.gfd-handle-nw { left: 0; top: 0; cursor: nwse-resize; }
+.gfd-handle-n { left: calc(50% - 4px); top: 0; cursor: ns-resize; }
+.gfd-handle-ne { right: 0; top: 0; cursor: nesw-resize; }
+.gfd-handle-e { right: 0; top: calc(50% - 4px); cursor: ew-resize; }
+.gfd-handle-se { right: 0; bottom: 0; cursor: nwse-resize; }
+.gfd-handle-s { bottom: 0; left: calc(50% - 4px); cursor: ns-resize; }
+.gfd-handle-sw { left: 0; bottom: 0; cursor: nesw-resize; }
+.gfd-handle-w { left: 0; top: calc(50% - 4px); cursor: ew-resize; }
 
 /* ---- anchors on the canvas ----
    Drawing-office chrome, laid over the component rather than in it: dimensions that say what
