@@ -71,6 +71,70 @@
       font-family: inherit;
       font-size: 13px;
     }
+    /* A drop-down carries an arrow beside its text, so at the same height as a text box it has
+       less room for the same 13px line and the platform's own rendering clips it. Three pixels is
+       what the line needs at the smallest height a control is drawn at, and it sits outside the
+       base-select block below because the platform's rendering is exactly where it matters. */
+    .gridlet-component-runtime select { padding-block: 3px; }
+
+    /* A drop-down's list, where the browser will hand it over. Setting appearance to base-select
+       opts the native control out of the platform's own popup and into one that is part of the
+       page, so the list can be painted in the component's colours instead of the operating
+       system's. Nothing here replaces the select: it is still a real one, with its own keyboard,
+       its own screen-reader behaviour and the platform's picker on a phone. A browser that does not
+       support this keeps its native list, which is why every rule below is additive and none of
+       them is relied on. The designer's canvas carries the same rules, so Preview and a published
+       page show the same list.
+
+       No backticks in this comment: the whole stylesheet is a template literal, and one would end
+       it. */
+    @supports (appearance: base-select) {
+      .gridlet-component-runtime select,
+      .gridlet-component-runtime select::picker(select) { appearance: base-select; }
+
+      .gridlet-component-runtime select {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        text-align: start;
+      }
+
+      .gridlet-component-runtime select::picker-icon {
+        margin-inline-start: auto;
+        color: var(--gridlet-text);
+        opacity: 0.6;
+      }
+
+      .gridlet-component-runtime select::picker(select) {
+        border: 1px solid var(--gridlet-border);
+        border-radius: 7px;
+        background: var(--gridlet-panel);
+        box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+        padding: 3px;
+        margin-block-start: 2px;
+      }
+
+      .gridlet-component-runtime option {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 5px;
+        border-radius: 4px;
+        color: var(--gridlet-text);
+        font-family: inherit;
+        font-size: 13px;
+      }
+
+      .gridlet-component-runtime option:hover { background: var(--gridlet-accent-dim); }
+      .gridlet-component-runtime option:checked { font-weight: 600; }
+      /* The tick keeps a column of its own on every row, checked or not, so choosing a different
+         option does not shift the labels sideways. */
+      .gridlet-component-runtime option::checkmark {
+        color: var(--gridlet-accent);
+        flex: 0 0 12px;
+        width: 12px;
+      }
+    }
     .gridlet-component-runtime button { cursor: pointer; padding-inline: 12px; }
     .gridlet-component-runtime button:disabled { opacity: 0.4; cursor: default; }
     /* A field is sized by the component, not dragged by the reader. The designer's field defaults
@@ -1228,11 +1292,29 @@
     return target.href;
   }
 
+  // What each operation is called on screen. The person filling a form in is not the person who
+  // authored it: they know they pressed a button, not that an add action was declared against a
+  // published route, so the status line says what happened to what they were doing. The designer's
+  // canvas carries the same words, so Preview and a published page read the same.
   const ACTIONS = {
-    add: { methods: ['POST'] },
-    update: { methods: ['PUT', 'PATCH'] },
-    delete: { methods: ['DELETE'] },
+    add: { methods: ['POST'], pending: 'Adding…', done: 'Added.', failed: 'Could not add.' },
+    update: { methods: ['PUT', 'PATCH'], pending: 'Saving…', done: 'Saved.', failed: 'Could not save.' },
+    delete: { methods: ['DELETE'], pending: 'Deleting…', done: 'Deleted.', failed: 'Could not delete.' },
   };
+
+  // Why a write did not happen, in words worth showing somebody. fetch rejects with a TypeError
+  // when the request never reached a server at all - nothing listening, no connection, a blocked
+  // request - and the browser's own words for that are "Failed to fetch", which names the mechanism
+  // and gives the reader nothing they can act on. Every other reason already arrived as a sentence,
+  // from the endpoint or from this file, so it is passed through: a form that hides why the
+  // database refused a record is worse than one that reads a little technical.
+  function actionFailureReason(exception) {
+    if (exception instanceof TypeError) return 'The server could not be reached.';
+    const message = String(exception?.message ?? exception ?? '').trim();
+    if (!message) return 'Something went wrong.';
+    const sentence = /[.!?]$/.test(message) ? message : `${message}.`;
+    return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+  }
 
   function normalizeActionIdentifier(value) {
     const operation = String(value ?? '').trim().toLowerCase();
@@ -1495,7 +1577,7 @@
     }
     status.hidden = false;
     status.className = 'gridlet-action-status pending';
-    status.textContent = `${operation} in progress…`;
+    status.textContent = ACTIONS[operation]?.pending || 'Working…';
     return status;
   }
 
@@ -1522,10 +1604,10 @@
         throw new Error(result?.error || `The published endpoint returned ${response.status}.`);
       }
       status.className = 'gridlet-action-status success';
-      status.textContent = `${actionName} completed successfully.`;
+      status.textContent = ACTIONS[actionName]?.done || 'Done.';
     } catch (exception) {
       status.className = 'gridlet-action-status error';
-      status.textContent = `${actionName} failed: ${exception?.message || exception}`;
+      status.textContent = `${ACTIONS[actionName]?.failed || 'Could not do that.'} ${actionFailureReason(exception)}`;
     } finally {
       pendingActions.delete(actionName);
       setActionPending(actionName, false);
@@ -1685,7 +1767,7 @@
         throw new Error('The component data source is outside the published API.');
       }
       const response = await fetch(url, { headers: { Accept: 'application/json' } });
-      if (!response.ok) throw new Error(`The component data source returned ${response.status}.`);
+      if (!response.ok) throw new Error(`The data source returned ${response.status}.`);
       const body = await response.json();
       rows = Array.isArray(body?.rows) ? body.rows : [];
       columns = rows.length && rows[0] && typeof rows[0] === 'object' ? Object.keys(rows[0]) : [];
@@ -1694,7 +1776,10 @@
       rows = [];
       columns = [];
       rowIndex = 0;
-      report(exception?.message || exception);
+      // A component that cannot read its rows shows no data at all, so say that plainly first. The
+      // reason keeps the same words a failed write uses - a stopped server reads as a stopped
+      // server wherever the reader meets it, not as "Failed to fetch".
+      report(`This component could not load its data. ${actionFailureReason(exception)}`);
     }
   }
 
