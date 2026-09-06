@@ -5519,7 +5519,16 @@ ${colourGeneration}`;
         const outwards = edge === axisFor(edge).near ? -1 : 1;
         const low = Math.min(span.from, span.to);
         const high = Math.max(span.from, span.to);
-        const length = Math.max(40, high - low + 16);
+        // ...and it can only take the room that is there. An edge anchored to the component's own
+        // edge measures a few pixels with the canvas edge just past it, so the forty the strip
+        // wants does not exist: outwards runs off the component, where nobody can press it and
+        // where a positioned box is still part of what the canvas can be scrolled to - a scrollbar
+        // on a component that fits, appearing because something was selected. Inwards is the
+        // control, which must stay pressable. So the strip is as long as the gap when the gap is
+        // all there is, which is small but is honestly where the distance being measured lies.
+        const room = span.axis === 'x' ? canvas.clientWidth : canvas.clientHeight;
+        const outward = outwards < 0 ? high : room - low;
+        const length = Math.max(0, Math.min(Math.max(40, high - low + 16), outward));
         const near = outwards < 0 ? high - length : low;
         if (span.axis === 'x') {
           Object.assign(hit.style,
@@ -5600,6 +5609,24 @@ ${colourGeneration}`;
         // starts a selection band across the layout being measured.
         hit.addEventListener('pointerdown', (event) => event.stopPropagation());
         layer.append(hit);
+
+        // The readout hangs off the side of the dimension, so on a dimension against the
+        // component's edge it is the piece that lands outside - where it is clipped, and where a
+        // number nobody can read all of is no use. It is moved back in by however far it went out,
+        // which on the far edge amounts to putting it on the other side of the line.
+        //
+        // Measured rather than worked out: the box is as wide as the number in it, and it is in
+        // the document by this point, so its size is there to read.
+        const drawn = readout.getBoundingClientRect();
+        const bound = canvas.getBoundingClientRect();
+        const insideLeft = bound.left + canvas.clientLeft;
+        const insideTop = bound.top + canvas.clientTop;
+        const nudge = (start, end, low, high) =>
+          (end > high ? high - end : start < low ? low - start : 0);
+        const nudgeX = nudge(drawn.left, drawn.right, insideLeft, insideLeft + canvas.clientWidth);
+        const nudgeY = nudge(drawn.top, drawn.bottom, insideTop, insideTop + canvas.clientHeight);
+        if (nudgeX) hit.style.setProperty('--gfd-dim-nudge-x', `${Math.round(nudgeX)}px`);
+        if (nudgeY) hit.style.setProperty('--gfd-dim-nudge-y', `${Math.round(nudgeY)}px`);
       }
 
       const anchors = anchorsOf(control);

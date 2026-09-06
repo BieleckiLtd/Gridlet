@@ -6132,4 +6132,78 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         browserPage.AssertNoUnexpectedErrors();
     }
+
+    /// <summary>
+    /// Selecting an anchored control at the component's edge does not put scrollbars on a component
+    /// that fits, and the dimension's readout stays somewhere it can be read and pressed.
+    /// </summary>
+    /// <remarks>
+    /// The chrome an anchor draws is the piece that reached furthest out. The strip that reveals a
+    /// dimension is never shorter than forty pixels and takes that room outwards, away from the
+    /// control; an edge anchored to the component's own edge measures a few pixels, so the strip
+    /// and the readout hanging off it were laid past the canvas. A positioned box out there is part
+    /// of what the canvas can be scrolled to, so choosing a control changed the size of what was
+    /// being designed - on the demo's own component, by forty pixels across and thirty-six down.
+    /// </remarks>
+    [Fact]
+    public async Task Selecting_an_anchored_control_at_the_edge_does_not_scroll_the_component()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Edge anchor component",
+            [
+                // Anchored the way the demo's pager is: a few pixels off the component's far
+                // corner, which is the case that leaves an anchor no room to draw itself in.
+                Control("corner", "label",
+                    bind: new
+                    {
+                        x = "=component.width - 7 - self.w",
+                        y = "=component.height - 6 - self.h",
+                    },
+                    props: new { text = "Corner" },
+                    x: 591, y: 430, w: 120, h: 24),
+            ],
+            scrollbars: true);
+
+        const string overflow = """
+            () => {
+              const canvas = document.querySelector('.gfd-canvas');
+              return {
+                x: canvas.scrollWidth - canvas.clientWidth,
+                y: canvas.scrollHeight - canvas.clientHeight,
+              };
+            }
+            """;
+
+        var before = await page.EvaluateAsync<JsonElement>(overflow);
+
+        await Box(page, "corner").ClickAsync();
+        // The anchors draw once the control is selected, so there is chrome to be wrong about.
+        await Assertions.Expect(page.Locator(".gfd-dim-control")).Not.ToHaveCountAsync(0);
+
+        var after = await page.EvaluateAsync<JsonElement>(overflow);
+        Assert.Equal(before.GetProperty("x").GetInt32(), after.GetProperty("x").GetInt32());
+        Assert.Equal(before.GetProperty("y").GetInt32(), after.GetProperty("y").GetInt32());
+
+        // Inside, not merely out of the scroll area: the layers clip, so chrome placed outside
+        // would be silently unreachable instead of visibly wrong.
+        var outside = await page.EvaluateAsync<string[]>("""
+            () => {
+              const canvas = document.querySelector('.gfd-canvas');
+              const box = canvas.getBoundingClientRect();
+              const left = box.left + canvas.clientLeft;
+              const top = box.top + canvas.clientTop;
+              return [...canvas.querySelectorAll('.gfd-dim-control, .gfd-dim-hit')]
+                .filter((el) => {
+                  const r = el.getBoundingClientRect();
+                  return r.left < left - 1 || r.top < top - 1
+                    || r.right > left + canvas.clientWidth + 1
+                    || r.bottom > top + canvas.clientHeight + 1;
+                })
+                .map((el) => el.className + ' ' + JSON.stringify(el.getBoundingClientRect()));
+            }
+            """);
+        Assert.Empty(outside);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
 }
