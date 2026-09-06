@@ -7149,6 +7149,12 @@ ${colourGeneration}`;
       // Preview is the component, not a drawing of it: clicks belong to the controls.
       if (model.mode === 'preview') return;
       if (model.documentError) return;
+      // A press that lands on the canvas is what the keyboard should be talking to next. Picking a
+      // control up prevents the default action, and moving focus is part of that default, so the
+      // canvas has to take it: without this, selecting a control by clicking it left focus on the
+      // page body and Delete, the arrow keys and Ctrl+Z all went nowhere. Never scrolling to it -
+      // the thing being focused is already under the pointer.
+      canvas.focus({ preventScroll: true });
       const handle = event.target.closest('.gfd-handle');
       // A locked control is not a thing to pick up. Pressing on one falls through to the marquee,
       // the same as pressing the canvas, so a band drawn across it still selects what is around it.
@@ -8772,14 +8778,19 @@ ${colourGeneration}`;
         palette),
       rail);
 
-    // Undo belongs to the whole designer rather than to the canvas: the edit being taken back was
-    // as likely made in the properties panel as on the canvas, and the panel is where the focus
-    // usually is straight after making one. Inside a text box the browser's own undo is the right
-    // one - it is walking back the characters being typed, where this history holds one step for
-    // the whole run of them - so a box keeps the shortcut and the designer takes it everywhere
-    // else. That includes Preview and Code, where both buttons are on screen and working: a
-    // shortcut that answers in one view and silently does nothing in another is worse than either.
-    designer.addEventListener('keydown', (event) => {
+    // Undo answers the keyboard whenever this component is the tab on screen, rather than only
+    // while something inside it holds focus. A press lands where the eye is, and after clicking the
+    // sidebar, the tab strip or a toolbar button there is often nothing focused in the designer at
+    // all. The visible panel is the one that acts, so two open components never take the same
+    // press, and it stops listening when the tab closes.
+    //
+    // Inside a text box the browser's own undo is the right one - it is walking back the characters
+    // being typed, where this history holds one step for the whole run of them - so a box keeps the
+    // shortcut and the designer takes it everywhere else. That includes Preview and Code, where
+    // both buttons are on screen and working: a shortcut that answers in one view and silently does
+    // nothing in another is worse than either.
+    const historyShortcut = (event) => {
+      if (panel.hidden || !panel.isConnected) return;
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
       const key = event.key.toLowerCase();
       if (key !== 'z' && key !== 'y') return;
@@ -8788,7 +8799,8 @@ ${colourGeneration}`;
       // Ctrl+Y is the other half of the same pair on Windows, and costs one condition to accept.
       if (key === 'y' || event.shiftKey) redo();
       else undo();
-    });
+    };
+    document.addEventListener('keydown', historyShortcut);
 
     panel.append(defaultStyle, generatedStyle, customStyle, designer);
 
@@ -8806,6 +8818,9 @@ ${colourGeneration}`;
     tab.onClose = () => {
       themeWatcher.disconnect();
       canvasSizeWatch?.disconnect();
+      // The undo shortcut listens on the document rather than on anything inside the panel, so it
+      // is the one listener here that has to be taken back by hand.
+      document.removeEventListener('keydown', historyShortcut);
       // The popover lives on the body outliving the panel on purpose, but when the designer that
       // opened it goes, both the open popover and its detached element go with it.
       disposeColourPicker();

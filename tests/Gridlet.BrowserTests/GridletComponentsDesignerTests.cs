@@ -6027,4 +6027,63 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         browserPage.AssertNoUnexpectedErrors();
     }
+
+    /// <summary>
+    /// Clicking a control hands the canvas the keyboard. Picking a control up prevents the press's
+    /// default action, and moving focus is part of that default, so without this the page body kept
+    /// focus and Delete, the arrow keys and Ctrl+Z all went nowhere after a control was selected.
+    /// </summary>
+    [Fact]
+    public async Task Clicking_a_control_gives_the_canvas_the_keyboard()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Canvas focus component",
+            [
+                Control("caption", "label", props: new { text = "Kept" }),
+                Control("gone", "label", props: new { text = "Deleted" }, y: 60),
+            ]);
+
+        await Box(page, "gone").ClickAsync();
+        Assert.True(await page.EvaluateAsync<bool>(
+            "() => document.activeElement?.classList.contains('gfd-canvas')"),
+            "clicking a control left the keyboard somewhere other than the canvas");
+
+        // Pressed at the page rather than at the canvas, so it is the focus that carries it.
+        await page.Keyboard.PressAsync("Delete");
+        await Assertions.Expect(Canvas(page, "gone")).ToHaveCountAsync(0);
+
+        await page.Keyboard.PressAsync("Control+z");
+        await Assertions.Expect(Canvas(page, "gone")).ToHaveTextAsync("Deleted");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The shortcut answers while the component is the tab on screen, even when nothing in the
+    /// designer holds focus - which is where a press lands after clicking the sidebar or a toolbar
+    /// button.
+    /// </summary>
+    [Fact]
+    public async Task Undo_answers_the_keyboard_with_nothing_in_the_designer_focused()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Unfocused undo component",
+            [Control("caption", "label", props: new { text = "Before" })]);
+
+        await Box(page, "caption").ClickAsync();
+        await page.GetByTestId("expr-text").FillAsync("After");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("After");
+
+        await page.EvaluateAsync("() => document.activeElement?.blur()");
+        Assert.True(await page.EvaluateAsync<bool>("() => document.activeElement === document.body"),
+            "the test did not manage to leave the designer without focus");
+
+        await page.Keyboard.PressAsync("Control+z");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Before");
+
+        await page.Keyboard.PressAsync("Control+Shift+z");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("After");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
 }
