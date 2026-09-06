@@ -2790,6 +2790,8 @@ export default class ${CLASS_NAME(name)} {
       canvas.style.resize = model.mode === 'preview' && model.doc.resizable ? 'both' : '';
       canvas.replaceChildren(...model.doc.controls.map(renderControl));
       if (model.mode === 'preview' && actionStatus.dataset.state && !actionStatus.hidden) canvas.append(actionStatus);
+      // Measured off what was just drawn, like the dimensions below it.
+      renderHandles();
       // Last, and measured off what was just drawn: a dimension is only true of the layout it was
       // taken from, so it is read back out of the canvas rather than worked out beside it.
       renderAnchorOverlay();
@@ -2933,15 +2935,46 @@ export default class ${CLASS_NAME(name)} {
         }
       }
 
-      // Handles resize one control. With several selected the size fields on the Appearance page
-      // are the way to resize them, so the handles stay out of a drag that would be ambiguous.
-      if (selected && model.selection.length === 1 && model.handles === 'resize') {
-        for (const handle of ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']) {
-          element.append(h('div', { class: 'gfd-handle gfd-handle-' + handle, 'data-handle': handle }));
-        }
-      }
-
       return element;
+    }
+
+    // The selection handles. They straddle the control's edges, five pixels out, which is where a
+    // handle reads as being on an edge rather than inside it - and a box drawn outside a control is
+    // part of what the canvas can be scrolled to, so drawn on the control they put scrollbars on a
+    // component that fits. They are drawn in a layer of their own instead: laid over the drawing,
+    // clipped to the component, and so free to sit where they belong without a selection changing
+    // the size of what is being designed.
+    //
+    // A control flush against the component's own edge has the outer half of its handles on that
+    // side trimmed by the clip. What is left is still on the edge and still something to take hold
+    // of, which is the trade this way round: a handle half drawn beats a scrollbar that appears
+    // because you looked at something.
+    //
+    // Handles resize one control. With several selected the size fields on the Appearance page are
+    // the way to resize them, so the handles stay out of a drag that would be ambiguous.
+    function renderHandles() {
+      if (model.mode !== 'design' || model.documentError) return;
+      if (model.selection.length !== 1 || model.handles !== 'resize') return;
+      const control = findControl(model.doc, model.selection[0]);
+      const box = control && canvas.querySelector(`[data-id="${control.id}"]`);
+      if (!box) return;
+
+      // Read off the drawing rather than worked out from the document, so a control inside a panel
+      // is where the panel put it. The scroll offset is part of that: the layer is positioned in
+      // the canvas's content, which moves under a rect measured against the viewport.
+      const bounds = canvas.getBoundingClientRect();
+      const rect = box.getBoundingClientRect();
+      const frame = h('div', { class: 'gfd-handle-box' });
+      Object.assign(frame.style, {
+        left: `${rect.left - bounds.left - canvas.clientLeft + canvas.scrollLeft}px`,
+        top: `${rect.top - bounds.top - canvas.clientTop + canvas.scrollTop}px`,
+        width: `${rect.width}px`,
+        height: `${rect.height}px`,
+      });
+      for (const handle of ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']) {
+        frame.append(h('div', { class: 'gfd-handle gfd-handle-' + handle, 'data-handle': handle }));
+      }
+      canvas.append(h('div', { class: 'gfd-handle-layer' }, frame));
     }
 
     // Custom CSS is the operator's, but it is written against one component. Prefixing every rule with
@@ -7183,12 +7216,17 @@ ${colourGeneration}`;
       // A locked control is not a thing to pick up. Pressing on one falls through to the marquee,
       // the same as pressing the canvas, so a band drawn across it still selects what is around it.
       const element = event.target.closest('.gfd-control:not(.gfd-locked)');
-      if (!element) {
+      if (!handle && !element) {
         marqueeSelect(event);
         return;
       }
 
-      const control = findControl(model.doc, element.dataset.id);
+      // A handle is drawn beside the control rather than on it, so a press on one names its control
+      // by the selection it was drawn for. There is exactly one, which is the condition it is drawn
+      // under.
+      const control = handle
+        ? findControl(model.doc, model.selection[0])
+        : findControl(model.doc, element.dataset.id);
       if (!control) return;
 
       // Adding to the selection is a decision on its own, not the start of a drag: releasing on

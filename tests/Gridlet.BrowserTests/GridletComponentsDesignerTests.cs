@@ -6132,4 +6132,42 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         browserPage.AssertNoUnexpectedErrors();
     }
+
+    /// <summary>
+    /// A selection handle sits on the edge it resizes, straddling it, rather than inside the
+    /// control. That is what makes it read as a grip on the edge, and it is drawn in a layer of its
+    /// own so that the overhang costs the canvas no scrollable area - see the edge test below.
+    /// </summary>
+    [Fact]
+    public async Task Selection_handles_straddle_the_edges_they_resize()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Straddling handle component",
+            [Control("field", "textbox", x: 120, y: 120, w: 220, h: 26)]);
+
+        await Box(page, "field").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-handle")).ToHaveCountAsync(8);
+
+        var reach = await page.EvaluateAsync<JsonElement>("""
+            () => {
+              const box = document.querySelector('[data-control-box="field"]').getBoundingClientRect();
+              const at = (name) => document.querySelector('.gfd-handle-' + name).getBoundingClientRect();
+              return {
+                west: Math.round(box.left - at('w').left),
+                east: Math.round(at('e').right - box.right),
+                north: Math.round(box.top - at('n').top),
+                south: Math.round(at('s').bottom - box.bottom),
+              };
+            }
+            """);
+
+        // Five pixels out on every side, which is the placement that centres an eight pixel handle
+        // on the edge it belongs to.
+        Assert.Equal(5, reach.GetProperty("west").GetInt32());
+        Assert.Equal(5, reach.GetProperty("east").GetInt32());
+        Assert.Equal(5, reach.GetProperty("north").GetInt32());
+        Assert.Equal(5, reach.GetProperty("south").GetInt32());
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
 }
