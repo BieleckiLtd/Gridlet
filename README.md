@@ -207,6 +207,26 @@ dotnet run --project samples/Gridlet.Demo
 
 Open [http://localhost:5088/gridlet](http://localhost:5088/gridlet).
 
+The workspace ships with three components that write, not just read. Each one's buttons are
+declared actions bound to published endpoints, and each is a public page that can be opened on its
+own:
+
+| Page | Who it is for | What it does |
+| --- | --- | --- |
+| `/pub/order` | Somebody ordering | Browse the menu, pick a size and a quantity, see the price, and send the order. Ordering enrols a customer the first time and finds them by email after that. |
+| `/pub/kitchen` | The kitchen | One ticket at a time, oldest first, and one button that moves it to the next step. |
+| `/pub/customer-form` | Back office | Adds, updates and deletes a customer record. |
+
+The ordering page names no customer and no order status: it asks only what somebody ordering
+would know. The kitchen page has no status list either, because the queue works out the next step
+itself and the button says what it is - `Put it in the oven`, then `Send it out`. Neither page
+prices anything: the total on the ordering page is a quote read from the menu, and the order is
+priced again on the server when it is sent.
+
+The forms report what the database says. An order writes the customer, the order and its line in
+one transaction, so a rejected line leaves nothing behind; deleting a customer who has already
+ordered fails on the foreign key. Both refusals appear on the form rather than being hidden.
+
 ## Development
 
 ```shell

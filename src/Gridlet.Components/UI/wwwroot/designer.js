@@ -29,6 +29,30 @@
   const PUBLISHED_SEGMENT = /^[A-Za-z0-9._-]+$/;
   const ACTION_NAMES = new Set(['add', 'update', 'delete']);
 
+  // What each operation is called on screen. The person filling a form in is not the person who
+  // authored it: they know they pressed a button, not that an add action was declared against a
+  // published route, so the status line says what happened to what they were doing. The runtime
+  // carries the same words, so Preview and a published page read the same.
+  const ACTION_WORDING = {
+    add: { pending: 'Adding…', done: 'Added.', failed: 'Could not add.' },
+    update: { pending: 'Saving…', done: 'Saved.', failed: 'Could not save.' },
+    delete: { pending: 'Deleting…', done: 'Deleted.', failed: 'Could not delete.' },
+  };
+
+  // Why a write did not happen, in words worth showing somebody. fetch rejects with a TypeError
+  // when the request never reached a server at all - nothing listening, no connection, a blocked
+  // request - and the browser's own words for that are "Failed to fetch", which names the mechanism
+  // and gives the reader nothing they can act on. Every other reason already arrived as a sentence,
+  // from the endpoint or from the component, so it is passed through: a form that hides why the
+  // database refused a record is worse than one that reads a little technical.
+  function actionFailureReason(err) {
+    if (err instanceof TypeError) return 'The server could not be reached.';
+    const message = String(err?.message ?? err ?? '').trim();
+    if (!message) return 'Something went wrong.';
+    const sentence = /[.!?]$/.test(message) ? message : `${message}.`;
+    return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+  }
+
   const cssSize = (value, fallback = '0px') => FORMAT?.cssSize
     ? FORMAT.cssSize(value, fallback) : fallback;
   // The same size as it is applied to an element rather than as it was typed: a component that
@@ -7598,7 +7622,7 @@ ${colourGeneration}`;
       actionStatus.hidden = false;
       actionStatus.dataset.state = 'pending';
       actionStatus.className = 'gfd-action-status pending';
-      actionStatus.textContent = `${actionName} in progress…`;
+      actionStatus.textContent = ACTION_WORDING[actionName]?.pending || 'Working…';
       if (!actionStatus.isConnected) canvas.append(actionStatus);
       try {
         const target = actionUrl(actionName, action);
@@ -7616,11 +7640,11 @@ ${colourGeneration}`;
         }
         actionStatus.className = 'gfd-action-status success';
         actionStatus.dataset.state = 'success';
-        actionStatus.textContent = `${actionName} completed successfully.`;
+        actionStatus.textContent = ACTION_WORDING[actionName]?.done || 'Done.';
       } catch (err) {
         actionStatus.className = 'gfd-action-status error';
         actionStatus.dataset.state = 'error';
-        actionStatus.textContent = `${actionName} failed: ${err?.message || err}`;
+        actionStatus.textContent = `${ACTION_WORDING[actionName]?.failed || 'Could not do that.'} ${actionFailureReason(err)}`;
       } finally {
         model.pendingActions.delete(actionName);
         if (button.isConnected) button.disabled = wasDisabled;

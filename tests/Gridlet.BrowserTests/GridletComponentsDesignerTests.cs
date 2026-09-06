@@ -1976,7 +1976,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.Locator("[data-name='add']").ClickAsync();
         var addRequest = await addRequestTask;
         await Assertions.Expect(page.Locator(".gridlet-action-status"))
-            .ToHaveTextAsync("add completed successfully.");
+            .ToHaveTextAsync("Added.");
         using (var body = JsonDocument.Parse(addRequest.PostData!))
         {
             Assert.Equal("edited", body.RootElement.GetProperty("Name").GetString());
@@ -1994,7 +1994,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.Locator("[data-name='update']").ClickAsync();
         var updateRequest = await updateRequestTask;
         await Assertions.Expect(page.Locator(".gridlet-action-status"))
-            .ToHaveTextAsync("update completed successfully.");
+            .ToHaveTextAsync("Saved.");
         Assert.Equal("PUT", updateRequest.Method);
         Assert.Contains('/' + updateRoute, updateRequest.Url, StringComparison.Ordinal);
         Assert.DoesNotContain('/' + addRoute, updateRequest.Url, StringComparison.Ordinal);
@@ -2005,7 +2005,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.Locator("[data-name='delete']").ClickAsync();
         var deleteRequest = await deleteRequestTask;
         await Assertions.Expect(page.Locator(".gridlet-action-status"))
-            .ToHaveTextAsync("delete completed successfully.");
+            .ToHaveTextAsync("Deleted.");
         Assert.Equal("DELETE", deleteRequest.Method);
         Assert.Contains('/' + deleteRoute, deleteRequest.Url, StringComparison.Ordinal);
         Assert.DoesNotContain('/' + updateRoute, deleteRequest.Url, StringComparison.Ordinal);
@@ -2043,7 +2043,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         await page.Locator("[data-name='wrong']").ClickAsync();
         await Assertions.Expect(page.Locator(".gridlet-action-status"))
-            .ToContainTextAsync("update failed:");
+            .ToContainTextAsync("Could not save.");
         Assert.DoesNotContain("successfully", await page.Locator(".gridlet-action-status").TextContentAsync(),
             StringComparison.OrdinalIgnoreCase);
         Assert.False(await page.Locator("[data-name='wrong']").IsDisabledAsync());
@@ -2086,7 +2086,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         await page.Locator("[data-name='submit']").ClickAsync();
         var status = page.Locator(".gridlet-action-status");
-        await Assertions.Expect(status).ToContainTextAsync("add failed: mid-stream kaboom");
+        await Assertions.Expect(status).ToContainTextAsync("Could not add. Mid-stream kaboom");
         Assert.DoesNotContain("successfully", await status.TextContentAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.False(await page.Locator("[data-name='submit']").IsDisabledAsync());
         Assert.Equal("stream-boom", fixture.Provider.LastQuerySql);
@@ -2139,7 +2139,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.Locator("[data-name='send']").ClickAsync();
         var previewRequest = await previewRequestTask;
         await Assertions.Expect(page.Locator(".gfd-action-status"))
-            .ToHaveTextAsync("add completed successfully.");
+            .ToHaveTextAsync("Added.");
         using (var previewBody = JsonDocument.Parse(previewRequest.PostData!))
         {
             Assert.Equal("sent from preview", previewBody.RootElement.GetProperty("Value").GetString());
@@ -2258,7 +2258,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.Locator("[data-name='send']").ClickAsync();
         await actionRequestTask;
         await Assertions.Expect(page.Locator(".gfd-action-status"))
-            .ToHaveTextAsync("add completed successfully.");
+            .ToHaveTextAsync("Added.");
         Assert.Equal("CASE ADD", fixture.Provider.LastQuerySql);
 
         browserPage.AssertNoUnexpectedErrors();
@@ -2305,7 +2305,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             await page.Locator("[data-name='send']").ClickAsync();
             await requestTask;
             await Assertions.Expect(page.Locator(".gfd-action-status"))
-                .ToContainTextAsync("add in progress");
+                .ToContainTextAsync("Adding");
             await Assertions.Expect(page.Locator("[data-name='send']")).ToBeDisabledAsync();
 
             // Both a mode switch and the resulting canvas redraw replace the button element. The
@@ -2319,7 +2319,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
             fixture.Provider.ReleaseLongQuery();
             await Assertions.Expect(page.Locator(".gfd-action-status"))
-                .ToHaveTextAsync("add completed successfully.");
+                .ToHaveTextAsync("Added.");
             Assert.Single(actionRequests);
         }
         finally
@@ -2372,7 +2372,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
             fixture.Provider.ReleaseLongQuery();
             await Assertions.Expect(page.Locator(".gridlet-action-status"))
-                .ToHaveTextAsync("add completed successfully.");
+                .ToHaveTextAsync("Added.");
             await Assertions.Expect(page.Locator("[data-name='first']")).ToBeEnabledAsync();
             await Assertions.Expect(page.Locator("[data-name='second']")).ToBeEnabledAsync();
             await Assertions.Expect(page.Locator("[data-name='locked']")).ToBeDisabledAsync();
@@ -2419,7 +2419,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.Locator("button[data-action='add']").ClickAsync();
         await designerRequest;
         await Assertions.Expect(page.Locator(".gfd-action-status"))
-            .ToHaveTextAsync("add completed successfully.");
+            .ToHaveTextAsync("Added.");
 
         await page.GotoAsync($"/gridlet/components/{id}");
         var consumerRequest = page.WaitForRequestAsync(request =>
@@ -2427,7 +2427,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.Locator("button[data-action=' ADD ']").ClickAsync();
         await consumerRequest;
         await Assertions.Expect(page.Locator(".gridlet-action-status"))
-            .ToHaveTextAsync("add completed successfully.");
+            .ToHaveTextAsync("Added.");
         Assert.Equal(2, actionRequests.Count);
 
         browserPage.AssertNoUnexpectedErrors();
@@ -2540,7 +2540,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.GetByTestId("component-view-preview").ClickAsync();
         await page.Locator("[data-name='send']").ClickAsync();
         await Assertions.Expect(page.Locator(".gfd-action-status"))
-            .ToHaveTextAsync("add failed: add action could not verify the published endpoint list.");
+            .ToHaveTextAsync("Could not add. Add action could not verify the published endpoint list.");
         Assert.Empty(actionRequests);
 
         browserPage.AssertNoUnexpectedErrors("Failed to load resource");
@@ -2578,10 +2578,10 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.GotoAsync($"/gridlet/components/{id}");
         await page.Locator("[data-name='add']").ClickAsync();
         await Assertions.Expect(page.Locator(".gridlet-action-status"))
-            .ToHaveTextAsync("add completed successfully.");
+            .ToHaveTextAsync("Added.");
         await page.Locator("[data-name='update']").ClickAsync();
         await Assertions.Expect(page.Locator(".gridlet-action-status"))
-            .ToHaveTextAsync("update completed successfully.");
+            .ToHaveTextAsync("Saved.");
         Assert.Equal(1, catalogueRequests);
 
         browserPage.AssertNoUnexpectedErrors();
@@ -2637,10 +2637,10 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.GotoAsync($"/gridlet/components/{id}");
         await page.Locator("[data-name='send']").ClickAsync();
         await Assertions.Expect(page.Locator(".gridlet-action-status"))
-            .ToHaveTextAsync("add failed: temporary catalogue failure");
+            .ToHaveTextAsync("Could not add. Temporary catalogue failure.");
         await page.Locator("[data-name='send']").ClickAsync();
         await Assertions.Expect(page.Locator(".gridlet-action-status"))
-            .ToHaveTextAsync("add completed successfully.");
+            .ToHaveTextAsync("Added.");
         Assert.Equal(2, catalogueRequests);
 
         browserPage.AssertNoUnexpectedErrors("Failed to load resource");
@@ -2786,7 +2786,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.Locator("[data-name='send']").ClickAsync();
         var caseRequest = await caseRequestTask;
         await Assertions.Expect(page.Locator(".gridlet-action-status"))
-            .ToHaveTextAsync("add completed successfully.");
+            .ToHaveTextAsync("Added.");
         using (var body = JsonDocument.Parse(caseRequest.PostData!))
         {
             Assert.Equal("edited", body.RootElement.GetProperty("Name").GetString());
@@ -2805,7 +2805,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.GotoAsync($"/gridlet/components/{unknownId}");
         await page.Locator("[data-name='send']").ClickAsync();
         await Assertions.Expect(page.Locator(".gridlet-action-status"))
-            .ToContainTextAsync("add failed: add action maps unknown parameter 'Unknown'.");
+            .ToContainTextAsync("Could not add. Add action maps unknown parameter 'Unknown'.");
         Assert.Single(requests);
 
         browserPage.AssertNoUnexpectedErrors();
@@ -2845,7 +2845,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.Locator("[data-name='send']").ClickAsync();
         var caseRequest = await caseRequestTask;
         await Assertions.Expect(page.Locator(".gfd-action-status"))
-            .ToHaveTextAsync("add completed successfully.");
+            .ToHaveTextAsync("Added.");
         using (var body = JsonDocument.Parse(caseRequest.PostData!))
         {
             Assert.Equal("designer value", body.RootElement.GetProperty("Name").GetString());
@@ -2865,7 +2865,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await page.GetByTestId("component-view-preview").ClickAsync();
         await page.Locator("[data-name='send']").ClickAsync();
         await Assertions.Expect(page.Locator(".gfd-action-status"))
-            .ToContainTextAsync("add failed: add action maps unknown parameter 'Unknown'.");
+            .ToContainTextAsync("Could not add. Add action maps unknown parameter 'Unknown'.");
 
         browserPage.AssertNoUnexpectedErrors();
     }

@@ -1,0 +1,91 @@
+<div data-gridlet="2" data-name="Order a pizza" data-layout="free" data-scrollbars data-resizable style="width: 900px; height: 640px; padding: 0px;">
+  <gridlet-code src="form-actions.js" run="OrderForm"></gridlet-code>
+  <gridlet-source href="menu/order"></gridlet-source>
+  <gridlet-action name="add" method="POST" href="orders/new">
+    <param name="first_name" control="firstName">
+    <param name="last_name" control="lastName">
+    <param name="email" control="email">
+    <param name="phone" control="phone">
+    <param name="pizza" control="pizza">
+    <param name="size" control="size">
+    <param name="quantity" control="quantity">
+    <param name="order_type" control="orderType">
+    <param name="notes" control="notes">
+  </gridlet-action>
+  <style>/* @control title */
+#title {
+  font-size: 1.3em;
+  font-weight: 600;
+}
+
+/* @control pizza */
+#pizza {
+  font-size: 1.15em;
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
+/* @control description */
+#description {
+  opacity: 0.8;
+}
+
+/* @control total */
+#total {
+  font-size: 1.3em;
+  font-weight: 600;
+}
+
+/* @control placeButton */
+#placeButton {
+  font-weight: 600;
+}
+
+/* @control confirmation */
+#confirmation {
+  font-weight: 600;
+  color: light-dark(#067647, #4ade80);
+}</style>
+  <span data-name="title" id="title" style="left: 24px; top: 16px; width: 400px; height: 28px;">Order a pizza</span>
+  <span data-name="menuHint" style="left: 24px; top: 52px; width: 400px; height: 20px;">Browse the menu with the arrows.</span>
+  <input type="text" readonly data-name="pizza" id="pizza" data-bind-value="=data.Pizza" style="left: 24px; top: 76px; width: 380px; height: 28px;">
+  <span data-name="description" id="description" data-bind-text="=data.Description" style="left: 24px; top: 108px; width: 380px; height: 40px;"></span>
+  <div data-role="pager" data-position data-name="menuPager" style="left: 264px; top: 48px; width: 140px; height: 28px;"></div>
+  <span data-name="sizeLabel" style="left: 24px; top: 160px; width: 110px; height: 24px;">Size</span>
+  <select data-name="size" data-on-change="=showTotal()" style="left: 140px; top: 160px; width: 160px; height: 24px;">
+    <option>Personal</option>
+    <option>Medium</option>
+    <option>Large</option>
+    <option>Family</option>
+  </select>
+  <span data-name="quantityLabel" style="left: 24px; top: 192px; width: 110px; height: 24px;">How many</span>
+  <input type="text" data-name="quantity" data-on-input="=showTotal()" style="left: 140px; top: 192px; width: 60px; height: 24px;">
+  <span data-name="totalLabel" style="left: 24px; top: 228px; width: 110px; height: 28px;">Total</span>
+  <span data-name="total" id="total" style="left: 140px; top: 228px; width: 160px; height: 28px;"></span>
+  <span data-name="detailsTitle" style="left: 460px; top: 52px; width: 300px; height: 20px;">Where should it go?</span>
+  <span data-name="firstNameLabel" style="left: 460px; top: 80px; width: 110px; height: 24px;">First name</span>
+  <input type="text" data-name="firstName" style="left: 576px; top: 80px; width: 220px; height: 24px;">
+  <span data-name="lastNameLabel" style="left: 460px; top: 112px; width: 110px; height: 24px;">Last name</span>
+  <input type="text" data-name="lastName" style="left: 576px; top: 112px; width: 220px; height: 24px;">
+  <span data-name="emailLabel" style="left: 460px; top: 144px; width: 110px; height: 24px;">Email</span>
+  <input type="text" data-name="email" style="left: 576px; top: 144px; width: 220px; height: 24px;">
+  <span data-name="phoneLabel" style="left: 460px; top: 176px; width: 110px; height: 24px;">Phone</span>
+  <input type="text" data-name="phone" style="left: 576px; top: 176px; width: 220px; height: 24px;">
+  <span data-name="typeLabel" style="left: 460px; top: 208px; width: 110px; height: 24px;">Getting it</span>
+  <select data-name="orderType" style="left: 576px; top: 208px; width: 220px; height: 24px;">
+    <option>Delivery</option>
+    <option>Collection</option>
+  </select>
+  <span data-name="notesLabel" style="left: 460px; top: 240px; width: 110px; height: 24px;">Anything else</span>
+  <input type="text" data-name="notes" style="left: 576px; top: 240px; width: 220px; height: 24px;">
+  <button type="button" data-name="placeButton" id="placeButton" data-action="add" style="left: 576px; top: 280px; width: 220px; height: 36px;">Place my order</button>
+  <span data-name="confirmation" id="confirmation" data-bind-w="=component.width - 31 - self.x" style="left: 24px; top: 288px; width: 500px; height: 24px;"></span>
+  <span data-name="hint" data-bind-w="=component.width - 31 - self.x" style="left: 24px; top: 332px; width: 845px; height: 20px;">The price is worked out from the menu again when the order is sent, so this total is a quote, not the bill.</span>
+  <table data-role="grid" data-name="menuGrid" data-bind-x="=24" data-bind-y="=364" data-bind-w="=component.width - 31 - self.x" data-bind-h="=component.height - 24 - self.y" style="left: 24px; top: 364px; width: 845px; height: 252px;">
+    <thead>
+      <tr><th>Pizza</th><th>Description</th><th>Personal</th><th>Medium</th><th>Large</th><th>Family</th></tr>
+    </thead>
+  </table>
+</div>
