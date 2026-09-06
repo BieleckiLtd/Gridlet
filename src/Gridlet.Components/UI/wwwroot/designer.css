@@ -645,7 +645,8 @@
   position: relative;
   /* How far past the edge the canvas still paints when it is clipping. Enough for what the designer
      draws around a control on the boundary - the selection outline sits a pixel outside it - and
-     not enough for a control placed outside to be mistaken for part of the component. */
+     not enough for a control placed outside to be mistaken for part of the component. The handles
+     no longer need it: they are clipped to the component by their own layer either way. */
   overflow-clip-margin: 12px;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -721,36 +722,58 @@
   pointer-events: none;
 }
 
+/* The layer the handles are drawn in, and it clips. A handle straddles the edge it resizes, and a
+   box drawn outside a control counts towards what the canvas can be scrolled to, so drawn on the
+   control itself a handle put scrollbars on a component that fits. Here it cannot: whatever the
+   selection is, the drawing stops where a scrollbar would start.
+
+   Above the anchor overlay. A dimension for an edge is drawn along that edge and takes presses, so
+   it lands on top of the very handle that edge is resized by; the handle has to win, because
+   decoration must never be in front of the thing it describes.
+
+   The layer takes no presses - it covers the whole component - and the handles take them back. */
+.gfd-handle-layer {
+  position: absolute;
+  /* Stopping at the component's far edges and reaching past its near ones, by the same twelve
+     pixels the canvas paints past itself. Only the far edges can make a scrollbar: a box laid past
+     the near edge of a scroll container is unreachable rather than scrolled to, so it costs
+     nothing, while the handles of a control at nought across or nought down are exactly the ones
+     that have to stay whole for it to be dragged back. */
+  inset: -12px 0 0 -12px;
+  z-index: 8;
+  overflow: clip;
+  pointer-events: none;
+}
+
+/* The control's box, in the layer's coordinates: the handles hang off this rather than off the
+   control, so each one is placed by the same rule it always was. The layer starts twelve pixels
+   above and left of the component, so the drawing code puts that back. */
+.gfd-handle-box { position: absolute; margin: 12px 0 0 12px; }
+
 .gfd-handle {
   position: absolute;
+  pointer-events: auto;
   width: 8px;
   height: 8px;
   background: var(--accent);
   border: 1px solid var(--panel);
-  /* Above the anchor overlay. A dimension for an edge is drawn along that edge and takes presses,
-     so it lands on top of the very handle that edge is resized by; the handle has to win, because
-     decoration must never be in front of the thing it describes. */
-  z-index: 8;
 }
 
 /* One per side and one per corner, because a resize is an edge being moved and every edge has to
    be reachable. Without the west and north handles there is no way to move a left or a top edge
    by dragging, and moving one is a different act from changing the width.
 
-   Each one sits inside the edge it belongs to rather than straddling it. A box drawn outside the
-   control is still part of what the canvas can be scrolled to - it counts towards the scrollable
-   overflow like anything else positioned in there - so a control against the component's far edge
-   used to put scrollbars on a component that fits, just by being selected. Clipping does not save
-   it: clipped content stops counting, but a clip margin wide enough to keep the handle whole hands
-   the same pixels straight back. Inside is the placement that has nothing to hand back. */
-.gfd-handle-nw { left: 0; top: 0; cursor: nwse-resize; }
-.gfd-handle-n { left: calc(50% - 4px); top: 0; cursor: ns-resize; }
-.gfd-handle-ne { right: 0; top: 0; cursor: nesw-resize; }
-.gfd-handle-e { right: 0; top: calc(50% - 4px); cursor: ew-resize; }
-.gfd-handle-se { right: 0; bottom: 0; cursor: nwse-resize; }
-.gfd-handle-s { bottom: 0; left: calc(50% - 4px); cursor: ns-resize; }
-.gfd-handle-sw { left: 0; bottom: 0; cursor: nesw-resize; }
-.gfd-handle-w { left: 0; top: calc(50% - 4px); cursor: ew-resize; }
+   Each one straddles the edge it belongs to, five pixels out, which is what makes it read as a
+   grip on that edge rather than a mark inside the control. The layer above is what lets it: the
+   overhang is drawn but is no part of what the canvas can be scrolled to. */
+.gfd-handle-nw { left: -5px; top: -5px; cursor: nwse-resize; }
+.gfd-handle-n { left: calc(50% - 4px); top: -5px; cursor: ns-resize; }
+.gfd-handle-ne { right: -5px; top: -5px; cursor: nesw-resize; }
+.gfd-handle-e { right: -5px; top: calc(50% - 4px); cursor: ew-resize; }
+.gfd-handle-se { right: -5px; bottom: -5px; cursor: nwse-resize; }
+.gfd-handle-s { bottom: -5px; left: calc(50% - 4px); cursor: ns-resize; }
+.gfd-handle-sw { left: -5px; bottom: -5px; cursor: nesw-resize; }
+.gfd-handle-w { left: -5px; top: calc(50% - 4px); cursor: ew-resize; }
 
 /* ---- anchors on the canvas ----
    Drawing-office chrome, laid over the component rather than in it: dimensions that say what
