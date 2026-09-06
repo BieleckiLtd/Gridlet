@@ -5821,4 +5821,210 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
         browserPage.AssertNoUnexpectedErrors();
     }
+
+    // ---- undo ----
+
+    /// <summary>
+    /// Undo and redo walk the document backwards and forwards through whole edits, whether the edit
+    /// was made in the properties panel or from the palette.
+    /// </summary>
+    [Fact]
+    public async Task Undo_and_redo_walk_back_and_forward_through_edits()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Undo component",
+            [Control("caption", "label", props: new { text = "First" })]);
+
+        var undo = page.GetByTestId("component-undo");
+        var redo = page.GetByTestId("component-redo");
+
+        // Nothing has been done to the component yet, so there is nothing to take back.
+        await Assertions.Expect(undo).ToBeDisabledAsync();
+        await Assertions.Expect(redo).ToBeDisabledAsync();
+
+        // One edit in the panel, and one control added from the palette.
+        await Box(page, "caption").ClickAsync();
+        await page.GetByTestId("expr-text").FillAsync("Second");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Second");
+        await page.Locator(".gfd-palette-item[data-type='button']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-control")).ToHaveCountAsync(2);
+        await Assertions.Expect(undo).ToBeEnabledAsync();
+
+        // The added control, taken back off.
+        await undo.ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-control")).ToHaveCountAsync(1);
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Second");
+        await Assertions.Expect(redo).ToBeEnabledAsync();
+
+        // The edit before it.
+        await undo.ClickAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("First");
+        await Assertions.Expect(undo).ToBeDisabledAsync();
+
+        // And forward again, one step at a time.
+        await redo.ClickAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Second");
+        await redo.ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-control")).ToHaveCountAsync(2);
+        await Assertions.Expect(redo).ToBeDisabledAsync();
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Deleting a control is one step, and undoing it puts the control back with what it held and
+    /// with the selection it was deleted from.
+    /// </summary>
+    [Fact]
+    public async Task Undo_puts_a_deleted_control_back_with_its_selection()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Undo delete component",
+            [
+                Control("caption", "label", props: new { text = "Kept" }),
+                Control("gone", "label", props: new { text = "Deleted" }, y: 60),
+            ]);
+
+        await Box(page, "gone").ClickAsync();
+        await page.Locator(".gfd-canvas").PressAsync("Delete");
+        await Assertions.Expect(Canvas(page, "gone")).ToHaveCountAsync(0);
+
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(Canvas(page, "gone")).ToHaveTextAsync("Deleted");
+        // Back, and still the control the panel is talking about.
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveValueAsync("gone");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A property box writes on every character, so a run of typing is one step rather than one per
+    /// character.
+    /// </summary>
+    [Fact]
+    public async Task A_run_of_typing_is_one_undo_step()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Undo typing component",
+            [Control("caption", "label", props: new { text = "" })]);
+
+        await Box(page, "caption").ClickAsync();
+        await page.GetByTestId("expr-text").PressSequentiallyAsync("Hello");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Hello");
+
+        // Five characters, one step: the whole word goes, not its last letter.
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("");
+        await Assertions.Expect(page.GetByTestId("component-undo")).ToBeDisabledAsync();
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The keyboard reaches undo and redo from anywhere in the designer except a text box, where the
+    /// browser's own undo is the one walking back the characters being typed.
+    /// </summary>
+    [Fact]
+    public async Task Undo_and_redo_answer_the_keyboard()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Undo keyboard component",
+            [Control("caption", "label", props: new { text = "Before" })]);
+
+        await Box(page, "caption").ClickAsync();
+        await page.GetByTestId("expr-text").FillAsync("After");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("After");
+
+        var canvas = page.Locator(".gfd-canvas");
+        await canvas.PressAsync("Control+z");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Before");
+
+        await canvas.PressAsync("Control+Shift+z");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("After");
+
+        // Ctrl+Y is the other way to say redo, so it takes the same step forward.
+        await canvas.PressAsync("Control+z");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Before");
+        await canvas.PressAsync("Control+y");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("After");
+
+        // Inside the box, the shortcut belongs to the box: the designer does not also take a step.
+        await page.GetByTestId("expr-text").PressAsync("Control+z");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("After");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// History is the document's. Editing what the component publishes marks the tab unsaved without
+    /// becoming a step, because it is not in the document undo restores.
+    /// </summary>
+    [Fact]
+    public async Task Editing_what_is_not_the_document_is_not_an_undo_step()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Undo settings component",
+            [Control("caption", "label", props: new { text = "Text" })]);
+
+        await OpenPanelTabAsync(page, "Settings");
+        await page.GetByTestId("component-title").FillAsync("A public title");
+        await Assertions.Expect(page.GetByTestId("component-save")).ToBeEnabledAsync();
+        await Assertions.Expect(page.GetByTestId("component-undo")).ToBeDisabledAsync();
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Undoing back through the history and then editing forgets what was undone: there is one line
+    /// of history rather than a tree, which is what everything else with an undo does.
+    /// </summary>
+    [Fact]
+    public async Task An_edit_after_an_undo_forgets_what_was_undone()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Undo branch component",
+            [Control("caption", "label", props: new { text = "First" })]);
+
+        await Box(page, "caption").ClickAsync();
+        await page.GetByTestId("expr-text").FillAsync("Second");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Second");
+
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("First");
+        await Assertions.Expect(page.GetByTestId("component-redo")).ToBeEnabledAsync();
+
+        await page.GetByTestId("expr-text").FillAsync("Third");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Third");
+        await Assertions.Expect(page.GetByTestId("component-redo")).ToBeDisabledAsync();
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The document is the same thing in Code as it is on the canvas, so an edit made in one is
+    /// undone from the other and the text follows.
+    /// </summary>
+    [Fact]
+    public async Task Undo_reaches_an_edit_made_in_the_code_view()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Undo code component",
+            [Control("caption", "label", props: new { text = "Before" })]);
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var editor = page.GetByTestId("component-document-editor");
+        var markup = await editor.InputValueAsync();
+        await editor.FillAsync(markup.Replace("Before", "After", StringComparison.Ordinal));
+        await page.GetByTestId("component-view-design").ClickAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("After");
+
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Before");
+
+        // And the text says so too, rather than showing the document that was undone.
+        await page.GetByTestId("component-view-code").ClickAsync();
+        await Assertions.Expect(editor).Not.ToHaveValueAsync(new Regex("After"));
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
 }
