@@ -382,6 +382,72 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    /// <summary>
+    /// A control is placed at a size somebody chose, so a caption longer than that size is cut off
+    /// at the control's edge rather than painted across whatever was placed beside it. A reverted
+    /// button does the painting by default, so the component stylesheet has to say otherwise - and
+    /// say it on both surfaces, because it is one stylesheet for both.
+    /// </summary>
+    [Fact]
+    public async Task Keeps_a_caption_too_long_for_its_control_inside_it()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var suffix = Guid.NewGuid().ToString("n");
+        var componentRoute = $"clipped-caption-{suffix}";
+        var page = await OpenComponentAsync(browserPage, $"Clipped caption component {suffix}",
+        [
+            // Both far too narrow for what they are named, which is the case the rule is for.
+            Control("save", "button", props: new { text = "Delete every customer" }, x: 16, y: 16, w: 40, h: 30),
+            Control("caption", "label", props: new { text = "A caption far longer than its box" }, x: 16, y: 56, w: 40, h: 30),
+        ],
+            route: componentRoute);
+
+        // Read off the control the operator is looking at: its content really is wider than the box
+        // it was given, and the box keeps it.
+        const string measure = """
+            element => {
+              const control = element.matches('button, span') ? element : element.firstElementChild;
+              const style = getComputedStyle(control);
+              return {
+                overflowing: control.scrollWidth > control.clientWidth,
+                overflow: style.overflowX,
+                spillsRight: Math.round(control.getBoundingClientRect().right
+                  - element.getBoundingClientRect().right),
+              };
+            }
+            """;
+
+        foreach (var name in new[] { "save", "caption" })
+        {
+            var drawn = await Box(page, name).EvaluateAsync<JsonElement>(measure);
+            Assert.True(drawn.GetProperty("overflowing").GetBoolean(), $"{name} was wide enough to fit its caption, so it tests nothing.");
+            Assert.Equal("hidden", drawn.GetProperty("overflow").GetString());
+            Assert.Equal(0, drawn.GetProperty("spillsRight").GetInt32());
+        }
+
+        // The published page is the same stylesheet, so it is the same answer.
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator("#gridlet-component-host .gridlet-component-runtime"))
+                .ToBeVisibleAsync();
+
+            foreach (var name in new[] { "save", "caption" })
+            {
+                var drawn = await published.Locator($"[data-name='{name}']").EvaluateAsync<JsonElement>(measure);
+                Assert.True(drawn.GetProperty("overflowing").GetBoolean(), $"published {name} was wide enough to fit its caption.");
+                Assert.Equal("hidden", drawn.GetProperty("overflow").GetString());
+            }
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     [Fact]
     public async Task Preview_and_published_component_have_pixel_parity_at_the_same_viewport()
     {
