@@ -6574,8 +6574,13 @@ ${colourGeneration}`;
         // when its kind has something worth saying about why.
         ...controlValueEditors(control, spec, group),
         ...(control.type === 'button' && !group
-          ? [heading('Action'), row(control, null, 'On click', () => buttonActionEditor(control),
-            { hint: 'Choose exactly one declared Add, Update, or Delete endpoint; empty is read only' })]
+          ? [heading('Action',
+            'What this button writes, which is not the same as what it runs. An action is one of '
+            + 'the component\'s declared Add, Update, or Delete endpoints, chosen here and called '
+            + 'with the controls mapped to its parameters; empty is read only. Events below run a '
+            + 'formula of your own instead, and a button can have both.'),
+            row(control, null, 'On click', () => buttonActionEditor(control),
+              { hint: 'Choose exactly one declared Add, Update, or Delete endpoint; empty is read only' })]
           : []),
         // The columns a value can be bound to are a group of their own, so what follows them needs
         // a heading of its own or it reads as more of them.
@@ -6588,7 +6593,6 @@ ${colourGeneration}`;
         // A handler belongs to one control, the way a name does: two controls sharing a click is
         // two handlers that happen to call the same function.
         ...(group ? [] : eventRows(control, CONTROL_EVENTS)),
-        ...elsewhereFormulaRows(control, spec, group),
         h('button', {
           class: 'danger gfd-delete',
           onclick: () => deleteSelection(),
@@ -6778,37 +6782,6 @@ ${colourGeneration}`;
 
       return editors;
     }
-
-    // Formulas set somewhere other than here - a width that follows another control, a colour that
-    // follows a value - gathered so this page answers "what on this control follows something
-    // else?" without sending anyone hunting through the other one. A property with its own row
-    // above is not repeated: it is already showing its formula.
-    function elsewhereFormulaRows(control, spec, group) {
-      if (group) return [];
-      const shown = new Set([
-        ...(spec.bindable ? [valueKeyOf(spec)] : []),
-        ...spec.properties.map((property) => property.key),
-        'classes', 'elementId', 'tip',
-      ]);
-      const bound = bindableKeys(control)
-        .filter((key) => !shown.has(key) && isFormula(control.bind[key]));
-      if (!bound.length) return [];
-
-      return [
-        heading('Also from a formula'),
-        ...bound.map((key) => row(control, key,
-          BINDING_LABELS[key] || key,
-          () => propertyBox(control, key))),
-      ];
-    }
-
-    // What a bound property is called where it is out of the context that named it on its own
-    // page.
-    const BINDING_LABELS = {
-      x: 'Left', y: 'Top', w: 'Width', h: 'Height',
-      'color.light': 'Text L', 'color.dark': 'Text D',
-      'fill.light': 'Fill L', 'fill.dark': 'Fill D',
-    };
 
     // Addressed by name rather than by id: names are unique within a component, and an attribute
     // selector cannot collide with anything in the surrounding page. A name is whatever someone
