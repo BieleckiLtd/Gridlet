@@ -592,6 +592,47 @@
   background: var(--border);
 }
 
+/* The (i) at the end of a heading: what the section is for, a hover away. Quiet enough to read as
+   part of the rule the heading sits on, and lit when the pointer is on it so it is clearly a thing
+   to use rather than a mark on the line.
+
+   Past the rule rather than beside the words: the heading's line is what separates one group of
+   rows from the last, and a break in it a few characters along reads as part of the title. At the
+   end, the icons of every section stand in one column down the edge of the panel, which is where
+   something you go to when you want it belongs. The rule is drawn by `::after`, so the order is
+   set rather than left to the document: a pseudo-element is always last among equals. */
+.gfd-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  order: 1;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0.7;
+  cursor: help;
+}
+
+.gfd-hint:hover,
+.gfd-hint:focus-visible { opacity: 1; color: var(--accent); }
+
+.gfd-hint-icon { display: block; }
+
+.gfd-hint-icon svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .gfd-properties-body > .gfd-heading:first-of-type { margin-top: 2px; }
 
 .gfd-properties-body {

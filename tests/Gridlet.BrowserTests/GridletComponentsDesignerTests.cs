@@ -5119,6 +5119,39 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
+    /// What a section of the panel is for lives on its heading rather than under it: an (i) beside
+    /// the heading, read on a hover, instead of a paragraph standing between somebody and the rows
+    /// they came for.
+    /// </summary>
+    [Fact]
+    public async Task Explains_a_section_from_the_icon_on_its_heading()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Section tip component",
+            [Control("button1", "button", props: new { text = "Save" }, x: 24, y: 10, w: 120, h: 24)]);
+
+        await Box(page, "button1").ClickAsync();
+
+        // The tip is what the icon says, which is what a hover shows.
+        var tip = page.GetByTestId("hint-events");
+        await Assertions.Expect(tip).ToBeVisibleAsync();
+        Assert.Contains("A handler is a formula", await tip.GetAttributeAsync("title"));
+
+        // ...and it is no longer a paragraph in the panel.
+        await Assertions.Expect(page.Locator(".gfd-note",
+            new PageLocatorOptions { HasTextString = "A handler is a formula" })).ToHaveCountAsync(0);
+
+        // A collapsible section carries its tip the same way, on the summary that heads it.
+        await OpenPanelTabAsync(page, "Appearance");
+        await Assertions.Expect(page.GetByTestId("hint-control-generated-css")).ToBeVisibleAsync();
+        await Assertions.Expect(page.Locator(".gfd-note",
+            new PageLocatorOptions { HasTextString = "A control is a box that places it" }))
+            .ToHaveCountAsync(0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// A handler is a formula run for what it does. It runs when the component runs, and not while
     /// somebody is still drawing the component.
     /// </summary>

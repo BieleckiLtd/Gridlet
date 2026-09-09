@@ -156,6 +156,10 @@
     ].map(iconPath).join(''),
     // The eyedropper: what the screen-pick button is, so a secondary action can be an icon rather
     // than the widest control in the picker.
+    // A circled i. What a section of the panel is for, kept beside its heading rather than spelled
+    // out under it.
+    'info-circle': ['M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0', 'M12 9h.01', 'M11 12h1v4h1']
+      .map(iconPath).join(''),
     'color-picker': [
       'M11 7l6 6', 'M4 16l11.7 -11.7a1 1 0 0 1 1.4 0l2.6 2.6a1 1 0 0 1 0 1.4l-11.7 11.7h-4v-4z',
     ].map(iconPath).join(''),
@@ -3148,9 +3152,14 @@ export default class ${CLASS_NAME(name)} {
     // keeps closed stays closed across selections and reloads.
     function section(key, title, ...children) {
       const open = readStored('gridlet.components.section.' + key, '0') === '1';
+      // A tip passed as a child belongs on the heading rather than in the body, so a section says
+      // what it is for the same way a plain heading does. It is written as a child because that is
+      // where the call site already puts everything else the section is made of.
+      const hints = children.filter((child) => child?.classList?.contains('gfd-hint'));
       const details = h('details', open ? { class: 'gfd-section', open: '' } : { class: 'gfd-section' },
-        h('summary', { class: 'gfd-heading', text: title }),
-        ...children);
+        h('summary', { class: 'gfd-heading' },
+          h('span', { class: 'gfd-heading-text', text: title }), ...hints),
+        ...children.filter((child) => !hints.includes(child)));
       details.addEventListener('toggle', () => {
         try { localStorage.setItem('gridlet.components.section.' + key, details.open ? '1' : '0'); }
         catch { /* unavailable */ }
@@ -3158,7 +3167,35 @@ export default class ${CLASS_NAME(name)} {
       return details;
     }
 
-    const heading = (text) => h('div', { class: 'gfd-heading', text });
+    // What a section is for, on the heading rather than under it. A tip is read once and known
+    // after that, so a paragraph of it below every heading is a paragraph standing between someone
+    // and the fields they came to the panel for. The (i) keeps the explanation a hover away and
+    // gives the panel back to its rows.
+    //
+    // A tip is not the same thing as a note: a note says what is true right now - no endpoints
+    // published, columns not read yet - and belongs in the panel where it can be seen without
+    // being looked for.
+    const hintKey = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+    function hintIcon(text, key) {
+      const button = h('button', {
+        type: 'button',
+        class: 'gfd-hint',
+        title: text,
+        'aria-label': text,
+        'data-testid': 'hint-' + key,
+      }, svgIcon(ICONS['info-circle'], 'gfd-hint-icon'));
+      // Inside a <summary> a press is the section opening or shutting, and the tip must not be a
+      // way to do that by accident.
+      button.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); });
+      return button;
+    }
+
+    // `text` is the heading; `hint`, when there is one, is what its (i) says.
+    const heading = (text, hint) => h('div', { class: 'gfd-heading' },
+      h('span', { class: 'gfd-heading-text', text }),
+      ...(hint ? [hintIcon(hint, hintKey(text))] : []));
+
     const note = (text) => h('p', { class: 'field-note gfd-note', text });
 
     // A textarea has no `value` content attribute - its text is its content - so the initial text
@@ -3602,12 +3639,12 @@ export default class ${CLASS_NAME(name)} {
     }
 
     const eventRows = (target, events) => [
-      heading('Events'),
-      ...events.map(([name, label, hint]) =>
-        row(target, null, label, () => eventBox(target, name, hint), { hint })),
-      note('A handler is a formula that is run for what it does. It calls a function one of this '
+      heading('Events',
+        'A handler is a formula that is run for what it does. It calls a function one of this '
         + 'component\'s modules exports, and it runs in Preview, not while you are drawing. Pass it '
         + '`component` for something to act on: =showPrice(component, data.Price).'),
+      ...events.map(([name, label, hint]) =>
+        row(target, null, label, () => eventBox(target, name, hint), { hint })),
     ];
 
     function propertyBox(target, key, options = {}) {
@@ -6366,7 +6403,9 @@ ${colourGeneration}`;
     }
 
     function actionEditors() {
-      const editors = [heading('Actions'), note('Each action is an explicitly selected published endpoint. Parameters must be mapped to a control or a literal value; the data source is never used for writes.')];
+      const editors = [heading('Actions',
+        'Each action is an explicitly selected published endpoint. Parameters must be mapped to a '
+        + 'control or a literal value; the data source is never used for writes.')];
       for (const [operation, definition] of Object.entries(ACTIONS)) {
         const action = model.doc.actions?.[operation] || null;
         const endpoints = model.endpoints.filter((endpoint) =>
@@ -6614,11 +6653,13 @@ ${colourGeneration}`;
       return [
         custom,
         inheritedSection,
-        section('control-generated', 'Generated CSS', generatedBody,
-          note('A control is a box that places it, and the element inside that you see. '
+        section('control-generated', 'Generated CSS',
+          hintIcon('A control is a box that places it, and the element inside that you see. '
             + 'The first rule positions the box from the panel\'s measurements; the second fills '
             + 'the box with the element and gives it the colours. Both are written as a variable '
-            + 'and then the property that reads it, so your own CSS can change either.')),
+            + 'and then the property that reads it, so your own CSS can change either.',
+          'control-generated-css'),
+          generatedBody),
         section('control-browser', 'From the browser', browserBody),
       ];
     }
