@@ -5228,6 +5228,53 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
+    /// A handler is not run while it is drawn, so the one thing about it that can be checked
+    /// without running it is: the names it calls have to exist. Said while it is typed rather than
+    /// when somebody runs the component and watches nothing happen.
+    /// </summary>
+    [Fact]
+    public async Task Marks_a_handler_that_calls_a_function_nobody_wrote()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await WriteModuleAsync(page, "checked.js", """
+            export function announce(component) {
+              component.field('output').value = 'announced';
+            }
+            """);
+
+        page = await OpenComponentAsync(browserPage, "Checked handler component",
+        [
+            Control("go", "button", props: new { text = "Go" },
+                events: new { click = "=announce(component)" }),
+            Control("output", "label", props: new { text = "waiting" }, y: 50),
+        ],
+            modules: ["checked.js"]);
+
+        await Box(page, "go").ClickAsync();
+        var handler = page.GetByTestId("event-click");
+
+        // A function the component's own module exports is a handler, and is left alone.
+        await Assertions.Expect(handler).Not.ToHaveClassAsync(new Regex("bad"));
+
+        // One nobody wrote is not, and the box says which name it could not find.
+        await handler.FillAsync("=test()");
+        await Assertions.Expect(handler).ToHaveClassAsync(new Regex("bad"));
+        await Assertions.Expect(handler)
+            .ToHaveAttributeAsync("title", new Regex("no function called \"test\""));
+
+        // Gridlet's own functions count as written, and so does a name nested inside a call.
+        await handler.FillAsync("=iferror(announce(component), 0)");
+        await Assertions.Expect(handler).Not.ToHaveClassAsync(new Regex("bad"));
+
+        await handler.FillAsync("=iferror(test(), 0)");
+        await Assertions.Expect(handler).ToHaveClassAsync(new Regex("bad"));
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// The class and the id belong to the control, not to the box the designer positions it with.
     /// A rule written against them has to style the thing it names.
     /// </summary>

@@ -3607,6 +3607,46 @@ export default class ${CLASS_NAME(name)} {
       refresh();
     }
 
+    // What is wrong with a handler, or null. A handler is run for what it does rather than for
+    // what it returns, so unlike every other formula in the panel it is never evaluated while it
+    // is being drawn - and a call to a function nobody wrote used to sit in the box looking like a
+    // handler until somebody ran the component and watched nothing happen.
+    //
+    // The names in it can be resolved without running any of it, so they are: the same scope the
+    // canvas resolves a binding against, asked the same question. Only the names - what a function
+    // does with what it is passed is its own business, and finding that out means running it.
+    function handlerFault(typed) {
+      if (!isFormula(typed)) return 'A handler has to start with = to run.';
+      let node;
+      try { node = compile(formulaBody(typed)); }
+      catch { return 'That is not an expression this can read.'; }
+
+      let fault = null;
+      const walk = (step) => {
+        if (fault || !step || typeof step !== 'object') return;
+        if (step.kind === 'call') {
+          const found = step.qualifier
+            ? expressionScope.qualifiedCall(step.qualifier, step.name)
+            : expressionScope.call(step.name);
+          if (found.error) {
+            fault = found.error.detail
+              || `There is no function called "${step.name}" in this component.`;
+            return;
+          }
+        }
+        for (const value of Object.values(step)) {
+          if (Array.isArray(value)) value.forEach(walk);
+          else walk(value);
+        }
+      };
+      // The scope is built from files that are still being fetched when the panel first draws, so
+      // a question asked too early is a question with no answer rather than a wrong one. Nothing
+      // said beats a handler wrongly marked as broken, and the panel is drawn again when the
+      // modules land.
+      try { walk(node); } catch { return null; }
+      return fault;
+    }
+
     // A handler box. It takes a formula and nothing else: a handler that is not a formula could
     // never run, so it is marked rather than quietly ignored.
     function eventBox(target, name, hint) {
@@ -3629,9 +3669,9 @@ export default class ${CLASS_NAME(name)} {
       });
       const mark = (element) => {
         const typed = element.value.trim();
-        const bad = Boolean(typed) && !isFormula(typed);
-        element.classList.toggle('bad', bad);
-        element.title = bad ? 'A handler has to start with = to run.' : hint;
+        const fault = typed ? handlerFault(typed) : null;
+        element.classList.toggle('bad', Boolean(fault));
+        element.title = fault || hint;
       };
       input.value = target.events?.[name] ?? '';
       mark(input);
