@@ -848,6 +848,21 @@
 .gfd-anchor-handle.held { background: var(--accent); }
 .gfd-anchor-handle.held::after { background: var(--panel); }
 
+/* A held handle dragged clear of every edge it could land on: letting go here takes the link off,
+   so it is drawn as the link already gone - the fill out of the handle and the band gone slack. */
+.gfd-anchor-handle.cutting {
+  border-color: var(--muted);
+  background: var(--panel);
+}
+
+.gfd-anchor-handle.cutting::after { background: var(--muted); }
+
+.gfd-anchor-band.cutting {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 5;
+}
+
 /* Where an anchor can land, shown only while one is being dragged. The one under the pointer
    grows and fills, so letting go is never a guess. */
 .gfd-anchor-target {

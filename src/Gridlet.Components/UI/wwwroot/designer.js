@@ -5416,7 +5416,9 @@ ${colourGeneration}`;
     // ---- anchors on the canvas ----
     // Anchoring is a drawing act, so it is done on the drawing. With Anchors on, the one selected
     // control grows a handle in the middle of each edge; drag one onto an edge of the frame or of
-    // another control and that edge is anchored to it. Every anchor in force is drawn as a CAD
+    // another control and that edge is anchored to it. The same handle takes the anchor off again:
+    // a held handle dragged back onto its own control is a link pulled out, undone where it was
+    // made rather than somewhere else. Every anchor in force is drawn as a CAD
     // dimension - a witness line, arrows both ways and the offset - which is how the layout is
     // read as well as how an anchor is retyped or taken off.
 
@@ -5676,6 +5678,11 @@ ${colourGeneration}`;
         const axis = AXIS_OF[edge];
         const start = selfPoint(edge);
         const band = line(start.x, start.y, start.x, start.y, { class: 'gfd-anchor-band' });
+        // The link this drag starts from, if there is one. An edge already anchored is dragged for
+        // two reasons - to put the link somewhere else, or to take it off - and which of the two a
+        // drag turns out to be is decided by where it is let go.
+        const held = anchors[edge] || null;
+        const handle = event.currentTarget;
 
         // Where the anchor could land: the same axis only, because an edge measured against one at
         // right angles to it would not be a distance anybody could read.
@@ -5705,8 +5712,31 @@ ${colourGeneration}`;
         // component's right edge would mean dragging to the middle of the component, so what
         // counts is being near the line: how far the pointer is from it along the axis being
         // measured, and whether it is beside the target at all across the other one.
+        // Where a link is let go of: the body of the control the handle belongs to. Dragging an
+        // edge back onto its own control is the plainest way to say it follows nothing now, and it
+        // is somewhere that is always there to drag to - which "away from every edge" is not, on a
+        // control with the frame's edge and two neighbours all inside the reach of a drop.
+        //
+        // So the body wins over every target within reach of it. A link is taken off far more
+        // often than an edge is anchored to something underneath the control that holds it, and a
+        // gesture that means one thing except when something happens to be near means nothing.
+        const self = rectOf(box);
+        const insideSelf = (clientX, clientY) => {
+          const x = clientX - surface.left;
+          const y = clientY - surface.top;
+          if (x < self.left || x > self.right || y < self.top || y > self.bottom) return false;
+          // Not the edge itself: the handle sits on it, and a hand that shakes on the press must
+          // not be a link taken off. Far enough in to be a journey, near enough that a control of
+          // any size has somewhere to make it to.
+          const from = edge === 'left' ? x - self.left
+            : edge === 'right' ? self.right - x
+              : edge === 'top' ? y - self.top : self.bottom - y;
+          return from >= 6;
+        };
+
         let candidate = null;
         const nearest = (clientX, clientY) => {
+          if (insideSelf(clientX, clientY)) return null;
           const along = (axis === 'x' ? clientX - surface.left : clientY - surface.top);
           const across = (axis === 'x' ? clientY - surface.top : clientX - surface.left);
           let best = null;
@@ -5762,6 +5792,12 @@ ${colourGeneration}`;
           candidate = nearest(moveEvent.clientX, moveEvent.clientY);
           for (const spot of spots) spot.dot.classList.toggle('hot', spot === candidate);
           showGuide();
+          // Pulled clear of every edge it could land on, a held handle is about to break its link,
+          // so the drawing says so before the pointer is let go: the band goes slack and the handle
+          // empties out, which is the picture of a link that is no longer attached to anything.
+          const cutting = Boolean(held) && !candidate;
+          band.classList.toggle('cutting', cutting);
+          handle?.classList.toggle('cutting', cutting);
         };
 
         const onUp = (upEvent) => {
@@ -5770,9 +5806,20 @@ ${colourGeneration}`;
           canvas.removeEventListener('pointercancel', onUp);
           canvas.removeEventListener('lostpointercapture', onUp);
           const drop = moved && (candidate || nearest(upEvent.clientX, upEvent.clientY));
-          // Let go of an anchor over nothing - or without having gone anywhere - and nothing
-          // happens, which is how a drag started by accident is called off.
-          if (!drop) { renderCanvas(); return; }
+          if (!drop) {
+            // An edge is unlinked the way it was linked: by the handle it is held by. Dragging the
+            // handle back onto its own control - or anywhere clear of every edge it could land on
+            // - and letting go there takes the link away, the same gesture as pulling a cable out.
+            // It means an anchor can be undone on the drawing, without going looking for the
+            // dimension that carries it.
+            // A click is not a drag here either: pressing a held handle and letting go on the spot
+            // must leave the link where it is.
+            if (held && moved) { setAnchor(control, edge, null); return; }
+            // Nothing held and nothing to land on - or a press that never went anywhere - and
+            // nothing happens, which is how a drag started by accident is called off.
+            renderCanvas();
+            return;
+          }
           // The offset is whatever gap the control already has, so anchoring does not move it.
           const now = controlEdgeValue(pass.viewOf(control), edge);
           setAnchor(control, edge, {
@@ -5803,7 +5850,8 @@ ${colourGeneration}`;
           'data-edge': edge,
           'data-testid': 'anchor-handle-' + edge,
           title: anchor
-            ? `${ANCHOR_LABELS[edge]} edge linked to ${named}. Drag to link it to something else.`
+            ? `${ANCHOR_LABELS[edge]} edge linked to ${named}. Drag onto another edge to move the`
+              + ' link, or back onto this control to unlink it.'
             : `Drag onto another edge to link the ${edge} edge to it.`,
           onpointerdown: (event) => startAnchorDrag(event, edge),
         });

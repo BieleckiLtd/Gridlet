@@ -3158,6 +3158,52 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
+    /// Unlinking on the canvas: the handle that put a link on takes it off again. A held handle
+    /// dragged back onto its own control and let go there is a link pulled out, which is the undo
+    /// of the drag that made it and needs no trip to the dimension.
+    /// </summary>
+    [Fact]
+    public async Task Unlinks_an_edge_by_dragging_its_handle_back_onto_the_control()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Unlinked by drag component",
+        [
+            Control("button1", "button", props: new { text = "Save" }, x: 24, y: 10, w: 120, h: 24),
+            // Close under the button, so the button's bottom edge stays within reach of a drop
+            // inside the grid. The body of the control has to win over an edge that near, or the
+            // gesture would work only where nothing happens to be alongside.
+            Control("grid1", "grid", props: new { columns = "Id" }, x: 24, y: 60, w: 300, h: 300),
+        ]);
+
+        await ShowAnchorHandlesAsync(page, "grid1");
+        await DragAsync(page, page.GetByTestId("anchor-handle-top"), await EdgeCentreAsync(page, "button1", "bottom"));
+        await Assertions.Expect(page.GetByTestId("anchor-offset-top")).ToHaveValueAsync("26");
+
+        // A press that goes nowhere is not a drag, so a held handle that is only clicked keeps its
+        // link - the same rule that stops a click anchoring an edge in the first place.
+        await page.GetByTestId("anchor-handle-top").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("anchor-release-top")).ToHaveCountAsync(1);
+
+        // Ten pixels inside the grid's own top edge, which is 36 from the button's bottom and well
+        // inside what a drop can reach. Inside the control it wins anyway, and the link comes off.
+        var box = await Box(page, "grid1").BoundingBoxAsync()
+            ?? throw new InvalidOperationException("grid1 is not on the canvas.");
+        await DragAsync(page, page.GetByTestId("anchor-handle-top"),
+            (box.X + box.Width / 2, box.Y + 10));
+
+        await Assertions.Expect(page.GetByTestId("anchor-release-top")).ToHaveCountAsync(0);
+
+        // The number the anchor was holding stays behind, so the control has not moved: unlinking
+        // says the edge no longer follows anything, not that it forgot where it is.
+        Assert.Equal(60, await OffsetAsync(page, "grid1", "top"), 0);
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+        await Assertions.Expect(page.GetByTestId("edge-top")).ToHaveValueAsync("60");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// One anchor on an axis moves the control; the second one stretches it. A control whose right
     /// edge follows the component's and whose left edge follows nothing slides along when the
     /// component is resized, carrying the width it had.
