@@ -1880,6 +1880,11 @@
 /* .field-note carries the colour and size; this is only the spacing between notes. */
 .gfd-note { margin: 4px 0 6px; font-size: 11px; line-height: 1.45; }
 
+/* What a rename could not carry into module code, and the way to the file that still names the
+   old control. The note and the button belong together, so they sit in one block. */
+.gfd-rename-module { margin: 4px 0 8px; }
+.gfd-rename-module .gfd-note { margin-bottom: 4px; }
+
 .gfd-publication-control { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 
 .module-action-icon {

@@ -1335,6 +1335,217 @@ export default class ${CLASS_NAME(name)} {
       : text;
   };
 
+  // ---- renaming a control -------------------------------------------------------
+  // A control is reached by the name it is given here, from four places. Three of them belong to
+  // the component and are rewritten with it: the formulas that name it, the stylesheets that
+  // select it, and the action parameters mapped to it. The fourth is module code, which is
+  // arbitrary JavaScript and not this designer's to edit, so what a module says about the old name
+  // is reported and left where it is.
+
+  // What a formula can spell. A name an expression cannot write is a name that does most of a
+  // name's job in no place at all, so the box takes this and says so when given anything else.
+  const CONTROL_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+  // The names an expression answers before it looks at the controls. A control holding one of them
+  // is a control no formula in the component can see.
+  const RESERVED_NAMES = new Set(['data', 'component', 'self', 'true', 'false', 'null']);
+
+  // The tokenizer's own rules with the offsets kept. A formula is text somebody typed, so it is
+  // edited where it stands: parsing it and printing it back would hand their spacing and their
+  // brackets back to them in the designer's style rather than in theirs.
+  const EXPRESSION_SCAN = new RegExp('(\\s+)|\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?'
+    + '|([A-Za-z_][A-Za-z0-9_]*)|\'[^\']*\'|"[^"]*"'
+    + '|<=|>=|==|!=|&&|\\|\\||[-+*/%().,?:<>!\\[\\]]', 'y');
+
+  const asRegExpLiteral = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  // Where a control's name may stand in an expression: at the head of a path, and nowhere else.
+  // `data.total` is a column, `total()` is a function, `tax.total()` is what a module exports, and
+  // a bare `total` or `total.right` is the control. A name inside a string is a string.
+  function headNames(source) {
+    const tokens = [];
+    let at = 0;
+    while (at < source.length) {
+      EXPRESSION_SCAN.lastIndex = at;
+      const match = EXPRESSION_SCAN.exec(source);
+      if (!match) throw new Error(`Unexpected character "${source[at]}"`);
+      const start = at;
+      at = EXPRESSION_SCAN.lastIndex;
+      if (match[1] !== undefined) continue;
+      tokens.push({ text: match[0], name: match[2], start, end: at });
+    }
+    return tokens.filter((token, index) => token.name
+      && tokens[index - 1]?.text !== '.'
+      && tokens[index + 1]?.text !== '('
+      && !(tokens[index + 1]?.text === '.' && tokens[index + 2]?.name && tokens[index + 3]?.text === '('));
+  }
+
+  // The same formula with every mention of one control spelled the new way. Matching ignores case,
+  // exactly as resolving a name does, so correcting the capitals of a name is a rename like any other.
+  function renameInExpression(source, from, to) {
+    const wanted = from.toLowerCase();
+    const found = headNames(source).filter((token) => token.name.toLowerCase() === wanted);
+    let text = source;
+    for (const token of [...found].reverse()) {
+      text = text.slice(0, token.start) + to + text.slice(token.end);
+    }
+    return { text, count: found.length };
+  }
+
+  // Whether a broken formula - one the scan above cannot read at all - mentions the name anywhere.
+  // It is the wrong question to edit on and the right one to report on.
+  const mentionsName = (source, name) =>
+    new RegExp(`(^|[^A-Za-z0-9_])${asRegExpLiteral(name)}($|[^A-Za-z0-9_])`, 'i').test(source);
+
+  // The two attributes a name is written into: the box the designer positions, and the element you
+  // see. A stylesheet reaches a control through one of them, so a rename is those selectors being
+  // respelled and the rest of the sheet being left exactly as it was written.
+  const NAME_SELECTOR = new RegExp('\\[\\s*(data-name|data-control-box)\\s*=\\s*'
+    + '(?:"((?:[^"\\\\]|\\\\.)*)"|\'((?:[^\'\\\\]|\\\\.)*)\'|([^\\s\\]"\']+))'
+    + '\\s*([iIsS])?\\s*\\]', 'g');
+
+  const cssUnquoted = (value) => value.replace(/\\(.)/g, '$1');
+  const cssQuoted = (value) => value.replace(/["\\]/g, '\\$&');
+
+  // Where a selector can be: each run of text that ends at an opening brace. Everything else in a
+  // stylesheet is declarations, and a declaration may quote a selector without meaning one -
+  // `content: "[data-name='total']"` is a string, and respelling it would break both the string and
+  // the rule around it. Strings and comments are stepped over, so a brace inside one does not
+  // decide where a selector ends.
+  function cssPreludes(css) {
+    const spans = [];
+    let start = 0;
+    let at = 0;
+    while (at < css.length) {
+      const char = css[at];
+      if (char === '/' && css[at + 1] === '*') {
+        const closed = css.indexOf('*/', at + 2);
+        at = closed === -1 ? css.length : closed + 2;
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        at += 1;
+        while (at < css.length && css[at] !== char) at += css[at] === '\\' ? 2 : 1;
+        at += 1;
+        continue;
+      }
+      if (char === '{') spans.push([start, at]);
+      if (char === '{' || char === '}' || char === ';') start = at + 1;
+      at += 1;
+    }
+    return spans;
+  }
+
+  function renameInCss(css, from, to) {
+    const source = String(css || '');
+    let count = 0;
+    let text = '';
+    let copied = 0;
+    for (const [start, end] of cssPreludes(source)) {
+      const rewritten = source.slice(start, end).replace(NAME_SELECTOR,
+        (whole, attribute, double, single, bare, flag) => {
+          const value = double !== undefined ? cssUnquoted(double)
+            : single !== undefined ? cssUnquoted(single) : bare;
+          // The browser matches an attribute value exactly, so the old name is matched exactly
+          // too, unless the selector itself asked for case to be ignored.
+          const same = flag?.toLowerCase() === 'i'
+            ? value.toLowerCase() === from.toLowerCase()
+            : value === from;
+          if (!same) return whole;
+          count += 1;
+          return `[${attribute}="${cssQuoted(to)}"${flag ? ' ' + flag : ''}]`;
+        });
+      text += source.slice(copied, start) + rewritten;
+      copied = end;
+    }
+    return { text: text + source.slice(copied), count };
+  }
+
+  // How a module reaches a control: by its name, inside a string. `component.field('total')`, a
+  // selector that names it, a comparison against `dataset.controlBox`. So the strings are what is
+  // searched, rather than every word in the file that happens to be spelled the same way.
+  const JS_STRING = /(['"`])((?:\\.|(?!\1)[^\\])*)\1/g;
+
+  function moduleReferences(source, name) {
+    const mention = new RegExp(`(^|[^A-Za-z0-9_$-])${asRegExpLiteral(name)}($|[^A-Za-z0-9_$-])`);
+    const found = [];
+    String(source || '').split(/\r?\n/).forEach((line, index) => {
+      for (const [, , text] of line.matchAll(JS_STRING)) {
+        if (!mention.test(text)) continue;
+        found.push({ line: index + 1, text: line.trim() });
+        return;
+      }
+    });
+    return found;
+  }
+
+  // Every formula the component holds: a bound property or a handler, on a control or on the
+  // component itself.
+  function formulaSlots(doc) {
+    const slots = [];
+    const collect = (target, label) => {
+      for (const store of [target.bind, target.events]) {
+        for (const key of Object.keys(store || {})) slots.push({ store, key, label });
+      }
+    };
+    collect(doc, 'the component');
+    walk(doc.controls, (control) => collect(control, control.name || control.type));
+    return slots;
+  }
+
+  // Rewriting the component so that everything naming `from` names `to` instead. What cannot be
+  // rewritten is returned rather than guessed at: a formula too broken to read must not be edited
+  // blind, and an emptied name is nothing to respell a reference to, so clearing a name changes
+  // nothing but says what it left behind.
+  function renameControlReferences(doc, from, to) {
+    // A control that had no name had no spelling for anything to have referred to.
+    if (!from) return { formulas: 0, styles: 0, mappings: 0, stranded: [] };
+    const write = Boolean(to);
+    const stranded = [];
+    let formulas = 0;
+    let styles = 0;
+    let mappings = 0;
+
+    for (const { store, key, label } of formulaSlots(doc)) {
+      const stored = store[key];
+      if (!isFormula(stored)) continue;
+      const body = formulaBody(stored);
+      let result = null;
+      try {
+        result = renameInExpression(body, from, to);
+      } catch {
+        if (mentionsName(body, from)) stranded.push(`${label}: ${key}`);
+        continue;
+      }
+      if (!result.count) continue;
+      if (!write) { stranded.push(`${label}: ${key}`); continue; }
+      store[key] = FORMULA + result.text;
+      formulas += result.count;
+    }
+
+    const sheets = [{ holder: doc, label: 'the component stylesheet' }];
+    walk(doc.controls, (control) =>
+      sheets.push({ holder: control, label: `${control.name || control.type}: custom CSS` }));
+    for (const { holder, label } of sheets) {
+      const result = renameInCss(holder.css, from, to);
+      if (!result.count) continue;
+      if (!write) { stranded.push(label); continue; }
+      holder.css = result.text;
+      styles += result.count;
+    }
+
+    for (const [operation, action] of Object.entries(doc.actions || {})) {
+      for (const [parameter, mapping] of Object.entries(action?.parameters || {})) {
+        if (!mapping || typeof mapping !== 'object' || mapping.control !== from) continue;
+        if (!write) { stranded.push(`the ${operation} action: ${parameter}`); continue; }
+        mapping.control = to;
+        mappings += 1;
+      }
+    }
+
+    return { formulas, styles, mappings, stranded };
+  }
+
   // ---- control catalogue ------------------------------------------------------
   // One entry per control kind: how to create it, how to draw it, and which properties the panel
   // offers. Adding a control means adding an entry here and nothing else.
@@ -2345,6 +2556,8 @@ export default class ${CLASS_NAME(name)} {
       // forgetting they were provisional is the safe half of that: a later nudge leaves them alone
       // instead of quietly taking off a link the restored document says is there.
       autoLinks.clear();
+      // What the last rename left for somebody to do was about a document this is not.
+      renameNotice = null;
       applyStyles();
       renderCanvas();
       renderProperties();
@@ -3124,6 +3337,14 @@ export default class ${CLASS_NAME(name)} {
       pass = resolveAll();
       const controls = selectedControls();
       const control = controls[0] || null;
+      // What a rename left for somebody to do is about the control it was done to. Reaching for
+      // another one puts it away.
+      if (renameNotice && !controls.some((candidate) => candidate.id === renameNotice.controlId)) {
+        renameNotice = null;
+      }
+      // The report is whatever this pass puts on the page. A selection of several has no Name box
+      // and so no report, and the element the last pass made is no longer on screen.
+      renameReport = null;
       // A selection of several is a subject in its own right: it says how many, and which, because
       // "3 controls" alone leaves you checking the canvas to find out what you are about to change.
       if (controls.length > 1) {
@@ -3436,6 +3657,146 @@ export default class ${CLASS_NAME(name)} {
         cssTabs.delete(id);
         closeTab(editor.tabId);
       }
+    }
+
+    // A stylesheet the designer rewrote underneath an open tab. The panel's own box is rebuilt with
+    // the panel, so only the tabs have to be told.
+    function refreshCssTabs() {
+      for (const [id, editor] of cssTabs) {
+        const target = id === '@component' ? model.doc : findControl(model.doc, id);
+        if (!target || editor.input === document.activeElement) continue;
+        editor.input.value = target.css || '';
+        editor.refresh();
+      }
+    }
+
+    // ---- renaming ----
+    // What the last rename could not carry with it, kept until the next one or until another
+    // control is selected. It is the only part of a rename that is not simply done: the formulas
+    // and stylesheets are rewritten, and this says which module code still names the old control
+    // and has to be changed by the person who wrote it.
+    let renameNotice = null;
+
+    // Applied when the name is finished rather than at every spelling on the way to it. Renaming on
+    // each keystroke renames to `t`, then `to`, then `tot`, and breaks every reference three times
+    // before it reaches the name that was meant.
+    function commitName(control, input) {
+      const from = control.name || '';
+      const to = input.value.trim();
+      if (to === from) { input.value = from; return; }
+
+      const refusal = renameRefusal(control, to);
+      if (refusal) {
+        // The box goes back to the name the control still has. A refused rename must not leave the
+        // panel showing a name that nothing else in the component agrees with.
+        input.value = from;
+        toast(refusal);
+        return;
+      }
+
+      const outcome = renameControlReferences(model.doc, from, to);
+      control.name = to;
+      // Naming a control that had no name carries nothing with it: there was no spelling for
+      // anything to have referred to.
+      renameNotice = from ? { controlId: control.id, from, to, ...outcome, modules: [], scanned: false } : null;
+      // One edit, so one step back: the name and everything that followed it are undone together.
+      applyStyles();
+      refreshCssTabs();
+      renderCanvas();
+      renderProperties();
+      markDirty();
+      if (renameNotice) scanModulesForName(renameNotice);
+    }
+
+    // Why a name cannot be taken, or null when it can. Clearing a name is allowed - a control with
+    // no name is one nothing addresses - so only a name that is written and unusable is refused.
+    function renameRefusal(control, to) {
+      if (!to) return null;
+      if (!CONTROL_NAME.test(to)) {
+        return `"${to}" is not a name a formula or a stylesheet can use. `
+          + 'Start with a letter or an underscore, and use letters, digits and underscores after it.';
+      }
+      if (RESERVED_NAMES.has(to.toLowerCase())) {
+        return `"${to}" is what an expression already answers with, so no formula could reach `
+          + 'this control by it. Choose another name.';
+      }
+      let taken = false;
+      walk(model.doc.controls, (candidate) => {
+        if (candidate !== control && (candidate.name || '').toLowerCase() === to.toLowerCase()) {
+          taken = true;
+        }
+      });
+      return taken
+        ? `Another control is already called "${to}", and a formula naming it could reach either.`
+        : null;
+    }
+
+    // Module code is arbitrary JavaScript, so it is read rather than rewritten. Every way a module
+    // reaches a control spells the name in a string, and those are the lines reported back.
+    async function scanModulesForName(notice) {
+      const names = [...new Set((model.doc.modules || []).map(moduleFileOf))].filter(Boolean);
+      for (const name of names) {
+        try {
+          const file = await scriptApi.read(name);
+          const hits = moduleReferences(file?.source ?? '', notice.from);
+          if (hits.length) notice.modules.push({ name, hits });
+        } catch {
+          // A module that cannot be read cannot be searched, and a rename is not the moment to
+          // report that a file is missing: the module rows already say so.
+        }
+      }
+      notice.scanned = true;
+      // Only the report is redrawn, never the panel around it. The reads take as long as the
+      // network takes, and by the time they land the operator may be typing the next name into the
+      // box a rebuilt panel would replace under them.
+      if (renameNotice === notice && renameReport) {
+        renameReport.replaceChildren(...renameReportRows());
+      }
+    }
+
+    // What the rename did, and what it could not do. Shown under the box that did it, because that
+    // is where the person who typed the name is looking.
+    let renameReport = null;
+
+    function renameRows(control) {
+      renameReport = renameNotice?.controlId === control.id
+        ? h('div', { class: 'gfd-rename-report' }, ...renameReportRows())
+        : null;
+      return renameReport ? [renameReport] : [];
+    }
+
+    function renameReportRows() {
+      const { from, to, formulas, styles, mappings, stranded, modules, scanned } = renameNotice;
+      const rows = [];
+
+      const carried = [
+        formulas ? `${formulas} formula${formulas === 1 ? '' : 's'}` : null,
+        styles ? `${styles} stylesheet rule${styles === 1 ? '' : 's'}` : null,
+        mappings ? `${mappings} action parameter${mappings === 1 ? '' : 's'}` : null,
+      ].filter(Boolean);
+      if (carried.length) {
+        rows.push(note(`Renamed ${from} to ${to}, and with it ${carried.join(', ')}.`));
+      }
+
+      if (stranded.length) {
+        rows.push(note(`Still names ${from}, and could not be rewritten: ${stranded.join('; ')}.`));
+      }
+
+      for (const module of modules) {
+        rows.push(h('div', { class: 'gfd-rename-module', 'data-testid': `rename-module-${module.name}` },
+          note(`${module.name} names ${from} on line${module.hits.length === 1 ? '' : 's'} `
+            + `${module.hits.map((hit) => hit.line).join(', ')}. Module code is not rewritten.`),
+          h('button', {
+            class: 'ghost',
+            type: 'button',
+            onclick: () => openCodeTab(module.name),
+          }, `Open ${module.name}`)));
+      }
+
+      if (scanned && !modules.length && !stranded.length && !carried.length) {
+        rows.push(note(`Renamed ${from} to ${to}. Nothing referred to it.`));
+      }
+      return rows;
     }
 
     // ---- property rows ----
@@ -6610,16 +6971,16 @@ ${colourGeneration}`;
             const input = h('input', {
               type: 'text',
               'data-testid': 'control-name',
-              oninput: (event) => {
-                control.name = event.target.value;
-                subjectName.textContent = control.name;
-                renderCanvas();
-                markDirty(`name:${control.id}`);
-              },
+              // The name is taken when it is finished, not as it is typed: everything that names
+              // this control is respelled with it, and a name half typed is a name nothing else
+              // in the component has.
+              onchange: (event) => commitName(control, event.target),
+              onkeydown: (event) => { if (event.key === 'Enter') event.target.blur(); },
             });
             input.value = control.name;
             return input;
-          }, { hint: 'What expressions and CSS call this control' }),
+          }, { hint: 'What expressions, stylesheets and actions call this control' }),
+          ...renameRows(control),
         ]),
         // What it shows, next to what it is called. A control that displays nothing says so only
         // when its kind has something worth saying about why.
