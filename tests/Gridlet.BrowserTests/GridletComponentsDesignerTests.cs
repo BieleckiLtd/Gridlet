@@ -382,6 +382,72 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    /// <summary>
+    /// A control is placed at a size somebody chose, so a caption longer than that size is cut off
+    /// at the control's edge rather than painted across whatever was placed beside it. A reverted
+    /// button does the painting by default, so the component stylesheet has to say otherwise - and
+    /// say it on both surfaces, because it is one stylesheet for both.
+    /// </summary>
+    [Fact]
+    public async Task Keeps_a_caption_too_long_for_its_control_inside_it()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var suffix = Guid.NewGuid().ToString("n");
+        var componentRoute = $"clipped-caption-{suffix}";
+        var page = await OpenComponentAsync(browserPage, $"Clipped caption component {suffix}",
+        [
+            // Both far too narrow for what they are named, which is the case the rule is for.
+            Control("save", "button", props: new { text = "Delete every customer" }, x: 16, y: 16, w: 40, h: 30),
+            Control("caption", "label", props: new { text = "A caption far longer than its box" }, x: 16, y: 56, w: 40, h: 30),
+        ],
+            route: componentRoute);
+
+        // Read off the control the operator is looking at: its content really is wider than the box
+        // it was given, and the box keeps it.
+        const string measure = """
+            element => {
+              const control = element.matches('button, span') ? element : element.firstElementChild;
+              const style = getComputedStyle(control);
+              return {
+                overflowing: control.scrollWidth > control.clientWidth,
+                overflow: style.overflowX,
+                spillsRight: Math.round(control.getBoundingClientRect().right
+                  - element.getBoundingClientRect().right),
+              };
+            }
+            """;
+
+        foreach (var name in new[] { "save", "caption" })
+        {
+            var drawn = await Box(page, name).EvaluateAsync<JsonElement>(measure);
+            Assert.True(drawn.GetProperty("overflowing").GetBoolean(), $"{name} was wide enough to fit its caption, so it tests nothing.");
+            Assert.Equal("hidden", drawn.GetProperty("overflow").GetString());
+            Assert.Equal(0, drawn.GetProperty("spillsRight").GetInt32());
+        }
+
+        // The published page is the same stylesheet, so it is the same answer.
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{componentRoute}");
+            await Assertions.Expect(published.Locator("#gridlet-component-host .gridlet-component-runtime"))
+                .ToBeVisibleAsync();
+
+            foreach (var name in new[] { "save", "caption" })
+            {
+                var drawn = await published.Locator($"[data-name='{name}']").EvaluateAsync<JsonElement>(measure);
+                Assert.True(drawn.GetProperty("overflowing").GetBoolean(), $"published {name} was wide enough to fit its caption.");
+                Assert.Equal("hidden", drawn.GetProperty("overflow").GetString());
+            }
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     [Fact]
     public async Task Preview_and_published_component_have_pixel_parity_at_the_same_viewport()
     {
@@ -3158,6 +3224,88 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
+    /// Unlinking on the canvas: the handle that put a link on takes it off again. A held handle
+    /// dragged back onto its own control and let go there is a link pulled out, which is the undo
+    /// of the drag that made it and needs no trip to the dimension.
+    /// </summary>
+    [Fact]
+    public async Task Unlinks_an_edge_by_dragging_its_handle_back_onto_the_control()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Unlinked by drag component",
+        [
+            Control("button1", "button", props: new { text = "Save" }, x: 24, y: 10, w: 120, h: 24),
+            // Close under the button, so the button's bottom edge stays within reach of a drop
+            // inside the grid. The body of the control has to win over an edge that near, or the
+            // gesture would work only where nothing happens to be alongside.
+            Control("grid1", "grid", props: new { columns = "Id" }, x: 24, y: 60, w: 300, h: 300),
+        ]);
+
+        await ShowAnchorHandlesAsync(page, "grid1");
+        await DragAsync(page, page.GetByTestId("anchor-handle-top"), await EdgeCentreAsync(page, "button1", "bottom"));
+        await Assertions.Expect(page.GetByTestId("anchor-offset-top")).ToHaveValueAsync("26");
+
+        // A press that goes nowhere is not a drag, so a held handle that is only clicked keeps its
+        // link - the same rule that stops a click anchoring an edge in the first place.
+        await page.GetByTestId("anchor-handle-top").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("anchor-release-top")).ToHaveCountAsync(1);
+
+        // Ten pixels inside the grid's own top edge, which is 36 from the button's bottom and well
+        // inside what a drop can reach. Inside the control it wins anyway, and the link comes off.
+        var box = await Box(page, "grid1").BoundingBoxAsync()
+            ?? throw new InvalidOperationException("grid1 is not on the canvas.");
+        await DragAsync(page, page.GetByTestId("anchor-handle-top"),
+            (box.X + box.Width / 2, box.Y + 10));
+
+        await Assertions.Expect(page.GetByTestId("anchor-release-top")).ToHaveCountAsync(0);
+
+        // The number the anchor was holding stays behind, so the control has not moved: unlinking
+        // says the edge no longer follows anything, not that it forgot where it is.
+        Assert.Equal(60, await OffsetAsync(page, "grid1", "top"), 0);
+        await Canvas(page, "grid1").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+        await Assertions.Expect(page.GetByTestId("edge-top")).ToHaveValueAsync("60");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A drag the pointer is taken away from is not a drop. Letting go inside the control takes a
+    /// link off, but losing the pointer part way there - a touch the system claims, a capture that
+    /// goes elsewhere - calls the gesture off and leaves the link where it was.
+    /// </summary>
+    [Fact]
+    public async Task Keeps_a_link_when_the_unlinking_drag_is_cancelled()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Cancelled unlink component",
+        [
+            Control("button1", "button", props: new { text = "Save" }, x: 24, y: 10, w: 120, h: 24),
+            Control("grid1", "grid", props: new { columns = "Id" }, x: 24, y: 60, w: 300, h: 300),
+        ]);
+
+        await ShowAnchorHandlesAsync(page, "grid1");
+        await DragAsync(page, page.GetByTestId("anchor-handle-top"), await EdgeCentreAsync(page, "button1", "bottom"));
+        await Assertions.Expect(page.GetByTestId("anchor-offset-top")).ToHaveValueAsync("26");
+
+        // The same drop that unlinks, stopped one event short of the release.
+        var box = await Box(page, "grid1").BoundingBoxAsync()
+            ?? throw new InvalidOperationException("grid1 is not on the canvas.");
+        var handle = await page.GetByTestId("anchor-handle-top").BoundingBoxAsync()
+            ?? throw new InvalidOperationException("The handle is not on the canvas.");
+        await page.Mouse.MoveAsync(handle.X + handle.Width / 2, handle.Y + handle.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(box.X + box.Width / 2, box.Y + 10, new MouseMoveOptions { Steps = 6 });
+        await page.Locator(".gfd-canvas").DispatchEventAsync("pointercancel");
+        await page.Mouse.UpAsync();
+
+        await Assertions.Expect(page.GetByTestId("anchor-release-top")).ToHaveCountAsync(1);
+        await Assertions.Expect(page.GetByTestId("anchor-offset-top")).ToHaveValueAsync("26");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// One anchor on an axis moves the control; the second one stretches it. A control whose right
     /// edge follows the component's and whose left edge follows nothing slides along when the
     /// component is resized, carrying the width it had.
@@ -5073,6 +5221,39 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
+    /// What a section of the panel is for lives on its heading rather than under it: an (i) beside
+    /// the heading, read on a hover, instead of a paragraph standing between somebody and the rows
+    /// they came for.
+    /// </summary>
+    [Fact]
+    public async Task Explains_a_section_from_the_icon_on_its_heading()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Section tip component",
+            [Control("button1", "button", props: new { text = "Save" }, x: 24, y: 10, w: 120, h: 24)]);
+
+        await Box(page, "button1").ClickAsync();
+
+        // The tip is what the icon says, which is what a hover shows.
+        var tip = page.GetByTestId("hint-events");
+        await Assertions.Expect(tip).ToBeVisibleAsync();
+        Assert.Contains("A handler is a formula", await tip.GetAttributeAsync("title"));
+
+        // ...and it is no longer a paragraph in the panel.
+        await Assertions.Expect(page.Locator(".gfd-note",
+            new PageLocatorOptions { HasTextString = "A handler is a formula" })).ToHaveCountAsync(0);
+
+        // A collapsible section carries its tip the same way, on the summary that heads it.
+        await OpenPanelTabAsync(page, "Appearance");
+        await Assertions.Expect(page.GetByTestId("hint-control-generated-css")).ToBeVisibleAsync();
+        await Assertions.Expect(page.Locator(".gfd-note",
+            new PageLocatorOptions { HasTextString = "A control is a box that places it" }))
+            .ToHaveCountAsync(0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// A handler is a formula run for what it does. It runs when the component runs, and not while
     /// somebody is still drawing the component.
     /// </summary>
@@ -5144,6 +5325,53 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await Canvas(page, "go").ClickAsync();
         await Assertions.Expect(page.Locator(".gfd-code-problem"))
             .ToContainTextAsync("click: There is no function called \"nosuch\".");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A handler is not run while it is drawn, so the one thing about it that can be checked
+    /// without running it is: the names it calls have to exist. Said while it is typed rather than
+    /// when somebody runs the component and watches nothing happen.
+    /// </summary>
+    [Fact]
+    public async Task Marks_a_handler_that_calls_a_function_nobody_wrote()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await WriteModuleAsync(page, "checked.js", """
+            export function announce(component) {
+              component.field('output').value = 'announced';
+            }
+            """);
+
+        page = await OpenComponentAsync(browserPage, "Checked handler component",
+        [
+            Control("go", "button", props: new { text = "Go" },
+                events: new { click = "=announce(component)" }),
+            Control("output", "label", props: new { text = "waiting" }, y: 50),
+        ],
+            modules: ["checked.js"]);
+
+        await Box(page, "go").ClickAsync();
+        var handler = page.GetByTestId("event-click");
+
+        // A function the component's own module exports is a handler, and is left alone.
+        await Assertions.Expect(handler).Not.ToHaveClassAsync(new Regex("bad"));
+
+        // One nobody wrote is not, and the box says which name it could not find.
+        await handler.FillAsync("=test()");
+        await Assertions.Expect(handler).ToHaveClassAsync(new Regex("bad"));
+        await Assertions.Expect(handler)
+            .ToHaveAttributeAsync("title", new Regex("no function called \"test\""));
+
+        // Gridlet's own functions count as written, and so does a name nested inside a call.
+        await handler.FillAsync("=iferror(announce(component), 0)");
+        await Assertions.Expect(handler).Not.ToHaveClassAsync(new Regex("bad"));
+
+        await handler.FillAsync("=iferror(test(), 0)");
+        await Assertions.Expect(handler).ToHaveClassAsync(new Regex("bad"));
 
         browserPage.AssertNoUnexpectedErrors();
     }

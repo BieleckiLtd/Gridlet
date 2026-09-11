@@ -156,6 +156,10 @@
     ].map(iconPath).join(''),
     // The eyedropper: what the screen-pick button is, so a secondary action can be an icon rather
     // than the widest control in the picker.
+    // A circled i. What a section of the panel is for, kept beside its heading rather than spelled
+    // out under it.
+    'info-circle': ['M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0', 'M12 9h.01', 'M11 12h1v4h1']
+      .map(iconPath).join(''),
     'color-picker': [
       'M11 7l6 6', 'M4 16l11.7 -11.7a1 1 0 0 1 1.4 0l2.6 2.6a1 1 0 0 1 0 1.4l-11.7 11.7h-4v-4z',
     ].map(iconPath).join(''),
@@ -3148,9 +3152,14 @@ export default class ${CLASS_NAME(name)} {
     // keeps closed stays closed across selections and reloads.
     function section(key, title, ...children) {
       const open = readStored('gridlet.components.section.' + key, '0') === '1';
+      // A tip passed as a child belongs on the heading rather than in the body, so a section says
+      // what it is for the same way a plain heading does. It is written as a child because that is
+      // where the call site already puts everything else the section is made of.
+      const hints = children.filter((child) => child?.classList?.contains('gfd-hint'));
       const details = h('details', open ? { class: 'gfd-section', open: '' } : { class: 'gfd-section' },
-        h('summary', { class: 'gfd-heading', text: title }),
-        ...children);
+        h('summary', { class: 'gfd-heading' },
+          h('span', { class: 'gfd-heading-text', text: title }), ...hints),
+        ...children.filter((child) => !hints.includes(child)));
       details.addEventListener('toggle', () => {
         try { localStorage.setItem('gridlet.components.section.' + key, details.open ? '1' : '0'); }
         catch { /* unavailable */ }
@@ -3158,7 +3167,35 @@ export default class ${CLASS_NAME(name)} {
       return details;
     }
 
-    const heading = (text) => h('div', { class: 'gfd-heading', text });
+    // What a section is for, on the heading rather than under it. A tip is read once and known
+    // after that, so a paragraph of it below every heading is a paragraph standing between someone
+    // and the fields they came to the panel for. The (i) keeps the explanation a hover away and
+    // gives the panel back to its rows.
+    //
+    // A tip is not the same thing as a note: a note says what is true right now - no endpoints
+    // published, columns not read yet - and belongs in the panel where it can be seen without
+    // being looked for.
+    const hintKey = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+    function hintIcon(text, key) {
+      const button = h('button', {
+        type: 'button',
+        class: 'gfd-hint',
+        title: text,
+        'aria-label': text,
+        'data-testid': 'hint-' + key,
+      }, svgIcon(ICONS['info-circle'], 'gfd-hint-icon'));
+      // Inside a <summary> a press is the section opening or shutting, and the tip must not be a
+      // way to do that by accident.
+      button.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); });
+      return button;
+    }
+
+    // `text` is the heading; `hint`, when there is one, is what its (i) says.
+    const heading = (text, hint) => h('div', { class: 'gfd-heading' },
+      h('span', { class: 'gfd-heading-text', text }),
+      ...(hint ? [hintIcon(hint, hintKey(text))] : []));
+
     const note = (text) => h('p', { class: 'field-note gfd-note', text });
 
     // A textarea has no `value` content attribute - its text is its content - so the initial text
@@ -3570,6 +3607,46 @@ export default class ${CLASS_NAME(name)} {
       refresh();
     }
 
+    // What is wrong with a handler, or null. A handler is run for what it does rather than for
+    // what it returns, so unlike every other formula in the panel it is never evaluated while it
+    // is being drawn - and a call to a function nobody wrote used to sit in the box looking like a
+    // handler until somebody ran the component and watched nothing happen.
+    //
+    // The names in it can be resolved without running any of it, so they are: the same scope the
+    // canvas resolves a binding against, asked the same question. Only the names - what a function
+    // does with what it is passed is its own business, and finding that out means running it.
+    function handlerFault(typed) {
+      if (!isFormula(typed)) return 'A handler has to start with = to run.';
+      let node;
+      try { node = compile(formulaBody(typed)); }
+      catch { return 'That is not an expression this can read.'; }
+
+      let fault = null;
+      const walk = (step) => {
+        if (fault || !step || typeof step !== 'object') return;
+        if (step.kind === 'call') {
+          const found = step.qualifier
+            ? expressionScope.qualifiedCall(step.qualifier, step.name)
+            : expressionScope.call(step.name);
+          if (found.error) {
+            fault = found.error.detail
+              || `There is no function called "${step.name}" in this component.`;
+            return;
+          }
+        }
+        for (const value of Object.values(step)) {
+          if (Array.isArray(value)) value.forEach(walk);
+          else walk(value);
+        }
+      };
+      // The scope is built from files that are still being fetched when the panel first draws, so
+      // a question asked too early is a question with no answer rather than a wrong one. Nothing
+      // said beats a handler wrongly marked as broken, and the panel is drawn again when the
+      // modules land.
+      try { walk(node); } catch { return null; }
+      return fault;
+    }
+
     // A handler box. It takes a formula and nothing else: a handler that is not a formula could
     // never run, so it is marked rather than quietly ignored.
     function eventBox(target, name, hint) {
@@ -3592,9 +3669,9 @@ export default class ${CLASS_NAME(name)} {
       });
       const mark = (element) => {
         const typed = element.value.trim();
-        const bad = Boolean(typed) && !isFormula(typed);
-        element.classList.toggle('bad', bad);
-        element.title = bad ? 'A handler has to start with = to run.' : hint;
+        const fault = typed ? handlerFault(typed) : null;
+        element.classList.toggle('bad', Boolean(fault));
+        element.title = fault || hint;
       };
       input.value = target.events?.[name] ?? '';
       mark(input);
@@ -3602,12 +3679,12 @@ export default class ${CLASS_NAME(name)} {
     }
 
     const eventRows = (target, events) => [
-      heading('Events'),
-      ...events.map(([name, label, hint]) =>
-        row(target, null, label, () => eventBox(target, name, hint), { hint })),
-      note('A handler is a formula that is run for what it does. It calls a function one of this '
+      heading('Events',
+        'A handler is a formula that is run for what it does. It calls a function one of this '
         + 'component\'s modules exports, and it runs in Preview, not while you are drawing. Pass it '
         + '`component` for something to act on: =showPrice(component, data.Price).'),
+      ...events.map(([name, label, hint]) =>
+        row(target, null, label, () => eventBox(target, name, hint), { hint })),
     ];
 
     function propertyBox(target, key, options = {}) {
@@ -5416,7 +5493,9 @@ ${colourGeneration}`;
     // ---- anchors on the canvas ----
     // Anchoring is a drawing act, so it is done on the drawing. With Anchors on, the one selected
     // control grows a handle in the middle of each edge; drag one onto an edge of the frame or of
-    // another control and that edge is anchored to it. Every anchor in force is drawn as a CAD
+    // another control and that edge is anchored to it. The same handle takes the anchor off again:
+    // a held handle dragged back onto its own control is a link pulled out, undone where it was
+    // made rather than somewhere else. Every anchor in force is drawn as a CAD
     // dimension - a witness line, arrows both ways and the offset - which is how the layout is
     // read as well as how an anchor is retyped or taken off.
 
@@ -5676,6 +5755,11 @@ ${colourGeneration}`;
         const axis = AXIS_OF[edge];
         const start = selfPoint(edge);
         const band = line(start.x, start.y, start.x, start.y, { class: 'gfd-anchor-band' });
+        // The link this drag starts from, if there is one. An edge already anchored is dragged for
+        // two reasons - to put the link somewhere else, or to take it off - and which of the two a
+        // drag turns out to be is decided by where it is let go.
+        const held = anchors[edge] || null;
+        const handle = event.currentTarget;
 
         // Where the anchor could land: the same axis only, because an edge measured against one at
         // right angles to it would not be a distance anybody could read.
@@ -5705,8 +5789,31 @@ ${colourGeneration}`;
         // component's right edge would mean dragging to the middle of the component, so what
         // counts is being near the line: how far the pointer is from it along the axis being
         // measured, and whether it is beside the target at all across the other one.
+        // Where a link is let go of: the body of the control the handle belongs to. Dragging an
+        // edge back onto its own control is the plainest way to say it follows nothing now, and it
+        // is somewhere that is always there to drag to - which "away from every edge" is not, on a
+        // control with the frame's edge and two neighbours all inside the reach of a drop.
+        //
+        // So the body wins over every target within reach of it. A link is taken off far more
+        // often than an edge is anchored to something underneath the control that holds it, and a
+        // gesture that means one thing except when something happens to be near means nothing.
+        const self = rectOf(box);
+        const insideSelf = (clientX, clientY) => {
+          const x = clientX - surface.left;
+          const y = clientY - surface.top;
+          if (x < self.left || x > self.right || y < self.top || y > self.bottom) return false;
+          // Not the edge itself: the handle sits on it, and a hand that shakes on the press must
+          // not be a link taken off. Far enough in to be a journey, near enough that a control of
+          // any size has somewhere to make it to.
+          const from = edge === 'left' ? x - self.left
+            : edge === 'right' ? self.right - x
+              : edge === 'top' ? y - self.top : self.bottom - y;
+          return from >= 6;
+        };
+
         let candidate = null;
         const nearest = (clientX, clientY) => {
+          if (insideSelf(clientX, clientY)) return null;
           const along = (axis === 'x' ? clientX - surface.left : clientY - surface.top);
           const across = (axis === 'x' ? clientY - surface.top : clientX - surface.left);
           let best = null;
@@ -5762,17 +5869,45 @@ ${colourGeneration}`;
           candidate = nearest(moveEvent.clientX, moveEvent.clientY);
           for (const spot of spots) spot.dot.classList.toggle('hot', spot === candidate);
           showGuide();
+          // Pulled clear of every edge it could land on, a held handle is about to break its link,
+          // so the drawing says so before the pointer is let go: the band goes slack and the handle
+          // empties out, which is the picture of a link that is no longer attached to anything.
+          const cutting = Boolean(held) && !candidate;
+          band.classList.toggle('cutting', cutting);
+          handle?.classList.toggle('cutting', cutting);
+        };
+
+        const stopListening = () => {
+          canvas.removeEventListener('pointermove', onMove);
+          canvas.removeEventListener('pointerup', onUp);
+          canvas.removeEventListener('pointercancel', onAbort);
+          canvas.removeEventListener('lostpointercapture', onAbort);
+        };
+
+        // A drag the pointer is taken away from was never let go of. The gesture is called off
+        // where it stands: the link it held is left exactly as it was found.
+        const onAbort = () => {
+          stopListening();
+          renderCanvas();
         };
 
         const onUp = (upEvent) => {
-          canvas.removeEventListener('pointermove', onMove);
-          canvas.removeEventListener('pointerup', onUp);
-          canvas.removeEventListener('pointercancel', onUp);
-          canvas.removeEventListener('lostpointercapture', onUp);
+          stopListening();
           const drop = moved && (candidate || nearest(upEvent.clientX, upEvent.clientY));
-          // Let go of an anchor over nothing - or without having gone anywhere - and nothing
-          // happens, which is how a drag started by accident is called off.
-          if (!drop) { renderCanvas(); return; }
+          if (!drop) {
+            // An edge is unlinked the way it was linked: by the handle it is held by. Dragging the
+            // handle back onto its own control - or anywhere clear of every edge it could land on
+            // - and letting go there takes the link away, the same gesture as pulling a cable out.
+            // It means an anchor can be undone on the drawing, without going looking for the
+            // dimension that carries it.
+            // A click is not a drag here either: pressing a held handle and letting go on the spot
+            // must leave the link where it is.
+            if (held && moved) { setAnchor(control, edge, null); return; }
+            // Nothing held and nothing to land on - or a press that never went anywhere - and
+            // nothing happens, which is how a drag started by accident is called off.
+            renderCanvas();
+            return;
+          }
           // The offset is whatever gap the control already has, so anchoring does not move it.
           const now = controlEdgeValue(pass.viewOf(control), edge);
           setAnchor(control, edge, {
@@ -5785,8 +5920,8 @@ ${colourGeneration}`;
         capturePointer(event);
         canvas.addEventListener('pointermove', onMove);
         canvas.addEventListener('pointerup', onUp);
-        canvas.addEventListener('pointercancel', onUp);
-        canvas.addEventListener('lostpointercapture', onUp);
+        canvas.addEventListener('pointercancel', onAbort);
+        canvas.addEventListener('lostpointercapture', onAbort);
       }
 
       // The dimensions are drawn whichever handles are out, because they are how the layout is
@@ -5803,7 +5938,8 @@ ${colourGeneration}`;
           'data-edge': edge,
           'data-testid': 'anchor-handle-' + edge,
           title: anchor
-            ? `${ANCHOR_LABELS[edge]} edge linked to ${named}. Drag to link it to something else.`
+            ? `${ANCHOR_LABELS[edge]} edge linked to ${named}. Drag onto another edge to move the`
+              + ' link, or back onto this control to unlink it.'
             : `Drag onto another edge to link the ${edge} edge to it.`,
           onpointerdown: (event) => startAnchorDrag(event, edge),
         });
@@ -6318,7 +6454,9 @@ ${colourGeneration}`;
     }
 
     function actionEditors() {
-      const editors = [heading('Actions'), note('Each action is an explicitly selected published endpoint. Parameters must be mapped to a control or a literal value; the data source is never used for writes.')];
+      const editors = [heading('Actions',
+        'Each action is an explicitly selected published endpoint. Parameters must be mapped to a '
+        + 'control or a literal value; the data source is never used for writes.')];
       for (const [operation, definition] of Object.entries(ACTIONS)) {
         const action = model.doc.actions?.[operation] || null;
         const endpoints = model.endpoints.filter((endpoint) =>
@@ -6487,8 +6625,13 @@ ${colourGeneration}`;
         // when its kind has something worth saying about why.
         ...controlValueEditors(control, spec, group),
         ...(control.type === 'button' && !group
-          ? [heading('Action'), row(control, null, 'On click', () => buttonActionEditor(control),
-            { hint: 'Choose exactly one declared Add, Update, or Delete endpoint; empty is read only' })]
+          ? [heading('Action',
+            'What this button writes, which is not the same as what it runs. An action is one of '
+            + 'the component\'s declared Add, Update, or Delete endpoints, chosen here and called '
+            + 'with the controls mapped to its parameters; empty is read only. Events below run a '
+            + 'formula of your own instead, and a button can have both.'),
+            row(control, null, 'On click', () => buttonActionEditor(control),
+              { hint: 'Choose exactly one declared Add, Update, or Delete endpoint; empty is read only' })]
           : []),
         // The columns a value can be bound to are a group of their own, so what follows them needs
         // a heading of its own or it reads as more of them.
@@ -6501,7 +6644,6 @@ ${colourGeneration}`;
         // A handler belongs to one control, the way a name does: two controls sharing a click is
         // two handlers that happen to call the same function.
         ...(group ? [] : eventRows(control, CONTROL_EVENTS)),
-        ...elsewhereFormulaRows(control, spec, group),
         h('button', {
           class: 'danger gfd-delete',
           onclick: () => deleteSelection(),
@@ -6566,11 +6708,13 @@ ${colourGeneration}`;
       return [
         custom,
         inheritedSection,
-        section('control-generated', 'Generated CSS', generatedBody,
-          note('A control is a box that places it, and the element inside that you see. '
+        section('control-generated', 'Generated CSS',
+          hintIcon('A control is a box that places it, and the element inside that you see. '
             + 'The first rule positions the box from the panel\'s measurements; the second fills '
             + 'the box with the element and gives it the colours. Both are written as a variable '
-            + 'and then the property that reads it, so your own CSS can change either.')),
+            + 'and then the property that reads it, so your own CSS can change either.',
+          'control-generated-css'),
+          generatedBody),
         section('control-browser', 'From the browser', browserBody),
       ];
     }
@@ -6689,37 +6833,6 @@ ${colourGeneration}`;
 
       return editors;
     }
-
-    // Formulas set somewhere other than here - a width that follows another control, a colour that
-    // follows a value - gathered so this page answers "what on this control follows something
-    // else?" without sending anyone hunting through the other one. A property with its own row
-    // above is not repeated: it is already showing its formula.
-    function elsewhereFormulaRows(control, spec, group) {
-      if (group) return [];
-      const shown = new Set([
-        ...(spec.bindable ? [valueKeyOf(spec)] : []),
-        ...spec.properties.map((property) => property.key),
-        'classes', 'elementId', 'tip',
-      ]);
-      const bound = bindableKeys(control)
-        .filter((key) => !shown.has(key) && isFormula(control.bind[key]));
-      if (!bound.length) return [];
-
-      return [
-        heading('Also from a formula'),
-        ...bound.map((key) => row(control, key,
-          BINDING_LABELS[key] || key,
-          () => propertyBox(control, key))),
-      ];
-    }
-
-    // What a bound property is called where it is out of the context that named it on its own
-    // page.
-    const BINDING_LABELS = {
-      x: 'Left', y: 'Top', w: 'Width', h: 'Height',
-      'color.light': 'Text L', 'color.dark': 'Text D',
-      'fill.light': 'Fill L', 'fill.dark': 'Fill D',
-    };
 
     // Addressed by name rather than by id: names are unique within a component, and an attribute
     // selector cannot collide with anything in the surrounding page. A name is whatever someone

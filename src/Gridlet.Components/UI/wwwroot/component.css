@@ -58,6 +58,29 @@
     align-items: center;
   }
 
+  /* Text stays inside the control that holds it. A control is placed at a size somebody chose, so
+     a caption longer than that size is a caption cut off at the edge - not one painted across
+     whatever was placed beside it, which is what a reverted button does when it is narrower than
+     its own label, and what the layout then looks nothing like.
+
+     Structure rather than appearance, so it belongs in the reset: a control that paints outside
+     its own geometry is not a control drawn small, it is a control drawn wrong, and an isolated
+     component that never gets the chrome layer would be wrong too.
+
+     A pager is left out: its buttons are a row of its own making, sized to the arrows in them
+     rather than placed by anybody.
+
+     The button is named by its class on the canvas rather than by its element, because `all:
+     revert` above is written against `:first-child` - a pseudo-class, and so a whole class worth
+     of specificity. A bare `button` loses to it and reverts to painting outside itself. */
+  .gfd-canvas .gfd-control > .gfd-label,
+  .gfd-canvas .gfd-control > .gfd-button,
+  .gridlet-component-runtime span[data-name],
+  .gridlet-component-runtime button[data-name],
+  .gridlet-component-runtime [data-name]:not([data-role="pager"]) > button {
+    overflow: hidden;
+  }
+
   /* How a checkbox is put together: a box, then a caption that stays inside the control. */
   .gfd-canvas .gfd-control > .gfd-checkbox,
   .gfd-canvas .gfd-control > [data-role="checkbox"],
