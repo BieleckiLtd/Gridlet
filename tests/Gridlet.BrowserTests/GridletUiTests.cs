@@ -7610,7 +7610,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     private static async Task OpenQueryAsync(IPage page, string sql)
     {
         await page.GotoAsync("/gridlet/");
-        await page.Locator("#new-query-btn").ClickAsync();
+        var newQueryButton = page.Locator("#new-query-btn");
+        await Assertions.Expect(newQueryButton).ToBeEnabledAsync();
+        await newQueryButton.ClickAsync();
         var editor = page.GetByTestId("sql-editor");
         await Assertions.Expect(editor).ToBeVisibleAsync();
         await editor.FillAsync(sql);

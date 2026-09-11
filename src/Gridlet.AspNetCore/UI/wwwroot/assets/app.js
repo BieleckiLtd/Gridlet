@@ -2321,6 +2321,8 @@
   // ---- boot -------------------------------------------------------------------
 
   async function boot() {
+    // These buttons start disabled so clicks cannot be lost while startup is awaiting data.
+    const startupButtons = $('#topbar').querySelectorAll('button:disabled');
     setupTheme();
     setupThemedSelect($('#connection-select'));
     setupThemedSelect($('#database-select'));
@@ -2405,6 +2407,8 @@
       toast('No connections configured. Add one with options.AddConnection(...) in the host.');
       sessionRestored = true;
     }
+    startupButtons.forEach((button) => { button.disabled = false; });
+    refreshAgentAvailability();
   }
 
   async function selectConnection(name) {

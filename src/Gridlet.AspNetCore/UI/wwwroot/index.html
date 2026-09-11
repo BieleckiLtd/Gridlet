@@ -31,7 +31,7 @@
           <select id="database-select" aria-label="Database"></select>
         </div>
       </div>
-      <button id="refresh-btn" class="ghost" title="Reload objects">⟳</button>
+      <button id="refresh-btn" class="ghost" title="Reload objects" disabled>⟳</button>
       <div class="spacer"></div>
       <button id="theme-btn" class="ghost theme-switch" title="Switch to light theme" aria-label="Switch to light theme">
         <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -42,14 +42,14 @@
           <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454l0 .008"></path>
         </svg>
       </button>
-      <button id="apis-btn" class="ghost app-action" title="Published API endpoints">
+      <button id="apis-btn" class="ghost app-action" title="Published API endpoints" disabled>
         <svg class="app-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path d="M7 4a2 2 0 0 0 -2 2v3a2 3 0 0 1 -2 3a2 3 0 0 1 2 3v3a2 2 0 0 0 2 2"></path>
           <path d="M17 4a2 2 0 0 1 2 2v3a2 3 0 0 0 2 3a2 3 0 0 0 -2 3v3a2 2 0 0 1 -2 2"></path>
         </svg>
         <span>APIs</span>
       </button>
-      <button id="ask-btn" class="ghost app-action" title="Talk with this database" data-testid="agent-open" hidden>
+      <button id="ask-btn" class="ghost app-action" title="Talk with this database" data-testid="agent-open" hidden disabled>
         <svg class="app-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12"></path>
           <path d="M9.5 9h.01"></path>
@@ -58,7 +58,7 @@
         </svg>
         <span>Ask</span>
       </button>
-      <button id="schema-compare-btn" class="ghost app-action" title="Compare database schemas" data-testid="schema-compare-open">
+      <button id="schema-compare-btn" class="ghost app-action" title="Compare database schemas" data-testid="schema-compare-open" disabled>
         <svg class="app-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path d="M4 5h6v14h-6z"></path>
           <path d="M14 5h6v14h-6z"></path>
@@ -67,13 +67,13 @@
         </svg>
         <span>Compare</span>
       </button>
-      <button id="new-query-btn" class="ghost app-action" title="Open an ad-hoc SQL workspace">
+      <button id="new-query-btn" class="ghost app-action" title="Open an ad-hoc SQL workspace" disabled>
         <svg class="app-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path d="M7 4v16l13 -8z"></path>
         </svg>
         <span>Query</span>
       </button>
-      <button id="about-btn" class="ghost app-action" title="About Gridlet, help, contributing, and licences">
+      <button id="about-btn" class="ghost app-action" title="About Gridlet, help, contributing, and licences" disabled>
         <svg class="app-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0"></path>
           <path d="M12 9h.01"></path>
