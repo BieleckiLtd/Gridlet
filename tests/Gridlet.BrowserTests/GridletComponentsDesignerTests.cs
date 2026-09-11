@@ -3270,6 +3270,42 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
+    /// A drag the pointer is taken away from is not a drop. Letting go inside the control takes a
+    /// link off, but losing the pointer part way there - a touch the system claims, a capture that
+    /// goes elsewhere - calls the gesture off and leaves the link where it was.
+    /// </summary>
+    [Fact]
+    public async Task Keeps_a_link_when_the_unlinking_drag_is_cancelled()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Cancelled unlink component",
+        [
+            Control("button1", "button", props: new { text = "Save" }, x: 24, y: 10, w: 120, h: 24),
+            Control("grid1", "grid", props: new { columns = "Id" }, x: 24, y: 60, w: 300, h: 300),
+        ]);
+
+        await ShowAnchorHandlesAsync(page, "grid1");
+        await DragAsync(page, page.GetByTestId("anchor-handle-top"), await EdgeCentreAsync(page, "button1", "bottom"));
+        await Assertions.Expect(page.GetByTestId("anchor-offset-top")).ToHaveValueAsync("26");
+
+        // The same drop that unlinks, stopped one event short of the release.
+        var box = await Box(page, "grid1").BoundingBoxAsync()
+            ?? throw new InvalidOperationException("grid1 is not on the canvas.");
+        var handle = await page.GetByTestId("anchor-handle-top").BoundingBoxAsync()
+            ?? throw new InvalidOperationException("The handle is not on the canvas.");
+        await page.Mouse.MoveAsync(handle.X + handle.Width / 2, handle.Y + handle.Height / 2);
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(box.X + box.Width / 2, box.Y + 10, new MouseMoveOptions { Steps = 6 });
+        await page.Locator(".gfd-canvas").DispatchEventAsync("pointercancel");
+        await page.Mouse.UpAsync();
+
+        await Assertions.Expect(page.GetByTestId("anchor-release-top")).ToHaveCountAsync(1);
+        await Assertions.Expect(page.GetByTestId("anchor-offset-top")).ToHaveValueAsync("26");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// One anchor on an axis moves the control; the second one stretches it. A control whose right
     /// edge follows the component's and whose left edge follows nothing slides along when the
     /// component is resized, carrying the width it had.

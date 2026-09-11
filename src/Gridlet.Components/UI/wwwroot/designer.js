@@ -5877,11 +5877,22 @@ ${colourGeneration}`;
           handle?.classList.toggle('cutting', cutting);
         };
 
-        const onUp = (upEvent) => {
+        const stopListening = () => {
           canvas.removeEventListener('pointermove', onMove);
           canvas.removeEventListener('pointerup', onUp);
-          canvas.removeEventListener('pointercancel', onUp);
-          canvas.removeEventListener('lostpointercapture', onUp);
+          canvas.removeEventListener('pointercancel', onAbort);
+          canvas.removeEventListener('lostpointercapture', onAbort);
+        };
+
+        // A drag the pointer is taken away from was never let go of. The gesture is called off
+        // where it stands: the link it held is left exactly as it was found.
+        const onAbort = () => {
+          stopListening();
+          renderCanvas();
+        };
+
+        const onUp = (upEvent) => {
+          stopListening();
           const drop = moved && (candidate || nearest(upEvent.clientX, upEvent.clientY));
           if (!drop) {
             // An edge is unlinked the way it was linked: by the handle it is held by. Dragging the
@@ -5909,8 +5920,8 @@ ${colourGeneration}`;
         capturePointer(event);
         canvas.addEventListener('pointermove', onMove);
         canvas.addEventListener('pointerup', onUp);
-        canvas.addEventListener('pointercancel', onUp);
-        canvas.addEventListener('lostpointercapture', onUp);
+        canvas.addEventListener('pointercancel', onAbort);
+        canvas.addEventListener('lostpointercapture', onAbort);
       }
 
       // The dimensions are drawn whichever handles are out, because they are how the layout is
