@@ -2028,6 +2028,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         };
         var sourceResponse = page.WaitForResponseAsync(response =>
             response.Request.Method == "GET" && response.Url.EndsWith('/' + getRoute, StringComparison.Ordinal));
+        var beforeSource = fixture.Provider.QueryMark;
         await page.GotoAsync($"/gridlet/components/{id}");
         await sourceResponse;
 
@@ -2036,13 +2037,14 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         var sourceRequest = Assert.Single(publishedRequests, request => request.Url.EndsWith('/' + getRoute, StringComparison.Ordinal));
         Assert.Equal("GET", sourceRequest.Method);
         Assert.Null(sourceRequest.PostData);
-        Assert.Equal("SELECT 42", fixture.Provider.LastQuerySql);
+        Assert.Single(fixture.Provider.QueriesSince(beforeSource), query => query.Sql == "SELECT 42");
 
         await page.Locator("[data-name='name']").FillAsync("edited");
         await page.Locator("[data-name='enabled']").CheckAsync();
         await page.Locator("[data-name='enabled']").UncheckAsync();
         await page.Locator("[data-name='count']").FillAsync("0");
 
+        var beforeAdd = fixture.Provider.QueryMark;
         var addRequestTask = page.WaitForRequestAsync(request =>
             request.Method == "POST" && request.Url.EndsWith('/' + addRoute, StringComparison.Ordinal));
         await page.Locator("[data-name='add']").ClickAsync();
@@ -2056,10 +2058,12 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             Assert.Equal("0", body.RootElement.GetProperty("Count").GetString());
             Assert.Equal(JsonValueKind.Null, body.RootElement.GetProperty("Empty").ValueKind);
         }
-        Assert.Equal("ADD", fixture.Provider.LastQuerySql);
-        Assert.Equal(0L, fixture.Provider.LastQueryParameters!["Count"]);
-        Assert.False((bool)fixture.Provider.LastQueryParameters["Enabled"]!);
-        Assert.Null(fixture.Provider.LastQueryParameters["Empty"]);
+        // The read behind the form can run again at any time, so the write is found by its own SQL
+        // rather than by being the query that happens to have run last.
+        var addQuery = Assert.Single(fixture.Provider.QueriesSince(beforeAdd), query => query.Sql == "ADD");
+        Assert.Equal(0L, addQuery.Parameters!["Count"]);
+        Assert.False((bool)addQuery.Parameters["Enabled"]!);
+        Assert.Null(addQuery.Parameters["Empty"]);
 
         var updateRequestTask = page.WaitForRequestAsync(request =>
             request.Method == "PUT" && request.Url.EndsWith('/' + updateRoute, StringComparison.Ordinal));
@@ -2095,7 +2099,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         var suffix = Guid.NewGuid().ToString("n");
         var addRoute = $"form-guard-add-{suffix}";
         await PublishEndpointAsync(page, "Guard add", "POST", addRoute, "GUARD");
-        var providerSqlBeforeGuard = fixture.Provider.LastQuerySql;
+        var beforeGuard = fixture.Provider.QueryMark;
         var publishedRequests = new List<IRequest>();
         page.Request += (_, request) =>
         {
@@ -2133,7 +2137,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.Locator(".gridlet-runtime-message"))
             .ToContainTextAsync("published route is unsafe or malformed");
         Assert.Empty(publishedRequests);
-        Assert.Equal(providerSqlBeforeGuard, fixture.Provider.LastQuerySql);
+        Assert.Empty(fixture.Provider.QueriesSince(beforeGuard));
 
         browserPage.AssertNoUnexpectedErrors();
     }
@@ -2154,6 +2158,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             </div>
             """;
         var id = await SaveComponentAsync(page, "Error form", html);
+        var beforeSubmit = fixture.Provider.QueryMark;
         await page.GotoAsync($"/gridlet/components/{id}");
 
         await page.Locator("[data-name='submit']").ClickAsync();
@@ -2161,7 +2166,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await Assertions.Expect(status).ToContainTextAsync("Could not add. Mid-stream kaboom");
         Assert.DoesNotContain("successfully", await status.TextContentAsync(), StringComparison.OrdinalIgnoreCase);
         Assert.False(await page.Locator("[data-name='submit']").IsDisabledAsync());
-        Assert.Equal("stream-boom", fixture.Provider.LastQuerySql);
+        Assert.Single(fixture.Provider.QueriesSince(beforeSubmit), query => query.Sql == "stream-boom");
 
         browserPage.AssertNoUnexpectedErrors();
     }
@@ -2694,6 +2699,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.GetByTestId("component-source")).ToHaveValueAsync(publishedReadRoute);
         await Assertions.Expect(page.GetByTestId("component-action-add")).ToHaveValueAsync(publishedAddRoute);
 
+        var beforeAction = fixture.Provider.QueryMark;
         await page.GetByTestId("component-view-preview").ClickAsync();
         var actionRequestTask = page.WaitForRequestAsync(request =>
             request.Method == "POST" && request.Url.EndsWith('/' + authoredAddRoute, StringComparison.Ordinal));
@@ -2701,7 +2707,9 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await actionRequestTask;
         await Assertions.Expect(page.Locator(".gfd-action-status"))
             .ToHaveTextAsync("Added.");
-        Assert.Equal("CASE ADD", fixture.Provider.LastQuerySql);
+        // Preview reads the source again alongside the write, so the write is found by its own SQL
+        // rather than by being the query that happens to have run last.
+        Assert.Single(fixture.Provider.QueriesSince(beforeAction), query => query.Sql == "CASE ADD");
 
         browserPage.AssertNoUnexpectedErrors();
     }
