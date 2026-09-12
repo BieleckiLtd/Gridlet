@@ -6466,6 +6466,544 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    // ---- copy, paste and duplicate ----
+
+    /// <summary>
+    /// A copied control arrives with everything it carried: its properties, its colours, its
+    /// formulas and its own stylesheet. What lands on the clipboard is a component document, so the
+    /// copy is made through the same format saving a component already goes through.
+    /// </summary>
+    [Fact]
+    public async Task A_copied_control_is_pasted_with_everything_it_carried()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+
+        page = await OpenComponentAsync(browserPage, "Copy component",
+            [Control("caption", "label", props: new { text = "Carried" }, x: 24, y: 24, w: 160, h: 30)],
+            css: "/* @control caption */\n[data-name=\"caption\"] { font-style: italic; }");
+
+        await Box(page, "caption").ClickAsync();
+        await page.Keyboard.PressAsync("Control+c");
+
+        // A component document, not a shape of the designer's own, so it is worth something outside
+        // this tab.
+        var copied = await page.EvaluateAsync<string>("navigator.clipboard.readText()");
+        Assert.Contains("data-gridlet", copied, StringComparison.Ordinal);
+        Assert.Contains("data-name=\"caption\"", copied, StringComparison.Ordinal);
+        Assert.Contains("font-style: italic", copied, StringComparison.Ordinal);
+
+        await page.Keyboard.PressAsync("Control+v");
+        await Assertions.Expect(page.Locator(".gfd-control")).ToHaveCountAsync(2);
+
+        // The copy answers to a name of its own, and the original still answers to the one it had.
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Carried");
+        await Assertions.Expect(Canvas(page, "caption2")).ToHaveTextAsync("Carried");
+        // The copy is what is selected, so it can be moved or taken back as the thing just put down.
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveValueAsync("caption2");
+
+        // Its own stylesheet came with it, respelled for the name it now answers to.
+        await Assertions.Expect(Canvas(page, "caption2")).ToHaveCSSAsync("font-style", "italic");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Duplicating several controls at once keeps what they said about each other: a copy that
+    /// placed itself against its neighbour goes on placing itself against that neighbour's copy,
+    /// rather than against the control it was copied from.
+    /// </summary>
+    [Fact]
+    public async Task Duplicating_a_selection_carries_what_the_copies_said_about_each_other()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Duplicate component",
+            [
+                Control("anchor", "label", props: new { text = "Anchor" }, x: 40, y: 40, w: 120, h: 30),
+                Control("follower", "label", props: new { text = "Follower" },
+                    bind: new { x = "=anchor.x + 160" }, y: 40, w: 120, h: 30),
+            ]);
+
+        await Box(page, "anchor").ClickAsync();
+        await Box(page, "follower").ClickAsync(new LocatorClickOptions { Modifiers = [KeyboardModifier.Control] });
+        await page.Keyboard.PressAsync("Control+d");
+        await Assertions.Expect(page.Locator(".gfd-control")).ToHaveCountAsync(4);
+
+        await Assertions.Expect(Canvas(page, "anchor2")).ToHaveCountAsync(1);
+        await Assertions.Expect(Canvas(page, "follower2")).ToHaveCountAsync(1);
+
+        // Said in the document itself rather than inferred from where things landed: the copy
+        // follows the copy, and the original still follows the original.
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var document = await page.GetByTestId("component-document-editor").InputValueAsync();
+        Assert.Contains("data-bind-x=\"=anchor2.x + 160\"", document, StringComparison.Ordinal);
+        Assert.Contains("data-bind-x=\"=anchor.x + 160\"", document, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A control copied in one component is pasted into another, and keeps the name it had because
+    /// the component it arrives in has room for it.
+    /// </summary>
+    [Fact]
+    public async Task A_control_copied_in_one_component_is_pasted_into_another()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var destination = $"Paste destination {suffix}";
+        await SaveComponentAsync(page, destination,
+            $"<div data-gridlet=\"2\" data-name=\"{destination}\" data-layout=\"free\" style=\"width: 720px; height: 460px;\"></div>");
+
+        page = await OpenComponentAsync(browserPage, $"Paste origin {suffix}",
+            [Control("travelling", "button", props: new { text = "Send" }, x: 32, y: 32, w: 120, h: 34)]);
+
+        await Box(page, "travelling").ClickAsync();
+        await page.Keyboard.PressAsync("Control+c");
+
+        // The other component, opened in its own tab. Both designers are on the page now, so the
+        // canvas has to be named: only the one on screen may answer the press.
+        await page.Locator($"button.tree-item[title^='{destination} -']").ClickAsync();
+        var arrived = page.Locator($".gfd-canvas[data-component='{destination}']");
+        await Assertions.Expect(arrived).ToBeVisibleAsync();
+        await Assertions.Expect(arrived.Locator(".gfd-control")).ToHaveCountAsync(0);
+
+        await arrived.ClickAsync(new LocatorClickOptions { Position = new() { X = 400, Y = 400 } });
+        await page.Keyboard.PressAsync("Control+v");
+
+        // Nothing here answered to the name, so the copy keeps it - and it landed in this component
+        // rather than in the one it was copied from.
+        await Assertions.Expect(arrived.Locator("[data-name='travelling']")).ToHaveTextAsync("Send");
+        await Assertions.Expect(arrived.Locator(".gfd-control")).ToHaveCountAsync(1);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Cut takes the controls away and puts them on the clipboard, and the paste that follows is the
+    /// move it was the first half of. Each is one step to take back.
+    /// </summary>
+    [Fact]
+    public async Task Cut_and_paste_move_a_control_and_each_is_one_step()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+
+        page = await OpenComponentAsync(browserPage, "Cut component",
+            [
+                Control("kept", "label", props: new { text = "Kept" }, x: 16, y: 16),
+                Control("moved", "label", props: new { text = "Moved" }, x: 16, y: 96),
+            ]);
+
+        await Box(page, "moved").ClickAsync();
+        await page.Keyboard.PressAsync("Control+x");
+        await Assertions.Expect(Canvas(page, "moved")).ToHaveCountAsync(0);
+        await Assertions.Expect(Canvas(page, "kept")).ToHaveTextAsync("Kept");
+
+        await page.Keyboard.PressAsync("Control+v");
+        // Back under the name it had, because the cut took that name out of the document with it.
+        await Assertions.Expect(Canvas(page, "moved")).ToHaveTextAsync("Moved");
+
+        // Two steps, each taken back on its own.
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(Canvas(page, "moved")).ToHaveCountAsync(0);
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(Canvas(page, "moved")).ToHaveTextAsync("Moved");
+        await Assertions.Expect(page.Locator(".gfd-control")).ToHaveCountAsync(2);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A panel is copied with what is inside it, and a control picked together with the panel it
+    /// sits in is not put down twice.
+    /// </summary>
+    [Fact]
+    public async Task A_panel_is_copied_with_what_is_inside_it_and_only_once()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Panel copy component",
+            [
+                $"<div data-role=\"panel\" data-name=\"box\" style=\"left: 24px; top: 24px; width: 300px; height: 140px;\">"
+                + Control("inside", "label", props: new { text = "Inside" }, x: 16, y: 16)
+                + "</div>",
+            ]);
+
+        // The panel and the control in it, picked together.
+        await Box(page, "box").ClickAsync();
+        await Box(page, "inside").ClickAsync(new LocatorClickOptions { Modifiers = [KeyboardModifier.Control] });
+        await page.Keyboard.PressAsync("Control+d");
+
+        // One new panel holding one new label: four controls in all, not five.
+        await Assertions.Expect(page.Locator(".gfd-control")).ToHaveCountAsync(4);
+        await Assertions.Expect(Canvas(page, "box2")).ToHaveCountAsync(1);
+        await Assertions.Expect(Canvas(page, "inside2")).ToHaveTextAsync("Inside");
+        // The child is drawn inside the box the designer positions the panel with, which is where a
+        // panel's contents live.
+        await Assertions.Expect(page.Locator("[data-control-box='box2'] [data-name='inside2']"))
+            .ToHaveCountAsync(1);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Text that is not a component is left to whatever else might want it, and a copy inside a
+    /// property box is about the characters in the box rather than about the control.
+    /// </summary>
+    [Fact]
+    public async Task The_clipboard_is_left_alone_where_the_designer_has_no_claim_on_it()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+
+        page = await OpenComponentAsync(browserPage, "Clipboard claim component",
+            [Control("caption", "label", props: new { text = "Only" })]);
+
+        // Something that is not a component document, pasted onto the canvas.
+        await Box(page, "caption").ClickAsync();
+        await page.EvaluateAsync("() => navigator.clipboard.writeText('just some text')");
+        await page.Keyboard.PressAsync("Control+v");
+        await Assertions.Expect(page.Locator(".gfd-control")).ToHaveCountAsync(1);
+
+        // A copy made from inside a property box is the box's, so the control is not what lands on
+        // the clipboard.
+        await page.GetByTestId("expr-text").ClickAsync();
+        await page.Keyboard.PressAsync("Control+a");
+        await page.Keyboard.PressAsync("Control+c");
+        var copied = await page.EvaluateAsync<string>("navigator.clipboard.readText()");
+        Assert.Equal("Only", copied);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Text highlighted in the designer is what a copy is about, and the component is not. Paste and
+    /// duplicate are unaffected: there is nowhere else for either of them to go, and highlighted text
+    /// is as likely to be something about to be pasted over.
+    /// </summary>
+    [Fact]
+    public async Task Highlighted_text_is_copied_instead_of_the_control_but_still_pastes_over()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+
+        page = await OpenComponentAsync(browserPage, "Highlighted text component",
+            [Control("caption", "label", props: new { text = "Only" })]);
+
+        await Box(page, "caption").ClickAsync();
+        await page.Keyboard.PressAsync("Control+c");
+        var component = await page.EvaluateAsync<string>("navigator.clipboard.readText()");
+        Assert.Contains("data-gridlet", component, StringComparison.Ordinal);
+
+        // A run of text dragged across in the panel, the way somebody reads something out of it.
+        var label = page.Locator(".gfd-properties .gfd-row-label").First;
+        await Assertions.Expect(label).ToBeVisibleAsync();
+        var wanted = (await label.TextContentAsync())!.Trim();
+        Assert.NotEmpty(wanted);
+        await page.EvaluateAsync(
+            @"() => {
+                const text = document.querySelector('.gfd-properties .gfd-row-label');
+                const range = document.createRange();
+                range.selectNodeContents(text);
+                const selection = document.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }");
+
+        await page.Keyboard.PressAsync("Control+c");
+        var highlighted = await page.EvaluateAsync<string>("navigator.clipboard.readText()");
+        Assert.DoesNotContain("data-gridlet", highlighted, StringComparison.Ordinal);
+        Assert.Contains(wanted, highlighted, StringComparison.Ordinal);
+
+        // The highlight says nothing about pasting, so duplicating still works while it stands.
+        await page.Keyboard.PressAsync("Control+d");
+        await Assertions.Expect(Canvas(page, "caption2")).ToHaveCountAsync(1);
+
+        // Text left highlighted outside the designer is not the designer's to answer for. Without
+        // this the component would stop being copyable for as long as the highlight stood, and
+        // clicking a control would not clear it: the canvas takes that press for itself.
+        await page.EvaluateAsync(
+            @"() => {
+                const item = document.querySelector('button.tree-item');
+                const range = document.createRange();
+                range.selectNodeContents(item);
+                const selection = document.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }");
+        await page.Keyboard.PressAsync("Control+c");
+        var still = await page.EvaluateAsync<string>("navigator.clipboard.readText()");
+        Assert.Contains("data-gridlet", still, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The clipboard is the design surface's. Previewing a component is filling it in, and the Code
+    /// view is text, so neither is somewhere a control can be put down.
+    /// </summary>
+    [Fact]
+    public async Task Controls_cannot_be_pasted_into_preview_or_the_code_view()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+
+        page = await OpenComponentAsync(browserPage, "Modes clipboard component",
+            [Control("caption", "label", props: new { text = "Only" })]);
+
+        await Box(page, "caption").ClickAsync();
+        await page.Keyboard.PressAsync("Control+c");
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas.preview")).ToBeVisibleAsync();
+        await page.Keyboard.PressAsync("Control+v");
+        await page.Keyboard.PressAsync("Control+d");
+        await Assertions.Expect(page.Locator(".gfd-control")).ToHaveCountAsync(1);
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-document-editor")).ToBeVisibleAsync();
+        await page.Keyboard.PressAsync("Control+d");
+
+        // Back where a control can be put down, there is still one of it.
+        await page.GetByTestId("component-view-design").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-control")).ToHaveCountAsync(1);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A copy renamed onto a name another copy in the same paste still holds must not take that
+    /// copy's references with it. The pair goes on placing itself against its own other half.
+    /// </summary>
+    /// <remarks>
+    /// Renaming one copy at a time, against only the names already spoken for, let the second
+    /// rename rewrite what the first one had just written: `total` became `total2`, the sibling's
+    /// formula was respelled to name it, and then renaming the pasted `total2` to `total3` respelled
+    /// that same formula again - leaving a control whose position followed itself.
+    /// </remarks>
+    [Fact]
+    public async Task A_copy_renamed_onto_another_copy_s_name_keeps_its_own_references()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var destination = $"Collision destination {suffix}";
+        // The destination already answers to `total`, and to nothing else.
+        await SaveComponentAsync(page, destination,
+            $"<div data-gridlet=\"2\" data-name=\"{destination}\" data-layout=\"free\" style=\"width: 720px; height: 460px;\">"
+            + Control("total", "label", props: new { text = "Theirs" }, x: 400, y: 400)
+            + "</div>");
+
+        // The origin holds both `total` and `total2`, and `total2` places itself against `total`.
+        page = await OpenComponentAsync(browserPage, $"Collision origin {suffix}",
+            [
+                Control("total", "label", props: new { text = "Ours" }, x: 40, y: 40, w: 120, h: 30),
+                Control("total2", "label", props: new { text = "Beside" },
+                    bind: new { x = "=total.x + 160" }, y: 40, w: 120, h: 30),
+            ]);
+
+        await page.Locator(".gfd-canvas").PressAsync("Control+a");
+        await page.Keyboard.PressAsync("Control+c");
+
+        await page.Locator($"button.tree-item[title^='{destination} -']").ClickAsync();
+        var arrived = page.Locator($".gfd-canvas[data-component='{destination}']");
+        await Assertions.Expect(arrived).ToBeVisibleAsync();
+        await arrived.ClickAsync(new LocatorClickOptions { Position = new() { X = 600, Y = 60 } });
+        await page.Keyboard.PressAsync("Control+v");
+        await Assertions.Expect(arrived.Locator(".gfd-control")).ToHaveCountAsync(3);
+
+        var designer = page.Locator($".gfd-designer:has(.gfd-canvas[data-component='{destination}'])");
+        await designer.GetByTestId("component-view-code").ClickAsync();
+        var document = await designer.GetByTestId("component-document-editor").InputValueAsync();
+
+        // The copy that follows names the copy it came in with, whatever either of them ended up
+        // being called. What it must never name is itself.
+        var following = Regex.Match(document, "data-name=\"(?<name>[^\"]+)\"[^>]*data-bind-x=\"=(?<target>[A-Za-z0-9_]+)\\.x \\+ 160\"");
+        Assert.True(following.Success, $"no control in the pasted document still follows another:\n{document}");
+        Assert.NotEqual(following.Groups["name"].Value, following.Groups["target"].Value);
+        // And it does not reach back to the control it was copied from, which lives in another
+        // component and is not in this document at all.
+        Assert.Contains($"data-name=\"{following.Groups["target"].Value}\"", document, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A button keeps the action it performs when it is duplicated, and loses it when it is pasted
+    /// into a component that has never declared that action.
+    /// </summary>
+    /// <remarks>
+    /// A button's action is only live while the component declares it, so the copied document has
+    /// to carry the declarations too - without them, duplicating a Save button gave back a button
+    /// that does nothing and a panel reporting an undeclared action.
+    /// </remarks>
+    [Fact]
+    public async Task A_duplicated_button_keeps_its_action_and_a_pasted_one_cannot_smuggle_it()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var addRoute = $"clip-add-{suffix}";
+        await PublishEndpointAsync(page, $"Clip add {suffix}", "POST", addRoute, "CLIP ADD");
+
+        var destination = $"Action destination {suffix}";
+        await SaveComponentAsync(page, destination,
+            $"<div data-gridlet=\"2\" data-name=\"{destination}\" data-layout=\"free\" style=\"width: 720px; height: 460px;\"></div>");
+
+        var origin = $"Action origin {suffix}";
+        await SaveComponentAsync(page, origin,
+            $"<div data-gridlet=\"2\" data-name=\"{origin}\" data-layout=\"free\" style=\"width: 720px; height: 460px;\">"
+            + $"<gridlet-action name=\"add\" method=\"POST\" href=\"{addRoute}\"></gridlet-action>"
+            + "<button type=\"button\" data-name=\"send\" data-action=\"add\" style=\"left: 16px; top: 16px; width: 120px; height: 30px;\">Send</button>"
+            + "</div>");
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        await page.Locator($"button.tree-item[title^='{origin} -']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas")).ToBeVisibleAsync();
+
+        // Duplicated where the action is declared: the copy is a button that still does something.
+        await Box(page, "send").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("control-action")).ToHaveValueAsync("add");
+        await page.Keyboard.PressAsync("Control+d");
+        await Assertions.Expect(Canvas(page, "send2")).ToHaveCountAsync(1);
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveValueAsync("send2");
+        await Assertions.Expect(page.GetByTestId("control-action")).ToHaveValueAsync("add");
+
+        // Pasted where it is not declared, the action does not come back to life: the button says
+        // what it was asked to do and refuses to do it.
+        await page.Keyboard.PressAsync("Control+c");
+        await page.Locator($"button.tree-item[title^='{destination} -']").ClickAsync();
+        var arrived = page.Locator($".gfd-canvas[data-component='{destination}']");
+        await Assertions.Expect(arrived).ToBeVisibleAsync();
+        await arrived.ClickAsync(new LocatorClickOptions { Position = new() { X = 600, Y = 400 } });
+        await page.Keyboard.PressAsync("Control+v");
+
+        await Assertions.Expect(arrived.Locator("[data-name='send2']")).ToHaveCountAsync(1);
+        await Assertions.Expect(arrived.Locator("[data-name='send2']"))
+            .ToHaveAttributeAsync("data-action-invalid", "add");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A copy lands where it can be seen to be a copy, and carries the colours, the handlers and the
+    /// HTML id rules that make it the control it was - except the id itself, which is the page's and
+    /// cannot be held by two elements at once.
+    /// </summary>
+    [Fact]
+    public async Task A_copy_lands_beside_the_original_and_does_not_take_its_html_id()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Copy identity component",
+            [
+                Control("caption", "label", props: new { text = "Coloured" },
+                    colors: new { colorLight = "#123456", colorDark = "#123456" },
+                    events: new { click = "=concat(1)" },
+                    x: 40, y: 40, w: 120, h: 30),
+            ]);
+
+        // The HTML id, given through the panel the way an operator gives one.
+        await Box(page, "caption").ClickAsync();
+        await OpenPanelTabAsync(page, "Settings");
+        await page.GetByTestId("expr-elementId").FillAsync("theCaption");
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveAttributeAsync("id", "theCaption");
+
+        // Back out of the box first: while the caret is in one, the press is the box's.
+        await Box(page, "caption").ClickAsync();
+        await page.Keyboard.PressAsync("Control+d");
+        await Assertions.Expect(Canvas(page, "caption2")).ToHaveCountAsync(1);
+
+        // Off the original rather than on top of it.
+        var original = await Box(page, "caption").BoundingBoxAsync();
+        var copy = await Box(page, "caption2").BoundingBoxAsync();
+        Assert.NotNull(original);
+        Assert.NotNull(copy);
+        Assert.True(copy!.X > original!.X && copy.Y > original.Y,
+            $"the copy landed at ({copy.X}, {copy.Y}) and the original is at ({original.X}, {original.Y})");
+
+        // What it carried, and the one thing it did not.
+        await Assertions.Expect(Canvas(page, "caption2")).ToHaveCSSAsync("color", "rgb(18, 52, 86)");
+        await Assertions.Expect(Canvas(page, "caption2")).Not.ToHaveAttributeAsync("id", "theCaption");
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var document = await page.GetByTestId("component-document-editor").InputValueAsync();
+        Assert.Equal(2, Regex.Matches(document, "data-on-click=\"=concat\\(1\\)\"").Count);
+        Assert.Single(Regex.Matches(document, "id=\"theCaption\""));
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A control cut out of a panel is pasted back into that panel, because a cut and the paste that
+    /// follows it are one move rather than two unrelated edits.
+    /// </summary>
+    [Fact]
+    public async Task A_control_cut_from_a_panel_is_pasted_back_into_it()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+
+        page = await OpenComponentAsync(browserPage, "Cut from panel component",
+            [
+                "<div data-role=\"panel\" data-name=\"box\" style=\"left: 24px; top: 24px; width: 300px; height: 200px;\">"
+                + Control("inside", "label", props: new { text = "Inside" }, x: 16, y: 16)
+                + "</div>",
+            ]);
+
+        await Box(page, "inside").ClickAsync();
+        await page.Keyboard.PressAsync("Control+x");
+        await Assertions.Expect(Canvas(page, "inside")).ToHaveCountAsync(0);
+
+        await page.Keyboard.PressAsync("Control+v");
+        // Back inside the panel it was cut from, not beside it at the coordinates it had in there.
+        await Assertions.Expect(page.Locator("[data-control-box='box'] [data-name='inside']"))
+            .ToHaveCountAsync(1);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The designer lets go of the clipboard when its tab does, so a component that has been closed
+    /// does not answer a copy meant for whatever is on screen now.
+    /// </summary>
+    [Fact]
+    public async Task A_closed_component_no_longer_answers_the_clipboard()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.Context.GrantPermissionsAsync(["clipboard-read", "clipboard-write"]);
+
+        page = await OpenComponentAsync(browserPage, "Closing clipboard component",
+            [Control("caption", "label", props: new { text = "Gone" })]);
+
+        await Box(page, "caption").ClickAsync();
+        await page.EvaluateAsync("() => navigator.clipboard.writeText('untouched')");
+
+        // The tab closed from its own close button, the way anyone closes one.
+        await page.Locator(".tab.active .tab-close, .tab.active button[title='Close']").First.ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas")).ToHaveCountAsync(0);
+
+        await page.Keyboard.PressAsync("Control+c");
+        Assert.Equal("untouched", await page.EvaluateAsync<string>("navigator.clipboard.readText()"));
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     // ---- undo ----
 
     /// <summary>

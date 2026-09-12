@@ -3485,13 +3485,20 @@ export default class ${CLASS_NAME(name)} {
 
     const isSelected = (id) => model.selection.includes(id);
 
+    // Where a cut came from, so the paste that finishes the move puts the control back among the
+    // controls it was taken from. It lives here with the rest of what the selection means rather
+    // than beside the clipboard that sets it, because choosing anything at all is what settles it.
+    let cutFrom = null;
+
     // `add` toggles one control in or out of the selection instead of replacing it, which is what
     // a modifier-click asks for. Selecting nothing selects the component.
     function select(id, add = false) {
       // A different control is a fresh start: arriving at one already in anchor mode, with no
       // resize handles, reads as a component that has lost them.
       if (!add && !isSelected(id)) model.handles = 'resize';
-      if (id === null) model.selection = [];
+      // Choosing nothing is choosing nothing: a paste after it goes where the canvas is, rather
+      // than back into the panel a cut came out of.
+      if (id === null) { model.selection = []; cutFrom = null; }
       else if (!add) model.selection = [id];
       else if (isSelected(id)) model.selection = model.selection.filter((other) => other !== id);
       else model.selection = [...model.selection, id];
@@ -3503,6 +3510,8 @@ export default class ${CLASS_NAME(name)} {
     function selectAll(ids, add = false) {
       const kept = add ? model.selection.filter((id) => !ids.includes(id)) : [];
       model.selection = [...kept, ...ids];
+      // A band that caught nothing is choosing nothing, which a cut still waiting does not survive.
+      if (!model.selection.length) cutFrom = null;
       noteSelection();
       renderCanvas();
       renderProperties();
@@ -7700,6 +7709,295 @@ ${colourGeneration}`;
       markDirty();
     }
 
+    // ---- copy, paste and duplicate ----
+    // What a copied selection is: a component document holding just those controls. Copying through
+    // the format a component is saved in rather than through a shape of its own means a control
+    // carries everything it has - its properties, its colours, its formulas, its handlers, its own
+    // stylesheet, and whatever is nested inside it - because carrying all of that is what saving a
+    // component already has to do. It inherits that format's one gap with it: a stylesheet is
+    // written under the name of the control it belongs to, so a control with no name and a
+    // stylesheet of its own does not keep it here either.
+    //
+    // It is also what makes the clipboard worth something outside this tab: what lands on it is a
+    // component, so it can be pasted into another one, into an editor, or into a file, and a whole
+    // component copied from anywhere can be pasted in here.
+
+    const CLIPBOARD_NAME = 'Gridlet controls';
+
+    // A control picked together with the panel it sits in is already being copied, inside that
+    // panel. Copying it again beside the panel would put down two of it.
+    function withoutNested(controls) {
+      const picked = new Set(controls.map((control) => control.id));
+      const nested = new Set();
+      for (const control of controls) {
+        walk(control.controls || [], (child) => { if (picked.has(child.id)) nested.add(child.id); });
+      }
+      return controls.filter((control) => !nested.has(control.id));
+    }
+
+    function selectionMarkup() {
+      const controls = withoutNested(selectedControls());
+      if (!controls.length) return '';
+      // Where each control sits is its own, and it is kept: an arrangement pasted into another
+      // component arrives arranged, and one pasted back into this one arrives where it can be seen
+      // to have come from rather than somewhere a rule decided.
+      //
+      // The actions travel with it because a button's action means nothing without the declaration
+      // it names: a document that carried the button and not the declaration would be a document
+      // saying the button does something undeclared, and reading it back is defined to strand that.
+      // Copying a Save button has to give you a Save button.
+      //
+      // Only the ones the copied buttons name, though. A label has no use for the component's
+      // endpoints, and the clipboard is read by more things than the file is.
+      const named = new Set();
+      walk(controls, (control) => {
+        if (control.type !== 'button') return;
+        const operation = normalizeActionIdentifier(control.props?.action);
+        if (operation) named.add(operation);
+      });
+      const actions = {};
+      for (const [operation, action] of Object.entries(model.doc.actions || {})) {
+        if (named.has(operation)) actions[operation] = structuredClone(action);
+      }
+
+      const copied = { ...newDocument(), actions, controls: structuredClone(controls) };
+      return FORMAT.toHtml(copied, CLIPBOARD_NAME);
+    }
+
+    // The name a copy gets when the one it was given is spoken for. Taken from the name it had
+    // rather than from its kind, because a copy of `total` is recognisably `total2` and a copy of
+    // `total` called `label7` is not. A trailing number is what makes one copy tell from another, so
+    // it is dropped before counting rather than counted on from: the copy of `total7` is `total2`
+    // when that is free, not `total8`.
+    function freeName(taken, wanted, type) {
+      const stem = String(wanted || '').replace(/\d+$/, '') || type || 'control';
+      for (let i = 2; ; i++) {
+        const candidate = `${stem}${i}`;
+        if (!taken.has(candidate.toLowerCase())) return candidate;
+      }
+    }
+
+    // Reading a clipboard document as controls this component can hold. Everything that made them
+    // the controls of the component they were copied from is settled here: a control is new, so it
+    // takes an id nothing else has; a name is kept when this document has room for it, because
+    // pasting into a component that has never heard of `total` should give you `total`, and is made
+    // unique only when something already answers to it - which is what pasting beside the original
+    // always means. What the copies said about each other is respelled with them, so a pasted pair
+    // goes on placing itself against its own other half rather than against the one it came from.
+    function controlsFromMarkup(markup) {
+      let parsed;
+      try {
+        parsed = FORMAT.fromHtml(markup);
+      } catch {
+        return [];
+      }
+      if (!parsed.controls?.length) return [];
+
+      // Two sets, because a new name has two different jobs to avoid. `claimed` is what this
+      // document already answers to, which decides whether a copy may keep the name it arrived
+      // with. `blocked` is that plus every name in the paste itself, and it is what a new name is
+      // picked against: renaming one copy onto a name another copy still holds would let the next
+      // rename rewrite the first one's references a second time, and the pair would end up
+      // pointing at themselves.
+      const claimed = new Set();
+      const elementIds = new Set();
+      walk(model.doc.controls, (control) => {
+        claimed.add((control.name || '').toLowerCase());
+        if (control.elementId) elementIds.add(control.elementId);
+      });
+      const blocked = new Set(claimed);
+      walk(parsed.controls, (control) => blocked.add((control.name || '').toLowerCase()));
+
+      const stranded = [];
+      walk(parsed.controls, (control) => {
+        control.id = newId();
+        // An HTML id is the page's, not the control's, and two elements may not share one. The
+        // panel already refuses to copy this field across a selection for that reason, so a paste
+        // does not carry one into a document that has it either.
+        if (control.elementId && elementIds.has(control.elementId)) control.elementId = '';
+        else if (control.elementId) elementIds.add(control.elementId);
+
+        const wanted = control.name || '';
+        if (!wanted) return;
+        if (!claimed.has(wanted.toLowerCase())) {
+          claimed.add(wanted.toLowerCase());
+          return;
+        }
+        const fresh = freeName(blocked, wanted, control.type);
+        // Without the actions: a mapping that names a control belongs to whichever component
+        // declared it, and neither copy is that. The clipboard document's own mappings are thrown
+        // away with it, and the destination's go on naming the controls they always named - so
+        // reporting them as references a paste could not respell would be reporting nothing.
+        stranded.push(...renameControlReferences({ ...parsed, actions: {} }, wanted, fresh).stranded);
+        control.name = fresh;
+        claimed.add(fresh.toLowerCase());
+        blocked.add(fresh.toLowerCase());
+      });
+
+      // A button's action is only live while the component declares it. The clipboard document
+      // declares what the component it was copied from did, which is what kept the action through
+      // the copy; landing somewhere that has never declared it is exactly the case reading a
+      // document back is defined to refuse, so it is refused here in the same words rather than
+      // arriving live in a component that never said it could write anything.
+      walk(parsed.controls, (control) => {
+        if (control.type !== 'button') return;
+        const authored = String(control.props?.action || '').trim();
+        const operation = normalizeActionIdentifier(authored);
+        if (!authored || (operation && Object.hasOwn(model.doc.actions || {}, operation))) return;
+        control.invalidAction = authored;
+        control.props.action = '';
+      });
+
+      // A formula too broken to read cannot be respelled, and a copy of it goes on naming whatever
+      // the destination calls by that name. Said out loud, because silently pointing a copy at
+      // somebody else's control is the kind of thing nobody finds until it matters.
+      if (stranded.length) {
+        toast(`Pasted. These could not be respelled for the copies: ${stranded.join(', ')}.`);
+      }
+
+      return parsed.controls;
+    }
+
+    // Where a paste lands. Straight back where it was copied from, unless something is already
+    // sitting there - the same cascade a control placed without a drag makes, and for the same
+    // reason: a copy that lands exactly on top of the original reads as nothing having happened.
+    // A control whose position is a formula is where the formula says, and a copy of it says the
+    // same thing, so there is nothing here to move it by: the offset lands on the coordinates that
+    // are numbers and leaves the ones that are decided. A copy that follows another control's edge
+    // in both directions therefore arrives on top of what it followed, which is what its own
+    // document asks for - it is selected, so it can be moved from there.
+    function cascade(controls, list) {
+      // Where the siblings actually are rather than what they store, because a sibling that follows
+      // an edge is not sitting at the number in the document.
+      const sitting = list.map((sibling) => pass.viewOf(sibling));
+      const occupied = (offset) => controls.some((control) =>
+        sitting.some((at) => at.x === control.x + offset && at.y === control.y + offset));
+      let offset = 0;
+      while (occupied(offset) && offset < GRID * 40) offset += GRID * 2;
+      if (!offset) return;
+      for (const control of controls) {
+        if (!isBound(control, 'x')) control.x = Math.max(0, control.x + offset);
+        if (!isBound(control, 'y')) control.y = Math.max(0, control.y + offset);
+      }
+    }
+
+    // Beside what is selected rather than inside it: a paste while a panel is picked puts the copies
+    // next to that panel, which is where the eye is. Moving a control into a panel is what the
+    // nesting item in the backlog is about, and it is that item's to answer.
+    // Whether a list is still somewhere in this component. A panel that has been deleted, or a step
+    // taken back to a document that never held it, leaves a list nothing can be pasted into.
+    function listInDocument(list) {
+      if (list === model.doc.controls) return true;
+      let found = false;
+      walk(model.doc.controls, (control) => { if (control.controls === list) found = true; });
+      return found;
+    }
+
+    function pasteTarget() {
+      const primary = selectedControls()[0];
+      if (primary) return findParentList(model.doc, primary.id) || model.doc.controls;
+      if (cutFrom && listInDocument(cutFrom)) return cutFrom;
+      return model.doc.controls;
+    }
+
+    function pasteControls(markup) {
+      if (model.mode !== 'design' || model.documentError) return false;
+      const controls = controlsFromMarkup(markup);
+      if (!controls.length) return false;
+      const list = pasteTarget();
+      cascade(controls, list);
+      list.push(...controls);
+      cutFrom = null;
+      markDirty();
+      // Selected, so what was just put down can be moved, styled or taken back as the one thing it
+      // was copied as. Selecting draws the canvas and the panel, so the paste does not draw them
+      // again - the same order a control placed from the palette is put down in.
+      selectAll(controls.map((control) => control.id));
+      return true;
+    }
+
+    // Duplicating is copying and pasting without the clipboard in the middle, so it goes through the
+    // same document format and cannot come out differently from a copy followed by a paste.
+    function duplicateSelection() {
+      const markup = selectionMarkup();
+      return markup ? pasteControls(markup) : false;
+    }
+
+    // The clipboard events rather than the clipboard object: they are what Ctrl+C and Ctrl+V already
+    // raise, they carry what was copied with them, and they need no permission to read. Listened for
+    // on the document because the press lands wherever the focus is - the canvas, a toolbar button,
+    // or nothing at all - and all three are the designer being asked to copy.
+    //
+    // A text box keeps its own copy and paste. The characters in it are what the press is about
+    // there, and a component document arriving in a property box is nobody's intention.
+    const clipboardElsewhere = (event) => panel.hidden || !panel.isConnected
+      || model.mode !== 'design' || model.documentError
+      || Boolean(event.target?.closest?.('input, textarea, select, [contenteditable="true"]'));
+
+    // Text somebody has dragged a selection across in the designer is what they are copying: the
+    // generated CSS the panel shows, the lines a rename reported. A control is selected the whole
+    // time any of those are on screen, so without this the component would answer instead.
+    //
+    // Asked only about copying, and only about text inside this panel. A paste has nowhere else to
+    // go - the fields that would take one are already excused above - and highlighted text is as
+    // likely to be something the reader is about to paste over as something they meant to keep.
+    // Clicking a control does not collapse a selection, because the canvas takes that press for
+    // itself, so a selection left anywhere else would otherwise switch copying off and stay that way.
+    const copyingText = () => {
+      const selection = document.getSelection();
+      if (!selection || selection.isCollapsed) return false;
+      // Either end, because a run dragged from the sidebar into the panel is text in the panel as
+      // much as one dragged the other way.
+      return panel.contains(selection.anchorNode) || panel.contains(selection.focusNode);
+    };
+
+    function writeSelection(event) {
+      if (clipboardElsewhere(event) || copyingText()) return false;
+      const markup = selectionMarkup();
+      if (!markup) return false;
+      event.clipboardData?.setData('text/plain', markup);
+      event.preventDefault();
+      return true;
+    }
+
+    // A copy is not the second half of a move, so it puts down whatever cut was still waiting.
+    const onCopy = (event) => { if (writeSelection(event)) cutFrom = null; };
+
+    const onCut = (event) => {
+      if (!writeSelection(event)) return;
+      // Remembered before the delete empties the selection, so the paste that finishes the move has
+      // somewhere to aim at.
+      cutFrom = findParentList(model.doc, selectedControls()[0]?.id) || model.doc.controls;
+      deleteSelection();
+    };
+
+    const onPaste = (event) => {
+      if (clipboardElsewhere(event)) return;
+      const markup = event.clipboardData?.getData('text/plain') || '';
+      // Anything else on the clipboard is left to whatever else might want it. A press that turns
+      // out not to be a paste of controls is better as nothing happening than as a complaint about
+      // text the person may never have meant for this component at all.
+      if (pasteControls(markup)) event.preventDefault();
+    };
+
+    // A second one like this one, without going through the clipboard and without disturbing what
+    // is on it. Listened for beside them rather than on the canvas, because it is the same kind of
+    // press and has no reason to reach less far than they do: after clicking a property box and
+    // back out again, Ctrl+D should still duplicate rather than offer to bookmark the page.
+    const onDuplicate = (event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (event.key.toLowerCase() !== 'd') return;
+      if (clipboardElsewhere(event)) return;
+      if (!selectedControls().length) return;
+      event.preventDefault();
+      duplicateSelection();
+    };
+
+    document.addEventListener('copy', onCopy);
+    document.addEventListener('cut', onCut);
+    document.addEventListener('paste', onPaste);
+    document.addEventListener('keydown', onDuplicate);
+
     // ---- the selection as one thing ----
     // Several controls picked together behave like the block they look like: the box around them
     // is what the Appearance page shows, moving works on all of them at once, and their
@@ -9638,9 +9936,14 @@ ${colourGeneration}`;
     tab.onClose = () => {
       themeWatcher.disconnect();
       canvasSizeWatch?.disconnect();
-      // The undo shortcut listens on the document rather than on anything inside the panel, so it
-      // is the one listener here that has to be taken back by hand.
+      // Undo and the clipboard listen on the document rather than on anything inside the panel,
+      // because the press lands wherever the focus is. They are the listeners here that have to be
+      // taken back by hand.
       document.removeEventListener('keydown', historyShortcut);
+      document.removeEventListener('copy', onCopy);
+      document.removeEventListener('cut', onCut);
+      document.removeEventListener('paste', onPaste);
+      document.removeEventListener('keydown', onDuplicate);
       // The popover lives on the body outliving the panel on purpose, but when the designer that
       // opened it goes, both the open popover and its detached element go with it.
       disposeColourPicker();
