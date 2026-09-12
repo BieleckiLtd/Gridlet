@@ -1506,7 +1506,15 @@ export default class ${CLASS_NAME(name)} {
     let styles = 0;
     let mappings = 0;
 
-    for (const { store, key, label } of formulaSlots(doc)) {
+    // A name an expression answers before it looks at the controls was never this control's to
+    // be called by. A document written by hand may hold a control called `data`, and
+    // `data.Total` in it is the row's column rather than that control, so respelling those
+    // heads would rewrite the row binding and not a reference to anything being renamed. The
+    // stylesheets and the action parameters address the control by its spelling either way, so
+    // they follow the rename as usual.
+    const reachable = !RESERVED_NAMES.has(from.toLowerCase());
+
+    for (const { store, key, label } of (reachable ? formulaSlots(doc) : [])) {
       const stored = store[key];
       if (!isFormula(stored)) continue;
       const body = formulaBody(stored);

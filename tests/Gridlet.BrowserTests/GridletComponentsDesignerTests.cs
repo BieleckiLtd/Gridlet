@@ -2484,6 +2484,43 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
+    /// An expression answers `data`, `component` and `self` before it looks at the controls, so a
+    /// control that a hand-written document called one of them was never reachable from a formula.
+    /// Renaming it away respells what addresses it by spelling and leaves every formula alone: the
+    /// `data.Column` in one is the row's column, not a reference to the control being renamed.
+    /// </summary>
+    [Fact]
+    public async Task Renaming_a_control_away_from_a_reserved_name_leaves_the_formulas_alone()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Rename reserved component",
+            [
+                Control("data", "label", props: new { text = "Legacy" }, x: 20, y: 20, w: 120, h: 24),
+                Control("reader", "label", bind: new { text = "=data.FirstName" },
+                    x: 20, y: 60, w: 120, h: 24),
+            ],
+            css: """
+                [data-name="data"] { font-style: italic; }
+                """);
+
+        await Box(page, "data").ClickAsync();
+        await page.GetByTestId("control-name").FillAsync("customer");
+        await page.GetByTestId("control-name").BlurAsync();
+        await Assertions.Expect(Box(page, "customer")).ToBeVisibleAsync();
+
+        // The stylesheet addressed the control by its spelling, so it follows.
+        await Assertions.Expect(Canvas(page, "customer")).ToHaveCSSAsync("font-style", "italic");
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var document = await page.GetByTestId("component-document-editor").InputValueAsync();
+        Assert.Contains(@"data-bind-text=""=data.FirstName""", document, StringComparison.Ordinal);
+        Assert.Contains(@"[data-name=""customer""] { font-style: italic; }", document, StringComparison.Ordinal);
+        Assert.DoesNotContain("customer.FirstName", document, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// The module scan takes as long as reading the files takes, and by the time it lands the next
     /// name may already be half typed. The report appears without the panel being rebuilt, so what
     /// is in the box stays in the box.
