@@ -2521,6 +2521,90 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
+    /// A rename rewrites a stylesheet the operator never typed in, so undoing one has to reach the
+    /// tab that stylesheet is open in. The tab goes back to the text the step took back, and the
+    /// next keystroke in it still edits the component rather than a document nobody is looking at.
+    /// </summary>
+    [Fact]
+    public async Task Undoing_a_rename_reaches_the_stylesheet_tab_it_rewrote()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Rename tab component",
+            [Control("total", "label", props: new { text = "Total" }, x: 20, y: 20, w: 120, h: 24)],
+            css: """
+                /* @control total */
+                [data-control-box="total"] { opacity: 0.5; }
+                """);
+
+        await Box(page, "total").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+        await page.Locator(".gfd-section", new PageLocatorOptions { HasTextString = "Custom CSS" })
+            .Locator("summary").First.ClickAsync();
+        await page.Locator("[data-testid^='css-expand-']").ClickAsync();
+
+        var editor = page.Locator("[data-testid='component-css-editor']:not([data-css-target='@component'])");
+        await Assertions.Expect(editor).ToHaveValueAsync(new Regex(@"data-control-box=""total"""));
+
+        var designerTab = page.Locator(".tab", new PageLocatorOptions { HasTextString = "Rename tab component" }).First;
+        await designerTab.ClickAsync();
+        // The Name box is on the other page of the panel, which the stylesheet was not on.
+        await OpenPanelTabAsync(page, "Settings");
+        await page.GetByTestId("control-name").FillAsync("sum");
+        await page.GetByTestId("control-name").BlurAsync();
+        await Assertions.Expect(Box(page, "sum")).ToBeVisibleAsync();
+        await Assertions.Expect(editor).ToHaveValueAsync(new Regex(@"data-control-box=""sum"""));
+
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(Box(page, "total")).ToBeVisibleAsync();
+        // The tab is showing the text the undo took back, not the text it took away.
+        await Assertions.Expect(editor).ToHaveValueAsync(new Regex(@"data-control-box=""total"""));
+
+        // And it is still editing the component: the restored document is a different object from
+        // the one the tab was opened on, so a write that went to the old one would vanish.
+        await page.Locator(".tab", new PageLocatorOptions { HasTextString = "total CSS" })
+            .First.ClickAsync();
+        await editor.FillAsync("[data-control-box=\"total\"] {\n  opacity: 0.25;\n}");
+        await Assertions.Expect(Box(page, "total")).ToHaveCSSAsync("opacity", "0.25");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Clearing a name is allowed - a control with no name is one nothing addresses - and it is not
+    /// a rename to something, so it does not report itself as one.
+    /// </summary>
+    [Fact]
+    public async Task Clearing_a_name_says_so_rather_than_renaming_to_nothing()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Rename cleared component",
+            [
+                Control("total", "label", props: new { text = "Total" }, x: 20, y: 20, w: 120, h: 24),
+                Control("follower", "label", bind: new { x = "=total.right + 20" },
+                    props: new { text = "Follows" }, y: 20, w: 120, h: 24),
+            ]);
+
+        await Box(page, "total").ClickAsync();
+        await page.GetByTestId("control-name").FillAsync("");
+        await page.GetByTestId("control-name").BlurAsync();
+
+        var panel = page.Locator(".gfd-rename-report");
+        await Assertions.Expect(panel).ToContainTextAsync("total no longer has a name");
+        // Nothing was respelled, because there is no spelling to respell it to, and what that leaves
+        // dangling is named rather than left to be discovered.
+        await Assertions.Expect(panel).ToContainTextAsync("Still names total");
+        await Assertions.Expect(panel).ToContainTextAsync("follower: x");
+        Assert.DoesNotContain("Renamed total to .", await panel.InnerTextAsync(), StringComparison.Ordinal);
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        Assert.Contains(@"data-bind-x=""=total.right + 20""",
+            await page.GetByTestId("component-document-editor").InputValueAsync(),
+            StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// The module scan takes as long as reading the files takes, and by the time it lands the next
     /// name may already be half typed. The report appears without the panel being rebuilt, so what
     /// is in the box stays in the box.

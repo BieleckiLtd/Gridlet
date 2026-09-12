@@ -1414,13 +1414,19 @@ export default class ${CLASS_NAME(name)} {
   // decide where a selector ends.
   function cssPreludes(css) {
     const spans = [];
+    // A comment sits in a prelude without being part of one, so the selector it may quote is
+    // prose rather than something this rename is respelling - and counting it would report a
+    // rule as carried when no rule changed.
+    const comments = [];
     let start = 0;
     let at = 0;
     while (at < css.length) {
       const char = css[at];
       if (char === '/' && css[at + 1] === '*') {
         const closed = css.indexOf('*/', at + 2);
-        at = closed === -1 ? css.length : closed + 2;
+        const end = closed === -1 ? css.length : closed + 2;
+        comments.push([at, end]);
+        at = end;
         continue;
       }
       if (char === '"' || char === "'") {
@@ -1433,7 +1439,7 @@ export default class ${CLASS_NAME(name)} {
       if (char === '{' || char === '}' || char === ';') start = at + 1;
       at += 1;
     }
-    return spans;
+    return { spans, comments };
   }
 
   function renameInCss(css, from, to) {
@@ -1441,9 +1447,13 @@ export default class ${CLASS_NAME(name)} {
     let count = 0;
     let text = '';
     let copied = 0;
-    for (const [start, end] of cssPreludes(source)) {
+    const { spans, comments } = cssPreludes(source);
+    const commented = (offset) =>
+      comments.some(([open, close]) => offset >= open && offset < close);
+    for (const [start, end] of spans) {
       const rewritten = source.slice(start, end).replace(NAME_SELECTOR,
-        (whole, attribute, double, single, bare, flag) => {
+        (whole, attribute, double, single, bare, flag, offset) => {
+          if (commented(start + offset)) return whole;
           const value = double !== undefined ? cssUnquoted(double)
             : single !== undefined ? cssUnquoted(single) : bare;
           // The browser matches an attribute value exactly, so the old name is matched exactly
@@ -1461,22 +1471,60 @@ export default class ${CLASS_NAME(name)} {
     return { text: text + source.slice(copied), count };
   }
 
+  // Every string a module holds, with the line it opens on. The file is walked rather than read
+  // a line at a time, because a template literal runs across lines - a selector built in one is
+  // a reference like any other - and because an apostrophe in a comment is not a string opening.
+  function jsStrings(source) {
+    const text = String(source || '');
+    const found = [];
+    let at = 0;
+    let line = 1;
+    const advanceTo = (to) => {
+      const limit = Math.min(Math.max(to, at), text.length);
+      for (let i = at; i < limit; i += 1) if (text[i] === '\n') line += 1;
+      at = limit;
+    };
+    while (at < text.length) {
+      const char = text[at];
+      if (char === '/' && text[at + 1] === '/') {
+        const end = text.indexOf('\n', at);
+        advanceTo(end === -1 ? text.length : end);
+        continue;
+      }
+      if (char === '/' && text[at + 1] === '*') {
+        const end = text.indexOf('*/', at + 2);
+        advanceTo(end === -1 ? text.length : end + 2);
+        continue;
+      }
+      if (char === '"' || char === "'" || char === '`') {
+        const open = at;
+        const opened = line;
+        let scan = at + 1;
+        while (scan < text.length && text[scan] !== char) scan += text[scan] === '\\' ? 2 : 1;
+        const close = Math.min(scan, text.length);
+        advanceTo(close + 1);
+        found.push({ line: opened, text: text.slice(open + 1, close) });
+        continue;
+      }
+      advanceTo(at + 1);
+    }
+    return found;
+  }
+
   // How a module reaches a control: by its name, inside a string. `component.field('total')`, a
   // selector that names it, a comparison against `dataset.controlBox`. So the strings are what is
-  // searched, rather than every word in the file that happens to be spelled the same way.
-  const JS_STRING = /(['"`])((?:\\.|(?!\1)[^\\])*)\1/g;
-
+  // searched, rather than every word in the file that happens to be spelled the same way. A name
+  // that is only part of a longer word is not it, and neither is one that is only part of a
+  // longer hyphenated id or class: `#total-box` is an element's id, not a control called total.
   function moduleReferences(source, name) {
     const mention = new RegExp(`(^|[^A-Za-z0-9_$-])${asRegExpLiteral(name)}($|[^A-Za-z0-9_$-])`);
-    const found = [];
-    String(source || '').split(/\r?\n/).forEach((line, index) => {
-      for (const [, , text] of line.matchAll(JS_STRING)) {
-        if (!mention.test(text)) continue;
-        found.push({ line: index + 1, text: line.trim() });
-        return;
-      }
-    });
-    return found;
+    const lines = String(source || '').split(/\r?\n/);
+    const named = new Set();
+    for (const { line, text } of jsStrings(source)) {
+      if (mention.test(text)) named.add(line);
+    }
+    return [...named].sort((a, b) => a - b)
+      .map((line) => ({ line, text: (lines[line - 1] || '').trim() }));
   }
 
   // Every formula the component holds: a bound property or a handler, on a control or on the
@@ -1544,8 +1592,17 @@ export default class ${CLASS_NAME(name)} {
 
     for (const [operation, action] of Object.entries(doc.actions || {})) {
       for (const [parameter, mapping] of Object.entries(action?.parameters || {})) {
-        if (!mapping || typeof mapping !== 'object' || mapping.control !== from) continue;
-        if (!write) { stranded.push(`the ${operation} action: ${parameter}`); continue; }
+        const mapped = mapping && typeof mapping === 'object' && typeof mapping.control === 'string'
+          ? mapping.control : null;
+        if (mapped === null || mapped.toLowerCase() !== from.toLowerCase()) continue;
+        // A mapping spelled differently from the control it names was already reaching nothing,
+        // because an action matches a control name exactly. Repairing it is not this rename's to
+        // do - making it live under the new name would start a write that never used to happen -
+        // so it is reported instead.
+        if (!write || mapped !== from) {
+          stranded.push(`the ${operation} action: ${parameter}`);
+          continue;
+        }
         mapping.control = to;
         mappings += 1;
       }
@@ -2566,6 +2623,9 @@ export default class ${CLASS_NAME(name)} {
       autoLinks.clear();
       // What the last rename left for somebody to do was about a document this is not.
       renameNotice = null;
+      // The restored document carries the stylesheets it had, and a tab open on one is showing
+      // the text this step just took back.
+      refreshCssTabs();
       applyStyles();
       renderCanvas();
       renderProperties();
@@ -3620,17 +3680,26 @@ export default class ${CLASS_NAME(name)} {
 
     function buildCssTab(panel, cssTab, target) {
       const id = cssTargetId(target);
+      // Which control this tab edits, found again on every write rather than held from when the
+      // tab was opened. An undo replaces the whole document, so the object the tab was built with
+      // is a control in a document nobody is looking at any more, and writing to it would put the
+      // operator's next keystroke somewhere it can never be read back from.
+      const subject = () => (id === '@component' ? model.doc : findControl(model.doc, id));
       const { surface, input, highlight, refresh } = codeSurface({
         paint: highlightCss,
         label: `${cssTargetName(target)} CSS`,
         testId: 'component-css-editor',
-        onInput: () => cssChanged(target, input.value, 'tab'),
+        onInput: () => {
+          const live = subject();
+          if (live) cssChanged(live, input.value, 'tab');
+        },
       });
 
-      // The control this stylesheet is about, so its own selectors are offered first.
-      const subject = target === model.doc ? null : target.name;
+      // The control this stylesheet is about, so its own selectors are offered first. Read when
+      // the completions are asked for, so a control renamed while its tab is open offers the name
+      // it now has.
       surface.append(attachCompletions(input, highlight,
-        (text, caret) => cssSuggestions(text, caret, subject)));
+        (text, caret) => cssSuggestions(text, caret, id === '@component' ? null : subject()?.name)));
       input.dataset.cssTarget = id;
 
       const subtitle = target === model.doc
@@ -3777,14 +3846,19 @@ export default class ${CLASS_NAME(name)} {
       const { from, to, formulas, styles, mappings, stranded, modules, scanned } = renameNotice;
       const rows = [];
 
+      // Clearing a name is not a rename to something, so it does not read as one.
+      const did = to ? `Renamed ${from} to ${to}` : `${from} no longer has a name`;
       const carried = [
         formulas ? `${formulas} formula${formulas === 1 ? '' : 's'}` : null,
         styles ? `${styles} stylesheet rule${styles === 1 ? '' : 's'}` : null,
         mappings ? `${mappings} action parameter${mappings === 1 ? '' : 's'}` : null,
       ].filter(Boolean);
-      if (carried.length) {
-        rows.push(note(`Renamed ${from} to ${to}, and with it ${carried.join(', ')}.`));
-      }
+      // What happened to the name is said first and always. It is the thing the operator just did,
+      // and a report that opens with what could not be carried leaves them to infer the rest.
+      const quiet = scanned && !stranded.length && !modules.length;
+      rows.push(note(carried.length
+        ? `${did}, and with it ${carried.join(', ')}.`
+        : quiet ? `${did}. Nothing referred to it.` : `${did}.`));
 
       if (stranded.length) {
         rows.push(note(`Still names ${from}, and could not be rewritten: ${stranded.join('; ')}.`));
@@ -3801,9 +3875,6 @@ export default class ${CLASS_NAME(name)} {
           }, `Open ${module.name}`)));
       }
 
-      if (scanned && !modules.length && !stranded.length && !carried.length) {
-        rows.push(note(`Renamed ${from} to ${to}. Nothing referred to it.`));
-      }
       return rows;
     }
 
