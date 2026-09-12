@@ -23,6 +23,45 @@ public sealed class FakeGridletProvider :
 
     public string? LastQuerySql { get; private set; }
 
+    private readonly List<RecordedQuery> executedQueries = [];
+
+    /// <summary>One query execution, kept so an assertion need not depend on which query ran last.</summary>
+    public sealed record RecordedQuery(
+        string Sql, IReadOnlyDictionary<string, object?>? Parameters, QueryRequestOptions Options);
+
+    /// <summary>
+    /// A marker for the executions recorded so far. Pass it to <see cref="QueriesSince"/> to look at
+    /// only the queries a later step ran.
+    /// </summary>
+    public int QueryMark
+    {
+        get { lock (executedQueries) return executedQueries.Count; }
+    }
+
+    /// <summary>
+    /// The executions recorded after <paramref name="mark"/>, in order. A test asserts on the query
+    /// it caused rather than on <see cref="LastQuerySql"/>, which any concurrent read can replace.
+    /// </summary>
+    public IReadOnlyList<RecordedQuery> QueriesSince(int mark)
+    {
+        lock (executedQueries)
+        {
+            return mark >= executedQueries.Count ? [] : [.. executedQueries.Skip(mark)];
+        }
+    }
+
+    private void RecordQuery(
+        string sql, IReadOnlyDictionary<string, object?>? parameters, QueryRequestOptions options)
+    {
+        LastQuerySql = sql;
+        LastQueryParameters = parameters;
+        LastQueryOptions = options;
+        lock (executedQueries)
+        {
+            executedQueries.Add(new RecordedQuery(sql, parameters, options));
+        }
+    }
+
     private TaskCompletionSource longQueryRelease = NewLongQuerySignal();
     private TaskCompletionSource completedQueryRelease = NewLongQuerySignal();
     private int longQueryCancellations;
@@ -718,9 +757,7 @@ public sealed class FakeGridletProvider :
         IReadOnlyDictionary<string, object?>? parameters = null,
         CancellationToken cancellationToken = default)
     {
-        LastQuerySql = sql;
-        LastQueryParameters = parameters;
-        LastQueryOptions = options;
+        RecordQuery(sql, parameters, options);
         return sql == "boom"
             ? throw new GridletQueryException("kaboom")
             : Task.FromResult(new QueryResult(
@@ -741,9 +778,7 @@ public sealed class FakeGridletProvider :
         IReadOnlyDictionary<string, object?>? parameters = null,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        LastQuerySql = sql;
-        LastQueryParameters = parameters;
-        LastQueryOptions = options;
+        RecordQuery(sql, parameters, options);
 
         if (sql == "boom")
         {
