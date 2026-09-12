@@ -8344,8 +8344,44 @@ ${colourGeneration}`;
       placeControl(type, event.clientX, event.clientY);
     });
 
+    // One step through the controls from the one the panel is showing, in the order the document
+    // holds them. That is also the order they are painted in: a control drawn later sits in front of
+    // one drawn earlier, so this is the order that reaches a control hidden behind another - the one
+    // the pointer cannot get to, because a press lands on whatever is in front. A locked control is
+    // passed over for the reason the pointer passes over it: it is not a thing to pick up. It is
+    // still somewhere to step on from, because select-all picks it up with everything else.
+    //
+    // At either end the press is let go rather than wrapped round, and the browser moves the focus
+    // on as it would from anything else. That is usually out of the canvas, towards the panel and
+    // the palette; while a selected control's dimensions are drawn it is into their controls first,
+    // which is the keyboard's only way to them. Either way a canvas that kept every Tab for itself
+    // would be somewhere a keyboard could get into and never out of.
+    function stepSelection(backwards) {
+      const order = [];
+      walk(model.doc.controls, (control) => order.push(control));
+      const direction = backwards ? -1 : 1;
+      const at = order.findIndex((control) => control.id === model.selection[0]);
+      const from = at === -1 ? (backwards ? order.length : -1) : at;
+      for (let index = from + direction; index >= 0 && index < order.length; index += direction) {
+        if (isLocked(order[index])) continue;
+        select(order[index].id);
+        // Into view, because the next control may be past where the surface has scrolled to, and a
+        // selection nobody can see has not been made as far as the person pressing is concerned.
+        // Only as far as it takes, so a control already on screen does not move anything.
+        canvas.querySelector(`[data-id="${order[index].id}"]`)
+          ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        return true;
+      }
+      return false;
+    }
+
     canvas.addEventListener('keydown', (event) => {
       if (model.mode === 'preview' || model.documentError) return;
+      // Only presses made to the canvas itself. The dimensions drawn over a selected control hold a
+      // real text box and a real button, and a key pressed in one of them rises to here: without
+      // this, Delete erasing a digit of an offset deleted the control being measured, and the arrow
+      // keys moved the control rather than the caret.
+      if (event.target !== canvas) return;
 
       // Select every control in the component. The canvas has focus while designing, so this is the
       // keyboard's way to the same place the rubber band gets to.
@@ -8354,6 +8390,22 @@ ${colourGeneration}`;
         walk(model.doc.controls, (control) => ids.push(control.id));
         selectAll(ids);
         event.preventDefault();
+        return;
+      }
+
+      // Letting go of what is selected, which leaves the panel showing the component. With nothing
+      // selected there is nothing to let go of, so the press carries on to whatever else wants it.
+      if (event.key === 'Escape') {
+        if (!model.selection.length) return;
+        select(null);
+        event.preventDefault();
+        return;
+      }
+
+      // The keyboard's way of choosing a control, and the only way to one sitting behind another.
+      // A modifier makes it somebody else's Tab - the browser's, for moving between its tabs.
+      if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        if (stepSelection(event.shiftKey)) event.preventDefault();
         return;
       }
 

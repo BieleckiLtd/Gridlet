@@ -6474,6 +6474,242 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    // ---- keyboard on the canvas ----
+
+    /// <summary>
+    /// Escape lets go of what is selected, so a selection can be changed without reaching for the
+    /// pointer. It lets go from anchor handles as well as from resize handles: choosing nothing is
+    /// the same move whatever the handles were doing.
+    /// </summary>
+    [Fact]
+    public async Task Escape_lets_go_of_the_selection()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Escape component",
+            [
+                Control("first", "label", props: new { text = "First" }, x: 24, y: 24, w: 160, h: 30),
+                Control("second", "label", props: new { text = "Second" }, x: 24, y: 96, w: 160, h: 30),
+            ]);
+
+        await Box(page, "first").ClickAsync();
+        await Assertions.Expect(Box(page, "first")).ToHaveClassAsync(new Regex(@"\bselected\b"));
+
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.Locator(".gfd-control.selected")).ToHaveCountAsync(0);
+        // The panel is back to talking about the component rather than about a control.
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveCountAsync(0);
+
+        // Turned over to its anchor handles, and let go of just the same.
+        await ShowAnchorHandlesAsync(page, "second");
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.Locator(".gfd-control.selected")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTestId("anchor-handle-left")).ToHaveCountAsync(0);
+
+        // With nothing selected there is nothing to let go of, and pressing it again is harmless.
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.Locator(".gfd-control")).ToHaveCountAsync(2);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Tab steps through the controls in the order the document holds them, which is the order they
+    /// are painted in. That reaches a control sitting behind another one, which the pointer cannot:
+    /// a press lands on whatever is in front.
+    /// </summary>
+    [Fact]
+    public async Task Tab_steps_through_the_controls_and_reaches_one_behind_another()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Tab order component",
+            [
+                // Drawn first, so the one after it covers it completely.
+                Control("behind", "label", props: new { text = "Behind" }, x: 40, y: 40, w: 200, h: 60),
+                Control("front", "label", props: new { text = "Front" }, x: 40, y: 40, w: 200, h: 60),
+                // Somebody's own markup: kept and drawn, but not something the designer can edit,
+                // so the keyboard passes over it the way the pointer does.
+                "<em data-name=\"markup\" style=\"left: 40px; top: 140px; width: 200px; height: 30px;\">Markup</em>",
+                Control("last", "label", props: new { text = "Last" }, x: 40, y: 200, w: 200, h: 30),
+            ]);
+
+        // The pointer, pressed where the two overlap, only ever reaches the one in front.
+        var front = await Box(page, "front").BoundingBoxAsync();
+        Assert.NotNull(front);
+        await page.Mouse.ClickAsync(front!.X + front.Width / 2, front.Y + front.Height / 2);
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveValueAsync("front");
+
+        // Let go, and step from the beginning.
+        await page.Keyboard.PressAsync("Escape");
+        await page.Keyboard.PressAsync("Tab");
+        await Assertions.Expect(Box(page, "behind")).ToHaveClassAsync(new Regex(@"\bselected\b"));
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveValueAsync("behind");
+
+        await page.Keyboard.PressAsync("Tab");
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveValueAsync("front");
+
+        // Past the markup, which is not a thing to pick up.
+        await page.Keyboard.PressAsync("Tab");
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveValueAsync("last");
+        await Assertions.Expect(page.Locator(".gfd-control.selected")).ToHaveCountAsync(1);
+
+        // And back the other way.
+        await page.Keyboard.PressAsync("Shift+Tab");
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveValueAsync("front");
+
+        // A step is a selection like any other, so what is selected moves as it always does.
+        await page.Keyboard.PressAsync("ArrowRight");
+        Assert.Equal(41, await OffsetAsync(page, "front", "left"), 0);
+        Assert.Equal(40, await OffsetAsync(page, "behind", "left"), 0);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A locked control picked up by select-all is still somewhere to step on from, in both
+    /// directions. Nothing comes before the first control in the document, so Shift+Tab from it lets
+    /// the press go rather than jumping round to the last one; Tab goes on to the control after it.
+    /// </summary>
+    [Fact]
+    public async Task Tab_steps_on_from_a_locked_control_select_all_picked_up()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Locked step component",
+            [
+                "<em data-name=\"markup\" style=\"left: 24px; top: 24px; width: 160px; height: 30px;\">Markup</em>",
+                Control("second", "label", props: new { text = "Second" }, x: 24, y: 96, w: 160, h: 30),
+                Control("third", "label", props: new { text = "Third" }, x: 24, y: 168, w: 160, h: 30),
+            ]);
+
+        // Select-all puts the markup first in the selection, because it is first in the document.
+        await page.Locator(".gfd-canvas").PressAsync("Control+a");
+        await Assertions.Expect(page.Locator(".gfd-control.selected")).ToHaveCountAsync(3);
+
+        // Backwards from the first control there is nowhere to go, so the selection is left as
+        // select-all made it rather than jumping to the last control in the document.
+        await page.Keyboard.PressAsync("Shift+Tab");
+        await Assertions.Expect(page.Locator(".gfd-control.selected")).ToHaveCountAsync(3);
+
+        // Forwards from it is the control after it.
+        await page.Locator(".gfd-canvas").FocusAsync();
+        await page.Keyboard.PressAsync("Tab");
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveValueAsync("second");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Tab does not wrap round at either end. It carries on out of the canvas instead, the way it
+    /// leaves anything else, so the canvas is never somewhere a keyboard can get into and not out of.
+    /// </summary>
+    [Fact]
+    public async Task Tab_leaves_the_canvas_at_either_end()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Tab ends component",
+            [
+                Control("first", "label", props: new { text = "First" }, x: 24, y: 24, w: 160, h: 30),
+                Control("last", "label", props: new { text = "Last" }, x: 24, y: 96, w: 160, h: 30),
+            ]);
+
+        // Anywhere in the canvas rather than the canvas element, so a focus that went to something
+        // drawn inside it would not count as having left.
+        const string canvasHasFocus = "() => document.querySelector('.gfd-canvas')?.contains(document.activeElement) ?? false";
+
+        await Box(page, "last").ClickAsync();
+        Assert.True(await page.EvaluateAsync<bool>(canvasHasFocus));
+
+        // Past the last control, the press is the page's: focus moves on, and the selection stays
+        // where it was for the panel it has gone to.
+        await page.Keyboard.PressAsync("Tab");
+        Assert.False(await page.EvaluateAsync<bool>(canvasHasFocus), "Tab past the last control kept the keyboard");
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveValueAsync("last");
+
+        // The same before the first.
+        await Box(page, "first").ClickAsync();
+        Assert.True(await page.EvaluateAsync<bool>(canvasHasFocus));
+        await page.Keyboard.PressAsync("Shift+Tab");
+        Assert.False(await page.EvaluateAsync<bool>(canvasHasFocus), "Shift+Tab before the first control kept the keyboard");
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveValueAsync("first");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A key pressed in the text box a dimension draws over a selected control is that box's key.
+    /// The canvas answers only presses made to the canvas itself.
+    /// </summary>
+    /// <remarks>
+    /// The dimension's box lives inside the canvas, so its key presses rose to the canvas's own
+    /// shortcuts: Delete, pressed to erase a digit of an offset, deleted the control being measured.
+    /// </remarks>
+    [Fact]
+    public async Task Keys_pressed_in_an_anchor_offset_belong_to_the_offset()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Offset keys component",
+        [
+            Control("button1", "button", props: new { text = "Save" }, x: 24, y: 10, w: 120, h: 24),
+            Control("grid1", "grid", props: new { columns = "Id" }, x: 24, y: 200, w: 300, h: 100),
+        ]);
+
+        await ShowAnchorHandlesAsync(page, "grid1");
+        await DragAsync(page, page.GetByTestId("anchor-handle-top"), await EdgeCentreAsync(page, "button1", "bottom"));
+        var offset = page.GetByTestId("anchor-offset-top");
+        await Assertions.Expect(offset).ToHaveValueAsync("166");
+
+        await offset.FocusAsync();
+        await page.Keyboard.PressAsync("Home");
+        await page.Keyboard.PressAsync("Delete");
+
+        // The digit went, and the control it measures did not.
+        await Assertions.Expect(offset).ToHaveValueAsync("66");
+        await Assertions.Expect(Box(page, "grid1")).ToHaveCountAsync(1);
+
+        // The arrow keys move the caret, not the control.
+        await page.Keyboard.PressAsync("ArrowRight");
+        await page.Keyboard.PressAsync("ArrowDown");
+        Assert.Equal(24, await OffsetAsync(page, "grid1", "left"), 0);
+        Assert.Equal(200, await OffsetAsync(page, "grid1", "top"), 0);
+
+        // And Escape is the box's too: the control stays selected.
+        await offset.FocusAsync();
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(Box(page, "grid1")).ToHaveClassAsync(new Regex(@"\bselected\b"));
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The canvas shows that it has the keyboard while one is being used on it, and never in
+    /// Preview, where focus belongs to the fields in the component.
+    /// </summary>
+    [Fact]
+    public async Task The_canvas_shows_it_has_the_keyboard_only_while_designing()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Canvas focus ring component",
+            [Control("caption", "label", props: new { text = "Only" }, x: 24, y: 24, w: 160, h: 30)]);
+
+        var canvas = page.Locator(".gfd-canvas");
+        const string outline = "element => getComputedStyle(element).outlineStyle";
+
+        await canvas.FocusAsync();
+        await page.Keyboard.PressAsync("Tab");
+        Assert.Equal("solid", await canvas.EvaluateAsync<string>(outline));
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas.preview")).ToBeVisibleAsync();
+        await canvas.FocusAsync();
+        await page.Keyboard.PressAsync("Escape");
+        // Keyboard focus by the browser's own reckoning, so the outline being absent is the rule
+        // leaving Preview alone rather than the browser not thinking a keyboard is in use.
+        Assert.True(await canvas.EvaluateAsync<bool>("element => element.matches(':focus-visible')"),
+            "the canvas was not keyboard-focused in Preview, so the check below would prove nothing");
+        Assert.Equal("none", await canvas.EvaluateAsync<string>(outline));
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     // ---- copy, paste and duplicate ----
 
     /// <summary>
