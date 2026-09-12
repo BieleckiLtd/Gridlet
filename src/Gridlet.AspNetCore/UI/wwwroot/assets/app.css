@@ -2726,7 +2726,8 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 
 .toast {
   width: fit-content;
-  max-width: 440px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   background: var(--panel-2);
   border: 1px solid var(--accent);
   border-radius: 8px;

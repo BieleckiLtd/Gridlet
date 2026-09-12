@@ -2272,15 +2272,385 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             + "  canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, buttons: 1 }));\n"
             + "  canvas.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, buttons: 0 }));\n"
             + "}");
+        // A rename carries the mapping with it, so the way a mapping goes stale is the
+        // control going away rather than the control being called something else.
         var mapping = page.GetByTestId("component-action-add-map-Value");
-        await Assertions.Expect(mapping).ToContainTextAsync("Missing control: value");
-        await mapping.SelectOptionAsync("control:renamed");
+        await Assertions.Expect(mapping).ToHaveValueAsync("control:renamed");
 
         await Box(page, "renamed").ClickAsync();
         await page.Locator("button.gfd-delete").ClickAsync();
         await Assertions.Expect(mapping).ToContainTextAsync("Missing control: renamed");
         await mapping.SelectOptionAsync("");
         await Assertions.Expect(mapping).ToHaveValueAsync("");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A name is how the component addresses a control, so changing it changes every place that
+    /// used the old one: the formulas, the component's stylesheet, the control's own stylesheet,
+    /// and the parameters of an action.
+    /// </summary>
+    [Fact]
+    public async Task Renaming_a_control_carries_its_formulas_and_stylesheets_with_it()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Rename cascade component",
+            [
+                Control("total", "label", props: new { text = "Total" }, x: 20, y: 20, w: 120, h: 24),
+                Control("follower", "label", bind: new { x = "=total.right + 20" },
+                    props: new { text = "Follows" }, y: 20, w: 120, h: 24),
+            ],
+            css: """
+                [data-name="total"] { font-style: italic; }
+                /* @control total */
+                [data-control-box="total"] { opacity: 0.5; }
+                """);
+
+        await Assertions.Expect(Box(page, "follower")).ToHaveCSSAsync("left", "160px");
+        await Assertions.Expect(Canvas(page, "total")).ToHaveCSSAsync("font-style", "italic");
+
+        await Box(page, "total").ClickAsync();
+        await page.GetByTestId("control-name").FillAsync("sum");
+        await page.GetByTestId("control-name").BlurAsync();
+
+        // Both stylesheets still reach the control, and the formula still finds it, under the new
+        // name and without anything being retyped.
+        await Assertions.Expect(Canvas(page, "sum")).ToHaveCSSAsync("font-style", "italic");
+        await Assertions.Expect(Box(page, "sum")).ToHaveCSSAsync("opacity", "0.5");
+        await Assertions.Expect(Box(page, "follower")).ToHaveCSSAsync("left", "160px");
+        await Assertions.Expect(Canvas(page, "total")).ToHaveCountAsync(0);
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var document = await page.GetByTestId("component-document-editor").InputValueAsync();
+        Assert.Contains(@"data-bind-x=""=sum.right + 20""", document, StringComparison.Ordinal);
+        Assert.Contains(@"[data-name=""sum""] { font-style: italic; }", document, StringComparison.Ordinal);
+        Assert.Contains("/* @control sum */", document, StringComparison.Ordinal);
+        Assert.Contains(@"[data-control-box=""sum""]", document, StringComparison.Ordinal);
+        Assert.DoesNotContain(@"data-name=""total""", document, StringComparison.Ordinal);
+        Assert.DoesNotContain("total.right", document, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A half-typed name is not a name. The rename happens once the box says it is finished, so
+    /// nothing is addressed by `s`, then `su`, then `sum` on the way to the name that was meant -
+    /// and the whole rename comes back in a single undo.
+    /// </summary>
+    [Fact]
+    public async Task A_rename_lands_once_and_undoes_in_one_step()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Rename undo component",
+            [
+                Control("total", "label", props: new { text = "Total" }, x: 20, y: 20, w: 120, h: 24),
+                Control("follower", "label", bind: new { x = "=total.right + 20" },
+                    props: new { text = "Follows" }, y: 20, w: 120, h: 24),
+            ]);
+
+        await Box(page, "total").ClickAsync();
+        var nameBox = page.GetByTestId("control-name");
+        await nameBox.FocusAsync();
+        await page.Keyboard.PressAsync("Control+a");
+        await nameBox.PressSequentiallyAsync("sum");
+
+        await Assertions.Expect(nameBox).ToHaveValueAsync("sum");
+        await Assertions.Expect(Box(page, "total")).ToBeVisibleAsync();
+        await Assertions.Expect(Box(page, "sum")).ToHaveCountAsync(0);
+
+        await nameBox.PressAsync("Enter");
+        await Assertions.Expect(Box(page, "sum")).ToBeVisibleAsync();
+        await Assertions.Expect(Box(page, "follower")).ToHaveCSSAsync("left", "160px");
+
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(Box(page, "total")).ToBeVisibleAsync();
+        await Assertions.Expect(Box(page, "sum")).ToHaveCountAsync(0);
+        await Assertions.Expect(Box(page, "follower")).ToHaveCSSAsync("left", "160px");
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        Assert.Contains(@"data-bind-x=""=total.right + 20""",
+            await page.GetByTestId("component-document-editor").InputValueAsync(),
+            StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Module code is arbitrary JavaScript, so a rename reports what still names the control there
+    /// rather than editing it.
+    /// </summary>
+    [Fact]
+    public async Task A_rename_reports_the_module_code_that_still_names_the_control()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var moduleName = $"rename-report-{Guid.NewGuid():n}.js";
+        await browserPage.Page.GotoAsync("/gridlet/");
+        await WriteModuleAsync(browserPage.Page, moduleName, """
+            export default class Report {
+              constructor(component) { this.component = component; }
+              connected() {
+                this.component.field('total').value = 'set';
+              }
+            }
+            """);
+
+        var page = await OpenComponentAsync(browserPage, "Rename report component",
+            [Control("total", "label", props: new { text = "Total" }, x: 20, y: 20, w: 120, h: 24)],
+            modules: [moduleName]);
+
+        await Box(page, "total").ClickAsync();
+        await page.GetByTestId("control-name").FillAsync("sum");
+        await page.GetByTestId("control-name").BlurAsync();
+
+        await Assertions.Expect(Box(page, "sum")).ToBeVisibleAsync();
+        var report = page.GetByTestId($"rename-module-{moduleName}");
+        await Assertions.Expect(report).ToContainTextAsync($"{moduleName} names total on line 4");
+        await Assertions.Expect(report).ToContainTextAsync("Module code is not rewritten.");
+
+        // And the way to the file that has to be changed by hand.
+        await report.Locator("button").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-code-editor"))
+            .ToHaveValueAsync(new Regex(@"field\('total'\)"));
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A name no formula could spell, and a name another control already answers to, are refused
+    /// rather than taken: both would leave references that reach the wrong control or no control.
+    /// </summary>
+    [Fact]
+    public async Task A_name_that_nothing_could_resolve_is_refused_and_the_box_goes_back()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Rename refusal component",
+            [
+                Control("total", "label", props: new { text = "Total" }, x: 20, y: 20, w: 120, h: 24),
+                Control("other", "label", props: new { text = "Other" }, x: 20, y: 60, w: 120, h: 24),
+            ]);
+
+        await Box(page, "other").ClickAsync();
+        var nameBox = page.GetByTestId("control-name");
+        var toasts = page.Locator("#toast-stack");
+
+        await nameBox.FillAsync("Total");
+        await nameBox.BlurAsync();
+        await Assertions.Expect(toasts).ToContainTextAsync(@"Another control is already called ""Total""");
+        await Assertions.Expect(nameBox).ToHaveValueAsync("other");
+
+        await nameBox.FillAsync("1st");
+        await nameBox.BlurAsync();
+        await Assertions.Expect(toasts).ToContainTextAsync("is not a name a formula or a stylesheet can use");
+        await Assertions.Expect(nameBox).ToHaveValueAsync("other");
+
+        await nameBox.FillAsync("data");
+        await nameBox.BlurAsync();
+        await Assertions.Expect(toasts).ToContainTextAsync("is what an expression already answers with");
+        await Assertions.Expect(nameBox).ToHaveValueAsync("other");
+
+        await Assertions.Expect(Box(page, "other")).ToBeVisibleAsync();
+        await Assertions.Expect(Box(page, "total")).ToBeVisibleAsync();
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A stylesheet that quotes a selector in a declaration is quoting a string. Renaming respells
+    /// the selectors and leaves the strings alone, because rewriting one would break both the
+    /// string and the rule it sits in.
+    /// </summary>
+    [Fact]
+    public async Task A_rename_respells_selectors_and_leaves_declaration_strings_alone()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Rename string component",
+            [Control("total", "label", props: new { text = "Total" }, x: 20, y: 20, w: 120, h: 24)],
+            css: """
+                [data-name="total"]::after { content: "[data-name='total']"; }
+                """);
+
+        await Box(page, "total").ClickAsync();
+        await page.GetByTestId("control-name").FillAsync("sum");
+        await page.GetByTestId("control-name").BlurAsync();
+        await Assertions.Expect(Box(page, "sum")).ToBeVisibleAsync();
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var document = await page.GetByTestId("component-document-editor").InputValueAsync();
+        Assert.Contains(@"[data-name=""sum""]::after", document, StringComparison.Ordinal);
+        Assert.Contains(@"content: ""[data-name='total']""", document, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// An expression answers `data`, `component` and `self` before it looks at the controls, so a
+    /// control that a hand-written document called one of them was never reachable from a formula.
+    /// Renaming it away respells what addresses it by spelling and leaves every formula alone: the
+    /// `data.Column` in one is the row's column, not a reference to the control being renamed.
+    /// </summary>
+    [Fact]
+    public async Task Renaming_a_control_away_from_a_reserved_name_leaves_the_formulas_alone()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Rename reserved component",
+            [
+                Control("data", "label", props: new { text = "Legacy" }, x: 20, y: 20, w: 120, h: 24),
+                Control("reader", "label", bind: new { text = "=data.FirstName" },
+                    x: 20, y: 60, w: 120, h: 24),
+            ],
+            css: """
+                [data-name="data"] { font-style: italic; }
+                """);
+
+        await Box(page, "data").ClickAsync();
+        await page.GetByTestId("control-name").FillAsync("customer");
+        await page.GetByTestId("control-name").BlurAsync();
+        await Assertions.Expect(Box(page, "customer")).ToBeVisibleAsync();
+
+        // The stylesheet addressed the control by its spelling, so it follows.
+        await Assertions.Expect(Canvas(page, "customer")).ToHaveCSSAsync("font-style", "italic");
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var document = await page.GetByTestId("component-document-editor").InputValueAsync();
+        Assert.Contains(@"data-bind-text=""=data.FirstName""", document, StringComparison.Ordinal);
+        Assert.Contains(@"[data-name=""customer""] { font-style: italic; }", document, StringComparison.Ordinal);
+        Assert.DoesNotContain("customer.FirstName", document, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A rename rewrites a stylesheet the operator never typed in, so undoing one has to reach the
+    /// tab that stylesheet is open in. The tab goes back to the text the step took back, and the
+    /// next keystroke in it still edits the component rather than a document nobody is looking at.
+    /// </summary>
+    [Fact]
+    public async Task Undoing_a_rename_reaches_the_stylesheet_tab_it_rewrote()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Rename tab component",
+            [Control("total", "label", props: new { text = "Total" }, x: 20, y: 20, w: 120, h: 24)],
+            css: """
+                /* @control total */
+                [data-control-box="total"] { opacity: 0.5; }
+                """);
+
+        await Box(page, "total").ClickAsync();
+        await OpenPanelTabAsync(page, "Appearance");
+        await page.Locator(".gfd-section", new PageLocatorOptions { HasTextString = "Custom CSS" })
+            .Locator("summary").First.ClickAsync();
+        await page.Locator("[data-testid^='css-expand-']").ClickAsync();
+
+        var editor = page.Locator("[data-testid='component-css-editor']:not([data-css-target='@component'])");
+        await Assertions.Expect(editor).ToHaveValueAsync(new Regex(@"data-control-box=""total"""));
+
+        var designerTab = page.Locator(".tab", new PageLocatorOptions { HasTextString = "Rename tab component" }).First;
+        await designerTab.ClickAsync();
+        // The Name box is on the other page of the panel, which the stylesheet was not on.
+        await OpenPanelTabAsync(page, "Settings");
+        await page.GetByTestId("control-name").FillAsync("sum");
+        await page.GetByTestId("control-name").BlurAsync();
+        await Assertions.Expect(Box(page, "sum")).ToBeVisibleAsync();
+        await Assertions.Expect(editor).ToHaveValueAsync(new Regex(@"data-control-box=""sum"""));
+
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(Box(page, "total")).ToBeVisibleAsync();
+        // The tab is showing the text the undo took back, not the text it took away.
+        await Assertions.Expect(editor).ToHaveValueAsync(new Regex(@"data-control-box=""total"""));
+
+        // And it is still editing the component: the restored document is a different object from
+        // the one the tab was opened on, so a write that went to the old one would vanish.
+        await page.Locator(".tab", new PageLocatorOptions { HasTextString = "total CSS" })
+            .First.ClickAsync();
+        await editor.FillAsync("[data-control-box=\"total\"] {\n  opacity: 0.25;\n}");
+        await Assertions.Expect(Box(page, "total")).ToHaveCSSAsync("opacity", "0.25");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Clearing a name is allowed - a control with no name is one nothing addresses - and it is not
+    /// a rename to something, so it does not report itself as one.
+    /// </summary>
+    [Fact]
+    public async Task Clearing_a_name_says_so_rather_than_renaming_to_nothing()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Rename cleared component",
+            [
+                Control("total", "label", props: new { text = "Total" }, x: 20, y: 20, w: 120, h: 24),
+                Control("follower", "label", bind: new { x = "=total.right + 20" },
+                    props: new { text = "Follows" }, y: 20, w: 120, h: 24),
+            ]);
+
+        await Box(page, "total").ClickAsync();
+        await page.GetByTestId("control-name").FillAsync("");
+        await page.GetByTestId("control-name").BlurAsync();
+
+        var panel = page.Locator(".gfd-rename-report");
+        await Assertions.Expect(panel).ToContainTextAsync("total no longer has a name");
+        // Nothing was respelled, because there is no spelling to respell it to, and what that leaves
+        // dangling is named rather than left to be discovered.
+        await Assertions.Expect(panel).ToContainTextAsync("Still names total");
+        await Assertions.Expect(panel).ToContainTextAsync("follower: x");
+        Assert.DoesNotContain("Renamed total to .", await panel.InnerTextAsync(), StringComparison.Ordinal);
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        Assert.Contains(@"data-bind-x=""=total.right + 20""",
+            await page.GetByTestId("component-document-editor").InputValueAsync(),
+            StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The module scan takes as long as reading the files takes, and by the time it lands the next
+    /// name may already be half typed. The report appears without the panel being rebuilt, so what
+    /// is in the box stays in the box.
+    /// </summary>
+    [Fact]
+    public async Task A_late_module_report_does_not_disturb_the_name_being_typed()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var moduleName = $"rename-slow-{Guid.NewGuid():n}.js";
+        await browserPage.Page.GotoAsync("/gridlet/");
+        await WriteModuleAsync(browserPage.Page, moduleName, """
+            export default class Slow {
+              constructor(component) { this.component = component; }
+              connected() { this.component.field('total').focus(); }
+            }
+            """);
+
+        var page = await OpenComponentAsync(browserPage, "Rename race component",
+            [Control("total", "label", props: new { text = "Total" }, x: 20, y: 20, w: 120, h: 24)],
+            modules: [moduleName]);
+
+        // Reading the module is what the report waits for, so it is the step that has to be slow
+        // enough for the next name to be typed while it is still in flight.
+        await page.RouteAsync($"**/api/components/scripts/{moduleName}", async route =>
+        {
+            await Task.Delay(2500);
+            await route.ContinueAsync();
+        });
+
+        await Box(page, "total").ClickAsync();
+        var nameBox = page.GetByTestId("control-name");
+        await nameBox.FillAsync("sum");
+        await nameBox.BlurAsync();
+        await Assertions.Expect(Box(page, "sum")).ToBeVisibleAsync();
+
+        await nameBox.FocusAsync();
+        await page.Keyboard.PressAsync("Control+a");
+        await nameBox.PressSequentiallyAsync("later");
+
+        // Still in flight, so what follows is the report landing on a panel being typed into.
+        await Assertions.Expect(page.GetByTestId($"rename-module-{moduleName}")).ToHaveCountAsync(0);
+
+        await Assertions.Expect(page.GetByTestId($"rename-module-{moduleName}"))
+            .ToContainTextAsync("Module code is not rewritten.");
+        await Assertions.Expect(nameBox).ToHaveValueAsync("later");
+        await Assertions.Expect(nameBox).ToBeFocusedAsync();
 
         browserPage.AssertNoUnexpectedErrors();
     }
