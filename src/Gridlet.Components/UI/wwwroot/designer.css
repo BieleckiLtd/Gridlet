@@ -1271,6 +1271,16 @@
 .gfd-canvas.preview,
 .gfd-canvas.no-grid { background-image: none; }
 
+/* The canvas takes the keyboard while designing - select-all, delete, the arrow keys, Tab and
+   Escape all go to it - so it says when it has it. Only when a keyboard is being used: a canvas
+   clicked into already has the hand's attention, and an outline arriving with every click would
+   read as the component growing a border. Never in Preview, where the component is the component
+   and focus belongs to the fields in it. */
+.gfd-canvas:not(.preview):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
 /* ---- properties ----
    One property, one row: caption and editor. Every property gets the same row whatever it holds,
    so the panel reads as a table rather than as a stack of differently shaped cards, and the eye can
