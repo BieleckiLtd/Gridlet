@@ -2602,11 +2602,126 @@ export default class ${CLASS_NAME(name)} {
       history.key = null;
     }
 
+    // What the document decides that redrawing the canvas does not settle: the rows the component
+    // reads, and what its modules put within reach of an expression. Each is fetched or run rather
+    // than drawn, so the paths that change one by hand follow it through themselves. A whole
+    // document arriving at once - typed into Code, or taken back by undo - can change either
+    // without saying so, and the document it replaced is the only way to tell that it did.
+    const documentFootprint = () => ({
+      source: JSON.stringify(model.doc.source ?? null),
+      modules: JSON.stringify(model.doc.modules ?? []),
+    });
+
+    async function followDocument(before) {
+      // The record bar is the document's, not the source's alone: a component carrying a pager of
+      // its own does without the bar, and a pager is a control an edit can put back or take away.
+      renderRecordBar();
+      if (JSON.stringify(model.doc.source ?? null) !== before.source) {
+        // Rows first and modules after, the order `setMode` reads them in: a module's connected()
+        // is named for the rows having arrived, so starting one over rows the document no longer
+        // names would hand it the answer to the question that was just taken back.
+        //
+        // Quietly, because the component was reading this endpoint a moment ago: a step taken back
+        // is not the place to report that an endpoint is unavailable.
+        await loadRows(true);
+        renderCanvas();
+        renderProperties();
+        renderRecordBar();
+      }
+      if (JSON.stringify(model.doc.modules ?? []) !== before.modules) {
+        // Exactly what ticking a module off does, and for the same reason: what a module exports is
+        // in reach of every formula, so a document that no longer runs it must not still resolve it.
+        await followModules();
+      }
+    }
+
+    // Making the component run the modules its document names, in whichever way the view it is in
+    // means. The panel's tick and a step taken back both end here, so a changed module list has one
+    // answer rather than one per caller.
+    async function followModules() {
+      if (model.mode !== 'preview') {
+        await refreshExpressionScope();
+        return;
+      }
+      await restartBehaviour();
+      // A running component draws itself and then builds its scope, in that order, because starting
+      // is what a module's connected() is given a drawn component for. So what a formula now
+      // resolves to reaches the screen at the next draw rather than at that one.
+      renderCanvas();
+    }
+
+    const followFailed = (error) => recordBehaviourError(model.name || 'component', error);
+
+    // One at a time, and only once. Undo is a control people hold down and Code reparses on every
+    // character, so several of these can be asked for inside a few milliseconds. Running them at
+    // once would let the slower one land its rows and its scope after the faster one, leaving the
+    // designer showing a document that is no longer on screen; running them one after another walks
+    // visibly through documents nobody stopped at, reading and importing at each.
+    //
+    // What makes one enough is that a follow-through is measured against the document on screen when
+    // it runs rather than when it was asked for. So one that has not started yet takes on the
+    // earliest footprint still waiting and answers for all of them - the same trick a run of typing
+    // uses below.
+    let following = Promise.resolve();
+    let followFrom = null;
+
+    function followDocumentChange(before) {
+      // Already waiting: the earliest document any of them was measured against is the one to keep.
+      if (followFrom) return following;
+      followFrom = before;
+      following = following
+        .then(() => {
+          const from = followFrom;
+          followFrom = null;
+          return followDocument(from);
+        })
+        // Reported where the component's other failures are read, and the chain carries on: the
+        // step after this one still has to be followed.
+        .catch(followFailed);
+      return following;
+    }
+
+    // A run of typing in Code is one step, and it is one follow-through. The document is reparsed
+    // on every character, so a route or a module name is half-spelled for most of the time it is
+    // being typed; following each spelling would read the source and re-import every module the
+    // component names, once per character, to answer a question the next character changes. The run
+    // is measured from where it started, so a name typed through to the end costs one follow-through
+    // and a route retyped back to what it was costs none.
+    let typedFollow = null;
+    let typedFrom = null;
+
+    function followTypedDocument(before) {
+      typedFrom ??= before;
+      clearTimeout(typedFollow);
+      typedFollow = setTimeout(() => {
+        const from = endTypedRun();
+        // The run can outlive the tab it was typed in.
+        if (panel.isConnected) followDocumentChange(from);
+      }, COALESCE_MS);
+    }
+
+    function endTypedRun() {
+      clearTimeout(typedFollow);
+      const from = typedFrom;
+      typedFollow = null;
+      typedFrom = null;
+      return from;
+    }
+
+    // A run still waiting when the view changes is about the document being switched away from, and
+    // the switch reads rows and starts behaviour of its own. Settling the run first, and waiting for
+    // it, means the two do not both do it in an order neither of them chose.
+    const settleTypedRun = () => (typedFrom ? followDocumentChange(endTypedRun()) : Promise.resolve());
+
     // Undo and redo are the same move in opposite directions: take the state off one stack, put the
     // one on screen onto the other, and show what came off.
     function travel(from, to) {
       const restored = from.pop();
       if (restored === undefined) return;
+      // A run of typing still waiting is about the document this step is measuring against, which is
+      // the one on screen, so the step answers for it and it is dropped rather than settled.
+      endTypedRun();
+      const before = documentFootprint();
       to.push(history.state);
       history.key = null;
       model.doc = JSON.parse(restored.doc);
@@ -2637,6 +2752,7 @@ export default class ${CLASS_NAME(name)} {
       history.state = historyState();
       markDirty();
       syncHistory();
+      return followDocumentChange(before);
     }
 
     const undo = () => travel(history.past, history.future);
@@ -6536,8 +6652,7 @@ ${colourGeneration}`;
       const attachmentChanged = () => {
         markDirty();
         renderProperties();
-        if (model.mode === 'preview') restartBehaviour();
-        else refreshExpressionScope();
+        followModules().catch(followFailed);
       };
 
       // One class of one file. Offered under the file, and only once the component already names that
@@ -8208,7 +8323,14 @@ ${colourGeneration}`;
     // property will actually show, so it is read while designing too rather than only in preview.
     // A failure at design time is usually a required parameter nobody has filled in yet, which is
     // not worth interrupting anyone over; a failure in preview is the component not working.
+    // Which read of the source the rows on screen came from. Two can be in the air at once - an
+    // endpoint chosen twice, a step taken back and forward - and the one that started first is
+    // about a source the component no longer names. It is allowed to finish and not to land, which
+    // is the only way the rows on screen can be said to be the rows the document asked for.
+    let sourceRead = 0;
+
     async function loadRows(quiet = false) {
+      const read = ++sourceRead;
       model.rowIndex = 0;
       model.rows = [];
       model.columns = [];
@@ -8217,9 +8339,13 @@ ${colourGeneration}`;
         if (model.endpointListState !== 'available') {
           throw new Error('The published endpoint list is unavailable.');
         }
-        model.rows = await readSource(model.doc.source, model.endpoints);
+        const rows = await readSource(model.doc.source, model.endpoints);
+        if (read !== sourceRead) return;
+        model.rows = rows;
         if (model.rows.length) model.columns = Object.keys(model.rows[0]);
       } catch (err) {
+        // A source nobody is reading any more failed for a component nobody is looking at.
+        if (read !== sourceRead) return;
         if (!quiet) toast(`The component's data source failed: ${err.message}`);
       }
     }
@@ -8903,17 +9029,26 @@ ${colourGeneration}`;
 
     // The one place the component's scope is built, because Design and Preview have to agree about what
     // a name means. Preview adds what running means on top of it: connected(), and the handlers.
+    // Which build of the scope is the live one, for the same reason the source read is counted. A
+    // build empties the scope before it reads a single file, so two overlapping ones would leave
+    // the slower one writing its names over the faster one's - and constructing a second set of
+    // instances for a component that already has one.
+    let scopeBuild = 0;
+
     async function rebuildScope() {
+      const build = ++scopeBuild;
       expressionScope = nameScope();
       expressionNames = { functions: [], values: [], methods: [] };
       behaviour.clashes = [];
       behaviour.errors = [];
       const loaded = await loadModules();
+      if (build !== scopeBuild) return false;
       discoverClasses(loaded);
       const contributed = harvestExports(loaded);
       behaviour.services = buildServices(loaded);
       buildInstances(loaded, contributed);
       reportAmbiguities();
+      return true;
     }
 
     // Loaded fresh every time. The version in the URL is what gets past the browser's module cache,
@@ -9018,7 +9153,11 @@ ${colourGeneration}`;
 
     async function startBehaviour() {
       await stopBehaviour();
-      await rebuildScope();
+      // A build that was overtaken while it was reading left the scope, and the instances in it, to
+      // the build that overtook it. Those are not this start's to connect: connecting them would
+      // give a component that is already running a second connected() and a second set of handlers,
+      // with no disconnected() in between to give back what the first one took.
+      if (!await rebuildScope()) return;
 
       for (const record of behaviour.instances) {
         try {
@@ -9065,6 +9204,7 @@ ${colourGeneration}`;
     // what it broke, and nothing behind it has been damaged by a half-typed tag.
     function documentEdited() {
       const source = code.input.value;
+      const before = documentFootprint();
       let parsed;
       try {
         parsed = FORMAT.fromHtml(source);
@@ -9088,10 +9228,42 @@ ${colourGeneration}`;
       // Preview runs what the text says.
       renderCanvas();
       renderProperties();
+      // Typing a different endpoint or a different module here is the same edit the Settings page
+      // makes, so it is followed through the same way - and it has to be, or undoing it would put
+      // the designer somewhere the edit itself never went.
+      followTypedDocument(before);
     }
 
-    async function setMode(mode) {
-      if (model.mode === mode) return;
+    // A switch that has to wait - for a run of typing to settle, for rows to arrive - is a switch
+    // somebody can press again while it is waiting. The mode is not taken until the far side of that
+    // wait, so a second press would walk straight past the guard below and make the whole switch a
+    // second time: the component started twice, and told twice that it had loaded. The switch that
+    // is already in flight is the answer to being asked for it again, and a switch to somewhere
+    // else waits its turn rather than interleaving with it.
+    let switching = null;
+    let switchingTo = null;
+    let switchWanted = null;
+
+    function setMode(mode) {
+      if (switching) {
+        // The view asked for last is the one to arrive at. Each press while a switch is in flight
+        // waits for it, and whichever is still the answer by then carries on from there, so three
+        // presses inside one slow switch land on the third rather than on the second.
+        switchWanted = mode;
+        return switchingTo === mode ? switching : switching.then(() => setMode(switchWanted));
+      }
+      if (model.mode === mode) return Promise.resolve();
+      switchingTo = mode;
+      switching = enterMode(mode)
+        // A switch that threw is reported where the component's other failures are read. The
+        // switcher has to come back either way: one bad module must not wedge it for the tab's life.
+        .catch(followFailed)
+        .finally(() => { switching = null; switchingTo = null; });
+      return switching;
+    }
+
+    async function enterMode(mode) {
+      await settleTypedRun();
       model.mode = mode;
       // Leaving design clears the selection: a selected control is a designer concept, and coming
       // back with stale handles drawn over a component you were just filling in reads as a glitch.
@@ -9144,6 +9316,12 @@ ${colourGeneration}`;
 
     // Running the modules again without leaving preview, for the edit-and-see-it loop the code
     // pane is for.
+    //
+    // The branch below reaches `setMode`, which waits on the follow-through chain. So this must not
+    // be called from inside that chain while the component is anywhere but Preview: it would be
+    // waiting for the entry it is running in. `followModules` is the only caller that could, and it
+    // reads the mode and branches with no await in between, so the branch it takes is the one the
+    // mode was true for.
     async function restartBehaviour() {
       if (model.mode !== 'preview') {
         await setMode('preview');

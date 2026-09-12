@@ -6732,6 +6732,185 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
+    /// A step that changes where the component reads its rows from is followed through, rather than
+    /// leaving the designer showing the endpoint the document no longer names.
+    /// </summary>
+    /// <remarks>
+    /// Rows are fetched rather than drawn, so redrawing the canvas over a restored document is not
+    /// enough on its own: the rows on screen would still be the ones the undone edit went and got.
+    /// </remarks>
+    [Fact]
+    public async Task Undo_reads_the_rows_the_restored_document_names()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var first = $"undo-source-first-{suffix}";
+        var second = $"undo-source-second-{suffix}";
+        await PublishEndpointAsync(page, $"Undo source first {suffix}", "GET", first, "SELECT 1");
+        await PublishEndpointAsync(page, $"Undo source second {suffix}", "GET", second, "copy-dynamic-numeric");
+
+        page = await OpenComponentAsync(browserPage, $"Undo source component {suffix}",
+            [
+                Control("answer", "label", bind: new { text = "=data.Answer" }),
+                Control("identifier", "label", bind: new { text = "=data.Value" }, y: 60),
+            ],
+            source: first);
+
+        await Assertions.Expect(Canvas(page, "answer")).ToHaveTextAsync("42");
+
+        // The other endpoint, chosen the way an operator chooses one.
+        await page.Locator(".gfd-canvas").ClickAsync(new LocatorClickOptions { Position = new() { X = 5, Y = 400 } });
+        await OpenPanelTabAsync(page, "Settings");
+        await page.GetByTestId("component-source").SelectOptionAsync(second);
+        await Assertions.Expect(Canvas(page, "identifier")).ToHaveTextAsync("007");
+
+        // Taken back: the first endpoint is named again, and its rows are what the component shows.
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-source")).ToHaveValueAsync(first);
+        await Assertions.Expect(Canvas(page, "answer")).ToHaveTextAsync("42");
+
+        // And forward again, the same way.
+        await page.GetByTestId("component-redo").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-source")).ToHaveValueAsync(second);
+        await Assertions.Expect(Canvas(page, "identifier")).ToHaveTextAsync("007");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A step that changes which modules the component runs puts what they export back within reach
+    /// of its formulas, or back out of it.
+    /// </summary>
+    /// <remarks>
+    /// A module's exports are read once and kept, so a restored document that runs a module again
+    /// resolves nothing from it until the scope is built again.
+    /// </remarks>
+    [Fact]
+    public async Task Undo_puts_a_module_s_exports_back_within_reach_of_a_formula()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var moduleName = $"undo-greeting-{suffix}.js";
+        await WriteModuleAsync(page, moduleName, "export function greeting() { return 'Hello'; }");
+
+        page = await OpenComponentAsync(browserPage, $"Undo module component {suffix}",
+            [Control("caption", "label", bind: new { text = "=greeting()" })],
+            modules: [moduleName]);
+
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Hello");
+
+        // Stop running it, and the formula names nothing.
+        await page.Locator(".gfd-canvas").ClickAsync(new LocatorClickOptions { Position = new() { X = 5, Y = 400 } });
+        await OpenPanelTabAsync(page, "Settings");
+        await page.GetByTestId($"module-{moduleName}").UncheckAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("#NAME?");
+
+        // Taken back: the component runs it again, so the formula answers again.
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(page.GetByTestId($"module-{moduleName}")).ToBeCheckedAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Hello");
+
+        // And forward again, the same way.
+        await page.GetByTestId("component-redo").ClickAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("#NAME?");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The same follow-through while the component is running, where a module list that changed
+    /// means starting the component's behaviour over rather than building the scope beside it.
+    /// </summary>
+    [Fact]
+    public async Task Undo_follows_a_module_through_while_the_component_is_running()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var moduleName = $"undo-running-{suffix}.js";
+        await WriteModuleAsync(page, moduleName, "export function greeting() { return 'Running'; }");
+
+        page = await OpenComponentAsync(browserPage, $"Undo running module component {suffix}",
+            [Control("caption", "label", bind: new { text = "=greeting()" })],
+            modules: [moduleName]);
+
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Running");
+
+        // Stop running it, then go and watch the component run without it.
+        await page.Locator(".gfd-canvas").ClickAsync(new LocatorClickOptions { Position = new() { X = 5, Y = 400 } });
+        await OpenPanelTabAsync(page, "Settings");
+        await page.GetByTestId($"module-{moduleName}").UncheckAsync();
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-canvas.preview")).ToBeVisibleAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("#NAME?");
+
+        // Taken back without leaving Preview: the component runs the module again, so the formula
+        // answers again, and the canvas is still the running one rather than having been switched
+        // back to Design on the way.
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(Canvas(page, "caption")).ToHaveTextAsync("Running");
+        await Assertions.Expect(page.Locator(".gfd-canvas.preview")).ToBeVisibleAsync();
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A document typed into the Code view is followed through the same way a step taken back is,
+    /// so the two agree about what the designer is showing.
+    /// </summary>
+    /// <remarks>
+    /// Without it the edit and its undo disagree: retyping the route in Code left the old
+    /// endpoint's rows on screen, and undoing that edit went and read rows the edit never did.
+    /// </remarks>
+    [Fact]
+    public async Task A_document_typed_into_the_code_view_reads_the_source_it_names()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var first = $"undo-typed-first-{suffix}";
+        var second = $"undo-typed-second-{suffix}";
+        await PublishEndpointAsync(page, $"Undo typed first {suffix}", "GET", first, "SELECT 1");
+        await PublishEndpointAsync(page, $"Undo typed second {suffix}", "GET", second, "copy-dynamic-numeric");
+
+        page = await OpenComponentAsync(browserPage, $"Undo typed component {suffix}",
+            [
+                Control("answer", "label", bind: new { text = "=data.Answer" }),
+                Control("identifier", "label", bind: new { text = "=data.Value" }, y: 60),
+            ],
+            source: first);
+
+        await Assertions.Expect(Canvas(page, "answer")).ToHaveTextAsync("42");
+
+        // The route, retyped in the document itself rather than chosen from the list.
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var document = await page.GetByTestId("component-document-editor").InputValueAsync();
+        await page.GetByTestId("component-document-editor")
+            .FillAsync(document.Replace(first, second, StringComparison.Ordinal));
+
+        await page.GetByTestId("component-view-design").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-source")).ToHaveValueAsync(second);
+        await Assertions.Expect(Canvas(page, "identifier")).ToHaveTextAsync("007");
+
+        // And the step back reads the first endpoint again, which is where the edit came from.
+        await page.GetByTestId("component-undo").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-source")).ToHaveValueAsync(first);
+        await Assertions.Expect(Canvas(page, "answer")).ToHaveTextAsync("42");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// Selecting an anchored control at the component's edge does not put scrollbars on a component
     /// that fits, and the dimension's readout stays somewhere it can be read and pressed.
     /// </summary>
