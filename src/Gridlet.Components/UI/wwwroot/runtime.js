@@ -30,6 +30,8 @@
   // component's regional settings. A module's function is called with no `this`, as in the designer.
   let builtins = new Set();
   let regionalContext;
+  // The text boxes given a Format or an Input Mask, and what each one's value is to the rest of the page.
+  const textBoxes = new WeakMap();
   const ambiguousFunctions = new Set();
   const ambiguousValues = new Set();
   const groups = new Map();
@@ -739,6 +741,7 @@
     if (key === 'value') {
       const input = element.matches('input, textarea, select') ? element
         : element.querySelector('input, textarea, select');
+      if (textBoxes.has(input)) return textBoxes.get(input).value;
       if (input?.type === 'checkbox') return input.checked;
       return input && 'value' in input ? input.value : element.textContent;
     }
@@ -860,6 +863,10 @@
   }
 
   function setText(element, value) {
+    if (textBoxes.has(element)) {
+      textBoxes.get(element).value = value;
+      return;
+    }
     const text = asText(value);
     if (element.matches('[data-role="checkbox"]')) element.querySelector('span')?.replaceChildren(document.createTextNode(text));
     else if (element.matches('input, textarea, select')) element.value = text;
@@ -1221,7 +1228,7 @@
         const input = () => element?.matches('input, textarea, select') ? element : element?.querySelector('input, textarea, select');
         return {
           get name() { return name; }, get exists() { return Boolean(element); }, get element() { return element; }, get input() { return input(); },
-          get value() { const target = input(); return target?.type === 'checkbox' ? target.checked : target && 'value' in target ? target.value : element?.textContent; },
+          get value() { const target = input(); if (textBoxes.has(target)) return textBoxes.get(target).value; return target?.type === 'checkbox' ? target.checked : target && 'value' in target ? target.value : element?.textContent; },
           set value(value) { if (element) setValue(element, value); },
           get visible() { return Boolean(element) && element.style.display !== 'none'; },
           set visible(value) { if (element) element.style.display = value ? '' : 'none'; },
@@ -1470,6 +1477,9 @@
     const input = element.matches('input, textarea, select')
       ? element : element.querySelector('input, textarea, select');
     if (!input) throw new Error(`Action control '${name}' has no value.`);
+    const box = textBoxes.get(input);
+    if (box && !box.valid) throw new Error(`${name} does not hold a valid value`);
+    if (box) return box.value;
     return input.type === 'checkbox' ? input.checked : input.value;
   }
 
@@ -1815,6 +1825,17 @@
           browser: navigator.language,
         }),
       });
+      // Before any binding writes a value into one, so the value arrives through the box.
+      if (typeof standard.textBox === 'function') {
+        for (const input of root.querySelectorAll('input[data-format], input[data-input-mask]')) {
+          const box = standard.textBox(input, {
+            format: input.dataset.format || '',
+            mask: input.dataset.inputMask || '',
+            locale: regionalContext.locale,
+          });
+          if (box) textBoxes.set(input, box);
+        }
+      }
       const standardGroup = Object.create(null);
       groups.set('gridlet', standardGroup);
       for (const [name, value] of Object.entries(functions)) addFunction(name, value, standardGroup);

@@ -886,6 +886,7 @@ export default class ${CLASS_NAME(name)} {
   let localeFor = () => null;
   let formatValue = (value) => asText(value);
   let FORMAT_NAMES = [];
+  let textBox = () => null;
 
   const STANDARD_LIBRARY = 'gridlet.js';
 
@@ -902,6 +903,7 @@ export default class ${CLASS_NAME(name)} {
       localeFor = library.localeFor;
       formatValue = library.format;
       FORMAT_NAMES = library.FORMAT_NAMES;
+      textBox = library.textBox;
     })
     .catch((err) => {
       toast(`Gridlet's component functions failed to load: ${err.message}`);
@@ -1711,13 +1713,17 @@ export default class ${CLASS_NAME(name)} {
       defaults: {
         w: 200,
         h: SINGLE_LINE_HEIGHT,
-        props: { placeholder: '', multiline: false, readOnly: false },
+        props: { placeholder: '', multiline: false, readOnly: false, format: '', inputMask: '' },
       },
       style: (c) => c.props.multiline ? { ...FIELD_STYLE, resize: 'none' } : { ...FIELD_STYLE },
       properties: [
         TEXT('placeholder', 'Placeholder'),
         BOOL('multiline', 'Multiline', fitToMultiline),
         BOOL('readOnly', 'Read only'),
+        // As Access's text box has them: how the value is shown, and what may be typed. Both are for
+        // a box on one line; a multi-line box holds text as it is.
+        TEXT('format', 'Format'),
+        TEXT('inputMask', 'Input mask'),
       ],
       render: (c) => c.props.multiline
         ? h('textarea', {
@@ -3267,6 +3273,26 @@ export default class ${CLASS_NAME(name)} {
       hidden: '',
     });
 
+    // A text box's Format and Input Mask. Preview is the component for real, so the box is edited
+    // there the way the published page edits it. Design takes no typing, and shows a bound value the
+    // way the format writes it.
+    const textBoxes = new WeakMap();
+
+    function attachTextBox(inner, view, bound) {
+      const locale = componentLocale();
+      if (model.mode !== 'preview') {
+        if (bound && view.props.format) {
+          const written = formatValue(view.value, view.props.format, locale);
+          inner.value = isError(written) ? asText(view.value) : written;
+        }
+        return;
+      }
+      const box = textBox(inner, { format: view.props.format, mask: view.props.inputMask, locale });
+      if (!box) return;
+      if (bound) box.value = view.value;
+      textBoxes.set(inner, box);
+    }
+
     function renderControl(control) {
       const spec = CATALOGUE[control.type];
       const selected = model.mode === 'design' && isSelected(control.id);
@@ -3343,6 +3369,9 @@ export default class ${CLASS_NAME(name)} {
       // empty boxes, and preview shows what the row actually holds. A control whose value is one
       // of its own properties is already drawn from it - only the generic slot needs putting in.
       if (bound && valueKey === 'value' && spec.bind) spec.bind(inner, view.value);
+      if (control.type === 'textbox' && !view.props.multiline && (view.props.format || view.props.inputMask)) {
+        attachTextBox(inner, view, bound);
+      }
       // No inline geometry: it goes into the generated stylesheet instead. Inline custom
       // properties beat every stylesheet rule, so writing them here would make the component's own CSS
       // unable to redefine the variables - which is the whole point of exposing them.
@@ -8934,6 +8963,11 @@ ${colourGeneration}`;
       const input = element.matches('input, textarea, select')
         ? element : element.querySelector('input, textarea, select');
       if (!input) throw new Error(`Action control '${name}' has no value.`);
+      // What a box with a format or a mask sends is the value it stands for, and only once it can
+      // be read: a date that is not a date is not written to the database as text.
+      const box = textBoxes.get(input);
+      if (box && !box.valid) throw new Error(`${name} does not hold a valid value`);
+      if (box) return box.value;
       return input.type === 'checkbox' ? input.checked : input.value;
     }
 
@@ -9057,6 +9091,8 @@ ${colourGeneration}`;
         get value() {
           const element = inner();
           if (!element) return undefined;
+          // A box with a format holds the value it stands for, not the text it shows.
+          if (textBoxes.has(element)) return textBoxes.get(element).value;
           if (element instanceof HTMLInputElement && element.type === 'checkbox') return element.checked;
           if ('value' in element && typeof element.value === 'string') return element.value;
           return element.textContent;
@@ -9065,6 +9101,10 @@ ${colourGeneration}`;
         set value(next) {
           const element = inner();
           if (!element) return;
+          if (textBoxes.has(element)) {
+            textBoxes.get(element).value = next;
+            return;
+          }
           const spec = CATALOGUE[control()?.type];
           if (spec?.bind) spec.bind(element, next);
           else element.textContent = asText(next);
@@ -9947,6 +9987,7 @@ ${colourGeneration}`;
           term('edate(d, 1), eomonth(d, 0)', 'The same day a month later, and the last day of the month.'),
           term('dateadd("m", 1, d), datediff("d", a, b)', 'Move a date, or count between two, in yyyy, q, m, d, ww, h, n or s.'),
           term('datevalue("31/12/2026"), numbervalue("1 234,5")', 'A date or a number typed the way the component\'s locale types one.'),
+          term('Format and Input mask', 'A text box\'s own, on its Settings page, as in Access. Format shows the value formatted - Short Date, #,##0.00 - and reads back what is typed in the component\'s locale, so the box holds a real date or number. Input mask says what may be typed, place by place: 0 a digit, 9 an optional digit, L a letter, A a letter or digit, & any character, > upper case, / and : the locale\'s separators, \\ or "quotes" for text. After ;0 the value keeps the literals, and after a second ; comes the character an empty place shows: (000) 000-0000;0;_'),
           h('p', { class: 'field-note' },
             'The component\'s Settings page chooses the locale, and can replace its separators and its short date and time.')),
 

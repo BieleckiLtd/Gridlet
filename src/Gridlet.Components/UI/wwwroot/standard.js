@@ -218,6 +218,13 @@ function localePattern(tag, options, names) {
     .join('');
 }
 
+// The first separator a pattern writes between two of its fields: `/` in `dd/mm/yyyy`, `.` in
+// `d.mm.yyyy`, `:` in `hh:mm`.
+function separatorOf(pattern, fallback) {
+  const match = /[dmyhs]([^dmyhs"\\\s\p{L}]+)[dmyhs]/iu.exec(String(pattern ?? ''));
+  return match ? match[1].charAt(0) : fallback;
+}
+
 // The order a short date's day, month and year are typed in, read off its pattern: `dd/mm/yyyy` is
 // day, month, year.
 function fieldOrder(pattern) {
@@ -258,6 +265,8 @@ function buildLocale(tag, overrides) {
   const cycle = new Intl.DateTimeFormat(tag, { hour: 'numeric' }).resolvedOptions().hourCycle;
   const hour = cycle === 'h23' || cycle === 'h24' ? '2-digit' : 'numeric';
 
+  const shortTime = overrides.shortTime || localePattern(tag, { hour, minute: '2-digit' }, names);
+
   return Object.freeze({
     tag,
     months: Object.freeze(names.months),
@@ -271,10 +280,13 @@ function buildLocale(tag, overrides) {
     shortDate,
     mediumDate: localePattern(tag, { year: 'numeric', month: 'short', day: 'numeric' }, names),
     longDate: localePattern(tag, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }, names),
-    shortTime: overrides.shortTime || localePattern(tag, { hour, minute: '2-digit' }, names),
+    shortTime,
     mediumTime: localePattern(tag, { hour: 'numeric', minute: '2-digit', hour12: true }, names),
     longTime: localePattern(tag, { hour, minute: '2-digit', second: '2-digit' }, names),
     order: Object.freeze(fieldOrder(shortDate)),
+    // The characters a date and a time are typed with, which an input mask's `/` and `:` stand for.
+    dateSeparator: separatorOf(shortDate, '/'),
+    timeSeparator: separatorOf(shortTime, ':'),
   });
 }
 
@@ -837,7 +849,9 @@ function sectionsOf(tokens) {
 
 const isDateFormat = (tokens) => tokens.some((token) => /^[ydhms]$/i.test(token.code ?? ''));
 
-function formatDate(parts, tokens, locale) {
+// What a date format asks for, in order: literal text, the fields with how many letters each was
+// written with, AM/PM, and fractions of a second.
+function dateItems(tokens) {
   const items = [];
   for (let at = 0; at < tokens.length; at += 1) {
     const token = tokens[at];
@@ -886,6 +900,11 @@ function formatDate(parts, tokens, locale) {
     }
   });
 
+  return items;
+}
+
+function formatDate(parts, tokens, locale) {
+  const items = dateItems(tokens);
   const twelveHour = items.some((item) => item.period);
   const afternoon = parts.h >= 12;
   const weekdayIndex = new Date(utc(parts.y, parts.mo, parts.d)).getUTCDay();
@@ -1160,6 +1179,568 @@ export function format(value, pattern, locale = localeFor()) {
   const textOnly = tokens.some((token) => token.code === '@')
     && !tokens.some((token) => /^[0#?]$/.test(token.code ?? ''));
   return found === null || textOnly ? formatText(value, tokens) : formatNumber(found, tokens, locale);
+}
+
+// ---- text boxes ----
+// A text box with a Format shows its value the way the format writes it, and while it is being
+// edited shows it the way a person types one - `1234.5` and `31/12/2026` rather than `1,234.50` and
+// `Thursday, 31 December 2026` - as Access does. What is typed is read back when the box is left,
+// in the component's locale, into the value formulas and actions see: a number as plain text, a date
+// as ISO text. Text that cannot be read is kept as it was typed and the box is marked invalid, rather
+// than the box refusing to be left: a form that will not let go of the cursor is not a form a browser
+// user expects.
+
+const DATE_KINDS = new Set(['date', 'time', 'datetime']);
+
+/** What a format writes: 'number', 'date', 'time', 'datetime', or 'text' when it is neither. */
+export function formatKind(pattern, locale = localeFor()) {
+  const written = String(pattern ?? '');
+  if (!written.trim()) return 'text';
+  const named = NAMED_FORMATS.get(written.replace(/[\s_-]/g, '').toLowerCase());
+  if (named?.general) return named.general === 'number' ? 'number' : 'datetime';
+  if (named?.pattern) return 'number';
+  const tokens = sectionsOf(scanFormat(named?.locale ? locale[named.locale] : written))[0];
+  if (isDateFormat(tokens)) {
+    const fields = dateItems(tokens).filter((item) => item.field).map((item) => item.field);
+    const hasDate = fields.some((field) => field === 'y' || field === 'd' || field === 'm');
+    const hasTime = fields.some((field) => field === 'h' || field === 'n' || field === 's');
+    if (hasDate && hasTime) return 'datetime';
+    return hasTime ? 'time' : 'date';
+  }
+  return tokens.some((token) => /^[0#?]$/.test(token.code ?? '')) ? 'number' : 'text';
+}
+
+const EDITED_AS = new Map([
+  ['number', 'General Number'],
+  ['date', 'Short Date'],
+  ['time', 'Long Time'],
+  ['datetime', 'General Date'],
+]);
+
+/** A value the way a person edits it in a box whose format writes this kind of thing. */
+export function editText(value, kind, locale = localeFor()) {
+  if (value === null || value === undefined || value === '') return '';
+  if (!EDITED_AS.has(kind)) return text(value);
+  const written = format(value, EDITED_AS.get(kind), locale);
+  return isError(written) ? text(value) : written;
+}
+
+/**
+ * What a person typed into a box whose format writes this kind of thing, as the value it stands for:
+ * a number as plain text, a date as ISO text, anything else as typed. Null when it cannot be read.
+ */
+export function readTyped(typed, kind, locale = localeFor()) {
+  if (kind === 'text') return String(typed ?? '');
+  const written = String(typed ?? '').trim();
+  if (!written) return '';
+  if (kind === 'number') {
+    const found = parseNumber(written, locale);
+    return found === null ? null : String(found);
+  }
+  const parts = dateParts(written, locale);
+  if (!parts) return null;
+  if (kind === 'time') return parts.kind === 'date' ? null : isoText({ ...parts, kind: 'time' });
+  if (parts.kind === 'time') return null;
+  return isoText({ ...parts, kind });
+}
+
+// A value a formula or a module gives a box, in the form the box keeps. It is not a person typing,
+// so data from SQL is read as the plain number or ISO date it arrives as, and anything else is kept.
+function keptValue(value, kind, locale) {
+  if (value === null || value === undefined) return '';
+  if (kind === 'number') {
+    // A plain number is kept as it is written, digit for digit: a decimal(38) column is longer than a
+    // double holds, and an action must send back what arrived.
+    if (typeof value === 'string' && PLAIN_NUMBER.test(value.trim()) && value.trim().length <= LONGEST_NUMBER) {
+      return value.trim();
+    }
+    const found = numericValue(value, locale);
+    return found === null ? text(value) : String(found);
+  }
+  if (DATE_KINDS.has(kind)) {
+    const parts = dateParts(value instanceof Date ? value : text(value), locale);
+    if (!parts) return text(value);
+    if (kind === 'date' && parts.kind !== 'time') return isoText({ ...parts, kind: 'date' });
+    if (kind === 'time' && parts.kind !== 'date') return isoText({ ...parts, kind: 'time' });
+    return isoText(parts);
+  }
+  return text(value);
+}
+
+// ---- input masks ----
+// What a text box lets somebody type, place by place, as an Access Input Mask says it:
+//
+//   0  a digit, required           9  a digit, optional       #  a digit, space, + or -, optional
+//   L  a letter, required          ?  a letter, optional
+//   A  a letter or digit, required a  a letter or digit, optional
+//   &  any character, required     C  any character, optional
+//   >  what follows in upper case  <  what follows in lower case
+//   !  optional places left empty go to the front
+//   \x and "text"  written as they are
+//   . , : /  the locale's decimal, thousands, time and date separators
+//
+// Two more sections may follow `;`: `0` to keep the literal characters in the value (the default
+// leaves them out), and the character an empty place shows (the default is `_`). `Password` on its
+// own hides what is typed.
+//
+// Typing fills a place rather than pushing the rest along, and deleting empties one rather than
+// pulling the rest back, as Access does: the places are fixed, so nothing ever lands in a position
+// that does not accept it.
+
+const PLACES = new Map([
+  ['0', { accepts: /^\d$/u, required: true }],
+  ['9', { accepts: /^\d$/u, required: false }],
+  ['#', { accepts: /^[\d+\- ]$/u, required: false }],
+  ['L', { accepts: /^\p{L}$/u, required: true }],
+  ['?', { accepts: /^\p{L}$/u, required: false }],
+  ['A', { accepts: /^[\p{L}\p{Nd}]$/u, required: true }],
+  ['a', { accepts: /^[\p{L}\p{Nd}]$/u, required: false }],
+  ['&', { accepts: /^[^\r\n]$/u, required: true }],
+  ['C', { accepts: /^[^\r\n]$/u, required: false }],
+]);
+
+function maskSections(written) {
+  const sections = [''];
+  for (let at = 0; at < written.length; at += 1) {
+    const character = written[at];
+    if (character === '\\' && at + 1 < written.length) {
+      sections[sections.length - 1] += character + written[at + 1];
+      at += 1;
+    } else if (character === '"') {
+      const end = written.indexOf('"', at + 1);
+      const stop = end < 0 ? written.length : end;
+      sections[sections.length - 1] += written.slice(at, stop + 1);
+      at = stop;
+    } else if (character === ';' && sections.length < 3) {
+      sections.push('');
+    } else {
+      sections[sections.length - 1] += character;
+    }
+  }
+  return sections;
+}
+
+/** A mask, read once, or null when the text is not one. */
+export function inputMask(written, locale = localeFor()) {
+  const source = String(written ?? '');
+  if (!source.trim()) return null;
+  if (source.trim().toLowerCase() === 'password') return Object.freeze({ password: true });
+
+  const [pattern, literals = '', placeholderSection = ''] = maskSections(source);
+  const separators = new Map([
+    ['.', locale.decimal],
+    [',', locale.thousands],
+    [':', locale.timeSeparator ?? ':'],
+    ['/', locale.dateSeparator ?? '/'],
+  ]);
+
+  const slots = [];
+  let letterCase = null;
+  let fromRight = false;
+  for (let at = 0; at < pattern.length; at += 1) {
+    const character = pattern[at];
+    if (character === '\\') {
+      if (at + 1 < pattern.length) slots.push({ literal: pattern[at + 1] });
+      at += 1;
+    } else if (character === '"') {
+      const end = pattern.indexOf('"', at + 1);
+      const stop = end < 0 ? pattern.length : end;
+      for (const quoted of pattern.slice(at + 1, stop)) slots.push({ literal: quoted });
+      at = stop;
+    } else if (character === '>') letterCase = 'upper';
+    else if (character === '<') letterCase = 'lower';
+    else if (character === '!') fromRight = true;
+    else if (PLACES.has(character)) slots.push({ ...PLACES.get(character), letterCase });
+    else slots.push({ literal: separators.get(character) ?? character });
+  }
+  if (!slots.some((slot) => slot.literal === undefined)) return null;
+
+  const placeholderText = /^"(.*)"$/.exec(placeholderSection)?.[1]
+    ?? (placeholderSection.startsWith('\\') ? placeholderSection.slice(1) : placeholderSection);
+  const placeholder = placeholderText.charAt(0) || '_';
+  const keepLiterals = literals.trim() === '0';
+  const isPlace = (index) => index >= 0 && index < slots.length && slots[index].literal === undefined;
+
+  const accept = (slot, character) => {
+    const cased = slot.letterCase === 'upper' ? character.toLocaleUpperCase(locale.tag)
+      : slot.letterCase === 'lower' ? character.toLocaleLowerCase(locale.tag) : character;
+    // A letter whose other case is two letters - ß in upper case is SS - keeps the case it was typed in.
+    const kept = cased.length === 1 ? cased : character;
+    return kept.length === 1 && slot.accepts.test(kept) ? kept : null;
+  };
+
+  const clear = (state, start, end) =>
+    state.map((filled, index) => (index >= start && index < end ? null : filled));
+
+  const mask = {
+    password: false,
+    length: slots.length,
+
+    empty: () => slots.map(() => null),
+
+    /** Types text at a position, replacing a selection first. Returns the new places and the caret. */
+    insert(state, start, end, typed) {
+      const next = end > start ? clear(state, start, end) : [...state];
+      let at = start;
+      for (const character of String(typed ?? '')) {
+        // A literal typed where it already stands is stepped over, so `31/12/2026` goes in as well
+        // as `31122026` does.
+        let index = at;
+        while (index < slots.length && !isPlace(index) && slots[index].literal !== character) index += 1;
+        if (index >= slots.length) break;
+        if (!isPlace(index)) {
+          at = index + 1;
+          continue;
+        }
+        const accepted = accept(slots[index], character);
+        if (accepted === null) {
+          // A separator typed while optional places before it are still empty skips them, so
+          // 1/2/2027 goes into 99/99/0000 as the date it is.
+          let ahead = index;
+          while (ahead < slots.length && isPlace(ahead) && !slots[ahead].required) ahead += 1;
+          if (ahead < slots.length && !isPlace(ahead) && slots[ahead].literal === character) at = ahead + 1;
+          continue;
+        }
+        next[index] = accepted;
+        at = index + 1;
+      }
+      while (at < slots.length && !isPlace(at)) at += 1;
+      return { state: next, caret: at };
+    },
+
+    /** Empties a selection, or the place before or after the caret. */
+    erase(state, start, end, backwards) {
+      if (end > start) return { state: clear(state, start, end), caret: start };
+      let index = backwards ? start - 1 : start;
+      while (index >= 0 && index < slots.length && !isPlace(index)) index += backwards ? -1 : 1;
+      if (!isPlace(index)) return { state, caret: start };
+      const next = [...state];
+      next[index] = null;
+      return { state: next, caret: backwards ? index : index + 1 };
+    },
+
+    /** The places some text fills, read leniently: what a place does not accept is left out. */
+    fromText: (value) => mask.insert(mask.empty(), 0, 0, text(value)).state,
+
+    isEmpty: (state) => state.every((filled) => filled === null),
+
+    /** What the box shows. An empty box nobody is editing shows nothing, so its placeholder can. */
+    display(state, editing) {
+      if (!editing && mask.isEmpty(state)) return '';
+      return slots.map((slot, index) => slot.literal ?? state[index] ?? placeholder).join('');
+    },
+
+    /** What was typed, with the literals between and without the empty places. */
+    typed(state) {
+      if (mask.isEmpty(state)) return '';
+      return slots.map((slot, index) => slot.literal ?? state[index] ?? '').join('');
+    },
+
+    /** What the box holds: what was typed, and the literals as well when the mask keeps them. */
+    value(state) {
+      if (mask.isEmpty(state)) return '';
+      return slots.map((slot, index) =>
+        (slot.literal !== undefined ? (keepLiterals ? slot.literal : '') : state[index] ?? '')).join('');
+    },
+
+    /** Every required place is filled, or nothing is. */
+    complete: (state) => mask.isEmpty(state)
+      || slots.every((slot, index) => !slot.required || state[index] !== null),
+
+    /** With `!`, what was typed moves to the end and the empty places to the front. */
+    settle(state) {
+      if (!fromRight) return state;
+      const places = slots.map((slot, index) => index).filter(isPlace);
+      const filled = places.map((index) => state[index]).filter((character) => character !== null);
+      const next = mask.empty();
+      const targets = places.slice(places.length - filled.length);
+      for (const [order, index] of targets.entries()) {
+        const accepted = accept(slots[index], filled[order]);
+        if (accepted === null) return state;
+        next[index] = accepted;
+      }
+      return next;
+    },
+
+    firstEmpty(state) {
+      const index = slots.findIndex((slot, position) => isPlace(position) && state[position] === null);
+      return index < 0 ? slots.length : index;
+    },
+  };
+  return Object.freeze(mask);
+}
+
+// Puts a mask on an input. The mask makes every edit in the browser's place from here on. `begin`
+// and `end` are called by whoever manages the box when it takes and loses the cursor.
+function maskedInput(input, mask) {
+  let state = mask.fromText(input.value);
+  let editing = false;
+  let shown = input.value;
+  let committed = '';
+  let announcing = false;
+  let changeSeen = false;
+
+  const paint = (caret) => {
+    shown = mask.display(state, editing);
+    input.value = shown;
+    if (editing && caret !== undefined) input.setSelectionRange(caret, caret);
+  };
+
+  // Whatever listens for `input` - a formula's On input, a module - still hears about an edit the
+  // mask made in the browser's place.
+  const announce = (type) => {
+    announcing = true;
+    try { input.dispatchEvent(new Event(type, { bubbles: true })); } finally { announcing = false; }
+  };
+
+  const onBeforeInput = (event) => {
+    const start = input.selectionStart ?? 0;
+    const end = input.selectionEnd ?? start;
+    const carried = () => event.dataTransfer?.getData('text/plain') ?? event.data ?? '';
+    let result;
+    switch (event.inputType) {
+      case 'insertText':
+      case 'insertReplacementText':
+        result = mask.insert(state, start, end, event.data ?? carried());
+        break;
+      case 'insertFromPaste':
+      case 'insertFromDrop':
+      case 'insertFromYank':
+        result = mask.insert(state, start, end, carried());
+        break;
+      case 'deleteContentBackward':
+      case 'deleteWordBackward':
+      case 'deleteSoftLineBackward':
+      case 'deleteHardLineBackward':
+        result = mask.erase(state, start, end, true);
+        break;
+      case 'deleteContentForward':
+      case 'deleteWordForward':
+      case 'deleteSoftLineForward':
+      case 'deleteHardLineForward':
+      case 'deleteByCut':
+      case 'deleteByDrag':
+        result = mask.erase(state, start, end, false);
+        break;
+      case 'insertCompositionText':
+      case 'insertFromComposition':
+        // An input method is composing. It cannot be stopped part-way, so what it leaves is read
+        // back when it is done.
+        return;
+      default:
+        // Undo, redo, a line break: nothing a fixed set of places can take. The browser's own undo
+        // would put back text the mask never showed.
+        if (event.cancelable) event.preventDefault();
+        return;
+    }
+    // Some mobile keyboards send edits that cannot be cancelled. Those are read back afterwards.
+    if (!event.cancelable) return;
+    event.preventDefault();
+    const changed = result.state.some((character, index) => character !== state[index]);
+    state = result.state;
+    paint(result.caret);
+    if (changed) announce('input');
+  };
+
+  // An edit the mask did not get to make - an input method, a keyboard whose edits cannot be
+  // cancelled, autofill - is worked out from what changed: the stretch that was replaced is emptied,
+  // and what took its place is typed there.
+  const onInput = (event) => {
+    if (announcing || event.isComposing || !editing) return;
+    const now = input.value;
+    let prefix = 0;
+    while (prefix < now.length && prefix < shown.length && now[prefix] === shown[prefix]) prefix += 1;
+    let suffix = 0;
+    while (suffix < now.length - prefix && suffix < shown.length - prefix
+      && now[now.length - 1 - suffix] === shown[shown.length - 1 - suffix]) suffix += 1;
+    // Only a stretch that was really replaced is emptied: text added at the caret removed nothing.
+    const replacedTo = Math.min(mask.length, shown.length - suffix);
+    const erased = replacedTo > prefix ? mask.erase(state, prefix, replacedTo, false) : { state, caret: prefix };
+    const typed = now.slice(prefix, now.length - suffix);
+    const result = typed ? mask.insert(erased.state, prefix, prefix, typed) : erased;
+    state = result.state;
+    paint(result.caret);
+  };
+
+  const onCompositionEnd = () => onInput({ isComposing: false });
+  const onChange = () => { if (!announcing) changeSeen = true; };
+
+  input.addEventListener('beforeinput', onBeforeInput);
+  input.addEventListener('input', onInput);
+  input.addEventListener('compositionend', onCompositionEnd);
+  input.addEventListener('change', onChange);
+
+  return {
+    get value() { return mask.value(state); },
+    get typed() { return mask.typed(state); },
+    get complete() { return mask.complete(state); },
+    /** Shows some text for editing, and an empty box its caret on the first place. */
+    begin(textToEdit) {
+      editing = true;
+      changeSeen = false;
+      state = mask.fromText(textToEdit);
+      committed = mask.value(state);
+      // Writing the text puts the caret at its end, past every place. An empty box starts at its first
+      // place at once, for whatever is typed next, and again a moment later, because a click puts the
+      // caret where it landed once focus has arrived.
+      paint(mask.isEmpty(state) ? mask.firstEmpty(state) : undefined);
+      setTimeout(() => {
+        if (editing && input.ownerDocument.activeElement === input && mask.isEmpty(state)) {
+          input.setSelectionRange(mask.firstEmpty(state), mask.firstEmpty(state));
+        }
+      }, 0);
+    },
+    /** Stops editing. The browser tells nobody a box changed when every edit was the mask's, so this does. */
+    end() {
+      editing = false;
+      state = mask.settle(state);
+      paint();
+      if (!changeSeen && mask.value(state) !== committed) announce('change');
+    },
+    set(textToShow) {
+      state = mask.fromText(textToShow);
+      paint();
+    },
+  };
+}
+
+/**
+ * Gives a text box a Format and an Input Mask, the way Access does, in `locale`. Returns the box's
+ * value as everything outside it sees it - a formula, a module, an action - through `value`, and
+ * whether what is in it can be used, through `valid`. Null when there is neither to give it.
+ */
+export function textBox(input, { format: pattern = '', mask: written = '', locale = localeFor() } = {}) {
+  const kind = formatKind(pattern, locale);
+  const mask = inputMask(written, locale);
+  if (mask?.password) {
+    input.type = 'password';
+    if (kind === 'text') return null;
+  }
+  if (kind === 'text' && !mask) return null;
+
+  const masked = mask && !mask.password ? maskedInput(input, mask) : null;
+  let value = keptValue(input.value, kind, locale);
+  let unreadable = null;
+  let editing = false;
+
+  const idleText = () => {
+    if (unreadable !== null) return unreadable;
+    if (kind === 'text') return value;
+    const written = format(value, pattern, locale);
+    return isError(written) ? text(value) : written;
+  };
+  const editingText = () => unreadable ?? (kind === 'text' ? value : editText(value, kind, locale));
+  const valid = () => unreadable === null && (!masked || masked.complete);
+
+  const mark = () => {
+    const ok = valid();
+    if (ok) input.removeAttribute('aria-invalid');
+    else input.setAttribute('aria-invalid', 'true');
+    let reason = '';
+    if (unreadable !== null) {
+      reason = `"${unreadable}" is not ${kind === 'number' ? 'a number' : kind === 'time' ? 'a time' : 'a date'}.`;
+    } else if (!ok) {
+      reason = 'Fill in every required place.';
+    }
+    input.setCustomValidity?.(reason);
+    // What the box holds, where a stylesheet or a test can see it without asking.
+    input.dataset.value = unreadable ?? value;
+  };
+
+  const show = () => {
+    if (editing) {
+      if (masked) masked.begin(editingText());
+      else input.value = editingText();
+    } else if (masked && kind === 'text' && unreadable === null) {
+      masked.set(value);
+    } else {
+      input.value = idleText();
+    }
+  };
+
+  const typedNow = () => (masked ? (kind === 'text' ? masked.value : masked.typed) : input.value);
+
+  // What the box showed when it took the cursor. Leaving it as it was is not an edit, so nothing is
+  // read back: a date shown without its time, or a number longer than a double holds, stays exactly
+  // the value it was.
+  let startedWith = null;
+
+  // What is in the box right now, read as the value it would be. A browser fires `change` before
+  // `blur`, and a component's handlers hear it before the box does, so a handler asking for the value
+  // in the middle of an edit is given what has been typed.
+  const pending = () => {
+    if (!editing) return null;
+    const typed = typedNow();
+    if (typed === startedWith) return null;
+    return { typed, read: readTyped(typed, kind, locale) };
+  };
+
+  const commit = () => {
+    const edit = pending();
+    if (!edit) return;
+    if (edit.read === null) unreadable = edit.typed;
+    else {
+      unreadable = null;
+      value = edit.read;
+    }
+    startedWith = edit.typed;
+  };
+
+  let pointing = false;
+  input.addEventListener('pointerdown', () => { pointing = true; });
+  input.addEventListener('focus', () => {
+    const byPointer = pointing;
+    pointing = false;
+    // A read-only box is shown, not edited.
+    if (input.readOnly) return;
+    editing = true;
+    show();
+    startedWith = typedNow();
+    // Arriving from the keyboard selects everything, as Access does, so typing replaces it. Writing the
+    // text would otherwise leave the caret after it.
+    if (!byPointer && input.value) input.setSelectionRange(0, input.value.length);
+  });
+  input.addEventListener('blur', () => {
+    // A press inside a box that already had the cursor is not how the next focus arrives.
+    pointing = false;
+    if (!editing) return;
+    commit();
+    editing = false;
+    if (masked) masked.end();
+    if (!(masked && kind === 'text' && unreadable === null)) input.value = idleText();
+    mark();
+  });
+  input.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || !editing) return;
+    commit();
+    mark();
+  });
+
+  editing = input.ownerDocument.activeElement === input && !input.readOnly;
+  show();
+  startedWith = editing ? typedNow() : null;
+  mark();
+
+  return {
+    kind,
+    get value() {
+      const edit = pending();
+      if (edit) return edit.read ?? edit.typed;
+      return unreadable ?? value;
+    },
+    set value(next) {
+      unreadable = null;
+      value = keptValue(next, kind, locale);
+      show();
+      if (editing) startedWith = typedNow();
+      mark();
+    },
+    get valid() {
+      const edit = pending();
+      if (edit) return edit.read !== null && (!masked || masked.complete);
+      return valid();
+    },
+  };
 }
 
 /**

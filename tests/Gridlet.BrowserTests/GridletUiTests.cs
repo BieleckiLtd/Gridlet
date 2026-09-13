@@ -2173,10 +2173,11 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await search.GetByTestId("object-search-run").ClickAsync();
 
         await Assertions.Expect(search.GetByTestId("object-search-status"))
-            .ToContainTextAsync("3 matches");
-        await Assertions.Expect(search.GetByTestId("object-search-status"))
             .ToContainTextAsync("3 databases · 3 connections");
-        await Assertions.Expect(search.GetByTestId("object-search-result")).ToHaveCountAsync(3);
+        // One trigger per connection. Counted by name rather than as every match: workspace modules are
+        // searched too, and Gridlet's own gridlet.js is ordinary text that is free to use both words.
+        await Assertions.Expect(search.GetByTestId("object-search-result")
+            .Filter(new() { HasText = "dbo.AuditCustomers" })).ToHaveCountAsync(3);
         await Assertions.Expect(search.GetByText("Main / FakeDb", new() { Exact = false }))
             .ToBeVisibleAsync();
         await Assertions.Expect(search.GetByText("DdlOnly / FakeDb", new() { Exact = false }))
