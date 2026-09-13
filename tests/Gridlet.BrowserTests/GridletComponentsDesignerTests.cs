@@ -3690,6 +3690,11 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         try
         {
             await published.GotoAsync($"/gridlet/components/{route}");
+            await Assertions.Expect(published.Locator("[data-name='due']")).ToHaveValueAsync("31/12/2026");
+            // The page works its bindings out again once the component is first measured, which puts a
+            // bound box back to its formula's value. Two frames on, that has happened.
+            await published.EvaluateAsync(
+                "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
             await TypeIntoFormattedBoxesAsync(published.Locator(".gridlet-component-runtime"));
         }
         finally
@@ -3748,7 +3753,10 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             """);
         var page = await OpenComponentAsync(browserPage, $"Change handler {route}",
         [
-            Control("amount", "textbox", bind: new { value = "=1234.5" }, props: new { format = "#,##0.00" }, y: 10),
+            // Not bound: the published page works its bindings out again when the component is first
+            // measured, and a bound box would go back to its formula's value if that lands after the
+            // typing.
+            Control("amount", "textbox", props: new { format = "#,##0.00" }, y: 10),
             Control("copy", "textbox", props: new { placeholder = "" }, y: 50),
             Control("moment", "textbox", bind: new { value = "=\"2026-12-31\"" }, props: new { format = "dd/mm/yyyy hh:mm" }, y: 90),
         ],
