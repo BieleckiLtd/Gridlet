@@ -75,9 +75,16 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             "textarea" => $"<textarea data-role=\"textarea\" {Placeholder(properties)} {attrs}></textarea>",
             "textbox" when properties.TryGetValue("multiline", out var m) && m == "true"
                 => $"<textarea {Placeholder(properties)} {attrs}></textarea>",
-            _ => $"<input type=\"text\" {Placeholder(properties)} {attrs}>",
+            _ => $"<input type=\"text\" {Placeholder(properties)} {Formatting(properties)} {attrs}>",
         };
     }
+
+    /// <summary>A text box's Format and Input Mask, as the panel writes them.</summary>
+    private static string Formatting(IReadOnlyDictionary<string, string> properties)
+        => string.Join(" ",
+            new[] { ("format", "data-format"), ("inputMask", "data-input-mask") }
+                .Where(pair => properties.ContainsKey(pair.Item1))
+                .Select(pair => $"{pair.Item2}=\"{Escape(properties[pair.Item1])}\""));
 
     private static string Options(IReadOnlyDictionary<string, string> properties)
         => properties.TryGetValue("options", out var options)
@@ -3652,6 +3659,214 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
 
             browserPage.AssertNoUnexpectedErrors();
         }
+    }
+
+    /// <summary>
+    /// A text box with a Format shows its value the way the format writes it, and is edited the way a
+    /// person types one, as in Access. What is typed is read back in the component's locale into the
+    /// value the rest of the component sees; text that cannot be read stays as it was typed and marks
+    /// the box. Design shows a bound value formatted, and the published page edits exactly as Preview.
+    /// </summary>
+    [Fact]
+    public async Task A_formatted_text_box_shows_its_value_formatted_and_reads_back_what_is_typed()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var route = $"text-box-format-{Guid.NewGuid():n}";
+        var page = await OpenComponentAsync(browserPage, $"Formatted boxes {route}",
+        [
+            Control("due", "textbox", bind: new { value = "=\"2026-12-31\"" }, props: new { format = "Short Date" }, y: 10),
+            Control("amount", "textbox", bind: new { value = "=1234.5" }, props: new { format = "#,##0.00" }, y: 50),
+        ],
+            route: route,
+            regional: new { locale = "en-GB" });
+
+        await Assertions.Expect(Canvas(page, "due")).ToHaveValueAsync("31/12/2026");
+        await Assertions.Expect(Canvas(page, "amount")).ToHaveValueAsync("1,234.50");
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await TypeIntoFormattedBoxesAsync(page.Locator(".gfd-canvas"));
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{route}");
+            await TypeIntoFormattedBoxesAsync(published.Locator(".gridlet-component-runtime"));
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    private static async Task TypeIntoFormattedBoxesAsync(ILocator surface)
+    {
+        var due = surface.Locator("[data-name='due']");
+        var amount = surface.Locator("[data-name='amount']");
+        await Assertions.Expect(due).ToHaveValueAsync("31/12/2026");
+        await Assertions.Expect(amount).ToHaveValueAsync("1,234.50");
+
+        // Being edited, a number is the number as it is typed, without its grouping or its places.
+        await amount.FocusAsync();
+        await Assertions.Expect(amount).ToHaveValueAsync("1234.5");
+        await amount.FillAsync("98765.4");
+        await amount.BlurAsync();
+        await Assertions.Expect(amount).ToHaveValueAsync("98,765.40");
+        await Assertions.Expect(amount).ToHaveAttributeAsync("data-value", "98765.4");
+
+        await due.FillAsync("1/2/2027");
+        await due.BlurAsync();
+        await Assertions.Expect(due).ToHaveValueAsync("01/02/2027");
+        await Assertions.Expect(due).ToHaveAttributeAsync("data-value", "2027-02-01");
+
+        await due.FillAsync("the day after tomorrow");
+        await due.BlurAsync();
+        await Assertions.Expect(due).ToHaveValueAsync("the day after tomorrow");
+        await Assertions.Expect(due).ToHaveAttributeAsync("aria-invalid", "true");
+    }
+
+    /// <summary>
+    /// A box's On change is heard before the box itself is left, so what a handler reads is what has
+    /// been typed, as the value it stands for - not the value the box held before the edit. Leaving a
+    /// box without typing changes nothing, even where the text it shows could not say the whole value.
+    /// </summary>
+    [Fact]
+    public async Task A_change_handler_reads_what_was_typed_and_an_untouched_box_keeps_its_value()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var route = $"text-box-change-{Guid.NewGuid():n}";
+        var module = $"remember{Guid.NewGuid():n}.js";
+        await WriteModuleAsync(browserPage.Page, module, """
+            export default class Remember {
+              constructor(component) {
+                component.field('amount').on('change', () => {
+                  component.field('copy').value = component.field('amount').value;
+                });
+              }
+            }
+            """);
+        var page = await OpenComponentAsync(browserPage, $"Change handler {route}",
+        [
+            Control("amount", "textbox", bind: new { value = "=1234.5" }, props: new { format = "#,##0.00" }, y: 10),
+            Control("copy", "textbox", props: new { placeholder = "" }, y: 50),
+            Control("moment", "textbox", bind: new { value = "=\"2026-12-31\"" }, props: new { format = "dd/mm/yyyy hh:mm" }, y: 90),
+        ],
+            modules: [module],
+            route: route,
+            regional: new { locale = "en-GB" });
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await ChangeAndReadAsync(page.Locator(".gfd-canvas"));
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{route}");
+            await ChangeAndReadAsync(published.Locator(".gridlet-component-runtime"));
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    private static async Task ChangeAndReadAsync(ILocator surface)
+    {
+        var amount = surface.Locator("[data-name='amount']");
+        await amount.FillAsync("98765.4");
+        await amount.PressAsync("Tab");
+        await Assertions.Expect(surface.Locator("[data-name='copy']")).ToHaveValueAsync("98765.4");
+        await Assertions.Expect(amount).ToHaveValueAsync("98,765.40");
+
+        var moment = surface.Locator("[data-name='moment']");
+        await moment.FocusAsync();
+        await moment.BlurAsync();
+        await Assertions.Expect(moment).ToHaveAttributeAsync("data-value", "2026-12-31");
+    }
+
+    /// <summary>
+    /// An Input Mask takes only what each place accepts. Typing fills a place rather than pushing the
+    /// rest along, deleting empties one, a separator is the locale's own, and a box with a required
+    /// place left empty is marked. A mask beside a date format is read back as the date it spells.
+    /// </summary>
+    [Fact]
+    public async Task An_input_mask_takes_only_what_each_place_accepts()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var route = $"text-box-mask-{Guid.NewGuid():n}";
+        var page = await OpenComponentAsync(browserPage, $"Masked boxes {route}",
+        [
+            Control("phone", "textbox", props: new { inputMask = "\\(000\\) 000-0000;0;_" }, y: 10),
+            Control("born", "textbox", props: new { format = "Short Date", inputMask = "00/00/0000" }, y: 50),
+            Control("code", "textbox", props: new { inputMask = ">LL-0000" }, y: 90),
+        ],
+            route: route,
+            regional: new { locale = "de-DE" });
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await TypeIntoMaskedBoxesAsync(page.Locator(".gfd-canvas"));
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{route}");
+            await TypeIntoMaskedBoxesAsync(published.Locator(".gridlet-component-runtime"));
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var document = await page.GetByTestId("component-document-editor").InputValueAsync();
+        Assert.Contains("data-input-mask=\"\\(000\\) 000-0000;0;_\"", document, StringComparison.Ordinal);
+        Assert.Contains("data-format=\"Short Date\"", document, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    private static async Task TypeIntoMaskedBoxesAsync(ILocator surface)
+    {
+        var phone = surface.Locator("[data-name='phone']");
+        await phone.FocusAsync();
+        await Assertions.Expect(phone).ToHaveValueAsync("(___) ___-____");
+        // A letter has no place in a digit's, so it is not typed at all.
+        await phone.PressSequentiallyAsync("55a5123");
+        await Assertions.Expect(phone).ToHaveValueAsync("(555) 123-____");
+        await phone.PressAsync("Backspace");
+        await Assertions.Expect(phone).ToHaveValueAsync("(555) 12_-____");
+        await phone.BlurAsync();
+        await Assertions.Expect(phone).ToHaveAttributeAsync("aria-invalid", "true");
+
+        await phone.FocusAsync();
+        await phone.EvaluateAsync("input => input.setSelectionRange(8, 8)");
+        await phone.PressSequentiallyAsync("34567");
+        await Assertions.Expect(phone).ToHaveValueAsync("(555) 123-4567");
+        await phone.BlurAsync();
+        await Assertions.Expect(phone).ToHaveAttributeAsync("data-value", "(555) 123-4567");
+        await Assertions.Expect(phone).Not.ToHaveAttributeAsync("aria-invalid", "true");
+
+        // `/` is the locale's date separator, and the date the places spell is the value.
+        var born = surface.Locator("[data-name='born']");
+        await born.FocusAsync();
+        await Assertions.Expect(born).ToHaveValueAsync("__.__.____");
+        await born.PressSequentiallyAsync("31122026");
+        await Assertions.Expect(born).ToHaveValueAsync("31.12.2026");
+        await born.BlurAsync();
+        await Assertions.Expect(born).ToHaveValueAsync("31.12.2026");
+        await Assertions.Expect(born).ToHaveAttributeAsync("data-value", "2026-12-31");
+
+        var code = surface.Locator("[data-name='code']");
+        await code.FocusAsync();
+        await code.PressSequentiallyAsync("ab1234");
+        await Assertions.Expect(code).ToHaveValueAsync("AB-1234");
+        await code.FillAsync("xy9876");
+        await Assertions.Expect(code).ToHaveValueAsync("XY-9876");
+        await code.BlurAsync();
+        await Assertions.Expect(code).ToHaveAttributeAsync("data-value", "XY9876");
     }
 
     /// <summary>

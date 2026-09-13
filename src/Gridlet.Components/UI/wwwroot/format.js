@@ -380,6 +380,10 @@
         if (!props.multiline) element.setAttribute('type', 'text');
         if (props.placeholder) element.setAttribute('placeholder', props.placeholder);
         if (props.readOnly) element.setAttribute('readonly', '');
+        // How the value is shown and what may be typed, as a form designer's Format and Input Mask.
+        // HTML has a `pattern`, but it only says whether text matches once it is typed.
+        if (props.format) element.setAttribute('data-format', props.format);
+        if (props.inputMask) element.setAttribute('data-input-mask', props.inputMask);
         return element;
       }
       case 'textarea': {
@@ -703,6 +707,8 @@
           placeholder: element.getAttribute('placeholder') || '',
           multiline: element.tagName.toLowerCase() === 'textarea',
           readOnly: element.hasAttribute('readonly'),
+          format: element.getAttribute('data-format') || '',
+          inputMask: element.getAttribute('data-input-mask') || '',
         };
       case 'textarea':
         return { placeholder: element.getAttribute('placeholder') || '' };
