@@ -256,6 +256,13 @@ internal sealed class GridletComponentEndpoints :
                 componentOptions.Value.PublicRoutePrefix,
                 componentOptions.Value.PublicRoutePrefix.TrimStart().StartsWith('/')));
 
+        // The language the page is in and the culture it formats with, for a component whose regional
+        // settings say Inherit or Server. The invariant culture has no name, so a server running under it
+        // declares English, as this page always used to.
+        var language = System.Net.WebUtility.HtmlEncode(
+            System.Globalization.CultureInfo.CurrentUICulture.Name is { Length: > 0 } uiCulture ? uiCulture : "en");
+        var serverLocale = System.Net.WebUtility.HtmlEncode(System.Globalization.CultureInfo.CurrentCulture.Name);
+
         context.Response.Headers.CacheControl = "no-store";
         context.Response.Headers.ContentSecurityPolicy =
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
@@ -264,7 +271,7 @@ internal sealed class GridletComponentEndpoints :
 
         var page = """
 <!doctype html>
-<html lang="en">
+<html lang="%LANGUAGE%">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -282,7 +289,7 @@ internal sealed class GridletComponentEndpoints :
     }
   </style>
 </head>
-<body data-gridlet-published-segment="%PUBLISHED_SEGMENT%" data-gridlet-published-api-path="%PUBLISHED_PATH%" data-gridlet-component-public-path="%COMPONENT_PUBLIC_PATH%" data-gridlet-component-id="%COMPONENT_ID%" data-gridlet-component-route="%COMPONENT_ROUTE%" data-gridlet-component-routable="true" data-gridlet-runtime-mount="%RUNTIME_MOUNT%">
+<body data-gridlet-published-segment="%PUBLISHED_SEGMENT%" data-gridlet-published-api-path="%PUBLISHED_PATH%" data-gridlet-component-public-path="%COMPONENT_PUBLIC_PATH%" data-gridlet-component-id="%COMPONENT_ID%" data-gridlet-component-route="%COMPONENT_ROUTE%" data-gridlet-component-routable="true" data-gridlet-runtime-mount="%RUNTIME_MOUNT%" data-gridlet-server-locale="%SERVER_LOCALE%">
   <main id="gridlet-component-host" aria-live="polite">
     <template id="gridlet-component-document">%DOCUMENT%</template>
   </main>
@@ -301,6 +308,8 @@ internal sealed class GridletComponentEndpoints :
             .Replace("%COMPONENT_ID%", System.Net.WebUtility.HtmlEncode(component.Id), StringComparison.Ordinal)
             .Replace("%COMPONENT_ROUTE%", componentRoute, StringComparison.Ordinal)
             .Replace("%RUNTIME_MOUNT%", runtimeMount, StringComparison.Ordinal)
+            .Replace("%SERVER_LOCALE%", serverLocale, StringComparison.Ordinal)
+            .Replace("%LANGUAGE%", language, StringComparison.Ordinal)
             .Replace("%TITLE%", title, StringComparison.Ordinal);
 
         return Results.Content(page, "text/html; charset=utf-8");

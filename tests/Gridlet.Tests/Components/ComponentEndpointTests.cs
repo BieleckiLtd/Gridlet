@@ -270,6 +270,61 @@ public class ComponentEndpointTests
         Assert.Contains("data-gridlet-published-segment=\"pub\"", page, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A component whose regional settings say Inherit or Server formats with what the server says,
+    /// so the page it runs in carries the language the request is in and the culture it formats
+    /// with, and the designer is told the same two so Preview agrees with the page.
+    /// </summary>
+    [Fact]
+    public async Task The_component_page_and_the_designer_are_told_the_server_s_culture_and_language()
+    {
+        var (app, _) = await StartAsync();
+        await using var _app = app;
+        // A request is served in the culture of whoever sent it only when the test server is told to
+        // carry the caller's across, and a client reads that when it is made.
+        var server = app.GetTestServer();
+        server.PreserveExecutionContext = true;
+        using var client = server.CreateClient();
+
+        var saved = await (await client.PostAsJsonAsync("/gridlet/api/components",
+                new { name = "Regional", html = Document(), routable = true }))
+            .Content.ReadFromJsonAsync<GridletComponent>();
+
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        var uiCulture = System.Globalization.CultureInfo.CurrentUICulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("pl-PL");
+            System.Globalization.CultureInfo.CurrentUICulture = new System.Globalization.CultureInfo("de-CH");
+
+            var page = await client.GetStringAsync($"/gridlet/components/{saved!.Id}");
+            Assert.Contains("<html lang=\"de-CH\">", page, StringComparison.Ordinal);
+            Assert.Contains("data-gridlet-server-locale=\"pl-PL\"", page, StringComparison.Ordinal);
+
+            var meta = await client.GetFromJsonAsync<JsonElement>("/gridlet/api/meta");
+            Assert.Equal("pl-PL", meta.GetProperty("serverLocale").GetString());
+            Assert.Equal("de-CH", meta.GetProperty("serverLanguage").GetString());
+
+            // The invariant culture has no name to offer. The page keeps declaring English, and the
+            // designer is told there is nothing to inherit.
+            System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+            System.Globalization.CultureInfo.CurrentUICulture = System.Globalization.CultureInfo.InvariantCulture;
+
+            page = await client.GetStringAsync($"/gridlet/components/{saved.Id}");
+            Assert.Contains("<html lang=\"en\">", page, StringComparison.Ordinal);
+            Assert.Contains("data-gridlet-server-locale=\"\"", page, StringComparison.Ordinal);
+
+            meta = await client.GetFromJsonAsync<JsonElement>("/gridlet/api/meta");
+            Assert.Equal(JsonValueKind.Null, meta.GetProperty("serverLocale").ValueKind);
+            Assert.Equal(JsonValueKind.Null, meta.GetProperty("serverLanguage").ValueKind);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = culture;
+            System.Globalization.CultureInfo.CurrentUICulture = uiCulture;
+        }
+    }
+
     [Fact]
     public async Task Components_reserve_the_components_published_route_segment()
     {

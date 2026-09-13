@@ -123,6 +123,17 @@
     ['margin', 'margin'],
   ];
 
+  // How the component writes numbers and dates. HTML's `lang` says what language content is in, which
+  // is not the same question, so these are attributes of their own. Each is written only when it is
+  // set: a component that says nothing formats the way the page it is on does.
+  const REGIONAL = [
+    ['locale', 'data-locale'],
+    ['decimalSeparator', 'data-decimal-separator'],
+    ['thousandsSeparator', 'data-thousands-separator'],
+    ['dateFormat', 'data-date-format'],
+    ['timeFormat', 'data-time-format'],
+  ];
+
   const px = (value) => `${Math.round(Number(value) || 0)}px`;
   const unpx = (value) => Math.round(parseFloat(value) || 0);
   // Keep this grammar identical to the designer, runtime and server: every slash separates two
@@ -219,6 +230,9 @@
     if (doc.elementId) root.id = doc.elementId;
     if (doc.classes && doc.classes.trim()) root.className = doc.classes.trim();
     if (doc.tip) root.title = doc.tip;
+    for (const [key, attribute] of REGIONAL) {
+      if (doc[key]) root.setAttribute(attribute, doc[key]);
+    }
 
     writeColors(root, doc.colors);
     writeBindings(root, doc.bind);
@@ -523,6 +537,7 @@
       elementId: root.id || '',
       classes: root.getAttribute('class') || '',
       tip: root.getAttribute('title') || '',
+      ...Object.fromEntries(REGIONAL.map(([key, attribute]) => [key, root.getAttribute(attribute) ?? ''])),
       colors: readColors(root),
       bind: readBindings(root),
       events: readHandlers(root),

@@ -13,7 +13,9 @@ public sealed record GridletMetaResponse(
     GridletVoiceInfo? Voice = null,
     IReadOnlyList<GridletUiModuleInfo>? Modules = null,
     string? PublishedApiPath = null,
-    string? ComponentPublicPath = null);
+    string? ComponentPublicPath = null,
+    string? ServerLocale = null,
+    string? ServerLanguage = null);
 
 /// <summary>
 /// An optional package that is installed and contributes browser assets. The shell loads these
