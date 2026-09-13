@@ -3618,7 +3618,9 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         foreach (var (source, tag) in sources)
         {
             // A page of its own for each: the workspace remembers the Components section was opened.
-            await using var browserPage = await fixture.NewPageAsync();
+            // The visual page is the one whose browser language is pinned; any other page takes the
+            // language of the machine the tests run on.
+            await using var browserPage = await fixture.NewVisualPageAsync();
             var route = $"regional-source-{Guid.NewGuid():n}";
             var page = await OpenComponentAsync(browserPage, $"Regional source {route}",
             [
