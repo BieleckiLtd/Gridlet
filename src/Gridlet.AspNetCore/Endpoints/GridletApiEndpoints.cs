@@ -199,8 +199,15 @@ internal static partial class GridletApiEndpoints
                 GridletRoutePath.TryNormalize(publishedApiPath, out var normalizedPublishedApiPath)
                     ? "/" + normalizedPublishedApiPath
                     : null,
-            services.GetService<IGridletRuntimeRouteMetadata>()?.ComponentPublicPath));
+            services.GetService<IGridletRuntimeRouteMetadata>()?.ComponentPublicPath,
+            // What a component's Server and Inherit regional settings mean: the culture this request
+            // formats with and the language it is in. The designer needs them to show what the
+            // published page will. The invariant culture has no name, and is not a locale to offer.
+            NullIfEmpty(System.Globalization.CultureInfo.CurrentCulture.Name),
+            NullIfEmpty(System.Globalization.CultureInfo.CurrentUICulture.Name)));
     }
+
+    private static string? NullIfEmpty(string value) => value.Length == 0 ? null : value;
 
     private static Task<IResult> GetDatabases(
         string connection,

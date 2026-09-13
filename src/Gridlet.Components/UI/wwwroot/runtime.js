@@ -26,6 +26,10 @@
   let rowIndex = 0;
   let columns = [];
   let functions = Object.create(null);
+  // Gridlet's own functions, and what they are handed as `this` when a formula calls one: the
+  // component's regional settings. A module's function is called with no `this`, as in the designer.
+  let builtins = new Set();
+  let regionalContext;
   const ambiguousFunctions = new Set();
   const ambiguousValues = new Set();
   const groups = new Map();
@@ -785,7 +789,7 @@
         if (typeof found !== 'function') return error('#NAME?', `There is nothing called "${node.name}" in this component.`);
         const args = node.args.map((argument) => evaluateNode(argument, lookup, scope));
         if (args.some(isError) && node.name.toLowerCase() !== 'iferror') return args.find(isError);
-        try { return Reflect.apply(found, undefined, args); }
+        try { return Reflect.apply(found, builtins.has(found) ? regionalContext : undefined, args); }
         catch (exception) { return error('#VALUE!', `${node.name} failed: ${exception?.message || exception}`); }
       }
       default: return error('#SYNTAX?', 'The expression could not be read.');
@@ -1796,6 +1800,21 @@
       api = componentApi();
       const standard = await import(`${WORKSPACE_ROOT}api/components/modules/runtime/gridlet.js?v=${Date.now()}`);
       functions = standard.FUNCTIONS || Object.create(null);
+      builtins = new Set(Object.values(functions));
+      // Worked out once: nothing on a published page changes where its locale comes from.
+      regionalContext = Object.freeze({
+        locale: standard.localeFor?.({
+          locale: root.getAttribute('data-locale') ?? '',
+          decimalSeparator: root.getAttribute('data-decimal-separator') ?? '',
+          thousandsSeparator: root.getAttribute('data-thousands-separator') ?? '',
+          dateFormat: root.getAttribute('data-date-format') ?? '',
+          timeFormat: root.getAttribute('data-time-format') ?? '',
+        }, {
+          language: document.documentElement.lang,
+          server: document.body.dataset.gridletServerLocale || '',
+          browser: navigator.language,
+        }),
+      });
       const standardGroup = Object.create(null);
       groups.set('gridlet', standardGroup);
       for (const [name, value] of Object.entries(functions)) addFunction(name, value, standardGroup);

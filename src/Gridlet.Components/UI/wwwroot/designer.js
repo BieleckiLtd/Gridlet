@@ -882,6 +882,10 @@ export default class ${CLASS_NAME(name)} {
   let makeError;
   let ERROR = {};
   let FUNCTIONS = Object.create(null);
+  // A component's regional settings, and the formats a value is written with in them.
+  let localeFor = () => null;
+  let formatValue = (value) => asText(value);
+  let FORMAT_NAMES = [];
 
   const STANDARD_LIBRARY = 'gridlet.js';
 
@@ -895,6 +899,9 @@ export default class ${CLASS_NAME(name)} {
       makeError = library.error;
       ERROR = library.ERROR;
       FUNCTIONS = library.FUNCTIONS;
+      localeFor = library.localeFor;
+      formatValue = library.format;
+      FORMAT_NAMES = library.FORMAT_NAMES;
     })
     .catch((err) => {
       toast(`Gridlet's component functions failed to load: ${err.message}`);
@@ -1119,7 +1126,10 @@ export default class ${CLASS_NAME(name)} {
   // expression could use, so its exports are reachable by their own names and not by its.
   const QUALIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-  function nameScope() {
+  // `context` answers what Gridlet's own functions are handed as `this` when a formula calls one:
+  // the regional settings of the component the formula belongs to. Outside a component there is
+  // none, and they use the page's.
+  function nameScope(context = () => undefined) {
     // Maps rather than objects, so nothing here answers `constructor` or `toString` with real
     // JavaScript. A name is matched without regard to case; the spelling it was written with is
     // kept, because that is the spelling to show back to whoever wrote it.
@@ -1153,6 +1163,8 @@ export default class ${CLASS_NAME(name)} {
     };
 
     return {
+      get context() { return context(); },
+
       // Takes a qualifier, unless something else already has that name. Qualifiers share one
       // namespace - a class called `tax` in one file beside a `tax.js` in another would make
       // `tax.vat()` two different things - so the second one to ask is refused and told about it.
@@ -1200,7 +1212,7 @@ export default class ${CLASS_NAME(name)} {
         if (entries.length === 1) return { fn: entries[0].value };
         if (entries.length > 1) return { error: ambiguous(name, entries, true) };
         const key = name.toLowerCase();
-        if (Object.hasOwn(FUNCTIONS, key)) return { fn: FUNCTIONS[key] };
+        if (Object.hasOwn(FUNCTIONS, key)) return { fn: FUNCTIONS[key], builtin: true };
         return { error: makeError(ERROR.NAME, `There is no function called "${name}".`) };
       },
 
@@ -1211,7 +1223,7 @@ export default class ${CLASS_NAME(name)} {
         if (key === GRIDLET) {
           const lowered = name.toLowerCase();
           return Object.hasOwn(FUNCTIONS, lowered)
-            ? { fn: FUNCTIONS[lowered] }
+            ? { fn: FUNCTIONS[lowered], builtin: true }
             : { error: makeError(ERROR.NAME, `Gridlet has no function called "${name}".`) };
         }
         const group = groups.get(key);
@@ -1287,11 +1299,13 @@ export default class ${CLASS_NAME(name)} {
           if (failed) return failed;
         }
         try {
-          // Called with no `this`, so a plain function is never handed something it did not ask for.
-          // A method is bound to the instance it belongs to before it gets here, and a bound `this`
-          // is not something a call can take back - which is the whole difference between a method
-          // of the component's behaviour and a loose exported function.
-          return Reflect.apply(found.fn, undefined, args);
+          // The component author's own functions are called with no `this`, so a plain function is never
+          // handed something it did not ask for. A method is bound to the instance it belongs to
+          // before it gets here, and a bound `this` is not something a call can take back - which is
+          // the whole difference between a method of the component's behaviour and a loose exported
+          // function. Gridlet's own are handed the component's regional settings, which is how
+          // `text(data.Due, 'Short Date')` knows whose short date to write.
+          return Reflect.apply(found.fn, found.builtin ? scope.context : undefined, args);
         } catch (err) {
           // A module's own function is somebody's code and it can throw. That is one property
           // showing #VALUE!, not a component that stops drawing.
@@ -1957,6 +1971,13 @@ export default class ${CLASS_NAME(name)} {
       // The JavaScript modules this component runs, by name. Names only: the code lives in its own
       // files, so the document stays a description of the component rather than a container for source.
       modules: [],
+      // How it writes numbers and dates. Empty is Inherit, and no override: a new component formats
+      // the way the page it is on does.
+      locale: '',
+      decimalSeparator: '',
+      thousandsSeparator: '',
+      dateFormat: '',
+      timeFormat: '',
       controls: [],
     };
   }
@@ -2281,6 +2302,11 @@ export default class ${CLASS_NAME(name)} {
     doc.classes ??= '';
     doc.tip ??= '';
     doc.modules ??= [];
+    doc.locale ??= '';
+    doc.decimalSeparator ??= '';
+    doc.thousandsSeparator ??= '';
+    doc.dateFormat ??= '';
+    doc.timeFormat ??= '';
     doc.colors ??= newColors();
     doc.bind ??= {};
     doc.width = authoredCssSize(doc.width, '720px');
@@ -6787,7 +6813,110 @@ ${colourGeneration}`;
         row(model.doc, null, 'Layout', () => layoutSelect),
         ...identityRows(model.doc),
         ...eventRows(model.doc, COMPONENT_EVENTS),
+        ...regionalRows(),
       ];
+    }
+
+    // ---- regional settings ----
+    // How the component writes numbers and dates: a locale, or where to take one from, and the
+    // separators and short patterns to use instead of the locale's own - what Windows' regional
+    // settings offer, and what Access and Excel format with. gridlet.js says what each choice means.
+
+    const LOCALE_SOURCES = [
+      ['', 'Inherit'],
+      ['browser', 'Browser'],
+      ['server', 'Server'],
+      ['named', 'Named locale'],
+    ];
+
+    function regionalRows() {
+      const source = String(model.doc.locale || '').trim().toLowerCase();
+      const choice = source === '' || source === 'inherit' ? ''
+        : source === 'browser' || source === 'server' ? source
+          : 'named';
+
+      // What the locale on its own would write, so an override box shows what it is overriding.
+      const plain = () => localeFor({ locale: model.doc.locale }, localeEnvironment());
+      const shown = (value) => String(value).replace(/\s/g, '␣');
+
+      const boxes = {};
+      const sample = h('p', { class: 'field-note gfd-note', 'data-testid': 'component-regional-sample' });
+      const refresh = () => {
+        const locale = componentLocale();
+        const underneath = plain();
+        sample.textContent = `${locale.tag}: `
+          + `${formatValue('2026-12-31T14:30:00', 'Short Date', locale)}, `
+          + `${formatValue('2026-12-31T14:30:00', 'Short Time', locale)}, `
+          + `${formatValue(1234567.891, '#,##0.00', locale)}`;
+        boxes.decimalSeparator.placeholder = shown(underneath.decimal);
+        boxes.thousandsSeparator.placeholder = shown(underneath.thousands);
+        boxes.dateFormat.placeholder = underneath.shortDate;
+        boxes.timeFormat.placeholder = underneath.shortTime;
+      };
+
+      // A formula that formats is worked out again on the next draw, so the canvas shows the change
+      // as it is typed.
+      const changed = (key) => {
+        refresh();
+        renderCanvas();
+        markDirty(`component:${key}`);
+      };
+
+      const select = h('select', {
+        'data-testid': 'component-locale',
+        onchange: (event) => {
+          // A named locale starts as the one the component was already using, so choosing it
+          // changes nothing until a name is typed.
+          model.doc.locale = event.target.value === 'named' ? componentLocale().tag : event.target.value;
+          renderCanvas();
+          renderProperties();
+          markDirty();
+        },
+      }, LOCALE_SOURCES.map(([value, label]) =>
+        h('option', { value, text: label, selected: choice === value ? '' : null })));
+
+      const box = (key, testId, attributes = {}) => {
+        const input = h('input', {
+          type: 'text',
+          spellcheck: 'false',
+          autocomplete: 'off',
+          'data-testid': testId,
+          ...attributes,
+          oninput: (event) => {
+            model.doc[key] = event.target.value;
+            changed(key);
+          },
+        });
+        input.value = model.doc[key] ?? '';
+        boxes[key] = input;
+        return input;
+      };
+
+      const rows = [
+        heading('Regional settings',
+          'How this component writes numbers and dates, in text(value, format) and wherever else '
+          + 'Gridlet formats a value for it. Inherit follows the language of the page the component '
+          + 'is on, Browser the reader\'s own language, and Server the culture the server formats '
+          + 'with. An override replaces what the locale would use; empty keeps the locale\'s own.'),
+        row(model.doc, null, 'Locale', () => select,
+          { hint: 'Where the component takes its locale from' }),
+      ];
+      if (choice === 'named') {
+        rows.push(row(model.doc, null, 'Name', () => box('locale', 'component-locale-name'),
+          { hint: 'A locale name, such as en-GB, en-US, pl-PL or de-CH' }));
+      }
+      rows.push(
+        row(model.doc, null, 'Decimal', () => box('decimalSeparator', 'component-decimal-separator', { maxlength: '1' }),
+          { hint: 'The character between whole numbers and fractions' }),
+        row(model.doc, null, 'Thousands', () => box('thousandsSeparator', 'component-thousands-separator', { maxlength: '1' }),
+          { hint: 'The character between groups of thousands' }),
+        row(model.doc, null, 'Short date', () => box('dateFormat', 'component-date-format'),
+          { hint: 'The Short Date format, e.g. dd/mm/yyyy' }),
+        row(model.doc, null, 'Short time', () => box('timeFormat', 'component-time-format'),
+          { hint: 'The Short Time format, e.g. hh:mm' }),
+        sample);
+      refresh();
+      return rows;
     }
 
     function publicationEditors() {
@@ -9089,7 +9218,43 @@ ${colourGeneration}`;
     // something to use: functions become calls, and any other value becomes a name, so
     // `export const VAT = 0.2` is written `data.Net * VAT`.
 
-    let expressionScope = nameScope();
+    // Where each place a locale can come from stands. The designer shows what the published page will
+    // show, so Inherit is the language the server declares on that page rather than the workspace's
+    // own, and Server is the culture it formats with.
+    function localeEnvironment() {
+      return {
+        language: state.meta?.serverLanguage || document.documentElement.lang,
+        server: state.meta?.serverLocale || '',
+        browser: navigator.language,
+      };
+    }
+
+    // The locale this component formats with, checked each time it is asked for, so a change on the
+    // Settings page is in the very next formula. Every call to one of Gridlet's functions asks, so it
+    // is worked out again only when something it depends on has changed.
+    let localeKey = null;
+    let currentContext = null;
+
+    function componentLocale() {
+      return regionalContext().locale;
+    }
+
+    function regionalContext() {
+      const environment = localeEnvironment();
+      const key = JSON.stringify([model.doc.locale, model.doc.decimalSeparator, model.doc.thousandsSeparator,
+        model.doc.dateFormat, model.doc.timeFormat,
+        environment.language, environment.server, environment.browser]);
+      if (key !== localeKey) {
+        const locale = localeFor(model.doc, environment);
+        // Before gridlet.js has loaded there is no locale to keep, and keeping none would outlast it.
+        if (!locale) return { locale: undefined };
+        localeKey = key;
+        currentContext = Object.freeze({ locale });
+      }
+      return currentContext;
+    }
+
+    let expressionScope = nameScope(regionalContext);
     // What the modules added, spelled the way they were exported. A name is matched without regard
     // to case, but it is written somewhere with a capital letter in it, and that is the spelling to
     // show back to the person who wrote it. Methods are listed with the class they belong to,
@@ -9387,7 +9552,7 @@ ${colourGeneration}`;
 
     async function rebuildScope() {
       const build = ++scopeBuild;
-      expressionScope = nameScope();
+      expressionScope = nameScope(regionalContext);
       expressionNames = { functions: [], values: [], methods: [] };
       behaviour.clashes = [];
       behaviour.errors = [];
@@ -9772,6 +9937,18 @@ ${colourGeneration}`;
             'They are written in gridlet.js, which the Code section lists and any module can import. '
             + 'What you read there is what runs your expression.'),
           ...moduleHelp()),
+
+        group('Dates and formats',
+          term('text(data.Total, "#,##0.00")', 'A number or a date written with a format, the way the component\'s regional settings write it: 1,234.50 in en-GB, 1 234,50 in pl-PL. Formats are a spreadsheet\'s codes: 0 # , . % E+00 for numbers, and d dd ddd dddd m mm mmm mmmm yy yyyy h hh mm ss AM/PM for dates, with text in "quotes".'),
+          term('text(data.Due, "Short Date")', `A named format: ${FORMAT_NAMES.join(', ')}.`),
+          term('today(), now()', 'Today\'s date, and the date and time now.'),
+          term('date(2026, 12, 31), time(14, 30, 0)', 'A date or a time from its parts. Dates travel between formulas as ISO text - 2026-12-31, 2026-12-31T14:30:00, 14:30:00 - which is how they arrive from SQL, so compare them as they are and format them last.'),
+          term('year(d), month(d), day(d), hour(d), minute(d), second(d), weekday(d)', 'A part of a date. weekday counts Sunday as 1.'),
+          term('edate(d, 1), eomonth(d, 0)', 'The same day a month later, and the last day of the month.'),
+          term('dateadd("m", 1, d), datediff("d", a, b)', 'Move a date, or count between two, in yyyy, q, m, d, ww, h, n or s.'),
+          term('datevalue("31/12/2026"), numbervalue("1 234,5")', 'A date or a number typed the way the component\'s locale types one.'),
+          h('p', { class: 'field-note' },
+            'The component\'s Settings page chooses the locale, and can replace its separators and its short date and time.')),
 
         group('Naming a function exactly',
           term('vat(100)', 'A function this component\'s modules export, or a method of a class it runs, while only one thing in this component has that name.'),

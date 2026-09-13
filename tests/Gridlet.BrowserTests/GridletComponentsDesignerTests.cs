@@ -149,7 +149,8 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         string? source = null,
         string? route = null,
         object? colors = null,
-        string box = "")
+        string box = "",
+        object? regional = null)
     {
         var page = browserPage.Page;
 
@@ -182,6 +183,12 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         // The component's own colours. A control that names none must still reach its kind default
         // rather than inheriting these, which is the difference the two surfaces used to disagree on.
         foreach (var (key, value) in Values(colors))
+        {
+            attributes.Add($"data-{Dashed(key)}=\"{Escape(value)}\"");
+        }
+
+        // How the component writes numbers and dates: data-locale, data-decimal-separator and the rest.
+        foreach (var (key, value) in Values(regional))
         {
             attributes.Add($"data-{Dashed(key)}=\"{Escape(value)}\"");
         }
@@ -3479,6 +3486,170 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await Assertions.Expect(Canvas(page, "downstream")).ToHaveTextAsync("#DIV/0!");
 
         browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Dates and numbers are written the way the component's regional settings say, with a
+    /// spreadsheet's format codes and a form designer's named formats, and a date is worked with as
+    /// the ISO text it arrives from SQL as. The published page writes every one of them the same.
+    /// </summary>
+    [Fact]
+    public async Task Formats_dates_and_numbers_in_the_component_s_locale_in_Design_and_on_the_published_page()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var route = $"regional-{Guid.NewGuid():n}";
+        var expected = new (string Name, string Formula, string Text)[]
+        {
+            ("grouped", "=text(1234567.891, \"#,##0.00\")", "1.234.567,89"),
+            ("longDate", "=text(date(2026, 12, 31), \"dddd d mmmm yyyy\")", "Donnerstag 31 Dezember 2026"),
+            ("shortDate", "=text(\"2026-12-31T14:30:00\", \"Short Date\")", "31.12.2026"),
+            ("clock", "=text(\"2026-12-31T14:05:00\", \"hh:mm\")", "14:05"),
+            ("between", "=datediff(\"d\", \"2026-01-01\", \"2026-03-01\")", "59"),
+            ("nextMonth", "=edate(\"2026-01-31\", 1)", "2026-02-28"),
+            ("typedDate", "=datevalue(\"31.12.2026\")", "2026-12-31"),
+            ("typedNumber", "=numbervalue(\"1.234,5\") * 2", "2469"),
+            ("dayOfWeek", "=weekday(\"2026-12-31\")", "5"),
+            ("notADate", "=text(\"banana\", \"dd/mm/yyyy\")", "#VALUE!"),
+            ("negativeSection", "=text(-1234.5, \"#,##0.00;(#,##0.00)\")", "(1.234,50)"),
+            ("scientific", "=text(12345, \"0.00E+00\")", "1,23E+04"),
+            ("roundsAsWritten", "=text(1.005, \"0.00\")", "1,01"),
+            ("minutes", "=text(\"2026-03-04T05:06:07\", \"hh:mm:ss\")", "05:06:07"),
+            ("asText", "=text(5, \"@\")", "5"),
+            ("namedMonth", "=datevalue(\"31. Dezember 2026\")", "2026-12-31"),
+        };
+        var page = await OpenComponentAsync(browserPage, $"Regional component {route}",
+            expected.Select((entry, index) =>
+                Control(entry.Name, "label", bind: new { text = entry.Formula }, y: 10 + index * 30)),
+            route: route,
+            regional: new { locale = "de-DE" });
+
+        foreach (var (name, _, text) in expected)
+        {
+            await Assertions.Expect(Canvas(page, name)).ToHaveTextAsync(text);
+        }
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{route}");
+            await Assertions.Expect(published.Locator("#gridlet-component-host .gridlet-component-runtime"))
+                .ToBeVisibleAsync();
+            foreach (var (name, _, text) in expected)
+            {
+                await Assertions.Expect(published.Locator($"[data-name='{name}']")).ToHaveTextAsync(text);
+            }
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// The component's Settings page is where its regional settings are chosen. A named locale and each
+    /// override reach the canvas as they are typed, each box shows what it would otherwise be, and
+    /// only what was set is written into the document.
+    /// </summary>
+    [Fact]
+    public async Task The_settings_page_chooses_the_locale_and_overrides_its_separators_and_short_date()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Regional settings component",
+        [
+            Control("amount", "label", bind: new { text = "=text(1234.5, \"#,##0.00\")" }, y: 10),
+            Control("due", "label", bind: new { text = "=text(\"2026-12-31\", \"Short Date\")" }, y: 40),
+        ]);
+
+        await OpenPanelTabAsync(page, "Settings");
+        await page.GetByTestId("component-locale").SelectOptionAsync("named");
+        await page.GetByTestId("component-locale-name").FillAsync("de-DE");
+
+        await Assertions.Expect(Canvas(page, "amount")).ToHaveTextAsync("1.234,50");
+        await Assertions.Expect(Canvas(page, "due")).ToHaveTextAsync("31.12.2026");
+        await Assertions.Expect(page.GetByTestId("component-thousands-separator")).ToHaveAttributeAsync("placeholder", ".");
+        await Assertions.Expect(page.GetByTestId("component-date-format")).ToHaveAttributeAsync("placeholder", "d.m.yyyy");
+
+        await page.GetByTestId("component-thousands-separator").FillAsync("'");
+        await page.GetByTestId("component-date-format").FillAsync("yyyy-mm-dd");
+
+        await Assertions.Expect(Canvas(page, "amount")).ToHaveTextAsync("1'234,50");
+        await Assertions.Expect(Canvas(page, "due")).ToHaveTextAsync("2026-12-31");
+        await Assertions.Expect(page.GetByTestId("component-regional-sample"))
+            .ToHaveTextAsync("de-DE: 2026-12-31, 14:30, 1'234'567,89");
+
+        await page.GetByTestId("component-view-code").ClickAsync();
+        var document = await page.GetByTestId("component-document-editor").InputValueAsync();
+        Assert.Contains("data-locale=\"de-DE\"", document, StringComparison.Ordinal);
+        Assert.Contains("data-thousands-separator=\"'\"", document, StringComparison.Ordinal);
+        Assert.Contains("data-date-format=\"yyyy-mm-dd\"", document, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-decimal-separator", document, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-time-format", document, StringComparison.Ordinal);
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Inherit, Server and Browser name places rather than locales, so what they come to depends on
+    /// where the component runs. The designer is told what the published page will be told - the
+    /// language the page declares and the culture the server formats with - so the two agree.
+    /// </summary>
+    [Fact]
+    public async Task Inherit_server_and_browser_come_to_the_same_locale_in_the_designer_and_on_the_published_page()
+    {
+        JsonElement meta;
+        await using (var metaPage = await fixture.NewPageAsync())
+        {
+            meta = (await (await metaPage.Page.APIRequest.GetAsync("/gridlet/api/meta")).JsonAsync())!.Value;
+        }
+        string? Named(string property) =>
+            meta.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+        // A server running under the invariant culture has no name to give: Server falls back to the
+        // reader's language, and the page it serves declares English.
+        var sources = new (string Source, string Tag)[]
+        {
+            ("", Named("serverLanguage") ?? "en"),
+            ("server", Named("serverLocale") ?? "en-GB"),
+            ("browser", "en-GB"),
+        };
+
+        foreach (var (source, tag) in sources)
+        {
+            // A page of its own for each: the workspace remembers the Components section was opened.
+            await using var browserPage = await fixture.NewPageAsync();
+            var route = $"regional-source-{Guid.NewGuid():n}";
+            var page = await OpenComponentAsync(browserPage, $"Regional source {route}",
+            [
+                Control("written", "label",
+                    bind: new { text = "=text(1234.5, \"#,##0.00\") + \" \" + text(\"2026-12-31T14:30:05\", \"General Date\")" },
+                    w: 400),
+            ],
+                route: route,
+                regional: source.Length == 0 ? null : new { locale = source });
+
+            await OpenPanelTabAsync(page, "Settings");
+            await Assertions.Expect(page.GetByTestId("component-regional-sample")).ToHaveTextAsync(new Regex($"^{Regex.Escape(tag)}: "));
+            var designed = await Canvas(page, "written").TextContentAsync();
+            if (source == "browser")
+            {
+                Assert.Equal("1,234.50 31/12/2026 14:30:05", designed);
+            }
+
+            var published = await browserPage.Context.NewPageAsync();
+            try
+            {
+                await published.GotoAsync($"/gridlet/components/{route}");
+                await Assertions.Expect(published.Locator("[data-name='written']")).ToHaveTextAsync(designed!);
+            }
+            finally
+            {
+                await published.CloseAsync();
+            }
+
+            browserPage.AssertNoUnexpectedErrors();
+        }
     }
 
     /// <summary>
