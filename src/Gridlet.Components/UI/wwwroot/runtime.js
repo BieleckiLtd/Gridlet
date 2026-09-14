@@ -749,7 +749,7 @@
       ? element.querySelector('span')?.textContent || '' : element.textContent;
     if (key === 'name') return element.dataset.name || '';
     if (key === 'type') return element.dataset.role || element.tagName.toLowerCase();
-    if (['x', 'left', 'y', 'top', 'w', 'width', 'h', 'height'].includes(key)) {
+    if (GEOMETRY_KEYS.has(key)) {
       const styleKey = { x: 'left', y: 'top', w: 'width', h: 'height' }[key] || key;
       return parseFloat(positionBox(element).style[styleKey]) || 0;
     }
@@ -805,21 +805,19 @@
       const lowered = head.toLowerCase();
       if (lowered === 'data') return reach(rows[rowIndex], rest);
       if (lowered === 'component') {
+        if (!rest.length || ['width', 'height'].includes(rest[0].toLowerCase())) sizeReads += 1;
         const values = { name: root.dataset.name || '', width: root.getBoundingClientRect().width || root.offsetWidth,
           height: root.getBoundingClientRect().height || root.offsetHeight, rowIndex, rowCount: rows.length };
         return reach(values, rest);
       }
-      if (lowered === 'self') {
-        if (!rest.length) return self;
-        resolveBinding?.(self, rest[0]);
-        return property(self, rest[0]);
-      }
-      const named = [...root.querySelectorAll('[data-name]')].find((element) =>
+      const control = lowered === 'self' ? self : [...root.querySelectorAll('[data-name]')].find((element) =>
         element.dataset.name.toLowerCase() === lowered);
-      if (named) {
-        if (!rest.length) return named;
-        resolveBinding?.(named, rest[0]);
-        return property(named, rest[0]);
+      if (control) {
+        // The element itself goes to a function that may well measure it.
+        if (!rest.length || GEOMETRY_KEYS.has(rest[0].toLowerCase())) sizeReads += 1;
+        if (!rest.length) return control;
+        resolveBinding?.(control, rest[0]);
+        return property(control, rest[0]);
       }
       const group = groups.get(lowered);
       if (group && rest.length) return reach(group, rest);
@@ -1142,6 +1140,10 @@
   // while the document stores the binding as `data-bind-x`; they are one property, so resolving one
   // has to find the other.
   const GEOMETRY_ALIASES = { left: 'x', top: 'y', width: 'w', height: 'h' };
+  const GEOMETRY_KEYS = new Set(['x', 'left', 'y', 'top', 'w', 'width', 'h', 'height']);
+
+  // Counted up whenever a formula reads a size, so a binding can tell afterwards whether it did.
+  let sizeReads = 0;
 
   // Set by a binding that changes which columns a grid shows, so a pass that only moved controls
   // around can leave the rows - and the reader's scroll position and column widths - alone.
@@ -1159,7 +1161,7 @@
     renderPagers();
   }
 
-  function applyBindings() {
+  function applyBindings({ sizeOnly = false } = {}) {
     const bindingsOf = new WeakMap();
 
     const bindings = (element) => {
@@ -1186,12 +1188,22 @@
       return longhand && map.has(longhand) ? map.get(longhand) : null;
     };
 
+    // A binding reads a size if its own formula does, or if it reads another binding that does:
+    // `=label.text` over a label worked out from `component.width` moves with the component too.
     const resolve = (element, name) => {
       const entry = entryFor(element, name);
-      if (!entry || entry.settled) return;
+      if (!entry) return;
+      if (entry.settled) {
+        if (entry.readsSize) sizeReads += 1;
+        return;
+      }
       entry.settled = true;
+      const before = sizeReads;
       const value = isFormula(entry.source) ? evaluate(entry.source, element) : entry.source;
-      applyBinding(element, entry.key, value);
+      entry.readsSize = sizeReads !== before;
+      if (!sizeOnly || entry.readsSize || GEOMETRY_KEYS.has(entry.key.toLowerCase())) {
+        applyBinding(element, entry.key, value);
+      }
     };
 
     resolveBinding = resolve;
@@ -1204,14 +1216,17 @@
     }
   }
 
-  // What a component does when its own box changes: work the bindings out again, because that is
-  // what anchoring is - `=component.width - 30` is a number that was only ever true of the size it
-  // was read at. Preview redraws its canvas the same way. The rows are left alone unless a binding
-  // actually changed which columns are on show: rebuilding them on every frame of a drag would
-  // throw away the reader's scroll position and the column widths they had just set.
+  // What a component does when its own box changes: work out again what depends on that box,
+  // because that is what anchoring is - `=component.width - 30` is a number that was only ever true
+  // of the size it was read at. Only what depends on it: a text box bound to `=data.Name` holds what
+  // the reader typed over the name, and a window resized under them - or the first measurement
+  // landing after they started typing - is not a reason to put the name back. A new row is, and
+  // goTo works everything out again. The rows are left alone unless a binding actually changed
+  // which columns are on show: rebuilding them on every frame of a drag would throw away the
+  // reader's scroll position and the column widths they had just set.
   function relayout() {
     gridShapeChanged = false;
-    applyBindings();
+    applyBindings({ sizeOnly: true });
     if (gridShapeChanged) renderGrids();
   }
 
