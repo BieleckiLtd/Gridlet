@@ -3732,6 +3732,55 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
+    /// A bare <c>component</c> in a formula is the whole component on both surfaces, so a function it
+    /// is handed to can reach the controls through it. Its members keep answering as they did.
+    /// </summary>
+    [Fact]
+    public async Task A_function_handed_the_component_reaches_its_fields_in_preview_and_published()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var route = $"component-argument-{Guid.NewGuid():n}";
+        var module = $"component-argument-{Guid.NewGuid():n}.js";
+        await WriteModuleAsync(browserPage.Page, module, """
+            export function copyAcross(component) {
+              component.field('result').value = component.field('source').value + ' ' + component.field('size').value;
+            }
+            """);
+        var page = await OpenComponentAsync(browserPage, $"Component argument {route}",
+        [
+            Control("source", "label", props: new { text = "copied" }, y: 10),
+            Control("size", "label", bind: new { text = "=component.width" }, y: 40),
+            Control("result", "label", props: new { text = "waiting" }, y: 70),
+            Control("copy", "button", props: new { text = "Copy" }, events: new { click = "=copyAcross(component)" }, y: 100, h: 30),
+        ],
+            modules: [module],
+            route: route);
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await CopyAcrossAsync(page.Locator(".gfd-canvas.preview"));
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{route}");
+            await CopyAcrossAsync(published.Locator(".gridlet-component-runtime"));
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    private static async Task CopyAcrossAsync(ILocator surface)
+    {
+        await Assertions.Expect(surface.Locator("[data-name='size']")).ToHaveTextAsync("720");
+        await surface.Locator("[data-name='copy']").ClickAsync();
+        await Assertions.Expect(surface.Locator("[data-name='result']")).ToHaveTextAsync("copied 720");
+    }
+
+    /// <summary>
     /// A box's On change is heard before the box itself is left, so what a handler reads is what has
     /// been typed, as the value it stands for - not the value the box held before the edit. Leaving a
     /// box without typing changes nothing, even where the text it shows could not say the whole value.
