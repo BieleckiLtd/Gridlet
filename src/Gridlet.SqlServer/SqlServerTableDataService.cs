@@ -22,6 +22,7 @@ public sealed class SqlServerTableDataService : ITableDataService
         // Validate the object exists and the sort column is a real column before any
         // identifier reaches dynamic SQL.
         var columnNames = new List<string>();
+        var filterColumns = new List<SqlServerFilterColumn>();
         var primaryKeyColumns = new List<(string Name, int KeyOrdinal)>();
         var nullableColumns = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         var uniqueKeys = new List<SqlServerRowIdentity.UniqueKey>();
@@ -29,7 +30,7 @@ public sealed class SqlServerTableDataService : ITableDataService
         {
             columnsCommand.CommandText =
                 """
-                SELECT c.name, CONVERT(int, ISNULL(pk.key_ordinal, 0)), c.is_nullable
+                SELECT c.name, CONVERT(int, ISNULL(pk.key_ordinal, 0)), c.is_nullable, TYPE_NAME(c.system_type_id)
                 FROM sys.columns c
                 LEFT JOIN (
                     SELECT ic.object_id, ic.column_id, ic.key_ordinal
@@ -62,6 +63,8 @@ public sealed class SqlServerTableDataService : ITableDataService
             {
                 var columnName = columnsReader.GetString(0);
                 columnNames.Add(columnName);
+                filterColumns.Add(new SqlServerFilterColumn(
+                    columnName, columnsReader.IsDBNull(3) ? null : columnsReader.GetString(3)));
                 nullableColumns[columnName] = columnsReader.GetBoolean(2);
                 var keyOrdinal = columnsReader.GetInt32(1);
                 if (keyOrdinal > 0)
@@ -116,7 +119,7 @@ public sealed class SqlServerTableDataService : ITableDataService
                     $"Sort column '{request.SortColumn}' does not exist on {qualifiedName}.");
         }
 
-        var filter = SqlServerSqlBuilder.BuildFilterClause(request.Filters, columnNames);
+        var filter = SqlServerSqlBuilder.BuildFilterClause(request.Filters, filterColumns, schema, name);
 
         long totalRows;
         await using (var countCommand = connection.CreateCommand())
@@ -183,7 +186,7 @@ public sealed class SqlServerTableDataService : ITableDataService
         string? dataType = null;
         string? systemType = null;
         var objectExists = false;
-        var filterColumnNames = new List<string>();
+        var filterColumns = new List<SqlServerFilterColumn>();
         await using (var metadata = connection.CreateCommand())
         {
             metadata.CommandText =
@@ -197,7 +200,8 @@ public sealed class SqlServerTableDataService : ITableDataService
                 objectExists = true;
                 var candidateName = reader.GetString(0);
                 var isHidden = reader.GetInt32(3) != 0;
-                filterColumnNames.Add(candidateName);
+                filterColumns.Add(new SqlServerFilterColumn(
+                    candidateName, reader.IsDBNull(2) ? null : reader.GetString(2)));
                 if (!string.Equals(candidateName, request.Column, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
@@ -230,7 +234,7 @@ public sealed class SqlServerTableDataService : ITableDataService
         }
 
         var (canGroup, canRange) = SqlServerSqlBuilder.GetProfileCapabilities(systemType);
-        var filter = SqlServerSqlBuilder.BuildFilterClause(request.Filters, filterColumnNames);
+        var filter = SqlServerSqlBuilder.BuildFilterClause(request.Filters, filterColumns, schema, name);
         var profileTransaction = await BeginProfileTransactionAsync(connection, cancellationToken);
         await using var transaction = profileTransaction.Transaction;
 
@@ -306,6 +310,120 @@ public sealed class SqlServerTableDataService : ITableDataService
             limitation);
     }
 
+    public async Task<ColumnFilterValues> GetColumnFilterValuesAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        ColumnFilterValuesRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var qualifiedName = SqlServerIdentifier.QuoteQualified(schema, name);
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        var filterColumns = new List<SqlServerFilterColumn>();
+        SqlServerFilterColumn? column = null;
+        await using (var metadata = connection.CreateCommand())
+        {
+            metadata.CommandText =
+                "SELECT c.name, TYPE_NAME(c.system_type_id), " +
+                "CONVERT(int, ISNULL(COLUMNPROPERTY(c.object_id, c.name, 'IsHidden'), 0)) " +
+                "FROM sys.columns c WHERE c.object_id = OBJECT_ID(@object) ORDER BY c.column_id;";
+            metadata.Parameters.AddWithValue("@object", qualifiedName);
+            await using var reader = await metadata.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var candidate = new SqlServerFilterColumn(
+                    reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+                filterColumns.Add(candidate);
+                if (string.Equals(candidate.Name, request.Column, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (reader.GetInt32(2) != 0)
+                    {
+                        throw new GridletValidationException(
+                            $"Hidden column '{candidate.Name}' is not available in table data.");
+                    }
+
+                    column = candidate;
+                }
+            }
+        }
+
+        if (filterColumns.Count == 0)
+        {
+            throw new GridletObjectNotFoundException(qualifiedName);
+        }
+        if (column is null)
+        {
+            throw new GridletValidationException(
+                $"Filter column '{request.Column}' does not exist on {qualifiedName}.");
+        }
+        if (!SqlServerSqlBuilder.GetProfileCapabilities(column.SystemType).CanGroup)
+        {
+            throw new GridletValidationException(
+                $"Values of the {column.SystemType ?? "unknown"} type cannot be listed. Use a condition instead.");
+        }
+
+        var filter = SqlServerSqlBuilder.BuildFilterClause(request.Filters, filterColumns, schema, name);
+        var limit = Math.Clamp(request.Limit, 1, 10_000);
+        var search = string.IsNullOrEmpty(request.Search) ? null : request.Search;
+        await using var command = connection.CreateCommand();
+        command.CommandText = SqlServerSqlBuilder.BuildFilterValuesSql(
+            schema, name, column, filter.Clause, search is not null);
+        // One more than the limit, so a full list can be told apart from a cut-off one.
+        command.Parameters.AddWithValue("@limit", limit + 1);
+        if (search is not null)
+        {
+            command.Parameters.AddWithValue("@search", SqlServerSqlBuilder.BuildFilterValuesSearch(search));
+        }
+        AddFilterParameters(command, filter.Parameters);
+
+        var values = new List<object?>();
+        await using var valuesReader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await valuesReader.ReadAsync(cancellationToken))
+        {
+            values.Add(SqlServerValues.Materialize(valuesReader.GetValue(0)));
+        }
+
+        await valuesReader.NextResultAsync(cancellationToken);
+        var hasBlanks = await valuesReader.ReadAsync(cancellationToken) && valuesReader.GetInt32(0) != 0;
+        var isTruncated = values.Count > limit;
+        if (isTruncated)
+        {
+            values.RemoveAt(limit);
+        }
+
+        return new ColumnFilterValues(values, hasBlanks, isTruncated);
+    }
+
+    public async Task<string> GetFilterSqlAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        IReadOnlyList<TableDataFilter>? filters,
+        CancellationToken cancellationToken = default)
+    {
+        var qualifiedName = SqlServerIdentifier.QuoteQualified(schema, name);
+        await using var connection = await SqlServerConnectionFactory.OpenAsync(context, cancellationToken);
+        var columns = new List<SqlServerFilterColumn>();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT c.name, TYPE_NAME(c.system_type_id) " +
+            "FROM sys.columns c WHERE c.object_id = OBJECT_ID(@object) ORDER BY c.column_id;";
+        command.Parameters.AddWithValue("@object", qualifiedName);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            columns.Add(new SqlServerFilterColumn(
+                reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1)));
+        }
+
+        if (columns.Count == 0)
+        {
+            throw new GridletObjectNotFoundException(qualifiedName);
+        }
+
+        return SqlServerSqlBuilder.BuildFilterDisplaySql(filters, columns, schema, name);
+    }
+
     private static async Task<(SqlTransaction Transaction, bool HasConsistentSnapshot)>
         BeginProfileTransactionAsync(
         SqlConnection connection,
@@ -331,7 +449,17 @@ public sealed class SqlServerTableDataService : ITableDataService
     {
         foreach (var (parameterName, value) in parameters)
         {
-            command.Parameters.AddWithValue(parameterName, value ?? DBNull.Value);
+            // A date binds as datetime2. AddWithValue would choose datetime, which starts in 1753 and
+            // rounds to a few milliseconds, so a datetime2 value read from the grid would no longer
+            // equal itself.
+            if (value is DateTime date)
+            {
+                command.Parameters.Add(parameterName, SqlDbType.DateTime2).Value = date;
+            }
+            else
+            {
+                command.Parameters.AddWithValue(parameterName, value ?? DBNull.Value);
+            }
         }
     }
 

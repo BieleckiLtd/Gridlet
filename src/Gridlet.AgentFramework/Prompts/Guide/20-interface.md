@@ -17,8 +17,13 @@ Rows stream in progressively rather than loading all at once, and the grid is ca
 host's `MaxQueryResultRows` limit so a careless `SELECT *` cannot exhaust the browser or the
 server.
 
-The grid's `⧩ Filter` button adds conditions on a column - equals, contains, starts with, a
-comparison, or is null - and they run in the database, over every row of the table, not over the
-rows already fetched. The row count reflects the filter. Several conditions combine with AND, and
-each one can be removed on its own. This is the answer to "find the row where…" without leaving the
-grid for the query editor.
+Each column header has a filter button that works like a spreadsheet's AutoFilter: sort commands,
+a searchable checklist of the column's values with (Blanks), and conditions chosen by the column's
+type. Text Filters offer equals, begins with, contains and their opposites, with `*` and `?`
+wildcards. Number Filters add comparisons, Between, Top 10 and Above or Below Average. Date Filters
+group the checklist by year, month and day, and add Before, After, Between, relative periods such
+as This Week or Last Month, and All Dates in the Period. A text column that holds ISO dates filters
+as dates. Filters run in the database, over every row of the table, not over the rows already
+fetched, and the row count reflects them. Each column holds one filter, the columns combine with
+AND, and each filter's chip above the grid removes it. This is the answer to "find the row where…"
+without leaving the grid for the query editor.
