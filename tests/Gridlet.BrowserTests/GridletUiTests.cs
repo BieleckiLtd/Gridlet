@@ -1485,6 +1485,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     {
         await using var browserPage = await fixture.NewPageAsync();
         var page = browserPage.Page;
+        // Keep the source list loading so the target changes before the initial load settles.
+        await page.RouteAsync("**/connections/Main/databases", async route =>
+        {
+            await Task.Delay(350);
+            await route.ContinueAsync();
+        });
         await page.RouteAsync("**/connections/SQLite/databases", async route =>
         {
             await Task.Delay(350);

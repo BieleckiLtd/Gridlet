@@ -6431,11 +6431,6 @@
       if (available.some((database) => database.name === preferred)) databaseSelect.value = preferred;
     };
 
-    await Promise.all([
-      populateDatabases(sourceConnection, sourceDatabase, tab.source.database),
-      populateDatabases(targetConnection, targetDatabase, tab.target.database),
-    ]);
-
     sourceConnection.addEventListener('change', async () => {
       await populateDatabases(sourceConnection, sourceDatabase, null);
       results.replaceChildren();
@@ -6456,6 +6451,12 @@
       results.replaceChildren();
       status.textContent = 'Source and target swapped. Compare to refresh the preview.';
     });
+
+    // Attach the listeners first so a change made while the initial lists load supersedes that load.
+    await Promise.all([
+      populateDatabases(sourceConnection, sourceDatabase, tab.source.database),
+      populateDatabases(targetConnection, targetDatabase, tab.target.database),
+    ]);
 
     let comparisonRequest = 0;
     compareButton.addEventListener('click', async () => {
