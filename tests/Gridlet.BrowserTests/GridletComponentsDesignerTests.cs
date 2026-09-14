@@ -3781,6 +3781,60 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    /// <summary>
+    /// Preview redraws the component when its size changes, and a redraw builds every control again
+    /// from its formulas. A control anchored to the right edge follows the edge; what the reader typed
+    /// over a bound text box - formatted or not - or ticked in a check box stays as they left it.
+    /// </summary>
+    [Fact]
+    public async Task Resizing_preview_moves_anchored_controls_and_keeps_what_was_typed()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var page = await OpenComponentAsync(browserPage, $"Preview keeps typing {Guid.NewGuid():n}",
+        [
+            Control("name", "textbox", bind: new { value = "=\"from the formula\"" }, props: new { placeholder = "" }, y: 10),
+            Control("amount", "textbox", bind: new { value = "=1234.5" }, props: new { format = "#,##0.00" }, y: 50),
+            Control("agree", "checkbox", bind: new { value = "=false" }, props: new { text = "Agree" }, y: 90),
+            Control("pin", "label", bind: new { x = "=component.width - 30" }, props: new { text = "!" }, y: 130, w: 20),
+        ],
+            box: "width: 100%;",
+            regional: new { locale = "en-GB" });
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        const string anchored = """
+            (previous) => {
+              const canvas = document.querySelector('.gfd-canvas.preview');
+              const pin = canvas?.querySelector('[data-name="pin"]')?.closest('.gfd-control');
+              if (!canvas || !pin) return null;
+              const left = pin.offsetLeft;
+              const settled = Math.abs(left - (canvas.offsetWidth - 30)) <= 1;
+              return settled && left !== previous ? left : null;
+            }
+            """;
+        var before = await (await page.WaitForFunctionAsync(anchored, -1.0)).JsonValueAsync<double>();
+
+        var canvas = page.Locator(".gfd-canvas");
+        var name = canvas.Locator("[data-name='name']");
+        var amount = canvas.Locator("[data-name='amount']");
+        var agree = canvas.Locator("[data-name='agree'] input");
+        await Assertions.Expect(name).ToHaveValueAsync("from the formula");
+        await name.FillAsync("typed by hand");
+        await amount.FillAsync("98765.4");
+        await amount.PressAsync("Tab");
+        await Assertions.Expect(amount).ToHaveValueAsync("98,765.40");
+        await agree.CheckAsync();
+
+        await page.SetViewportSizeAsync(1000, 900);
+        var after = await (await page.WaitForFunctionAsync(anchored, before)).JsonValueAsync<double>();
+        Assert.True(after < before, $"the anchored control went from {before}px to {after}px");
+
+        await Assertions.Expect(name).ToHaveValueAsync("typed by hand");
+        await Assertions.Expect(amount).ToHaveValueAsync("98,765.40");
+        await Assertions.Expect(agree).ToBeCheckedAsync();
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     private static async Task ChangeAndReadAsync(ILocator surface)
     {
         var amount = surface.Locator("[data-name='amount']");
