@@ -519,6 +519,118 @@ public sealed class FakeGridletProvider :
         });
     }
 
+    /// <summary>The most recent filter-values request, so its parsing can be asserted.</summary>
+    public ColumnFilterValuesRequest? LastFilterValuesRequest { get; private set; }
+
+    /// <summary>The filters most recently rendered for the filter SQL display.</summary>
+    public IReadOnlyList<TableDataFilter>? LastFilterSqlFilters { get; private set; }
+
+    /// <summary>Lists a column's values from the same fixed rows the data pages serve.</summary>
+    public async Task<ColumnFilterValues> GetColumnFilterValuesAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        ColumnFilterValuesRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        LastFilterValuesRequest = request;
+        Calls.Add($"filterValues {schema}.{name}.{request.Column} filters({request.Filters?.Count ?? 0})");
+        var page = await GetPageCore(name, new TableDataRequest(1, 1000, null, SortDirection.Ascending));
+        var index = page.Columns.ToList().FindIndex(column =>
+            string.Equals(column.Name, request.Column, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+        {
+            throw new GridletValidationException($"Filter column '{request.Column}' does not exist.");
+        }
+
+        var cells = page.Rows.Select(row => row[index]).ToArray();
+        var values = cells
+            .Where(value => value is not null && !Equals(value, ""))
+            .Where(value => request.Search is null
+                || Convert.ToString(value)!.Contains(request.Search, StringComparison.OrdinalIgnoreCase))
+            .Distinct()
+            .Take(request.Limit)
+            .ToArray();
+        return new ColumnFilterValues(values, cells.Any(value => value is null || Equals(value, "")), IsTruncated: false);
+    }
+
+    public async Task<string> GetFilterSqlAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        IReadOnlyList<TableDataFilter>? filters,
+        CancellationToken cancellationToken = default)
+    {
+        LastFilterSqlFilters = filters;
+        if (filters is not { Count: > 0 }) return "";
+        var page = await GetPageCore(name, new TableDataRequest(1, 1));
+        var columns = page.Columns.ToDictionary(column => column.Name, StringComparer.OrdinalIgnoreCase);
+
+        string Literal(string value, ResultColumn column)
+        {
+            var type = column.DataTypeName.ToLowerInvariant();
+            if (type.Contains("int", StringComparison.Ordinal)
+                || type.Contains("decimal", StringComparison.Ordinal)
+                || type.Contains("numeric", StringComparison.Ordinal)
+                || type.Contains("money", StringComparison.Ordinal)
+                || type.Contains("float", StringComparison.Ordinal)
+                || type.Contains("real", StringComparison.Ordinal)
+                || type.Contains("bit", StringComparison.Ordinal))
+            {
+                return value;
+            }
+            if (type.Contains("date", StringComparison.Ordinal) || type.Contains("time", StringComparison.Ordinal))
+            {
+                return $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";
+            }
+            return $"N'{value.Replace("'", "''", StringComparison.Ordinal)}'";
+        }
+
+        string Predicate(TableDataFilter filter)
+        {
+            if (filter.Operator is FilterOperator.AnyOf or FilterOperator.AllOf)
+            {
+                var conditions = filter.Conditions ?? throw new GridletValidationException(
+                    "A filter group needs at least one condition.");
+                return conditions.Count == 1
+                    ? Predicate(conditions[0])
+                    : "(" + string.Join(filter.Operator == FilterOperator.AnyOf ? " OR " : " AND ",
+                        conditions.Select(Predicate)) + ")";
+            }
+
+            if (!columns.TryGetValue(filter.Column, out var column))
+            {
+                throw new GridletValidationException($"Filter column '{filter.Column}' does not exist.");
+            }
+            var quoted = $"[{column.Name.Replace("]", "]]", StringComparison.Ordinal)}]";
+            return filter.Operator switch
+            {
+                FilterOperator.IsNull => $"{quoted} IS NULL",
+                FilterOperator.IsNotNull => $"{quoted} IS NOT NULL",
+                FilterOperator.IsBlank => $"({quoted} IS NULL OR {quoted} = N'')",
+                FilterOperator.IsNotBlank => $"{quoted} IS NOT NULL AND {quoted} <> N''",
+                FilterOperator.In or FilterOperator.NotIn => $"{quoted} "
+                    + (filter.Operator == FilterOperator.In ? "IN" : "NOT IN") + " ("
+                    + string.Join(", ", (filter.Values ?? []).Select(value => Literal(value, column))) + ")",
+                FilterOperator.Equals => $"{quoted} = {Literal(filter.Value!, column)}",
+                FilterOperator.NotEquals => $"{quoted} <> {Literal(filter.Value!, column)}",
+                FilterOperator.LessThan => $"{quoted} < {Literal(filter.Value!, column)}",
+                FilterOperator.LessThanOrEqual => $"{quoted} <= {Literal(filter.Value!, column)}",
+                FilterOperator.GreaterThan => $"{quoted} > {Literal(filter.Value!, column)}",
+                FilterOperator.GreaterThanOrEqual => $"{quoted} >= {Literal(filter.Value!, column)}",
+                FilterOperator.Matches => $"{quoted} LIKE {Literal(filter.Value!.Replace('*', '%').Replace('?', '_'), column)}",
+                FilterOperator.NotMatches => $"{quoted} NOT LIKE {Literal(filter.Value!.Replace('*', '%').Replace('?', '_'), column)}",
+                FilterOperator.MonthEquals => $"MONTH({quoted}) = {filter.Value}",
+                FilterOperator.QuarterEquals => $"DATEPART(quarter, {quoted}) = {filter.Value}",
+                FilterOperator.AboveAverage => $"{quoted} > (SELECT AVG({quoted}) FROM [{name}])",
+                FilterOperator.BelowAverage => $"{quoted} < (SELECT AVG({quoted}) FROM [{name}])",
+                _ => $"{quoted} /* {filter.Operator} {filter.Value} */",
+            };
+        }
+
+        return "WHERE " + string.Join(" AND ", filters.Select(Predicate));
+    }
+
     /// <summary>
     /// Four rows served a page at a time, from a table that can be addressed and one that cannot.
     /// A caller that pages through the second one is reading an unordered table twice.

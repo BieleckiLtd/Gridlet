@@ -238,14 +238,27 @@ public sealed record ResultExportRequest(
     string?[][]? ExactValues = null);
 
 /// <summary>One condition in the <c>filter</c> query parameter of the table-data routes.</summary>
-/// <param name="Column">The column to compare.</param>
-/// <param name="Operator">
-/// One of <c>equals</c>, <c>notEquals</c>, <c>lessThan</c>, <c>lessThanOrEqual</c>,
-/// <c>greaterThan</c>, <c>greaterThanOrEqual</c>, <c>contains</c>, <c>notContains</c>,
-/// <c>startsWith</c>, <c>endsWith</c>, <c>isNull</c> or <c>isNotNull</c>.
+/// <param name="Column">
+/// The column to compare. A condition inside a group may leave it out and use the group's.
 /// </param>
-/// <param name="Value">The value to compare against; omitted for the null checks.</param>
-public sealed record TableDataFilterBody(string? Column, string? Operator, string? Value = null);
+/// <param name="Operator">
+/// A filter operator name in camel case: <c>equals</c>, <c>notEquals</c>, <c>lessThan</c>,
+/// <c>lessThanOrEqual</c>, <c>greaterThan</c>, <c>greaterThanOrEqual</c>, <c>contains</c>,
+/// <c>notContains</c>, <c>startsWith</c>, <c>notStartsWith</c>, <c>endsWith</c>,
+/// <c>notEndsWith</c>, <c>matches</c>, <c>notMatches</c>, <c>in</c>, <c>notIn</c>, <c>isNull</c>,
+/// <c>isNotNull</c>, <c>isBlank</c>, <c>isNotBlank</c>, <c>top</c>, <c>bottom</c>,
+/// <c>topPercent</c>, <c>bottomPercent</c>, <c>aboveAverage</c>, <c>belowAverage</c>,
+/// <c>monthEquals</c>, <c>quarterEquals</c>, <c>anyOf</c> or <c>allOf</c>.
+/// </param>
+/// <param name="Value">The value to compare against; omitted for the operators that need none.</param>
+public sealed record TableDataFilterBody(string? Column, string? Operator, string? Value = null)
+{
+    /// <summary>The values of an <c>in</c> or <c>notIn</c> condition.</summary>
+    public IReadOnlyList<string?>? Values { get; init; }
+
+    /// <summary>The conditions of an <c>anyOf</c> or <c>allOf</c> group.</summary>
+    public IReadOnlyList<TableDataFilterBody?>? Conditions { get; init; }
+}
 
 /// <summary>Body for an execution-plan request.</summary>
 /// <param name="Sql">The statement to explain.</param>

@@ -64,10 +64,12 @@ internal static partial class GridletApiEndpoints
         api.MapPost("/connections/{connection}/databases/{database}/triggers/state", SetTriggerState);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data", GetObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data/stream", StreamObjectData);
+        api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data/filter-sql", GetObjectFilterSql);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/profile", GetColumnProfile);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/data/export", ExportObjectData);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/structure", GetObjectStructure);
         api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns/{column}/distinct-values", GetDistinctColumnValues);
+        api.MapGet("/connections/{connection}/databases/{database}/objects/{schema}/{name}/columns/{column}/filter-values", GetColumnFilterValues);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", SaveForeignKeyDisplay);
         api.MapDelete("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}", DeleteForeignKeyDisplay);
         api.MapPost("/connections/{connection}/databases/{database}/objects/{schema}/{name}/foreign-key-displays/{foreignKey}/lookup", LookupForeignKeyDisplay);
@@ -359,6 +361,22 @@ internal static partial class GridletApiEndpoints
             return Results.Ok(profile);
         });
 
+    private static Task<IResult> GetObjectFilterSql(
+        string connection,
+        string database,
+        string schema,
+        string name,
+        string? filter,
+        IGridletConnectionResolver resolver,
+        CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            var resolved = resolver.Resolve(connection, database);
+            var sql = await resolved.Provider.Data.GetFilterSqlAsync(
+                resolved.Context, schema, name, ParseFilters(filter), cancellationToken);
+            return Results.Ok(new { sql });
+        });
+
     private static async Task StreamObjectData(
         string connection, string database, string schema, string name,
         int? maxRows, string? sort, string? dir, string? filter,
@@ -540,7 +558,7 @@ internal static partial class GridletApiEndpoints
     /// <summary>
     /// Reads the <c>filter</c> query parameter, a JSON array of conditions. JSON rather than a
     /// delimited string because a filter value is arbitrary text and would otherwise have to be
-    /// escaped against whatever separator was chosen.
+    /// escaped against whatever separator was chosen, and because a group holds conditions of its own.
     /// </summary>
     private static IReadOnlyList<TableDataFilter>? ParseFilters(string? filter)
     {
@@ -564,20 +582,48 @@ internal static partial class GridletApiEndpoints
             return null;
         }
 
-        return parsed.Select(entry =>
+        return parsed.Select(entry => ParseFilter(entry, inheritedColumn: null, depth: 0)).ToArray();
+    }
+
+    /// <summary>
+    /// Reads one condition. A condition inside a group may leave its column out and use the group's,
+    /// which is how a column's own filter is written: one group naming the column once.
+    /// </summary>
+    private static TableDataFilter ParseFilter(TableDataFilterBody? entry, string? inheritedColumn, int depth)
+    {
+        if (entry is null)
         {
-            if (string.IsNullOrWhiteSpace(entry.Column))
-            {
-                throw new GridletValidationException("Every filter needs a column.");
-            }
+            throw new GridletValidationException("A filter condition cannot be null.");
+        }
 
-            if (!Enum.TryParse<FilterOperator>(entry.Operator, ignoreCase: true, out var @operator))
-            {
-                throw new GridletValidationException($"'{entry.Operator}' is not a filter operator.");
-            }
+        if (depth > 8)
+        {
+            throw new GridletValidationException("Filter groups are nested too deeply.");
+        }
 
-            return new TableDataFilter(entry.Column, @operator, entry.Value);
-        }).ToArray();
+        var column = string.IsNullOrWhiteSpace(entry.Column) ? inheritedColumn : entry.Column;
+        var isGroup = string.Equals(entry.Operator, nameof(FilterOperator.AnyOf), StringComparison.OrdinalIgnoreCase)
+            || string.Equals(entry.Operator, nameof(FilterOperator.AllOf), StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(column) && !isGroup)
+        {
+            throw new GridletValidationException("Every filter needs a column.");
+        }
+
+        if (!Enum.TryParse<FilterOperator>(entry.Operator, ignoreCase: true, out var @operator))
+        {
+            throw new GridletValidationException($"'{entry.Operator}' is not a filter operator.");
+        }
+
+        return new TableDataFilter(column ?? "", @operator, entry.Value)
+        {
+            Values = entry.Values?.Select(value => value
+                ?? throw new GridletValidationException(
+                    "A filter's list of values cannot contain null. Use 'isBlank' to match rows without a value."))
+                .ToArray(),
+            Conditions = entry.Conditions?
+                .Select(condition => ParseFilter(condition, column, depth + 1))
+                .ToArray(),
+        };
     }
 
     private static Task<IResult> GetObjectStructure(
@@ -737,6 +783,41 @@ internal static partial class GridletApiEndpoints
             var values = await distinctProvider.GetDistinctColumnValuesAsync(
                 resolved.Context, schema, name, column, search, capped, cancellationToken);
             return Results.Ok(new ColumnDistinctValuesResponse(values));
+        });
+
+    /// <summary>
+    /// Lists the values a column filter offers as a checklist. The filter parameter carries the other
+    /// columns' filters, so the list holds only values of rows those leave visible.
+    /// </summary>
+    private static Task<IResult> GetColumnFilterValues(
+        string connection, string database, string schema, string name, string column,
+        string? filter, string? search, int? limit,
+        IGridletConnectionResolver resolver,
+        CancellationToken cancellationToken)
+        => Execute(async () =>
+        {
+            if (string.IsNullOrWhiteSpace(column))
+            {
+                throw new GridletValidationException("A column name is required.");
+            }
+
+            var resolved = resolver.Resolve(connection, database);
+            if (column.Length > MaximumColumnIdentifierLength(resolved.Provider.ProviderName))
+            {
+                throw new GridletValidationException("The column name is too long.");
+            }
+
+            var values = await resolved.Provider.Data.GetColumnFilterValuesAsync(
+                resolved.Context,
+                schema,
+                name,
+                new ColumnFilterValuesRequest(
+                    column,
+                    ParseFilters(filter),
+                    string.IsNullOrEmpty(search) ? null : search,
+                    Math.Clamp(limit ?? 10_000, 1, 10_000)),
+                cancellationToken);
+            return Results.Ok(values);
         });
 
     internal static int MaximumColumnIdentifierLength(GridletProviderNames providerName)

@@ -796,6 +796,100 @@ public class GridletEndpointTests
     }
 
     [Fact]
+    public async Task Filter_sql_returns_the_provider_clause_for_the_same_parsed_filters()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        var filter = Uri.EscapeDataString(
+            """[{"column":"Name","operator":"in","values":["O'Brien"]}]""");
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data/filter-sql?filter=" + filter);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("WHERE [Name] IN (N'O''Brien')", document.RootElement.GetProperty("sql").GetString());
+        var applied = Assert.Single(fake.LastFilterSqlFilters!);
+        Assert.Equal(FilterOperator.In, applied.Operator);
+        Assert.Equal(["O'Brien"], applied.Values);
+
+        var bad = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data/filter-sql?filter="
+            + Uri.EscapeDataString("""[{"column":"Missing","operator":"equals","value":"x"}]"""));
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+    }
+
+    [Fact]
+    public async Task Data_requests_carry_filter_groups_and_lists_to_the_provider()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        var filter = Uri.EscapeDataString(
+            """[{"column":"Name","operator":"anyOf","conditions":[{"operator":"in","values":["Ada","Grace"]},{"operator":"isBlank"}]}]""");
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data?filter=" + filter);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var group = Assert.Single(fake.LastDataFilters!);
+        Assert.Equal(FilterOperator.AnyOf, group.Operator);
+        Assert.Collection(group.Conditions!,
+            first =>
+            {
+                Assert.Equal("Name", first.Column);
+                Assert.Equal(FilterOperator.In, first.Operator);
+                Assert.Equal(["Ada", "Grace"], first.Values!);
+            },
+            second =>
+            {
+                Assert.Equal("Name", second.Column);
+                Assert.Equal(FilterOperator.IsBlank, second.Operator);
+            });
+    }
+
+    [Fact]
+    public async Task A_filter_list_holding_null_is_rejected()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var filter = Uri.EscapeDataString("""[{"column":"Name","operator":"in","values":[null]}]""");
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data?filter=" + filter);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("isBlank", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Column_filter_values_carry_the_other_filters_search_and_limit()
+    {
+        var (app, client) = await GridletTestHost.StartDefaultAsync();
+        await using var _ = app;
+        var fake = (FakeGridletProvider)app.Services.GetRequiredService<IGridletProvider>();
+        var filter = Uri.EscapeDataString("""[{"column":"Id","operator":"greaterThan","value":"0"}]""");
+
+        var response = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/columns/Name/filter-values"
+            + $"?filter={filter}&search=a&limit=50000");
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(
+            ["Ada", "Grace"],
+            document.RootElement.GetProperty("values").EnumerateArray().Select(value => value.GetString()));
+        Assert.False(document.RootElement.GetProperty("hasBlanks").GetBoolean());
+        Assert.False(document.RootElement.GetProperty("isTruncated").GetBoolean());
+        var request = fake.LastFilterValuesRequest!;
+        Assert.Equal("Name", request.Column);
+        Assert.Equal("a", request.Search);
+        Assert.Equal(10_000, request.Limit);
+        Assert.Equal(FilterOperator.GreaterThan, Assert.Single(request.Filters!).Operator);
+    }
+
+    [Fact]
     public async Task Column_profile_returns_exact_statistics_and_bounds_its_request()
     {
         var (app, client) = await GridletTestHost.StartDefaultAsync();

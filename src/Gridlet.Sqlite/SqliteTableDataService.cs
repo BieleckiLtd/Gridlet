@@ -26,7 +26,7 @@ public sealed class SqliteTableDataService : ITableDataService
                     $"Sort column '{request.SortColumn}' does not exist on {qualifiedName}.");
         }
 
-        var filter = SqliteFilterBuilder.Build(request.Filters, definition.Columns);
+        var filter = SqliteFilterBuilder.Build(request.Filters, definition.Columns, schema, name);
 
         await using var countCommand = connection.CreateCommand();
         countCommand.CommandText = $"SELECT COUNT(*) FROM {qualifiedName}{filter.Clause};";
@@ -155,7 +155,7 @@ public sealed class SqliteTableDataService : ITableDataService
 
         var quotedColumn = SqliteIdentifier.Quote(column.Name);
         var filter = SqliteFilterBuilder.Build(
-            request.Filters, definition.Columns);
+            request.Filters, definition.Columns, schema, name);
         await using var transaction = (Microsoft.Data.Sqlite.SqliteTransaction)
             await connection.BeginTransactionAsync(cancellationToken);
         await using var aggregate = connection.CreateCommand();
@@ -206,6 +206,74 @@ public sealed class SqliteTableDataService : ITableDataService
             minimum,
             maximum,
             topValues);
+    }
+
+    public async Task<ColumnFilterValues> GetColumnFilterValuesAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        ColumnFilterValuesRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
+        var qualifiedName = SqliteIdentifier.QuoteQualified(schema, name);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(
+            connection, schema, name, cancellationToken);
+        var column = definition.Columns.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, request.Column, StringComparison.OrdinalIgnoreCase))
+            ?? throw new GridletValidationException(
+                $"Filter column '{request.Column}' does not exist on {qualifiedName}.");
+        if (column.IsHidden)
+        {
+            throw new GridletValidationException(
+                $"Hidden column '{column.Name}' is not available in table data.");
+        }
+
+        var filter = SqliteFilterBuilder.Build(request.Filters, definition.Columns, schema, name);
+        var limit = Math.Clamp(request.Limit, 1, 10_000);
+        var search = string.IsNullOrEmpty(request.Search) ? null : request.Search;
+        await using var command = connection.CreateCommand();
+        command.CommandText = SqliteFilterBuilder.BuildFilterValuesSql(
+            schema, name, column, filter.Clause, search is not null);
+        AddFilterParameters(command, filter.Parameters);
+        // One more than the limit, so a full list can be told apart from a cut-off one.
+        command.Parameters.AddWithValue("@limit", limit + 1);
+        if (search is not null)
+        {
+            command.Parameters.AddWithValue("@search", SqliteFilterBuilder.BuildFilterValuesSearch(search));
+        }
+
+        var values = new List<object?>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            values.Add(SqliteValues.Materialize(reader.GetValue(0)));
+        }
+
+        await reader.NextResultAsync(cancellationToken);
+        var hasBlanks = await reader.ReadAsync(cancellationToken) && reader.GetInt64(0) != 0;
+        var isTruncated = values.Count > limit;
+        if (isTruncated)
+        {
+            values.RemoveAt(limit);
+        }
+
+        return new ColumnFilterValues(values, hasBlanks, isTruncated);
+    }
+
+    public async Task<string> GetFilterSqlAsync(
+        GridletConnectionContext context,
+        string schema,
+        string name,
+        IReadOnlyList<TableDataFilter>? filters,
+        CancellationToken cancellationToken = default)
+    {
+        SqliteIdentifier.RequireSelectedSchema(context, schema);
+        await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
+        var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(
+            connection, schema, name, cancellationToken);
+        return SqliteFilterBuilder.BuildFilterDisplaySql(filters, definition.Columns, schema, name);
     }
 
     private static void AddFilterParameters(

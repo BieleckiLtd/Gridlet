@@ -35,14 +35,23 @@
     'adjustments-horizontal': ['M12 6a2 2 0 1 0 4 0a2 2 0 1 0 -4 0', 'M4 6l8 0', 'M16 6l4 0', 'M6 12a2 2 0 1 0 4 0a2 2 0 1 0 -4 0', 'M4 12l2 0', 'M10 12l10 0', 'M15 18a2 2 0 1 0 4 0a2 2 0 1 0 -4 0', 'M4 18l11 0', 'M19 18l1 0'],
     'alert-triangle': ['M12 9v4', 'M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0', 'M12 16h.01'],
     'arrow-up': ['M12 5l0 14', 'M18 11l-6 -6', 'M6 11l6 -6'],
+    calendar: ['M4 7a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-12z', 'M16 3v4', 'M8 3v4', 'M4 11h16'],
+    'chevron-down': ['M6 9l6 6l6 -6'],
     'chevron-right': ['M9 6l6 6l-6 6'],
     copy: ['M7 9.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667l0 -8.666', 'M4.012 16.737a2.005 2.005 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1'],
     'external-link': ['M14 5h5v5', 'M19 5l-8 8', 'M18 13v5a1 1 0 0 1 -1 1h-10a1 1 0 0 1 -1 -1v-10a1 1 0 0 1 1 -1h5'],
+    filter: ['M4 4h16v2.172a2 2 0 0 1 -.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48 -4.928a2 2 0 0 1 -.52 -1.345v-2.227z'],
+    'filter-off': ['M8 4h12v2.172a2 2 0 0 1 -.586 1.414l-3.914 3.914m-.5 3.5v4l-6 2v-8.5l-4.48 -4.928a2 2 0 0 1 -.52 -1.345v-2.227', 'M3 3l18 18'],
     'info-circle': ['M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0', 'M12 9h.01', 'M11 12h1v4h1'],
     lock: ['M5 13a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-6', 'M11 16a1 1 0 1 0 2 0a1 1 0 0 0 -2 0', 'M8 11v-4a4 4 0 1 1 8 0v4'],
     microphone: ['M9 5a3 3 0 0 1 3 -3a3 3 0 0 1 3 3v5a3 3 0 0 1 -3 3a3 3 0 0 1 -3 -3l0 -5', 'M5 10a7 7 0 0 0 14 0', 'M8 21l8 0', 'M12 17l0 4'],
     'player-play': ['M7 4v16l13 -8z'],
     plus: ['M12 5l0 14', 'M5 12l14 0'],
+    // A compact sort stack with an X reads as "remove sorting" at menu-icon size. Tabler does
+    // not currently include a clear-sort glyph, so this follows the same 24px outline geometry.
+    'sort-clear': ['M4 6h10', 'M4 12h7', 'M4 18h4', 'M16 15l5 5', 'M21 15l-5 5'],
+    'sort-ascending': ['M4 6l7 0', 'M4 12l7 0', 'M4 18l9 0', 'M15 9l3 -3l3 3', 'M18 6l0 12'],
+    'sort-descending': ['M4 6l9 0', 'M4 12l7 0', 'M4 18l7 0', 'M15 15l3 3l3 -3', 'M18 6l0 12'],
     // Completion categories. The popup shows these instead of spelling the category out.
     'completion-keyword': ['M7 8l-4 4l4 4', 'M17 8l4 4l-4 4'],
     'completion-function': ['M3 19a2 2 0 0 0 2 2c2 0 2 -4 3 -9s1 -9 3 -9a2 2 0 0 1 2 2', 'M5 12h6'],
@@ -66,6 +75,7 @@
   /** One icon by name, as an <svg>. Extra paths carry their own class, for the ones CSS toggles. */
   function icon(name, className = null, extras = []) {
     const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('data-icon', name);
     if (className) svg.setAttribute('class', className);
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('aria-hidden', 'true');
@@ -619,6 +629,7 @@
       triggerState: () => `${dbBase()}/triggers/state`,
       data: (s, n, q) => `${objBase(s, n)}/data?${q}`,
       dataStream: (s, n, q) => `${objBase(s, n)}/data/stream?${q}`,
+      filterSql: (s, n, q) => `${objBase(s, n)}/data/filter-sql?${q}`,
       profile: (s, n, q) => `${objBase(s, n)}/profile?${q}`,
       dataExport: (s, n, q) => `${objBase(s, n)}/data/export?${q}`,
       structure: (s, n) => `${objBase(s, n)}/structure`,
@@ -666,6 +677,7 @@
         const qs = params.toString();
         return `${objBase(s, n)}/columns/${enc(col)}/distinct-values${qs ? `?${qs}` : ''}`;
       },
+      filterValues: (s, n, col, q) => `${objBase(s, n)}/columns/${enc(col)}/filter-values?${q}`,
       dropObject: (s, n, type) => `${objBase(s, n)}?type=${enc(type)}`,
       renameObject: (s, n, type) => `${objBase(s, n)}/rename?type=${enc(type)}`,
       renameIndex: (s, n, index) => `${objBase(s, n)}/indexes/${enc(index)}/rename`,
@@ -3075,19 +3087,43 @@
 
   const sqlName = (o) => `[${o.schema.replaceAll(']', ']]')}].[${o.name.replaceAll(']', ']]')}]`;
 
-  function objectQuerySql(o, scope = state) {
+  function appendFilterSql(query, filterSql) {
+    const clause = String(filterSql || '').trim();
+    if (!clause) return query;
+    const terminator = query.match(/;\s*$/)?.[0] || '';
+    const statement = (terminator ? query.slice(0, -terminator.length) : query).trimEnd();
+    // Provider examples may put a row cap after the source (SQLite's LIMIT is the current case).
+    // A WHERE clause belongs before any result-shaping tail, not merely before the semicolon.
+    const tail = statement.match(/\s+(?:GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT|OFFSET|FETCH)\b/i);
+    if (!tail) return `${statement}\n${clause}${terminator}`;
+    return `${statement.slice(0, tail.index).trimEnd()}\n${clause}\n${statement.slice(tail.index).trim()}${terminator}`;
+  }
+
+  function objectQuerySql(o, scope = state, filterSql = '') {
     if (o.type === 'StoredProcedure') return `EXEC ${sqlName(o)};`;
     if (o.type === 'ScalarFunction') return `SELECT ${sqlName(o)}(/* arguments */);`;
     if (o.type === 'Sequence') return `SELECT NEXT VALUE FOR ${sqlName(o)} AS [NextValue];`;
     if (o.type === 'Table' || o.type === 'View') {
-      return capabilitiesFor(scope).selectExample.replace('{object}', sqlName(o));
+      return appendFilterSql(capabilitiesFor(scope).selectExample.replace('{object}', sqlName(o)), filterSql);
     }
     return `SELECT * FROM ${sqlName(o)}(/* arguments */);`;
   }
 
-  const useInQueryButton = (o, scope = state) =>
+  const useInQueryButton = (o, scope = state, getFilterSql = null) =>
     connectionFor(scope).allowSqlExecution && !['Trigger', 'UserDefinedType'].includes(o.type) ? h('button', {
-      onclick: () => openQueryTab(objectQuerySql(o, scope), `Use ${o.name}`, scope),
+      'data-testid': 'object-use-query',
+      onclick: async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          const filterSql = getFilterSql ? await getFilterSql() : '';
+          openQueryTab(objectQuerySql(o, scope, filterSql), `Use ${o.name}`, scope);
+        } catch (err) {
+          if (err.name !== 'AbortError') toast(`Could not create filtered query. ${err.message}`);
+        } finally {
+          if (button.isConnected) button.disabled = false;
+        }
+      },
     }, 'Use in query') : null;
 
   const dependenciesButton = (o, scope = state) => h('button', {
@@ -7312,7 +7348,13 @@
     const currentCapabilities = () => capabilitiesFor(scope);
     const grid = { sort: null, dir: 'asc', filters: [...(tab.initialFilters || [])] };
     tab.initialFilters = null;
-    tab.dataFilters = () => grid.filters.map((filter) => ({ ...filter }));
+    tab.dataFilters = () => grid.filters.map((filter) => JSON.parse(JSON.stringify(filter)));
+    // The conditions the server applies, measured afresh for every request. `except` leaves out one
+    // column's own filter, which is what that column's checklist lists values under.
+    const serverFilters = (except = null) => grid.filters
+      .filter((filter) => except === null || filter.column.toLowerCase() !== except.toLowerCase())
+      .map((filter) => serverColumnFilter(filter))
+      .filter(Boolean);
     const views = ['Data', 'Profile', 'Structure', 'Definition'];
     const viewBar = h('div', { class: 'viewbar' });
     const body = h('div', { class: 'panel-body' });
@@ -7509,7 +7551,7 @@
           column: column.value, topValues: String(requestedTop),
         });
         if (useFilters.checked && grid.filters.length) {
-          params.set('filter', JSON.stringify(grid.filters));
+          params.set('filter', JSON.stringify(serverFilters()));
         }
         setRunning(true);
         status.textContent = `Profiling ${column.value}…`;
@@ -8010,80 +8052,70 @@
       };
 
       // Filtering happens in SQL, on every row of the object, not on the page already fetched -
-      // otherwise "find the row" would only ever search the first few hundred rows.
-      const filterOperators = [
-        ['equals', '='], ['notEquals', '≠'],
-        ['contains', 'contains'], ['notContains', 'does not contain'],
-        ['startsWith', 'starts with'], ['endsWith', 'ends with'],
-        ['lessThan', '<'], ['lessThanOrEqual', '≤'],
-        ['greaterThan', '>'], ['greaterThanOrEqual', '≥'],
-        ['isNull', 'is null'], ['isNotNull', 'is not null'],
-      ];
-      const operatorLabel = (name) =>
-        (filterOperators.find(([value]) => value === name) || [name, name])[1];
-      const needsValue = (name) => name !== 'isNull' && name !== 'isNotNull';
-
-      const openFilterDialog = () => {
-        const columns = data.columns.length ? data.columns : (structure?.columns || []);
-        if (!columns.length) { toast('Wait for the columns to load first.'); return; }
-        const column = h('select', { 'aria-label': 'Filter column' },
-          ...columns.map((c) => h('option', { value: c.name, text: c.name })));
-        const operator = h('select', { 'aria-label': 'Filter operator' },
-          ...filterOperators.map(([value, label]) => h('option', { value, text: label })));
-        const value = h('input', { type: 'text', 'aria-label': 'Filter value' });
-        const syncValue = () => { value.disabled = !needsValue(operator.value); };
-        operator.addEventListener('change', syncValue);
-        syncValue();
-        modal('Filter rows', h('div', { class: 'form-grid' },
-          h('label', { class: 'field-label', text: 'Column' }), h('div', { class: 'field-input' }, column),
-          h('label', { class: 'field-label', text: 'Condition' }), h('div', { class: 'field-input' }, operator),
-          h('label', { class: 'field-label', text: 'Value' }), h('div', { class: 'field-input' }, value)), [
-          { label: 'Cancel', onClick: (close) => close() },
-          {
-            label: 'Apply', primary: true,
-            onClick: (close) => {
-              grid.filters = [...grid.filters, {
-                column: column.value,
-                operator: operator.value,
-                value: needsValue(operator.value) ? value.value : null,
-              }];
-              saveSession();
-              close();
+      // otherwise "find the row" would only ever search the first few hundred rows. A column holds
+      // one filter, as a spreadsheet's does, so applying a filter replaces the column's last one.
+      const columnSpec = (name) =>
+        grid.filters.find((filter) => filter.column.toLowerCase() === name.toLowerCase()) || null;
+      const setColumnSpec = (name, spec) => {
+        grid.filters = [
+          ...grid.filters.filter((filter) => filter.column.toLowerCase() !== name.toLowerCase()),
+          ...(spec ? [spec] : []),
+        ];
+        saveSession();
+        renderData();
+      };
+      const columnFilter = {
+        isActive: (name) => Boolean(columnSpec(name)),
+        describe: (name) => {
+          const spec = columnSpec(name);
+          return spec ? describeColumnFilter(spec) : '';
+        },
+        open: (column, button) => {
+          const declared = structure?.columns?.find((candidate) =>
+            candidate.name.toLowerCase() === column.name.toLowerCase());
+          const index = data.columns.findIndex((candidate) => candidate.name === column.name);
+          const samples = index < 0 ? [] : data.rows.slice(0, 200).map((row) => row[index]);
+          const timed = samples.find((value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}[T ]/.test(value));
+          openColumnFilterMenu(button, {
+            column: column.name,
+            kind: columnFilterKind(declared?.dataType || column.dataTypeName, currentConn().providerName, samples),
+            spec: columnSpec(column.name),
+            separator: timed ? timed.charAt(10) : 'T',
+            sort: grid.sort,
+            direction: grid.dir,
+            onSort: (direction) => {
+              grid.sort = column.name;
+              grid.dir = direction;
               renderData();
             },
-          },
-        ]);
-        value.focus();
+            onClearSort: () => {
+              grid.sort = null;
+              grid.dir = 'asc';
+              renderData();
+            },
+            onApply: (spec) => setColumnSpec(column.name, spec),
+            loadValues: ({ search = null, own = false } = {}) => {
+              const params = new URLSearchParams();
+              const filters = own ? serverFilters() : serverFilters(column.name);
+              if (filters.length) params.set('filter', JSON.stringify(filters));
+              if (search) params.set('search', search);
+              return api(urls.filterValues(o.schema, o.name, column.name, params));
+            },
+          });
+        },
       };
 
       const filterBar = () => {
-        const bar = h('div', { class: 'filter-bar', 'data-testid': 'filter-bar' },
+        if (!grid.filters.length) return null;
+        return h('div', { class: 'filter-bar', 'data-testid': 'filter-bar' },
+          h('code', {
+            class: 'filter-sql', text: 'Loading filter SQL…', 'data-testid': 'filter-sql',
+            'aria-live': 'polite',
+          }),
           h('button', {
-            class: 'ghost', 'data-testid': 'add-filter', title: 'Filter rows in the database',
-            onclick: openFilterDialog,
-          }, '⧩ Filter'));
-        grid.filters.forEach((filter, index) => {
-          bar.append(h('span', { class: 'filter-chip', 'data-testid': 'filter-chip' },
-            h('span', {
-              text: `${filter.column} ${operatorLabel(filter.operator)}`
-                + (needsValue(filter.operator) ? ` ${filter.value}` : ''),
-            }),
-            h('button', {
-              class: 'chip-remove', title: 'Remove this filter', 'aria-label': 'Remove filter',
-              onclick: () => {
-                grid.filters = grid.filters.filter((_, position) => position !== index);
-                saveSession();
-                renderData();
-              },
-            }, '×')));
-        });
-        if (grid.filters.length > 1) {
-          bar.append(h('button', {
             class: 'ghost', 'data-testid': 'clear-filters',
             onclick: () => { grid.filters = []; saveSession(); renderData(); },
           }, 'Clear all'));
-        }
-        return bar;
       };
 
       const serverMaxRows = state.meta.maxQueryResultRows;
@@ -8103,6 +8135,7 @@
       const cancel = h('button', { text: 'Cancel', onclick: () => controller.abort() });
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
       let exportControls;
+      let filterSqlRequest = Promise.resolve('');
       let fullExportInProgress = false;
       const fullExport = async (format) => {
         if (fullExportInProgress) return;
@@ -8110,7 +8143,7 @@
         exportControls?.querySelectorAll('button').forEach((button) => { button.disabled = true; });
         const params = new URLSearchParams({ format });
         if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
-        if (grid.filters.length) params.set('filter', JSON.stringify(grid.filters));
+        if (grid.filters.length) params.set('filter', JSON.stringify(serverFilters()));
         try {
           params.set('probe', 'true');
           await api(urls.dataExport(o.schema, o.name, params));
@@ -8155,7 +8188,7 @@
           ? h('button', { 'data-testid': 'import-data', onclick: openImportDialog }, 'Import…')
           : null,
         cancel,
-        useInQueryButton(o, scope),
+        useInQueryButton(o, scope, () => filterSqlRequest),
         dependenciesButton(o, scope),
         h('span', { class: 'spacer' }),
         (exportControls = createExportControls()),
@@ -8171,7 +8204,8 @@
           class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
         }) : null,
       ].filter(Boolean));
-      body.replaceChildren(filterBar(), scroll, incomingPanel);
+      const filterBarElement = filterBar();
+      body.replaceChildren(...[filterBarElement, scroll, incomingPanel].filter(Boolean));
       const gridView = progressiveDataGrid(scroll, {
         columns: data.columns,
         rows: data.rows,
@@ -8181,7 +8215,9 @@
         direction: () => grid.dir,
         onRender: (value) => { table = value; },
         renderCell: friendlyCell,
+        providerName: currentConn().providerName,
         onSelectionChange: showIncomingReferences,
+        columnFilter,
         onSort: (column) => {
           if (grid.sort === column) grid.dir = grid.dir === 'asc' ? 'desc' : 'asc';
           else { grid.sort = column; grid.dir = 'asc'; }
@@ -8191,7 +8227,24 @@
 
       const params = new URLSearchParams({ maxRows: capInput.value });
       if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
-      if (grid.filters.length) params.set('filter', JSON.stringify(grid.filters));
+      const appliedFilters = grid.filters.length ? JSON.stringify(serverFilters()) : null;
+      if (appliedFilters) params.set('filter', appliedFilters);
+      if (filterBarElement && appliedFilters) {
+        const display = filterBarElement.querySelector('[data-testid="filter-sql"]');
+        const filterParams = new URLSearchParams({ filter: appliedFilters });
+        filterSqlRequest = api(urls.filterSql(o.schema, o.name, filterParams), { signal: controller.signal })
+          .then((result) => result.sql || '');
+        filterSqlRequest
+          .then((sql) => {
+            if (!display.isConnected) return;
+            display.innerHTML = highlightSql(sql);
+          })
+          .catch((err) => {
+            if (err.name === 'AbortError' || !display.isConnected) return;
+            display.textContent = 'Filter SQL unavailable.';
+            display.title = err.message;
+          });
+      }
       try {
         await streamNdjson(urls.dataStream(o.schema, o.name, params), { signal: controller.signal }, (event) => {
           if (event.type === 'resultSet') {
@@ -8534,7 +8587,10 @@
             rowKey?.refresh?.(existingRow);
             existingRowElement.querySelectorAll('td:not(.row-selector)').forEach((cell, index) => {
               const rendered = friendly.renderCell(existingRow[index], dataColumns[index], existingRow);
+              // The grid, not the cell renderer, decides a column's alignment, so it carries over.
+              const alignedRight = cell.classList.contains('cell-align-right');
               cell.className = rendered.className;
+              cell.classList.toggle('cell-align-right', alignedRight);
               cell.replaceChildren(...rendered.childNodes);
               if (rendered.title) cell.title = rendered.title;
               else cell.removeAttribute('title');
@@ -12319,7 +12375,9 @@
           const exports = h('span', { class: 'export-buttons' });
           const meta = h('div', { class: 'result-meta muted' }, metaText, h('span', { class: 'spacer' }), exports);
           const scroll = h('div', { class: 'grid-scroll' });
-          const gridView = progressiveDataGrid(scroll, { selectable: true });
+          const gridView = progressiveDataGrid(scroll, {
+            selectable: true, providerName: connectionFor(scope).providerName,
+          });
           gridView.setColumns(event.columns);
           const panel = h('div', { class: 'result-set' }, meta, scroll);
           if (lastPanel) results.append(resultSetGrip(lastPanel, panel, results));
@@ -12452,7 +12510,9 @@
           const meta = h('div', { class: 'result-meta muted' },
             metaText, h('span', { class: 'spacer' }), exports);
           const scroll = h('div', { class: 'grid-scroll' });
-          const gridView = progressiveDataGrid(scroll, { selectable: true });
+          const gridView = progressiveDataGrid(scroll, {
+            selectable: true, providerName: connectionFor(scope).providerName,
+          });
           gridView.setColumns(event.columns);
           results.append(meta, scroll);
           sets.set(event.resultSetIndex, {
@@ -13493,20 +13553,1098 @@
 
   // ---- data grid ---------------------------------------------------------------------
 
+  // ---- column filters ---------------------------------------------------------------------
+  //
+  // Every column of a table or view has a filter of its own, laid out like a spreadsheet's
+  // AutoFilter: sort commands, conditions chosen by the column's type, and a searchable checklist of
+  // the column's values. A tab keeps one spec per column saying what was chosen, and turns the specs
+  // into the server's conditions on every request, so a relative date such as "This Week" is
+  // measured again each time instead of being frozen when it was picked.
+
+  const COLUMN_FILTER_ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/;
+  const COLUMN_FILTER_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+    'August', 'September', 'October', 'November', 'December'];
+  const COLUMN_FILTER_SQL_SERVER_KINDS = {
+    date: ['date', 'datetime', 'datetime2', 'smalldatetime', 'datetimeoffset'],
+    number: ['bigint', 'int', 'smallint', 'tinyint', 'bit', 'decimal', 'numeric', 'money', 'smallmoney', 'float', 'real'],
+    binary: ['binary', 'varbinary', 'image', 'timestamp', 'rowversion'],
+  };
+  // [operator, label, label for dates]: a date condition reads "is after" where a number reads
+  // "is greater than".
+  const COLUMN_FILTER_CONDITIONS = [
+    ['equals', 'equals'],
+    ['notEquals', 'does not equal'],
+    ['greaterThan', 'is greater than', 'is after'],
+    ['greaterThanOrEqual', 'is greater than or equal to', 'is after or equal to'],
+    ['lessThan', 'is less than', 'is before'],
+    ['lessThanOrEqual', 'is less than or equal to', 'is before or equal to'],
+    ['beginsWith', 'begins with'],
+    ['notBeginsWith', 'does not begin with'],
+    ['endsWith', 'ends with'],
+    ['notEndsWith', 'does not end with'],
+    ['contains', 'contains'],
+    ['notContains', 'does not contain'],
+  ];
+  const COLUMN_FILTER_OPERATORS = {
+    text: ['equals', 'notEquals', 'beginsWith', 'notBeginsWith', 'endsWith', 'notEndsWith',
+      'contains', 'notContains'],
+    number: ['equals', 'notEquals', 'greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual'],
+    date: ['equals', 'notEquals', 'greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual'],
+  };
+  const COLUMN_FILTER_PERIODS = [
+    ['tomorrow', 'Tomorrow'], ['today', 'Today'], ['yesterday', 'Yesterday'], null,
+    ['nextWeek', 'Next Week'], ['thisWeek', 'This Week'], ['lastWeek', 'Last Week'], null,
+    ['nextMonth', 'Next Month'], ['thisMonth', 'This Month'], ['lastMonth', 'Last Month'], null,
+    ['nextQuarter', 'Next Quarter'], ['thisQuarter', 'This Quarter'], ['lastQuarter', 'Last Quarter'], null,
+    ['nextYear', 'Next Year'], ['thisYear', 'This Year'], ['lastYear', 'Last Year'], null,
+    ['yearToDate', 'Year to Date'],
+  ];
+  // A plain condition arrives from elsewhere, such as following a foreign key to its row.
+  const COLUMN_FILTER_PLAIN_LABELS = {
+    equals: '=', notEquals: '≠', contains: 'contains', notContains: 'does not contain',
+    startsWith: 'starts with', endsWith: 'ends with', lessThan: '<', lessThanOrEqual: '≤',
+    greaterThan: '>', greaterThanOrEqual: '≥', isNull: 'is null', isNotNull: 'is not null',
+  };
+
+  const columnFilterPad = (number) => String(number).padStart(2, '0');
+
+  /**
+   * Whether a column filters as text, a number or a date, or cannot be listed at all. The declared
+   * type decides first. A text column whose values are all ISO dates filters as dates: that is how
+   * SQLite tables usually keep them, and how a spreadsheet picks Date Filters for a column of dates.
+   */
+  function columnFilterKind(typeName, providerName, samples = []) {
+    const type = String(typeName || '').toLowerCase().replace(/\s*\(.*$/, '').trim();
+    if (providerName !== 'Sqlite') {
+      const kind = Object.keys(COLUMN_FILTER_SQL_SERVER_KINDS)
+        .find((name) => COLUMN_FILTER_SQL_SERVER_KINDS[name].includes(type));
+      if (kind) return kind;
+    } else if (type) {
+      // SQLite's affinity rules in its own order, after the date names SQLite schemas use.
+      if (/date|time/.test(type)) return 'date';
+      if (type.includes('int')) return 'number';
+      if (type === 'blob') return 'binary';
+      if (!/char|clob|text/.test(type)) return 'number';
+    }
+    const present = samples.filter((value) => value !== null && value !== undefined && value !== '');
+    return present.length && present.every((value) => typeof value === 'string' && COLUMN_FILTER_ISO_DATE.test(value))
+      ? 'date'
+      : 'text';
+  }
+
+  function columnFilterDateParts(value) {
+    const match = typeof value === 'string' ? COLUMN_FILTER_ISO_DATE.exec(value) : null;
+    if (!match) return null;
+    const [year, month, day, hour = 0, minute = 0, second = 0] = match.slice(1, 7)
+      .map((part) => (part === undefined ? undefined : Number(part)));
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    return {
+      year, month, day, hour, minute, second,
+      separator: value.charAt(10) === ' ' ? ' ' : 'T',
+      timed: hour !== 0 || minute !== 0 || second !== 0,
+    };
+  }
+
+  /**
+   * A moment as bound text: the day alone at midnight, and to the second otherwise. Both forms order
+   * correctly against ISO text, so the same bound works on a SQLite text column and, bound as a
+   * typed date, on SQL Server.
+   */
+  function columnFilterBound(moment, separator = 'T') {
+    const day = `${String(moment.getUTCFullYear()).padStart(4, '0')}-${columnFilterPad(moment.getUTCMonth() + 1)}`
+      + `-${columnFilterPad(moment.getUTCDate())}`;
+    return moment.getUTCHours() || moment.getUTCMinutes() || moment.getUTCSeconds()
+      ? `${day}${separator}${columnFilterPad(moment.getUTCHours())}:${columnFilterPad(moment.getUTCMinutes())}`
+        + `:${columnFilterPad(moment.getUTCSeconds())}`
+      : day;
+  }
+
+  function columnFilterWeekStart() {
+    try {
+      const locale = new Intl.Locale(navigator.language || 'en-US');
+      const info = locale.getWeekInfo?.() || locale.weekInfo;
+      return info?.firstDay ? info.firstDay % 7 : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** The first day of a relative period and the day after it ends, counted from the viewer's today. */
+  function columnFilterPeriodRange(period, now = new Date()) {
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const utc = (y, m, d) => new Date(Date.UTC(y, m, d));
+    const day = (offset) => utc(year, month, now.getDate() + offset);
+    const week = (offset) => day(offset * 7 - ((now.getDay() - columnFilterWeekStart() + 7) % 7));
+    const monthStart = (offset) => utc(year, month + offset, 1);
+    const quarterStart = (offset) => utc(year, Math.floor(month / 3) * 3 + offset * 3, 1);
+    const yearStart = (offset) => utc(year + offset, 0, 1);
+    const ranges = {
+      tomorrow: [day(1), day(2)], today: [day(0), day(1)], yesterday: [day(-1), day(0)],
+      nextWeek: [week(1), week(2)], thisWeek: [week(0), week(1)], lastWeek: [week(-1), week(0)],
+      nextMonth: [monthStart(1), monthStart(2)], thisMonth: [monthStart(0), monthStart(1)],
+      lastMonth: [monthStart(-1), monthStart(0)],
+      nextQuarter: [quarterStart(1), quarterStart(2)], thisQuarter: [quarterStart(0), quarterStart(1)],
+      lastQuarter: [quarterStart(-1), quarterStart(0)],
+      nextYear: [yearStart(1), yearStart(2)], thisYear: [yearStart(0), yearStart(1)],
+      lastYear: [yearStart(-1), yearStart(0)],
+      yearToDate: [yearStart(0), day(1)],
+    };
+    return (ranges[period] || ranges.today).map((bound) => columnFilterBound(bound));
+  }
+
+  function columnFilterConditionLabel(operator, type) {
+    const entry = COLUMN_FILTER_CONDITIONS.find(([value]) => value === operator);
+    return entry ? (type === 'date' && entry[2]) || entry[1] : operator;
+  }
+
+  const columnFilterHasWildcard = (value) => /(^|[^~])[*?]/.test(value);
+
+  /**
+   * One Custom AutoFilter condition as the server's condition. Text compares with spreadsheet
+   * wildcards, so "equals A*" means "begins with A". A date typed without a time stands for its
+   * whole day, and a "does not" condition keeps the blank rows, both as a spreadsheet does.
+   */
+  function columnFilterCondition({ operator, value }, type, separator = 'T') {
+    let text = String(value);
+    const wildcard = columnFilterHasWildcard(text);
+    const orNull = (condition) => ({ operator: 'anyOf', conditions: [condition, { operator: 'isNull' }] });
+    const parts = type === 'date' && !wildcard ? columnFilterDateParts(text.trim()) : null;
+    if (parts && !parts.timed && text.trim().length === 10) {
+      const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+      const start = columnFilterBound(day);
+      const end = columnFilterBound(new Date(day.getTime() + 86_400_000));
+      const whole = {
+        equals: { operator: 'allOf', conditions: [
+          { operator: 'greaterThanOrEqual', value: start }, { operator: 'lessThan', value: end }] },
+        notEquals: { operator: 'anyOf', conditions: [
+          { operator: 'lessThan', value: start }, { operator: 'greaterThanOrEqual', value: end },
+          { operator: 'isNull' }] },
+        greaterThan: { operator: 'greaterThanOrEqual', value: end },
+        greaterThanOrEqual: { operator: 'greaterThanOrEqual', value: start },
+        lessThan: { operator: 'lessThan', value: start },
+        lessThanOrEqual: { operator: 'lessThan', value: end },
+      }[operator];
+      if (whole) return whole;
+    } else if (parts) {
+      text = columnFilterBound(new Date(Date.UTC(
+        parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second)), separator);
+    }
+    const pattern = {
+      beginsWith: `${text}*`, notBeginsWith: `${text}*`, endsWith: `*${text}`, notEndsWith: `*${text}`,
+      contains: `*${text}*`, notContains: `*${text}*`,
+    }[operator];
+    if (pattern !== undefined) {
+      return operator.startsWith('not')
+        ? orNull({ operator: 'notMatches', value: pattern })
+        : { operator: 'matches', value: pattern };
+    }
+    const matching = type === 'text' || wildcard;
+    if (operator === 'equals') return { operator: matching ? 'matches' : 'equals', value: text };
+    if (operator === 'notEquals') return orNull({ operator: matching ? 'notMatches' : 'notEquals', value: text });
+    return { operator, value: text };
+  }
+
+  /** A column's spec as the server's filter condition, or null for a spec this page cannot read. */
+  function serverColumnFilter(spec, now = new Date()) {
+    const column = spec.column;
+    if (!spec.kind) return { column, operator: spec.operator, value: spec.value ?? null };
+    const combine = (operator, conditions) => (conditions.length === 1
+      ? { column, ...conditions[0] }
+      : { column, operator, conditions });
+    const range = ([start, end]) => ({ operator: 'allOf', conditions: [
+      { operator: 'greaterThanOrEqual', value: start }, { operator: 'lessThan', value: end }] });
+    switch (spec.kind) {
+      case 'values':
+        if (spec.exclude) {
+          if (!spec.values.length) return { column, operator: 'isNotBlank' };
+          const without = { operator: 'notIn', values: spec.values };
+          return spec.blanks
+            ? combine('anyOf', [without, { operator: 'isBlank' }])
+            : combine('allOf', [without, { operator: 'isNotBlank' }]);
+        }
+        return combine('anyOf', [
+          ...(spec.values.length ? [{ operator: 'in', values: spec.values }] : []),
+          ...(spec.ranges || []).map(range),
+          ...(spec.blanks ? [{ operator: 'isBlank' }] : []),
+        ]);
+      case 'custom':
+        return combine(spec.join === 'or' ? 'anyOf' : 'allOf',
+          spec.conditions.map((condition) => columnFilterCondition(condition, spec.type, spec.separator)));
+      case 'top':
+        return { column, operator: `${spec.bottom ? 'bottom' : 'top'}${spec.percent ? 'Percent' : ''}`, value: String(spec.count) };
+      case 'average':
+        return { column, operator: spec.above ? 'aboveAverage' : 'belowAverage' };
+      case 'period':
+        return { column, operator: spec.part === 'quarter' ? 'quarterEquals' : 'monthEquals', value: String(spec.value) };
+      case 'dynamic':
+        return { column, ...range(columnFilterPeriodRange(spec.period, now)) };
+      default:
+        return null;
+    }
+  }
+
+  function columnFilterRangeText([start, end]) {
+    const from = columnFilterDateParts(start);
+    const to = columnFilterDateParts(end);
+    if (from && to && start.length === 10 && end.length === 10) {
+      const after = (years, months, days) => columnFilterBound(new Date(Date.UTC(
+        from.year + years, from.month - 1 + months, from.day + days)));
+      if (end === after(0, 0, 1)) return start;
+      if (from.day === 1 && end === after(0, 1, 0)) return `${COLUMN_FILTER_MONTHS[from.month - 1]} ${from.year}`;
+      if (from.day === 1 && from.month === 1 && end === after(1, 0, 0)) return String(from.year);
+      // The range ends before its end day, so the words name the last day it includes.
+      return `${start} to ${columnFilterBound(new Date(Date.UTC(to.year, to.month - 1, to.day - 1)))}`;
+    }
+    return `${start} up to ${end}`;
+  }
+
+  /** What a column's filter does, in words, for its chip and its header button's tooltip. */
+  function describeColumnFilter(spec) {
+    const column = spec.column;
+    const quote = (value) => `"${value}"`;
+    const list = (items, joiner) => (items.length > 3
+      ? `${items.slice(0, 3).join(joiner)}${joiner}${items.length - 3} more`
+      : items.join(joiner));
+    switch (spec.kind) {
+      case undefined:
+      case null: {
+        const label = COLUMN_FILTER_PLAIN_LABELS[spec.operator] || spec.operator;
+        return `${column} ${label}${spec.operator === 'isNull' || spec.operator === 'isNotNull' ? '' : ` ${spec.value}`}`;
+      }
+      case 'values':
+        if (spec.exclude) {
+          return `${column} excludes ${list([...spec.values.map(quote), ...(spec.blanks ? [] : ['(Blanks)'])], ', ')}`;
+        }
+        return `${column} is ${list([
+          ...spec.values.map(quote),
+          ...(spec.ranges || []).map(columnFilterRangeText),
+          ...(spec.blanks ? ['(Blanks)'] : []),
+        ], ' or ')}`;
+      case 'custom':
+        return `${column} ${spec.conditions.map((condition) =>
+          `${columnFilterConditionLabel(condition.operator, spec.type)} ${quote(condition.value)}`)
+          .join(spec.join === 'or' ? ' or ' : ' and ')}`;
+      case 'top':
+        return `${column}: ${spec.bottom ? 'Bottom' : 'Top'} ${spec.count} ${spec.percent ? 'percent' : 'items'}`;
+      case 'average':
+        return `${column}: ${spec.above ? 'Above' : 'Below'} Average`;
+      case 'dynamic':
+        return `${column}: ${COLUMN_FILTER_PERIODS.find((period) => period?.[0] === spec.period)?.[1] || spec.period}`;
+      case 'period':
+        return `${column}: ${spec.part === 'quarter' ? `Quarter ${spec.value}` : COLUMN_FILTER_MONTHS[spec.value - 1]}`;
+      default:
+        return column;
+    }
+  }
+
+  let activeColumnFilterMenu = null;
+
+  function closeColumnFilterMenu(restoreFocus = false) {
+    activeColumnFilterMenu?.close(restoreFocus);
+  }
+
+  /**
+   * Opens a column's filter under its header button. The options give the column, its filter kind,
+   * its current spec and sort, and the callbacks: `onSort`, `onApply` with the new spec or null to
+   * clear it, and `loadValues`, which lists the column's values under the other columns' filters, or
+   * under every filter when `own` is set.
+   */
+  function openColumnFilterMenu(anchor, options) {
+    closeColumnFilterMenu();
+    const { column, kind, spec } = options;
+    const sortedHere = typeof options.sort === 'string'
+      && options.sort.toLowerCase() === column.toLowerCase();
+    const sortLabels = {
+      number: ['Sort Smallest to Largest', 'Sort Largest to Smallest'],
+      date: ['Sort Oldest to Newest', 'Sort Newest to Oldest'],
+    }[kind] || ['Sort A to Z', 'Sort Z to A'];
+    const popup = h('div', {
+      class: 'column-filter-menu', role: 'dialog', 'aria-label': `Filter ${column}`,
+      'data-testid': 'column-filter-menu',
+    });
+    let submenus = [];
+    let roots = [];
+    let searchRoots = null;
+    let truncated = false;
+    let unlistedTicked = true;
+    let searching = false;
+    let searchPending = false;
+    let searchTimer = null;
+    let searchRequest = 0;
+    let rows = [];
+    let shownRows = 0;
+    let closed = false;
+
+    const closeSubmenus = (depth = 0) => {
+      for (const entry of submenus.slice(depth)) {
+        entry.menu.remove();
+        entry.trigger.setAttribute('aria-expanded', 'false');
+      }
+      submenus = submenus.slice(0, depth);
+    };
+    // The whole header cell opens the filter, so a press anywhere on it is left to the header's own
+    // click to toggle; closing here first would make that click open the filter again.
+    const header = anchor.closest('th') || anchor;
+    const onPointerDown = (event) => {
+      if (header.contains(event.target) || popup.contains(event.target)
+        || submenus.some((entry) => entry.menu.contains(event.target))) return;
+      close();
+    };
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (submenus.length) {
+        const { trigger } = submenus[submenus.length - 1];
+        closeSubmenus(submenus.length - 1);
+        trigger.focus();
+      } else {
+        close(true);
+      }
+    };
+    const onResize = () => close();
+    function close(restoreFocus = false) {
+      if (closed) return;
+      closed = true;
+      if (activeColumnFilterMenu?.close === close) activeColumnFilterMenu = null;
+      clearTimeout(searchTimer);
+      closeSubmenus();
+      popup.remove();
+      anchor.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('resize', onResize);
+      if (restoreFocus && anchor.isConnected) anchor.focus();
+    }
+    activeColumnFilterMenu = { close };
+
+    const moveFocus = (container, event) => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      const items = [...container.querySelectorAll(':scope > .column-filter-item:not(:disabled)')];
+      const index = items.indexOf(document.activeElement);
+      if (index < 0) return;
+      event.preventDefault();
+      items[(index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+    };
+    const openSubmenu = (trigger, entries, depth) => {
+      if (submenus[depth]?.trigger === trigger) return submenus[depth].menu;
+      closeSubmenus(depth);
+      const menu = h('div', {
+        class: 'column-filter-submenu', role: 'menu', 'data-testid': 'column-filter-submenu',
+      }, entries.map((entry) => (entry
+        ? menuButton(entry, depth + 1)
+        : h('div', { class: 'context-menu-separator', role: 'separator' }))));
+      menu.addEventListener('keydown', (event) => {
+        moveFocus(menu, event);
+        if (event.key === 'ArrowLeft') {
+          event.preventDefault();
+          closeSubmenus(depth);
+          trigger.focus();
+        }
+      });
+      document.body.append(menu);
+      const box = trigger.getBoundingClientRect();
+      const size = menu.getBoundingClientRect();
+      const left = box.right + size.width + 4 <= window.innerWidth ? box.right + 2 : box.left - size.width - 2;
+      menu.style.left = `${Math.max(4, left)}px`;
+      menu.style.top = `${Math.max(4, Math.min(box.top - 6, window.innerHeight - size.height - 4))}px`;
+      trigger.setAttribute('aria-expanded', 'true');
+      submenus[depth] = { trigger, menu };
+      return menu;
+    };
+    function menuButton(entry, depth) {
+      const radio = entry.checked !== undefined && !entry.submenu;
+      const button = h('button', {
+        type: 'button', class: 'column-filter-item' + (entry.checked ? ' checked' : ''),
+        role: radio ? 'menuitemradio' : 'menuitem',
+        'aria-checked': radio ? String(Boolean(entry.checked)) : null,
+        disabled: entry.disabled ? '' : null,
+        'aria-haspopup': entry.submenu ? 'menu' : null,
+        'aria-expanded': entry.submenu ? 'false' : null,
+        'data-testid': entry.testId || null,
+      },
+        h('span', { class: 'column-filter-mark', 'aria-hidden': 'true' },
+          entry.icon ? icon(entry.icon) : entry.checked ? '✓' : ''),
+        h('span', { text: entry.label }),
+        entry.submenu ? icon('chevron-right', 'column-filter-arrow')
+          : radio && entry.checked ? h('span', { class: 'column-filter-check', text: '✓', 'aria-hidden': 'true' }) : null);
+      if (entry.submenu) {
+        const show = (focusFirst) => {
+          const menu = openSubmenu(button, entry.submenu, depth);
+          if (focusFirst) menu.querySelector('.column-filter-item:not(:disabled)')?.focus();
+        };
+        button.addEventListener('click', () => show(true));
+        button.addEventListener('pointerenter', () => show(false));
+        button.addEventListener('keydown', (event) => {
+          if (event.key !== 'ArrowRight' && event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          show(true);
+        });
+      } else {
+        button.addEventListener('pointerenter', () => closeSubmenus(depth));
+        button.addEventListener('click', () => {
+          close();
+          entry.action();
+        });
+      }
+      return button;
+    }
+
+    const apply = (next) => options.onApply(next);
+    const conditionDialog = (preset) => () => openCustomAutoFilter({
+      column, type: kind, spec, preset, separator: options.separator,
+      loadValues: options.loadValues, onApply: apply,
+    });
+    const isKind = (name, test = () => true) => spec?.kind === name && test(spec);
+    const customEntry = { label: 'Custom Filter…', action: conditionDialog(null), checked: isKind('custom') };
+    const conditionEntries = {
+      text: [
+        { label: 'Equals…', action: conditionDialog(['equals']) },
+        { label: 'Does Not Equal…', action: conditionDialog(['notEquals']) },
+        null,
+        { label: 'Begins With…', action: conditionDialog(['beginsWith']) },
+        { label: 'Ends With…', action: conditionDialog(['endsWith']) },
+        null,
+        { label: 'Contains…', action: conditionDialog(['contains']) },
+        { label: 'Does Not Contain…', action: conditionDialog(['notContains']) },
+        null,
+        customEntry,
+      ],
+      number: [
+        { label: 'Equals…', action: conditionDialog(['equals']) },
+        { label: 'Does Not Equal…', action: conditionDialog(['notEquals']) },
+        null,
+        { label: 'Greater Than…', action: conditionDialog(['greaterThan']) },
+        { label: 'Greater Than Or Equal To…', action: conditionDialog(['greaterThanOrEqual']) },
+        { label: 'Less Than…', action: conditionDialog(['lessThan']) },
+        { label: 'Less Than Or Equal To…', action: conditionDialog(['lessThanOrEqual']) },
+        { label: 'Between…', action: conditionDialog(['greaterThanOrEqual', 'lessThanOrEqual']) },
+        null,
+        {
+          label: 'Top 10…', checked: isKind('top'),
+          action: () => openTopTenDialog({ column, spec, onApply: apply }),
+        },
+        {
+          label: 'Above Average', checked: isKind('average', (current) => current.above),
+          action: () => apply({ kind: 'average', column, above: true }),
+        },
+        {
+          label: 'Below Average', checked: isKind('average', (current) => !current.above),
+          action: () => apply({ kind: 'average', column, above: false }),
+        },
+        null,
+        customEntry,
+      ],
+      date: [
+        { label: 'Equals…', action: conditionDialog(['equals']) },
+        { label: 'Before…', action: conditionDialog(['lessThan']) },
+        { label: 'After…', action: conditionDialog(['greaterThan']) },
+        { label: 'Between…', action: conditionDialog(['greaterThanOrEqual', 'lessThanOrEqual']) },
+        null,
+        ...COLUMN_FILTER_PERIODS.map((period) => period && {
+          label: period[1],
+          checked: isKind('dynamic', (current) => current.period === period[0]),
+          action: () => apply({ kind: 'dynamic', column, period: period[0] }),
+        }),
+        {
+          label: 'All Dates in the Period', checked: isKind('period'),
+          submenu: [
+            ...[1, 2, 3, 4].map((quarter) => ({
+              label: `Quarter ${quarter}`,
+              checked: isKind('period', (current) => current.part === 'quarter' && current.value === quarter),
+              action: () => apply({ kind: 'period', column, part: 'quarter', value: quarter }),
+            })),
+            null,
+            ...COLUMN_FILTER_MONTHS.map((month, index) => ({
+              label: month,
+              checked: isKind('period', (current) => current.part === 'month' && current.value === index + 1),
+              action: () => apply({ kind: 'period', column, part: 'month', value: index + 1 }),
+            })),
+          ],
+        },
+        null,
+        customEntry,
+      ],
+    }[kind] || null;
+
+    const commands = h('div', { class: 'column-filter-commands', role: 'menu', 'aria-label': `${column} commands` },
+      menuButton({
+        label: sortLabels[0], icon: 'sort-ascending', testId: 'column-filter-sort-ascending',
+        checked: sortedHere && options.direction !== 'desc',
+        action: () => options.onSort('asc'),
+      }, 0),
+      menuButton({
+        label: sortLabels[1], icon: 'sort-descending', testId: 'column-filter-sort-descending',
+        checked: sortedHere && options.direction === 'desc',
+        action: () => options.onSort('desc'),
+      }, 0),
+      menuButton({
+        label: `Clear Sort From "${column}"`, icon: 'sort-clear', disabled: !sortedHere,
+        testId: 'column-filter-clear-sort', action: options.onClearSort,
+      }, 0),
+      h('div', { class: 'context-menu-separator', role: 'separator' }),
+      menuButton({
+        label: `Clear Filter From "${column}"`, icon: 'filter-off', disabled: !spec,
+        testId: 'column-filter-clear', action: () => apply(null),
+      }, 0),
+      conditionEntries ? menuButton({
+        label: `${{ number: 'Number', date: 'Date' }[kind] || 'Text'} Filters`,
+        submenu: conditionEntries, checked: Boolean(spec && spec.kind !== 'values'),
+        testId: 'column-filter-conditions',
+      }, 0) : null);
+    commands.addEventListener('keydown', (event) => moveFocus(commands, event));
+
+    const search = h('input', {
+      type: 'search', class: 'column-filter-search',
+      placeholder: kind === 'date' ? 'Search (All)' : 'Search',
+      'aria-label': `Search ${column} values`, 'data-testid': 'column-filter-search',
+    });
+    const list = h('div', {
+      class: 'column-filter-list', role: 'group', 'aria-label': `${column} values`,
+      'data-testid': 'column-filter-values',
+    }, h('div', { class: 'column-filter-empty muted', text: 'Loading values…' }));
+    const status = h('div', { class: 'column-filter-status', role: 'status', 'aria-live': 'polite' });
+    const addToCurrent = h('input', { type: 'checkbox', 'data-testid': 'column-filter-add-current' });
+    const addRow = h('label', { class: 'checkbox-row column-filter-add', hidden: '' },
+      addToCurrent, 'Add current selection to filter');
+    const ok = h('button', {
+      type: 'button', class: 'primary', text: 'OK', disabled: '', 'data-testid': 'column-filter-ok',
+    });
+    const cancel = h('button', { type: 'button', text: 'Cancel', onclick: () => close(true) });
+    popup.append(commands);
+    if (kind === 'binary') {
+      popup.append(h('div', { class: 'column-filter-status', text: 'Values of this type cannot be listed.' }));
+    } else {
+      popup.append(search, list, addRow, status, h('div', { class: 'column-filter-actions' }, ok, cancel));
+    }
+
+    function* leavesOf(nodes) {
+      for (const node of nodes) {
+        if (node.children) yield* leavesOf(node.children);
+        else yield node;
+      }
+    }
+    function* nodesOf(nodes) {
+      for (const node of nodes) {
+        yield node;
+        if (node.children) yield* nodesOf(node.children);
+      }
+    }
+    const leafNode = (value) => ({
+      label: String(value), value: String(value), text: String(value).toLowerCase(),
+      ticked: true, searchTicked: true, depth: 0, children: null,
+    });
+    // Dates are grouped by year, month and day, and further by hour, minute and second when any
+    // value has a time. Each group knows the span it covers, so ticking a whole month filters on
+    // one range rather than on every value in it.
+    const dateNodes = (values) => {
+      const parsed = values.map((value) => ({ value: String(value), parts: columnFilterDateParts(String(value)) }));
+      const timed = parsed.find((entry) => entry.parts?.timed);
+      const units = timed ? ['year', 'month', 'day', 'hour', 'minute', 'second'] : ['year', 'month', 'day'];
+      const separator = timed?.parts.separator || 'T';
+      const steps = { day: 86_400_000, hour: 3_600_000, minute: 60_000, second: 1_000 };
+      const top = { children: [], index: new Map() };
+      const loose = [];
+      for (const { value, parts } of parsed) {
+        if (!parts) {
+          loose.push(leafNode(value));
+          continue;
+        }
+        let parent = top;
+        units.forEach((unit, depth) => {
+          const number = parts[unit];
+          let node = parent.index.get(number);
+          if (!node) {
+            const start = new Date(Date.UTC(parts.year, depth >= 1 ? parts.month - 1 : 0, depth >= 2 ? parts.day : 1,
+              depth >= 3 ? parts.hour : 0, depth >= 4 ? parts.minute : 0, depth >= 5 ? parts.second : 0));
+            const end = new Date(start.getTime());
+            if (unit === 'year') end.setUTCFullYear(end.getUTCFullYear() + 1);
+            else if (unit === 'month') end.setUTCMonth(end.getUTCMonth() + 1);
+            else end.setTime(end.getTime() + steps[unit]);
+            const label = unit === 'year' ? String(number)
+              : unit === 'month' ? COLUMN_FILTER_MONTHS[number - 1]
+                : unit === 'day' || unit === 'hour' ? columnFilterPad(number) : `:${columnFilterPad(number)}`;
+            node = {
+              label, text: label.toLowerCase(), depth, expanded: false, ticked: true, searchTicked: true,
+              range: [columnFilterBound(start, separator), columnFilterBound(end, separator)],
+              children: depth < units.length - 1 ? [] : null, index: new Map(), values: [],
+            };
+            parent.index.set(number, node);
+            parent.children.push(node);
+          }
+          parent = node;
+        });
+        parent.values.push(value);
+        parent.text += ` ${value.toLowerCase()}`;
+      }
+      return [...top.children, ...loose];
+    };
+    const buildNodes = (values, hasBlanks) => {
+      const nodes = kind === 'date' ? dateNodes(values) : values.map(leafNode);
+      if (hasBlanks) {
+        nodes.push({
+          label: '(Blanks)', blank: true, text: '', ticked: true, searchTicked: true, depth: 0, children: null,
+        });
+      }
+      return nodes;
+    };
+    const tickFromSpec = async (nodes) => {
+      if (!spec) return;
+      let ticked;
+      if (spec.kind === 'values') {
+        unlistedTicked = Boolean(spec.exclude);
+        const listed = new Set(spec.values || []);
+        const ranges = spec.ranges || [];
+        ticked = (leaf) => (leaf.blank ? Boolean(spec.blanks)
+          : spec.exclude ? !listed.has(leaf.value)
+            : listed.has(leaf.value)
+              || Boolean(leaf.range && ranges.some(([start, end]) => start <= leaf.range[0] && leaf.range[1] <= end)));
+      } else {
+        // Any other filter ticks the values it leaves visible, as a spreadsheet's does.
+        unlistedTicked = false;
+        const visible = await options.loadValues({ own: true });
+        const keys = new Set((visible.values || []).map(String));
+        ticked = (leaf) => (leaf.blank ? Boolean(visible.hasBlanks)
+          : (leaf.values || [leaf.value]).some((value) => keys.has(value)));
+      }
+      for (const leaf of leavesOf(nodes)) leaf.ticked = ticked(leaf);
+    };
+
+    const currentRoots = () => (searching && searchRoots) || roots;
+    const isShown = (node) => !searching || Boolean(node.hit);
+    const isTicked = (leaf) => (searching ? leaf.searchTicked : leaf.ticked);
+    const stateOf = (node) => {
+      if (!node.children) return isTicked(node) ? 'on' : 'off';
+      let on = false;
+      let off = false;
+      for (const child of node.children) {
+        if (!isShown(child)) continue;
+        const childState = stateOf(child);
+        if (childState !== 'off') on = true;
+        if (childState !== 'on') off = true;
+        if (on && off) return 'mixed';
+      }
+      return on ? 'on' : 'off';
+    };
+    const setTicked = (node, value) => {
+      if (!isShown(node)) return;
+      if (node.children) node.children.forEach((child) => setTicked(child, value));
+      else if (searching) node.searchTicked = value;
+      else node.ticked = value;
+    };
+    const anyChosen = () => {
+      for (const leaf of leavesOf(currentRoots())) {
+        if (isShown(leaf) && isTicked(leaf)) return true;
+      }
+      return searching && addToCurrent.checked && [...leavesOf(roots)].some((leaf) => leaf.ticked);
+    };
+    const refreshTicks = () => {
+      for (const box of list.querySelectorAll('input[type="checkbox"]')) {
+        const boxState = stateOf(box.filterNode || { children: currentRoots() });
+        box.checked = boxState === 'on';
+        box.indeterminate = boxState === 'mixed';
+      }
+      ok.disabled = !anyChosen();
+    };
+    const checkbox = (node, testId) => {
+      const box = h('input', { type: 'checkbox', 'data-testid': testId });
+      box.filterNode = node;
+      box.addEventListener('change', () => {
+        if (node) {
+          setTicked(node, box.checked);
+        } else {
+          currentRoots().forEach((rootNode) => setTicked(rootNode, box.checked));
+          if (!searching) unlistedTicked = box.checked;
+        }
+        refreshTicks();
+      });
+      return box;
+    };
+    const rowFor = (node) => h('div', { class: 'column-filter-option', style: `--depth:${node.depth || 0}` },
+      node.children
+        ? h('button', {
+          type: 'button', class: 'column-filter-toggle',
+          'aria-label': `${node.expanded ? 'Collapse' : 'Expand'} ${node.label}`,
+          'aria-expanded': String(Boolean(node.expanded)),
+          onclick: () => {
+            node.expanded = !node.expanded;
+            renderList();
+          },
+        }, icon(node.expanded ? 'chevron-down' : 'chevron-right'))
+        : kind === 'date' ? h('span', { class: 'column-filter-toggle-space' }) : null,
+      h('label', {}, checkbox(node, 'column-filter-value'), h('span', { text: node.label, title: node.label })));
+    const renderMore = () => {
+      const next = rows.slice(shownRows, shownRows + 300);
+      shownRows += next.length;
+      list.append(...next.map(rowFor));
+    };
+    function renderList() {
+      const scrollTop = list.scrollTop;
+      rows = [];
+      const walk = (nodes) => {
+        for (const node of nodes) {
+          if (!isShown(node)) continue;
+          rows.push(node);
+          if (node.children && node.expanded) walk(node.children);
+        }
+      };
+      walk(currentRoots());
+      shownRows = 0;
+      list.replaceChildren(h('div', { class: 'column-filter-option' },
+        kind === 'date' ? h('span', { class: 'column-filter-toggle-space' }) : null,
+        h('label', {}, checkbox(null, 'column-filter-select-all'),
+          h('span', { text: searching ? '(Select All Search Results)' : '(Select All)' }))));
+      if (!rows.length) {
+        list.append(h('div', { class: 'column-filter-empty muted', text: searching ? 'No matches' : 'No values' }));
+      }
+      renderMore();
+      while (shownRows < rows.length && list.scrollHeight < scrollTop + list.clientHeight + 60) renderMore();
+      list.scrollTop = scrollTop;
+      refreshTicks();
+    }
+    list.addEventListener('scroll', () => {
+      if (shownRows >= rows.length || list.scrollTop + list.clientHeight < list.scrollHeight - 60) return;
+      renderMore();
+      refreshTicks();
+    });
+
+    const shownStatus = () => { status.textContent = truncated ? 'Not all items showing' : ''; };
+    const runSearch = async () => {
+      searchPending = false;
+      const text = search.value.trim().toLowerCase();
+      searching = Boolean(text);
+      addRow.hidden = !searching;
+      searchRoots = null;
+      if (searching && truncated) {
+        // The checklist holds only the first values, so a search of a long list asks the database.
+        const request = ++searchRequest;
+        status.textContent = 'Searching…';
+        try {
+          const result = await options.loadValues({ search: search.value.trim() });
+          if (request !== searchRequest || closed) return;
+          searchRoots = buildNodes(result.values || [], false);
+          for (const node of nodesOf(searchRoots)) {
+            node.hit = true;
+            node.searchTicked = true;
+          }
+          status.textContent = result.isTruncated ? 'Not all items showing' : '';
+        } catch (err) {
+          if (request === searchRequest && !closed) status.textContent = err.message;
+          return;
+        }
+      } else if (searching) {
+        const mark = (node, inherited) => {
+          const hit = inherited || (!node.blank && node.text.includes(text));
+          if (!node.children) {
+            node.hit = hit;
+            node.searchTicked = true;
+            return hit;
+          }
+          let any = false;
+          for (const child of node.children) any = mark(child, hit) || any;
+          node.hit = any;
+          return any;
+        };
+        roots.forEach((node) => mark(node, false));
+        let hits = 0;
+        for (const leaf of leavesOf(roots)) if (leaf.hit) hits += 1;
+        // Opening the groups that hold a match shows the matches, unless there are too many to read.
+        for (const node of nodesOf(roots)) if (node.children) node.expanded = Boolean(node.hit) && hits <= 200;
+        shownStatus();
+      } else {
+        shownStatus();
+      }
+      renderList();
+    };
+    search.addEventListener('input', () => {
+      searchPending = true;
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(runSearch, truncated ? 300 : 80);
+    });
+    search.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      if (searchPending) {
+        clearTimeout(searchTimer);
+        await runSearch();
+      }
+      if (!ok.disabled) ok.click();
+    });
+    addToCurrent.addEventListener('change', refreshTicks);
+
+    const includeSpec = (picked, sources) => {
+      const values = new Set();
+      const ranges = [];
+      const collect = (nodes) => {
+        for (const node of nodes) {
+          if (node.blank) continue;
+          if (!node.children) {
+            if (!picked.has(node)) continue;
+            if (node.range) ranges.push(node.range);
+            else values.add(node.value);
+            continue;
+          }
+          const under = [...leavesOf(node.children)];
+          if (under.every((leaf) => picked.has(leaf))) ranges.push(node.range);
+          else if (under.some((leaf) => picked.has(leaf))) collect(node.children);
+        }
+      };
+      sources.forEach(collect);
+      ranges.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+      const merged = [];
+      for (const [start, end] of ranges) {
+        const last = merged[merged.length - 1];
+        if (last && start <= last[1]) {
+          if (end > last[1]) last[1] = end;
+        } else {
+          merged.push([start, end]);
+        }
+      }
+      return {
+        kind: 'values', column, type: kind, exclude: false,
+        values: [...values], ranges: merged, blanks: [...picked].some((leaf) => leaf.blank),
+      };
+    };
+    const buildSpec = () => {
+      if (searching) {
+        const source = searchRoots || roots;
+        const picked = new Set([...leavesOf(source)].filter((leaf) => leaf.hit && leaf.searchTicked));
+        if (addToCurrent.checked) {
+          for (const leaf of leavesOf(roots)) if (leaf.ticked) picked.add(leaf);
+        }
+        if (searchRoots && !addToCurrent.checked && [...leavesOf(searchRoots)].every((leaf) => leaf.searchTicked)) {
+          return {
+            kind: 'custom', column, type: kind, join: 'and', separator: options.separator,
+            conditions: [{ operator: 'contains', value: search.value.trim() }],
+          };
+        }
+        return includeSpec(picked, searchRoots ? [roots, searchRoots] : [roots]);
+      }
+      const leaves = [...leavesOf(roots)];
+      const ticked = leaves.filter((leaf) => leaf.ticked);
+      if (ticked.length === leaves.length && (!truncated || unlistedTicked)) return null;
+      // A list is kept in its shorter form: the values to show, or the values to hide.
+      if (kind !== 'date' && (truncated ? unlistedTicked : ticked.length * 2 > leaves.length)) {
+        const unticked = leaves.filter((leaf) => !leaf.ticked);
+        return {
+          kind: 'values', column, type: kind, exclude: true,
+          values: unticked.filter((leaf) => !leaf.blank).map((leaf) => leaf.value),
+          blanks: !unticked.some((leaf) => leaf.blank),
+        };
+      }
+      return includeSpec(new Set(ticked), [roots]);
+    };
+    ok.addEventListener('click', () => {
+      const next = buildSpec();
+      close(true);
+      if (next || spec) apply(next);
+    });
+
+    document.body.append(popup);
+    const box = anchor.getBoundingClientRect();
+    const size = popup.getBoundingClientRect();
+    popup.style.left = `${Math.max(4, Math.min(box.right - size.width, window.innerWidth - size.width - 4))}px`;
+    popup.style.top = `${box.bottom + 2 + size.height <= window.innerHeight - 4
+      ? box.bottom + 2
+      : Math.max(4, box.top - size.height - 2)}px`;
+    anchor.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('resize', onResize);
+    if (kind === 'binary') {
+      commands.querySelector('.column-filter-item:not(:disabled)')?.focus();
+      return;
+    }
+    search.focus();
+    (async () => {
+      try {
+        const result = await options.loadValues({});
+        if (closed) return;
+        truncated = Boolean(result.isTruncated);
+        roots = buildNodes(result.values || [], Boolean(result.hasBlanks));
+        await tickFromSpec(roots);
+        if (closed) return;
+        shownStatus();
+        renderList();
+      } catch (err) {
+        if (closed) return;
+        list.replaceChildren(h('div', { class: 'column-filter-empty', text: err.message }));
+      }
+    })();
+  }
+
+  /** Two conditions joined by And or Or, the spreadsheet's Custom AutoFilter. */
+  function openCustomAutoFilter({ column, type, spec, preset, separator, loadValues, onApply }) {
+    const existing = spec?.kind === 'custom' ? spec : null;
+    const initial = preset
+      ? preset.map((operator) => ({ operator, value: '' }))
+      : existing?.conditions || [{ operator: 'equals', value: '' }];
+    const id = `custom-filter-${Math.random().toString(36).slice(2)}`;
+    const suggestions = h('datalist', { id: `${id}-values` });
+    Promise.resolve()
+      .then(() => loadValues({}))
+      .then((result) => suggestions.replaceChildren(
+        ...(result.values || []).slice(0, 1000).map((value) => h('option', { value: String(value) }))))
+      .catch(() => { /* suggestions are a convenience */ });
+    const row = (condition, index) => {
+      const offered = COLUMN_FILTER_OPERATORS[type] || COLUMN_FILTER_OPERATORS.text;
+      const operators = offered.includes(condition?.operator)
+        ? offered
+        : [...offered, ...(condition?.operator ? [condition.operator] : [])];
+      const operator = h('select', {
+        'aria-label': `Condition ${index + 1}`, 'data-testid': `custom-filter-operator-${index + 1}`,
+      },
+        index ? h('option', { value: '', text: '' }) : null,
+        operators.map((value) => h('option', { value, text: columnFilterConditionLabel(value, type) })));
+      operator.value = condition?.operator || (index ? '' : operators[0]);
+      const input = h('input', {
+        type: 'text', list: `${id}-values`, 'aria-label': `Value ${index + 1}`,
+        'data-testid': `custom-filter-value-${index + 1}`, placeholder: type === 'date' ? 'YYYY-MM-DD' : null,
+      });
+      input.value = condition?.value ?? '';
+      let picker = null;
+      if (type === 'date') {
+        const date = h('input', { type: 'date', class: 'custom-filter-date-picker', tabindex: '-1', 'aria-hidden': 'true' });
+        date.addEventListener('change', () => {
+          if (date.value) input.value = date.value;
+        });
+        picker = h('span', { class: 'custom-filter-date' }, date, h('button', {
+          type: 'button', class: 'ghost', title: 'Choose a date', 'aria-label': `Choose a date for value ${index + 1}`,
+          onclick: () => {
+            try { date.showPicker(); } catch { date.focus(); }
+          },
+        }, icon('calendar')));
+      }
+      return { operator, input, element: h('div', { class: 'custom-filter-row' }, operator, input, picker) };
+    };
+    const rows = [row(initial[0], 0), row(initial[1], 1)];
+    const and = h('input', { type: 'radio', name: `${id}-join`, value: 'and', 'data-testid': 'custom-filter-and' });
+    const or = h('input', { type: 'radio', name: `${id}-join`, value: 'or', 'data-testid': 'custom-filter-or' });
+    ((preset ? 'and' : existing?.join) === 'or' ? or : and).checked = true;
+    modal('Custom AutoFilter', h('div', { class: 'custom-filter-dialog' },
+      h('p', {}, 'Show rows where: ', h('strong', { text: column })),
+      rows[0].element,
+      h('div', { class: 'custom-filter-join', role: 'radiogroup', 'aria-label': 'Combine the conditions' },
+        h('label', {}, and, 'And'), h('label', {}, or, 'Or')),
+      rows[1].element,
+      suggestions,
+      type === 'text' ? h('p', { class: 'muted', text: 'Use ? to represent any single character' }) : null,
+      type === 'text' ? h('p', { class: 'muted', text: 'Use * to represent any series of characters' }) : null), [
+      { label: 'Cancel', onClick: (close) => close() },
+      {
+        label: 'OK', primary: true,
+        onClick: (close, showError) => {
+          const conditions = rows
+            .filter((entry) => entry.operator.value && entry.input.value !== '')
+            .map((entry) => ({ operator: entry.operator.value, value: entry.input.value }));
+          if (!conditions.length) {
+            showError('Choose a condition and enter a value.');
+            return;
+          }
+          for (const condition of conditions) {
+            const comparison = ['greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual'].includes(condition.operator);
+            const equality = condition.operator === 'equals' || condition.operator === 'notEquals';
+            if (!comparison && !(equality && !columnFilterHasWildcard(condition.value))) continue;
+            if (type === 'number' && !Number.isFinite(Number(condition.value.trim()))) {
+              showError(`"${condition.value}" is not a number.`);
+              return;
+            }
+            if (type === 'date' && !columnFilterDateParts(condition.value.trim())) {
+              showError(`"${condition.value}" is not a date. Enter dates as YYYY-MM-DD.`);
+              return;
+            }
+          }
+          close();
+          onApply({ kind: 'custom', column, type, separator, join: or.checked ? 'or' : 'and', conditions });
+        },
+      },
+    ]);
+    rows[0].input.focus();
+  }
+
+  function openTopTenDialog({ column, spec, onApply }) {
+    const existing = spec?.kind === 'top' ? spec : null;
+    const direction = h('select', { 'aria-label': 'Top or bottom', 'data-testid': 'top10-direction' },
+      h('option', { value: 'top', text: 'Top' }), h('option', { value: 'bottom', text: 'Bottom' }));
+    const count = h('input', {
+      type: 'number', min: '1', max: '500', step: '1', value: String(existing?.count ?? 10),
+      'aria-label': 'How many', 'data-testid': 'top10-count',
+    });
+    const unit = h('select', { 'aria-label': 'Items or percent', 'data-testid': 'top10-unit' },
+      h('option', { value: 'items', text: 'Items' }), h('option', { value: 'percent', text: 'Percent' }));
+    direction.value = existing?.bottom ? 'bottom' : 'top';
+    unit.value = existing?.percent ? 'percent' : 'items';
+    const syncMaximum = () => { count.max = unit.value === 'percent' ? '100' : '500'; };
+    unit.addEventListener('change', syncMaximum);
+    syncMaximum();
+    modal('Top 10 AutoFilter', h('div', { class: 'top-ten-dialog' },
+      h('span', { text: 'Show' }), direction, count, unit), [
+      { label: 'Cancel', onClick: (close) => close() },
+      {
+        label: 'OK', primary: true,
+        onClick: (close, showError) => {
+          const maximum = Number(count.max);
+          const value = Number(count.value);
+          if (!Number.isInteger(value) || value < 1 || value > maximum) {
+            showError(`Enter a whole number from 1 to ${maximum}.`);
+            return;
+          }
+          close();
+          onApply({
+            kind: 'top', column, bottom: direction.value === 'bottom', count: value, percent: unit.value === 'percent',
+          });
+        },
+      },
+    ]);
+    count.focus();
+  }
+
   function dataGrid(columns, rows, options) {
     const selectable = Boolean(options && options.selectable);
     const rowOffset = options?.rowOffset || 0;
     const allRows = options?.allRows || rows;
+    const columnKinds = columns.map((column, index) => columnFilterKind(
+      column.dataTypeName, options?.providerName, allRows.slice(0, 200).map((row) => row[index])));
     const headRow = h('tr', {}, columns.map((c) => {
       const th = h('th', { title: c.dataTypeName },
         h('span', { text: c.name }),
         h('span', { class: 'coltype', text: c.dataTypeName }));
-      if (options && options.onSort) {
+      if (options && options.onSort && !options.columnFilter) {
         th.classList.add('sortable');
         if (options.sort && options.sort.toLowerCase() === c.name.toLowerCase()) {
-          th.firstChild.append(h('span', { class: 'sort-arrow', text: options.dir === 'desc' ? ' ↓' : ' ↑' }));
+          th.firstChild.append(h('span', {
+            class: 'sort-arrow', 'data-testid': 'sort-arrow', 'aria-hidden': 'true',
+          }, icon(options.dir === 'desc' ? 'sort-descending' : 'sort-ascending')));
         }
         th.addEventListener('click', () => options.onSort(c.name));
+      }
+      if (options?.columnFilter) {
+        const filtered = options.columnFilter.isActive(c.name);
+        const toggle = () => {
+          if (button.getAttribute('aria-expanded') === 'true') closeColumnFilterMenu(true);
+          else options.columnFilter.open(c, button);
+        };
+        const button = h('button', {
+          type: 'button', class: 'column-filter-button' + (filtered ? ' active' : ''),
+          title: filtered ? options.columnFilter.describe(c.name) : `Filter ${c.name}`,
+          'aria-label': filtered ? `Filter ${c.name}, filtered` : `Filter ${c.name}`,
+          'aria-haspopup': 'dialog', 'aria-expanded': 'false',
+          'data-testid': 'column-filter-button', 'data-column': c.name,
+          onclick: (event) => {
+            event.stopPropagation();
+            toggle();
+          },
+        }, icon(filtered ? 'filter' : 'chevron-down'));
+        th.classList.add('filterable');
+        if (options.sort && options.sort.toLowerCase() === c.name.toLowerCase()) {
+          th.classList.add('sorted');
+          th.append(h('span', {
+            class: 'sort-arrow column-sort-indicator', 'data-testid': 'sort-arrow', 'aria-hidden': 'true',
+          }, icon(options.dir === 'desc' ? 'sort-descending' : 'sort-ascending')));
+        }
+        th.append(button);
+        th.addEventListener('click', toggle);
       }
       return th;
     }));
@@ -13516,8 +14654,13 @@
     const selected = selection.selected;
     const rowElements = [];
     const tbody = h('tbody', {}, rows.map((row, rowIndex) => {
-      const tr = h('tr', {}, row.map((value, columnIndex) =>
-        options?.renderCell ? options.renderCell(value, columns[columnIndex], row) : renderCell(value)));
+      const tr = h('tr', {}, row.map((value, columnIndex) => {
+        const cell = options?.renderCell ? options.renderCell(value, columns[columnIndex], row) : renderCell(value);
+        if (columnKinds[columnIndex] === 'number' || columnKinds[columnIndex] === 'date') {
+          cell.classList.add('cell-align-right');
+        }
+        return cell;
+      }));
       rowElements.push(tr);
       if (selectable) {
         const globalIndex = rowOffset + rowIndex;
@@ -13614,7 +14757,9 @@
         onSort: options.onSort,
         rowActions,
         renderCell: options.renderCell,
+        providerName: options.providerName,
         onSelectionChange: options.onSelectionChange,
+        columnFilter: options.columnFilter,
       });
       if (virtual) {
         const tbody = table.tBodies[0];

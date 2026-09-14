@@ -4574,13 +4574,14 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var panel = ActivePanel(page);
         await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
 
-        await panel.GetByTestId("add-filter").ClickAsync();
-        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Filter rows" });
-        await dialog.GetByLabel("Filter column").SelectOptionAsync("Name");
-        await dialog.GetByLabel("Filter operator").SelectOptionAsync("contains");
-        await dialog.GetByLabel("Filter value").FillAsync("ada");
-        await dialog.GetByRole(AriaRole.Button, new() { Name = "Apply", Exact = true }).ClickAsync();
-        await Assertions.Expect(panel.GetByTestId("filter-chip")).ToBeVisibleAsync();
+        await ColumnFilterButton(panel, "Name").ClickAsync();
+        await page.GetByTestId("column-filter-conditions").ClickAsync();
+        await page.GetByTestId("column-filter-submenu")
+            .GetByRole(AriaRole.Menuitem, new() { Name = "Contains…", Exact = true }).ClickAsync();
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Custom AutoFilter" });
+        await dialog.GetByTestId("custom-filter-value-1").FillAsync("ada");
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "OK", Exact = true }).ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("filter-sql")).ToContainTextAsync("WHERE [Name] LIKE N'%ada%'");
 
         await panel.GetByRole(AriaRole.Button, new() { Name = "Profile", Exact = true }).ClickAsync();
         await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Ready.");
@@ -4588,7 +4589,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await panel.GetByTestId("profile-run").ClickAsync();
         await Assertions.Expect(panel.GetByTestId("profile-status")).ToHaveTextAsync("Profiled 1 row");
         Assert.Contains(profileRequests, url => Uri.UnescapeDataString(url).Contains(
-            """filter=[{"column":"Name","operator":"contains","value":"ada"}]""",
+            """filter=[{"column":"Name","operator":"matches","value":"*ada*"}]""",
             StringComparison.Ordinal));
         browserPage.AssertNoUnexpectedErrors();
     }
@@ -4796,6 +4797,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         var results = page.GetByTestId("query-results");
         await Assertions.Expect(results.GetByRole(AriaRole.Cell, new() { Name = "42" })).ToBeVisibleAsync();
+        await Assertions.Expect(results.GetByRole(AriaRole.Cell, new() { Name = "42" }))
+            .ToHaveCSSAsync("text-align", "right");
         await Assertions.Expect(results.GetByText("hello from fake", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
 
@@ -6029,7 +6032,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await follow.ClickAsync();
 
         var pizzas = ActivePanel(page);
-        await Assertions.Expect(pizzas.GetByTestId("filter-chip")).ToContainTextAsync("Id = 1");
+        await Assertions.Expect(pizzas.GetByTestId("filter-sql")).ToContainTextAsync("WHERE [Id] = 1");
         Assert.Contains(targetRequests, url => Uri.UnescapeDataString(url)
             .Contains("\"column\":\"Id\",\"operator\":\"equals\",\"value\":\"1\"", StringComparison.Ordinal));
         await Assertions.Expect(page.Locator("#panels .panel tr.row-editor")).ToHaveCountAsync(0);
@@ -6037,7 +6040,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.ReloadAsync();
         pizzas = ActivePanel(page);
         await Assertions.Expect(page.Locator(".tab.active")).ToContainTextAsync("dbo.Pizzas");
-        await Assertions.Expect(pizzas.GetByTestId("filter-chip")).ToContainTextAsync("Id = 1");
+        await Assertions.Expect(pizzas.GetByTestId("filter-sql")).ToContainTextAsync("WHERE [Id] = 1");
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -6076,7 +6079,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         var target = ActivePanel(page);
         await Assertions.Expect(page.Locator(".tab.active")).ToContainTextAsync("dbo.Customers");
-        await Assertions.Expect(target.GetByTestId("filter-chip")).ToContainTextAsync("Id = 1");
+        await Assertions.Expect(target.GetByTestId("filter-sql")).ToContainTextAsync("WHERE [Id] = 1");
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -6163,7 +6166,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ClickAsync();
 
         var orders = ActivePanel(page);
-        await Assertions.Expect(orders.GetByTestId("filter-chip")).ToContainTextAsync("PizzaId = 1");
+        await Assertions.Expect(orders.GetByTestId("filter-sql")).ToContainTextAsync("WHERE [PizzaId] = 1");
         Assert.Contains(orderRequests, url => Uri.UnescapeDataString(url)
             .Contains("\"column\":\"PizzaId\",\"operator\":\"equals\",\"value\":\"1\"", StringComparison.Ordinal));
         browserPage.AssertNoUnexpectedErrors("503");
@@ -6353,9 +6356,8 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             "aria-label", "Follow PizzaId=1, Promotion=Featured to dbo.Pizzas");
         await follow.ClickAsync();
         var pizzas = ActivePanel(page);
-        await Assertions.Expect(pizzas.GetByTestId("filter-chip")).ToHaveCountAsync(2);
-        await Assertions.Expect(pizzas.GetByTestId("filter-bar")).ToContainTextAsync("Id = 1");
-        await Assertions.Expect(pizzas.GetByTestId("filter-bar")).ToContainTextAsync("Name = Featured");
+        await Assertions.Expect(pizzas.GetByTestId("filter-sql"))
+            .ToContainTextAsync("WHERE [Id] = 1 AND [Name] = N'Featured'");
         Assert.Contains(targetRequests, url =>
         {
             var decoded = Uri.UnescapeDataString(url);
@@ -7478,39 +7480,363 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
-    /// <summary>
-    /// A filter has to reach the database: filtering the page already fetched would only ever search
-    /// the rows on screen.
-    /// </summary>
-    [Fact]
-    public async Task Filters_table_data_in_the_database()
+    private static ILocator ColumnFilterButton(ILocator panel, string column)
+        => panel.Locator($"[data-testid='column-filter-button'][data-column='{column}']");
+
+    private static ILocator ColumnHeader(ILocator panel, string column)
+        => panel.Locator($"thead th:has([data-testid='column-filter-button'][data-column='{column}'])");
+
+    private static async Task<(BrowserTestPage BrowserPage, ILocator Panel, List<string> DataRequests)> OpenTableAsync(
+        BrowserAppFixture fixture, Func<IPage, ILocator> table, string rowCount)
     {
-        await using var browserPage = await fixture.NewPageAsync();
+        var browserPage = await fixture.NewPageAsync();
         var page = browserPage.Page;
         var dataRequests = new List<string>();
         page.Request += (_, request) =>
         {
-            if (request.Url.Contains("/data/stream", StringComparison.Ordinal)) dataRequests.Add(request.Url);
+            if (request.Url.Contains("/data/stream", StringComparison.Ordinal))
+            {
+                dataRequests.Add(Uri.UnescapeDataString(request.Url));
+            }
         };
         await page.GotoAsync("/gridlet/");
+        await table(page).ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText(rowCount, new() { Exact = true })).ToBeVisibleAsync();
+        return (browserPage, panel, dataRequests);
+    }
 
+    /// <summary>
+    /// A filter has to reach the database: filtering the page already fetched would only ever search
+    /// the rows on screen. A column's checklist lists its values, and ticking one filters to it.
+    /// </summary>
+    [Fact]
+    public async Task Filters_table_data_in_the_database_from_a_column_checklist()
+    {
+        var (browserPage, panel, dataRequests) = await OpenTableAsync(fixture, p => p.GetByTitle("dbo.Customers"), "2 row(s)");
+        await using var _ = browserPage;
+        var page = browserPage.Page;
+        await Assertions.Expect(panel.GetByTestId("filter-bar")).ToHaveCountAsync(0);
+
+        var nameHeader = ColumnHeader(panel, "Name");
+        await nameHeader.ClickAsync();
+        var menu = page.GetByTestId("column-filter-menu");
+        await Assertions.Expect(menu.GetByTestId("column-filter-sort-ascending")).ToHaveTextAsync("Sort A to Z");
+        await Assertions.Expect(menu.GetByTestId("column-filter-clear-sort")).ToBeDisabledAsync();
+        await Assertions.Expect(menu.GetByTestId("column-filter-clear-sort").Locator("svg"))
+            .ToHaveAttributeAsync("data-icon", "sort-clear");
+        await Assertions.Expect(menu.GetByTestId("column-filter-sort-descending")
+            .Locator("xpath=following-sibling::*[1]"))
+            .ToHaveAttributeAsync("data-testid", "column-filter-clear-sort");
+        await Assertions.Expect(menu.GetByTestId("column-filter-clear")).ToBeDisabledAsync();
+        var buttonBounds = await ColumnFilterButton(panel, "Name").BoundingBoxAsync();
+        var menuBounds = await menu.BoundingBoxAsync();
+        Assert.NotNull(buttonBounds);
+        Assert.NotNull(menuBounds);
+        Assert.InRange(
+            Math.Abs((menuBounds.X + menuBounds.Width) - (buttonBounds.X + buttonBounds.Width)), 0, 2);
+        await Assertions.Expect(menu.GetByRole(AriaRole.Checkbox, new() { Name = "Grace", Exact = true })).ToBeCheckedAsync();
+        await menu.GetByRole(AriaRole.Checkbox, new() { Name = "(Select All)", Exact = true }).UncheckAsync();
+        await Assertions.Expect(menu.GetByTestId("column-filter-ok")).ToBeDisabledAsync();
+        await menu.GetByRole(AriaRole.Checkbox, new() { Name = "Ada", Exact = true }).CheckAsync();
+        await menu.GetByTestId("column-filter-ok").ClickAsync();
+
+        await Assertions.Expect(panel.GetByTestId("filter-sql"))
+            .ToHaveTextAsync("WHERE [Name] IN (N'Ada')");
+        await Assertions.Expect(panel.GetByTestId("clear-filters")).ToBeVisibleAsync();
+        await Assertions.Expect(ColumnFilterButton(panel, "Name")).ToHaveAttributeAsync("aria-label", "Filter Name, filtered");
+        Assert.Contains(dataRequests, url => url.Contains(
+            """filter=[{"column":"Name","operator":"in","values":["Ada"]}]""", StringComparison.Ordinal));
+
+        await panel.GetByTestId("object-use-query").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("sql-editor")).ToHaveValueAsync(
+            "SELECT TOP (100) * FROM [dbo].[Customers]\nWHERE [Name] IN (N'Ada');");
+        await page.Locator(".tab").Filter(new() { HasText = "dbo.Customers" }).ClickAsync();
+
+        await ColumnFilterButton(panel, "Name").ClickAsync();
+        await Assertions.Expect(menu.GetByRole(AriaRole.Checkbox, new() { Name = "Ada", Exact = true })).ToBeCheckedAsync();
+        await Assertions.Expect(menu.GetByRole(AriaRole.Checkbox, new() { Name = "Grace", Exact = true })).Not.ToBeCheckedAsync();
+        await menu.GetByTestId("column-filter-clear").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("filter-bar")).ToHaveCountAsync(0);
+        await Assertions.Expect(ColumnFilterButton(panel, "Name")).ToHaveAttributeAsync("aria-label", "Filter Name");
+
+        await nameHeader.ClickAsync();
+        var sortedRequest = page.WaitForRequestAsync(request =>
+            request.Url.Contains("/data/stream?", StringComparison.Ordinal)
+            && Uri.UnescapeDataString(request.Url).Contains("sort=Name&dir=asc", StringComparison.Ordinal));
+        await menu.GetByTestId("column-filter-sort-ascending").ClickAsync();
+        await sortedRequest;
+        var sortArrow = nameHeader.GetByTestId("sort-arrow");
+        await Assertions.Expect(sortArrow).ToBeVisibleAsync();
+        await Assertions.Expect(sortArrow.Locator("xpath=following-sibling::*[1]"))
+            .ToHaveAttributeAsync("data-testid", "column-filter-button");
+        var sortBounds = await sortArrow.BoundingBoxAsync();
+        var filterButtonBounds = await ColumnFilterButton(panel, "Name").BoundingBoxAsync();
+        Assert.NotNull(sortBounds);
+        Assert.NotNull(filterButtonBounds);
+        Assert.InRange(filterButtonBounds.X - (sortBounds.X + sortBounds.Width), 0, 8);
+        Assert.InRange(Math.Abs((sortBounds.Y + sortBounds.Height / 2)
+            - (filterButtonBounds.Y + filterButtonBounds.Height / 2)), 0, 2);
+
+        await nameHeader.ClickAsync();
+        await Assertions.Expect(menu.GetByTestId("column-filter-sort-ascending")).ToBeCheckedAsync();
+        await Assertions.Expect(menu.GetByTestId("column-filter-sort-descending")).Not.ToBeCheckedAsync();
+        await Assertions.Expect(menu.GetByTestId("column-filter-clear-sort")).ToBeEnabledAsync();
+        var clearedRequest = page.WaitForRequestAsync(request =>
+            request.Url.Contains("/data/stream?", StringComparison.Ordinal)
+            && !Uri.UnescapeDataString(request.Url).Contains("sort=", StringComparison.Ordinal));
+        await menu.GetByTestId("column-filter-clear-sort").ClickAsync();
+        await clearedRequest;
+        await Assertions.Expect(nameHeader.GetByTestId("sort-arrow")).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Use_in_query_puts_a_SQLite_filter_before_the_limit()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        await page.Locator("#connection-select").SelectOptionAsync("SQLite");
         await page.GetByTitle("dbo.Customers").ClickAsync();
         var panel = ActivePanel(page);
         await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
 
-        await panel.GetByTestId("add-filter").ClickAsync();
-        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Filter rows" });
-        await dialog.GetByLabel("Filter column").SelectOptionAsync("Name");
-        await dialog.GetByLabel("Filter operator").SelectOptionAsync("contains");
-        await dialog.GetByLabel("Filter value").FillAsync("ada");
-        await dialog.GetByRole(AriaRole.Button, new() { Name = "Apply", Exact = true }).ClickAsync();
+        await ColumnFilterButton(panel, "Name").ClickAsync();
+        var menu = page.GetByTestId("column-filter-menu");
+        await menu.GetByRole(AriaRole.Checkbox, new() { Name = "(Select All)", Exact = true }).UncheckAsync();
+        await menu.GetByRole(AriaRole.Checkbox, new() { Name = "Ada", Exact = true }).CheckAsync();
+        await menu.GetByTestId("column-filter-ok").ClickAsync();
+        await Assertions.Expect(panel.GetByTestId("filter-sql"))
+            .ToHaveTextAsync("WHERE [Name] IN (N'Ada')");
 
-        await Assertions.Expect(panel.GetByTestId("filter-chip")).ToHaveTextAsync("Name contains ada×");
-        Assert.Contains(dataRequests, url => Uri.UnescapeDataString(url)
-            .Contains("""filter=[{"column":"Name","operator":"contains","value":"ada"}]""", StringComparison.Ordinal));
+        await panel.GetByTestId("object-use-query").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("sql-editor")).ToHaveValueAsync(
+            "SELECT * FROM [dbo].[Customers]\nWHERE [Name] IN (N'Ada')\nLIMIT 100;");
+        browserPage.AssertNoUnexpectedErrors();
+    }
 
-        await panel.GetByTestId("filter-chip").GetByRole(AriaRole.Button).ClickAsync();
-        await Assertions.Expect(panel.GetByTestId("filter-chip")).ToHaveCountAsync(0);
+    /// <summary>
+    /// Numbers and dates sit on the right of their cells and text on the left, as in a spreadsheet,
+    /// and an edited row keeps that alignment when its cells are drawn again.
+    /// </summary>
+    [Fact]
+    public async Task Aligns_numbers_right_and_keeps_the_alignment_after_a_row_edit()
+    {
+        var (browserPage, panel, _) = await OpenTableAsync(
+            fixture, p => p.GetByTitle("dbo.Customers"), "2 row(s)");
+        await using var _ = browserPage;
+        var page = browserPage.Page;
+        static Task<string> AlignmentAsync(ILocator element)
+            => element.EvaluateAsync<string>("element => getComputedStyle(element).textAlign");
+        var cells = panel.Locator("tbody tr").First.Locator("td:not(.row-selector)");
+
+        Assert.Equal("right", await AlignmentAsync(cells.Nth(0)));
+        Assert.Equal("left", await AlignmentAsync(cells.Nth(1)));
+        Assert.Equal("left", await AlignmentAsync(ColumnHeader(panel, "Id")));
+
+        await cells.Nth(1).ClickAsync();
+        var name = panel.GetByLabel("Name", new() { Exact = true });
+        await name.FillAsync("Ada Lovelace");
+        await name.PressAsync("Control+Enter");
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText("Row 1 updated.", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(panel.Locator("tr.row-editor")).ToHaveCountAsync(0);
+
+        Assert.Equal("right", await AlignmentAsync(cells.Nth(0)));
+        Assert.Equal("left", await AlignmentAsync(cells.Nth(1)));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Clicking_a_header_again_closes_its_filter_and_another_header_opens_its_own()
+    {
+        var (browserPage, panel, _) = await OpenTableAsync(
+            fixture, p => p.GetByTitle("dbo.Customers"), "2 row(s)");
+        await using var _ = browserPage;
+        var menu = browserPage.Page.GetByTestId("column-filter-menu");
+
+        await ColumnHeader(panel, "Name").ClickAsync();
+        await Assertions.Expect(menu).ToHaveAttributeAsync("aria-label", "Filter Name");
+        await ColumnHeader(panel, "Name").ClickAsync();
+        await Assertions.Expect(menu).ToHaveCountAsync(0);
+
+        await ColumnHeader(panel, "Id").ClickAsync();
+        await Assertions.Expect(menu).ToHaveAttributeAsync("aria-label", "Filter Id");
+        await ColumnHeader(panel, "Name").ClickAsync();
+        await Assertions.Expect(menu).ToHaveAttributeAsync("aria-label", "Filter Name");
+        await Assertions.Expect(menu).ToHaveCountAsync(1);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Custom_filters_offer_only_operators_for_the_column_type()
+    {
+        var (browserPage, panel, _) = await OpenTableAsync(
+            fixture, page => page.GetByTitle("dbo.Customers"), "2 row(s)");
+        await using var _ = browserPage;
+        var page = browserPage.Page;
+
+        async Task<IReadOnlyList<string>> OpenOperatorsAsync(string column)
+        {
+            await ColumnFilterButton(panel, column).ClickAsync();
+            await page.GetByTestId("column-filter-conditions").ClickAsync();
+            await page.GetByTestId("column-filter-submenu")
+                .GetByRole(AriaRole.Menuitemradio, new() { Name = "Custom Filter…", Exact = true }).ClickAsync();
+            var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Custom AutoFilter" });
+            var labels = await dialog.GetByTestId("custom-filter-operator-1").Locator("option").AllTextContentsAsync();
+            Assert.DoesNotContain("", labels);
+            Assert.Equal("", (await dialog.GetByTestId("custom-filter-operator-2")
+                .Locator("option").AllTextContentsAsync())[0]);
+            return labels;
+        }
+
+        Assert.Equal(
+            ["equals", "does not equal", "begins with", "does not begin with", "ends with",
+                "does not end with", "contains", "does not contain"],
+            await OpenOperatorsAsync("Name"));
+        var textDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Custom AutoFilter" });
+        await Assertions.Expect(textDialog).ToContainTextAsync("Use ? to represent any single character");
+        await textDialog.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+
+        Assert.Equal(
+            ["equals", "does not equal", "is greater than", "is greater than or equal to",
+                "is less than", "is less than or equal to"],
+            await OpenOperatorsAsync("Id"));
+        var numberDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Custom AutoFilter" });
+        await Assertions.Expect(numberDialog).Not.ToContainTextAsync("Use ? to represent any single character");
+        await numberDialog.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task A_restored_custom_operator_stays_available_only_in_its_existing_row()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.AddInitScriptAsync("""
+            localStorage.setItem('gridlet.session', JSON.stringify({
+              tabs: [{
+                kind: 'object',
+                scope: { connection: 'Main', database: 'FakeDb' },
+                schema: 'dbo', name: 'Customers', type: 'Table',
+                filters: [{
+                  kind: 'custom', column: 'Id', type: 'number', join: 'and', separator: 'T',
+                  conditions: [{ operator: 'contains', value: '1' }]
+                }]
+              }],
+              active: 0
+            }));
+            """);
+
+        await page.GotoAsync("/gridlet/");
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        await ColumnFilterButton(panel, "Id").ClickAsync();
+        await page.GetByTestId("column-filter-conditions").ClickAsync();
+        await page.GetByTestId("column-filter-submenu")
+            .GetByRole(AriaRole.Menuitemradio, new() { Name = "Custom Filter…", Exact = true }).ClickAsync();
+
+        var dialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Custom AutoFilter" });
+        var first = dialog.GetByTestId("custom-filter-operator-1");
+        var second = dialog.GetByTestId("custom-filter-operator-2");
+        await Assertions.Expect(first).ToHaveValueAsync("contains");
+        await Assertions.Expect(first.Locator("option[value='contains']")).ToHaveCountAsync(1);
+        await Assertions.Expect(second.Locator("option[value='contains']")).ToHaveCountAsync(0);
+        await first.SelectOptionAsync("contains");
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Number_filters_offer_top_ten_and_a_validated_between_condition()
+    {
+        var (browserPage, panel, dataRequests) = await OpenTableAsync(fixture, p => p.GetByTitle("dbo.Customers"), "2 row(s)");
+        await using var _ = browserPage;
+        var page = browserPage.Page;
+
+        await ColumnFilterButton(panel, "Id").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("column-filter-sort-ascending")).ToHaveTextAsync("Sort Smallest to Largest");
+        await Assertions.Expect(page.GetByTestId("column-filter-conditions")).ToHaveTextAsync("Number Filters");
+        await page.GetByTestId("column-filter-conditions").ClickAsync();
+        await page.GetByTestId("column-filter-submenu")
+            .GetByRole(AriaRole.Menuitemradio, new() { Name = "Top 10…", Exact = true }).ClickAsync();
+        var topTen = page.GetByRole(AriaRole.Dialog, new() { Name = "Top 10 AutoFilter" });
+        await topTen.GetByTestId("top10-direction").SelectOptionAsync("bottom");
+        await topTen.GetByTestId("top10-count").FillAsync("1");
+        await topTen.GetByRole(AriaRole.Button, new() { Name = "OK", Exact = true }).ClickAsync();
+
+        await Assertions.Expect(panel.GetByTestId("filter-sql")).ToContainTextAsync("WHERE [Id]");
+        Assert.Contains(dataRequests, url => url.Contains(
+            """filter=[{"column":"Id","operator":"bottom","value":"1"}]""", StringComparison.Ordinal));
+
+        await ColumnFilterButton(panel, "Id").ClickAsync();
+        await page.GetByTestId("column-filter-conditions").ClickAsync();
+        await page.GetByTestId("column-filter-submenu")
+            .GetByRole(AriaRole.Menuitem, new() { Name = "Between…", Exact = true }).ClickAsync();
+        var custom = page.GetByRole(AriaRole.Dialog, new() { Name = "Custom AutoFilter" });
+        await Assertions.Expect(custom.GetByTestId("custom-filter-operator-1")).ToHaveValueAsync("greaterThanOrEqual");
+        await Assertions.Expect(custom.GetByTestId("custom-filter-operator-2")).ToHaveValueAsync("lessThanOrEqual");
+        await custom.GetByTestId("custom-filter-value-1").FillAsync("x");
+        await custom.GetByRole(AriaRole.Button, new() { Name = "OK", Exact = true }).ClickAsync();
+        await Assertions.Expect(custom.Locator(".dialog-error")).ToHaveTextAsync("\"x\" is not a number.");
+        await custom.GetByTestId("custom-filter-value-1").FillAsync("1");
+        await custom.GetByTestId("custom-filter-value-2").FillAsync("2");
+        await custom.GetByRole(AriaRole.Button, new() { Name = "OK", Exact = true }).ClickAsync();
+
+        await Assertions.Expect(panel.GetByTestId("filter-sql"))
+            .ToHaveTextAsync("WHERE ([Id] >= 1 AND [Id] <= 2)");
+        Assert.Contains(dataRequests, url => url.Contains(
+            """filter=[{"column":"Id","operator":"allOf","conditions":[{"operator":"greaterThanOrEqual","value":"1"},{"operator":"lessThanOrEqual","value":"2"}]}]""",
+            StringComparison.Ordinal));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// A date column's checklist groups its values by year, month and day, and ticking days filters
+    /// on the span they cover rather than on each value, so a day with many times is one condition.
+    /// </summary>
+    [Fact]
+    public async Task Date_filters_group_values_into_a_calendar_tree_and_filter_whole_periods()
+    {
+        var (browserPage, panel, dataRequests) = await OpenTableAsync(fixture, p => p.Locator("[title='dbo.Ledger']"), "4 row(s)");
+        await using var _ = browserPage;
+        var page = browserPage.Page;
+
+        await Assertions.Expect(panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(0))
+            .ToHaveCSSAsync("text-align", "right");
+        await Assertions.Expect(panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(1))
+            .ToHaveCSSAsync("text-align", "left");
+        await Assertions.Expect(panel.Locator("tbody tr").First.Locator("td:not(.row-selector)").Nth(2))
+            .ToHaveCSSAsync("text-align", "right");
+        await Assertions.Expect(ColumnHeader(panel, "SysStart")).ToHaveCSSAsync("text-align", "left");
+
+        await ColumnFilterButton(panel, "SysStart").ClickAsync();
+        var menu = page.GetByTestId("column-filter-menu");
+        await Assertions.Expect(page.GetByTestId("column-filter-conditions")).ToHaveTextAsync("Date Filters");
+        await menu.GetByRole(AriaRole.Button, new() { Name = "Expand 2026", Exact = true }).ClickAsync();
+        await menu.GetByRole(AriaRole.Button, new() { Name = "Expand January", Exact = true }).ClickAsync();
+        await menu.GetByRole(AriaRole.Checkbox, new() { Name = "(Select All)", Exact = true }).UncheckAsync();
+        await menu.GetByRole(AriaRole.Checkbox, new() { Name = "02", Exact = true }).CheckAsync();
+        await menu.GetByRole(AriaRole.Checkbox, new() { Name = "03", Exact = true }).CheckAsync();
+        await Assertions.Expect(menu.GetByRole(AriaRole.Checkbox, new() { Name = "January", Exact = true }))
+            .ToHaveJSPropertyAsync("indeterminate", true);
+        await menu.GetByTestId("column-filter-ok").ClickAsync();
+
+        await Assertions.Expect(panel.GetByTestId("filter-sql")).ToHaveTextAsync(
+            "WHERE ([SysStart] >= '2026-01-02' AND [SysStart] < '2026-01-04')");
+        Assert.Contains(dataRequests, url => url.Contains(
+            """filter=[{"column":"SysStart","operator":"allOf","conditions":[{"operator":"greaterThanOrEqual","value":"2026-01-02"},{"operator":"lessThan","value":"2026-01-04"}]}]""",
+            StringComparison.Ordinal));
+
+        await ColumnFilterButton(panel, "SysStart").ClickAsync();
+        await page.GetByTestId("column-filter-conditions").ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "All Dates in the Period", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Menuitemradio, new() { Name = "Quarter 1", Exact = true }).ClickAsync();
+
+        await Assertions.Expect(panel.GetByTestId("filter-sql")).ToHaveTextAsync(
+            "WHERE DATEPART(quarter, [SysStart]) = 1");
+        Assert.Contains(dataRequests, url => url.Contains(
+            """filter=[{"column":"SysStart","operator":"quarterEquals","value":"1"}]""", StringComparison.Ordinal));
         browserPage.AssertNoUnexpectedErrors();
     }
 
