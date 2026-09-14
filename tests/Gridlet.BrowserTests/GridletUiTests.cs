@@ -7314,6 +7314,47 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         return search;
     }
 
+    [Fact]
+    public async Task Published_api_urls_follow_an_application_root_published_api_path()
+    {
+        using (var client = new HttpClient { BaseAddress = fixture.BaseAddress })
+        {
+            using var publish = await client.PostAsJsonAsync("/gridlet/api/published", new
+            {
+                name = "Root path answers",
+                method = "GET",
+                route = "root-path-answers",
+                connectionName = "Main",
+                database = "FakeDb",
+                sql = "SELECT 42",
+            });
+            publish.EnsureSuccessStatusCode();
+        }
+
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        // The shared fixture mounts published APIs beneath /gridlet; a host that sets PublishedApiPath
+        // reports it through meta, and every URL the workspace shows has to be built from it.
+        await page.RouteAsync("**/gridlet/api/meta", async route =>
+        {
+            var response = await route.FetchAsync();
+            var meta = System.Text.Json.Nodes.JsonNode.Parse(await response.TextAsync())!;
+            meta["publishedApiPath"] = "/pub/api";
+            await route.FulfillAsync(new RouteFulfillOptions { Response = response, Body = meta.ToJsonString() });
+        });
+        await page.GotoAsync("/gridlet/");
+        var panel = await OpenPublishedApisAsync(page);
+
+        var expected = new Uri(fixture.BaseAddress, "/pub/api/root-path-answers").AbsoluteUri;
+        var row = panel.Locator("table.grid tbody tr").Filter(new() { HasText = "Root path answers" });
+        await Assertions.Expect(row.Locator("td").Nth(2)).ToHaveTextAsync(expected);
+
+        await row.GetByTestId("open-api-request").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByLabel("Request URL"))
+            .ToHaveValueAsync(expected);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     /// <summary>
     /// The top bar wires its buttons at the end of boot, so a click sent while the page is still
     /// starting lands on a button that does nothing. Waiting for the database picker to settle

@@ -781,9 +781,15 @@
 
   // Published endpoints answer on a segment the host configures, so it comes from the server
   // rather than being assumed. The default is used only before the first meta response lands.
-  const publishedSegment = () => state.meta?.publishedApiSegment || 'pub';
+  // A host can instead set PublishedApiPath, an application-root path such as /pub/api, which
+  // replaces the segment beneath the mount entirely.
+  const publishedRoot = () => {
+    const configured = String(state.meta?.publishedApiPath || '').trim().replace(/\/+$/, '');
+    const segment = state.meta?.publishedApiSegment || 'pub';
+    return new URL(`${configured || segment}/`, document.baseURI);
+  };
   const publishedUrl = (route) =>
-    new URL(`${publishedSegment()}/${String(route).replace(/^\/+/, '')}`, document.baseURI);
+    new URL(String(route).replace(/^\/+/, ''), publishedRoot());
 
   // The scopes a person can share with an agent, in the order the sharing menu lists them. API
   // access is distinct from direct data access, but its description explains that an endpoint
@@ -10134,8 +10140,7 @@
       return null;
     }
     if (url.origin !== window.location.origin) return null;
-    const publishedRoot = new URL(publishedSegment() + '/', document.baseURI).pathname;
-    if (!url.pathname.startsWith(publishedRoot)) return null;
+    if (!url.pathname.startsWith(publishedRoot().pathname)) return null;
     return { method, url: url.href };
   }
 
