@@ -805,6 +805,9 @@
       const lowered = head.toLowerCase();
       if (lowered === 'data') return reach(rows[rowIndex], rest);
       if (lowered === 'component') {
+        // `component` on its own is the component itself, as it is in the designer, so a function a
+        // formula hands it to can call field(), rows and the rest: `=showSize(component)`.
+        if (!rest.length && api) return api;
         const values = { name: root.dataset.name || '', width: root.getBoundingClientRect().width || root.offsetWidth,
           height: root.getBoundingClientRect().height || root.offsetHeight, rowIndex, rowCount: rows.length };
         return reach(values, rest);
