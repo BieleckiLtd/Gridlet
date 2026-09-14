@@ -3830,6 +3830,65 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    /// <summary>
+    /// Resizing a published component lays out again what depends on its size and nothing else. A
+    /// control anchored to the right edge follows the edge, and what the reader typed over a bound
+    /// text box - formatted or not - stays typed rather than going back to the formula's value.
+    /// </summary>
+    [Fact]
+    public async Task Resizing_a_published_component_moves_anchored_controls_and_keeps_what_was_typed()
+    {
+        await using var browserPage = await fixture.NewVisualPageAsync();
+        var route = $"resize-keeps-typing-{Guid.NewGuid():n}";
+        await OpenComponentAsync(browserPage, $"Resize keeps typing {route}",
+        [
+            Control("name", "textbox", bind: new { value = "=\"from the formula\"" }, props: new { placeholder = "" }, y: 10),
+            Control("amount", "textbox", bind: new { value = "=1234.5" }, props: new { format = "#,##0.00" }, y: 50),
+            Control("pin", "label", bind: new { x = "=component.width - 30" }, props: new { text = "!" }, y: 90, w: 20),
+        ],
+            route: route,
+            box: "width: 100%;",
+            regional: new { locale = "en-GB" });
+
+        var published = await browserPage.Context.NewPageAsync();
+        try
+        {
+            await published.GotoAsync($"/gridlet/components/{route}");
+            const string anchored = """
+                (previous) => {
+                  const root = document.querySelector('.gridlet-component-runtime');
+                  const pin = root?.querySelector('[data-name="pin"]');
+                  if (!root || !pin) return null;
+                  const left = parseFloat(pin.style.left);
+                  const settled = Math.abs(left - (root.getBoundingClientRect().width - 30)) <= 1;
+                  return settled && left !== previous ? left : null;
+                }
+                """;
+            var before = await (await published.WaitForFunctionAsync(anchored, -1.0)).JsonValueAsync<double>();
+
+            var name = published.Locator(".gridlet-component-runtime [data-name='name']");
+            var amount = published.Locator(".gridlet-component-runtime [data-name='amount']");
+            await Assertions.Expect(name).ToHaveValueAsync("from the formula");
+            await name.FillAsync("typed by hand");
+            await amount.FillAsync("98765.4");
+            await amount.PressAsync("Tab");
+            await Assertions.Expect(amount).ToHaveValueAsync("98,765.40");
+
+            await published.SetViewportSizeAsync(900, 900);
+            var after = await (await published.WaitForFunctionAsync(anchored, before)).JsonValueAsync<double>();
+            Assert.True(after < before, $"the anchored control went from {before}px to {after}px");
+
+            await Assertions.Expect(name).ToHaveValueAsync("typed by hand");
+            await Assertions.Expect(amount).ToHaveValueAsync("98,765.40");
+        }
+        finally
+        {
+            await published.CloseAsync();
+        }
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     private static async Task ChangeAndReadAsync(ILocator surface)
     {
         var amount = surface.Locator("[data-name='amount']");
