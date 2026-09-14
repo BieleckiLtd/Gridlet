@@ -3278,6 +3278,43 @@ export default class ${CLASS_NAME(name)} {
     // way the format writes it.
     const textBoxes = new WeakMap();
 
+    // What the reader has put into the controls in Preview, by control. A redraw builds every control
+    // again from its formulas - a resize does, and so does an action starting or finishing - and what
+    // was typed has to survive that the way it survives a resize on the published page. A new row, a
+    // new set of rows or going into Preview afresh is where the formulas decide the values again.
+    const enteredValues = new Map();
+
+    const enteredInput = (element) => (element?.matches('input, textarea, select')
+      ? element : element?.querySelector('input, textarea, select')) || null;
+
+    function readEntered(element) {
+      const input = enteredInput(element);
+      if (!input) return null;
+      if (textBoxes.has(input)) return { kind: 'box', value: textBoxes.get(input).value };
+      if (input.type === 'checkbox') return { kind: 'checked', value: input.checked };
+      return { kind: 'value', value: input.value };
+    }
+
+    function restoreEntered(element, id) {
+      const entry = enteredValues.get(id);
+      const input = enteredInput(element);
+      if (!entry || !input) return;
+      if (entry.kind === 'box' && textBoxes.has(input)) textBoxes.get(input).value = entry.value;
+      else if (entry.kind === 'checked' && input.type === 'checkbox') input.checked = entry.value;
+      else if (entry.kind === 'value') input.value = entry.value;
+    }
+
+    function rememberEntered(event) {
+      if (model.mode !== 'preview' || !(event.target instanceof Element)) return;
+      if (!event.target.matches('input, textarea, select')) return;
+      const box = event.target.closest('.gfd-control');
+      if (!box?.dataset.id) return;
+      const entry = readEntered(event.target);
+      if (entry) enteredValues.set(box.dataset.id, entry);
+    }
+
+    for (const type of ['input', 'change', 'focusout']) canvas.addEventListener(type, rememberEntered);
+
     function attachTextBox(inner, view, bound) {
       const locale = componentLocale();
       if (model.mode !== 'preview') {
@@ -3372,6 +3409,7 @@ export default class ${CLASS_NAME(name)} {
       if (control.type === 'textbox' && !view.props.multiline && (view.props.format || view.props.inputMask)) {
         attachTextBox(inner, view, bound);
       }
+      if (model.mode === 'preview') restoreEntered(inner, control.id);
       // No inline geometry: it goes into the generated stylesheet instead. Inline custom
       // properties beat every stylesheet rule, so writing them here would make the component's own CSS
       // unable to redefine the variables - which is the whole point of exposing them.
@@ -8839,6 +8877,7 @@ ${colourGeneration}`;
 
     async function loadRows(quiet = false) {
       const read = ++sourceRead;
+      enteredValues.clear();
       model.rowIndex = 0;
       model.rows = [];
       model.columns = [];
@@ -8875,6 +8914,7 @@ ${colourGeneration}`;
 
     function showRow(index) {
       model.rowIndex = Math.min(Math.max(0, index), Math.max(0, model.rows.length - 1));
+      enteredValues.clear();
       renderCanvas();
       renderRecordBar();
       emitComponentEvent('row', currentRow());
@@ -9101,13 +9141,16 @@ ${colourGeneration}`;
         set value(next) {
           const element = inner();
           if (!element) return;
-          if (textBoxes.has(element)) {
-            textBoxes.get(element).value = next;
-            return;
+          if (textBoxes.has(element)) textBoxes.get(element).value = next;
+          else {
+            const spec = CATALOGUE[control()?.type];
+            if (spec?.bind) spec.bind(element, next);
+            else element.textContent = asText(next);
           }
-          const spec = CATALOGUE[control()?.type];
-          if (spec?.bind) spec.bind(element, next);
-          else element.textContent = asText(next);
+          // Written by the component while it runs, so it outlasts a redraw the same as typing does.
+          const id = control()?.id;
+          const entry = model.mode === 'preview' && id ? readEntered(element) : null;
+          if (entry) enteredValues.set(id, entry);
         },
 
         get visible() { return box()?.style.display !== 'none'; },
@@ -9836,6 +9879,8 @@ ${colourGeneration}`;
 
       // The grip leaves an inline size behind. It belongs to the run that was happening, not to
       // the component, so both it and the size the formulas were reading go when Preview does.
+      // So does whatever was typed during that run.
+      enteredValues.clear();
       if (mode !== 'preview') {
         model.livingSize = null;
         canvas.style.width = '';
