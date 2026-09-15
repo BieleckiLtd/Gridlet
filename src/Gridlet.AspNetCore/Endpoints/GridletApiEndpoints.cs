@@ -367,13 +367,23 @@ internal static partial class GridletApiEndpoints
         string schema,
         string name,
         string? filter,
+        string? sort,
+        string? dir,
         IGridletConnectionResolver resolver,
         CancellationToken cancellationToken)
         => Execute(async () =>
         {
             var resolved = resolver.Resolve(connection, database);
             var sql = await resolved.Provider.Data.GetFilterSqlAsync(
-                resolved.Context, schema, name, ParseFilters(filter), cancellationToken);
+                resolved.Context,
+                schema,
+                name,
+                ParseFilters(filter),
+                string.IsNullOrWhiteSpace(sort) ? null : sort,
+                string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase)
+                    ? SortDirection.Descending
+                    : SortDirection.Ascending,
+                cancellationToken);
             return Results.Ok(new { sql });
         });
 

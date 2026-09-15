@@ -81,17 +81,32 @@ public static partial class SqlServerSqlBuilder
         => BuildFilterClauseCore(filters, columns, SqlServerIdentifier.QuoteQualified(schema, name));
 
     /// <summary>
-    /// Builds the same WHERE clause used by data reads, then replaces its parameters with escaped
-    /// SQL Server literals for a read-only UI description. The returned SQL is never executed.
+    /// Builds the same WHERE clause used by data reads with its parameters replaced by escaped SQL
+    /// Server literals, then the ORDER BY clause for the sort on a line of its own. Data reads never
+    /// run it; it is shown above the grid and copied into the query editor.
     /// </summary>
     internal static string BuildFilterDisplaySql(
         IReadOnlyList<TableDataFilter>? filters,
         IReadOnlyList<SqlServerFilterColumn> columns,
         string schema,
-        string name)
+        string name,
+        string? sortColumn = null,
+        SortDirection sortDirection = SortDirection.Ascending)
     {
         var (clause, parameters) = BuildFilterClause(filters, columns, schema, name);
-        return SubstituteFilterParameters(clause, parameters).TrimStart();
+        var sql = SubstituteFilterParameters(clause, parameters).TrimStart();
+        if (string.IsNullOrEmpty(sortColumn))
+        {
+            return sql;
+        }
+
+        var sorted = columns.FirstOrDefault(
+            column => string.Equals(column.Name, sortColumn, StringComparison.OrdinalIgnoreCase))
+            ?? throw new GridletValidationException(
+                $"Sort column '{sortColumn}' does not exist on {SqlServerIdentifier.QuoteQualified(schema, name)}.");
+        var orderBy = $"ORDER BY {SqlServerIdentifier.Quote(sorted.Name)} "
+            + (sortDirection == SortDirection.Descending ? "DESC" : "ASC");
+        return sql.Length == 0 ? orderBy : sql + "\n" + orderBy;
     }
 
     /// <summary>Substitutes only complete <c>@fN</c> tokens, so <c>@f1</c> cannot alter <c>@f10</c>.</summary>

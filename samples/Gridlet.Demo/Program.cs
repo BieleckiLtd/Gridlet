@@ -5,6 +5,14 @@ using Gridlet.AgentFramework;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// A preview host hands the sample the port it picked, which is not always the configured one: the
+// developer may already be running this sample themselves.
+var assignedPort = Environment.GetEnvironmentVariable("PORT");
+if (!string.IsNullOrWhiteSpace(assignedPort))
+{
+    builder.WebHost.UseUrls($"http://localhost:{assignedPort}");
+}
+
 builder.Services.AddAuthorizationPolicies();
 
 var gridlet = builder.Services

@@ -6019,17 +6019,15 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var orders = ActivePanel(page);
         await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
 
-        var follow = orders.GetByTitle("Follow PizzaId=1 to dbo.Pizzas").First;
-        await Assertions.Expect(follow).ToHaveAttributeAsync(
-            "aria-label", "Follow PizzaId=1 to dbo.Pizzas");
-        var foreignKeyCell = follow.Locator("xpath=..");
+        var foreignKeyCell = orders.Locator("tbody td.foreign-key-cell").First;
         await foreignKeyCell.ClickAsync(new LocatorClickOptions { Position = new() { X = 4, Y = 4 } });
         var editor = orders.Locator("tr.row-editor");
         await Assertions.Expect(editor).ToHaveCountAsync(1);
         await editor.Locator("input").First.PressAsync("Escape");
         await Assertions.Expect(editor).ToHaveCountAsync(0);
-        follow = orders.GetByTitle("Follow PizzaId=1 to dbo.Pizzas").First;
-        await follow.ClickAsync();
+        await orders.Locator("tbody td.foreign-key-cell").First.ClickAsync(new LocatorClickOptions { Button = MouseButton.Right });
+        await page.Locator(".context-menu").GetByRole(AriaRole.Menuitem,
+            new() { Name = "Follow PizzaId=1 to dbo.Pizzas", Exact = true }).ClickAsync();
 
         var pizzas = ActivePanel(page);
         await Assertions.Expect(pizzas.GetByTestId("filter-sql")).ToContainTextAsync("WHERE [Id] = 1");
@@ -6069,7 +6067,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var orders = ActivePanel(page);
         await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
 
-        await orders.GetByTitle("Follow PizzaId=1 to 2 referenced tables").First.ClickAsync();
+        await orders.Locator("tbody td.foreign-key-cell").First.ClickAsync(new LocatorClickOptions { Button = MouseButton.Right });
         var menu = page.Locator(".context-menu");
         await Assertions.Expect(menu.GetByRole(AriaRole.Menuitem)).ToHaveCountAsync(2);
         await Assertions.Expect(menu).ToContainTextAsync("FK_Orders_Pizzas → dbo.Pizzas (PizzaId=1)");
@@ -6104,7 +6102,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTitle("dbo.Orders").ClickAsync();
         var orders = ActivePanel(page);
         await Assertions.Expect(orders.GetByText("1 row(s)", new() { Exact = true })).ToBeVisibleAsync();
-        await Assertions.Expect(orders.Locator("button.fk-follow")).ToHaveCountAsync(0);
+        await Assertions.Expect(orders.Locator("tbody td.foreign-key-cell")).ToHaveCountAsync(0);
+        await orders.Locator("tbody td").Nth(1).ClickAsync(new LocatorClickOptions { Button = MouseButton.Right });
+        await Assertions.Expect(page.Locator(".context-menu")).ToHaveCountAsync(0);
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -6286,8 +6286,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         releaseFirst.TrySetResult(true);
 
         var orders = ActivePanel(page);
-        await Assertions.Expect(orders.GetByTitle("Follow PizzaId=1 to dbo.Pizzas").First)
-            .ToBeVisibleAsync();
+        await Assertions.Expect(orders.Locator("tbody td.foreign-key-cell").First).ToBeVisibleAsync();
         Assert.True(attempts >= 2);
         browserPage.AssertNoUnexpectedErrors();
     }
@@ -6351,10 +6350,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var orders = ActivePanel(page);
         await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
 
-        var follow = orders.GetByTitle("Follow PizzaId=1, Promotion=Featured to dbo.Pizzas").First;
-        await Assertions.Expect(follow).ToHaveAttributeAsync(
-            "aria-label", "Follow PizzaId=1, Promotion=Featured to dbo.Pizzas");
-        await follow.ClickAsync();
+        await orders.Locator("tbody td.foreign-key-cell").First.ClickAsync(new LocatorClickOptions { Button = MouseButton.Right });
+        await page.Locator(".context-menu").GetByRole(AriaRole.Menuitem,
+            new() { Name = "Follow PizzaId=1, Promotion=Featured to dbo.Pizzas", Exact = true }).ClickAsync();
         var pizzas = ActivePanel(page);
         await Assertions.Expect(pizzas.GetByTestId("filter-sql"))
             .ToContainTextAsync("WHERE [Id] = 1 AND [Name] = N'Featured'");
@@ -6367,7 +6365,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await page.Locator(".tab").Filter(new() { HasText = "dbo.Orders" }).ClickAsync();
         orders = ActivePanel(page);
-        await Assertions.Expect(orders.Locator("tbody tr").Nth(1).Locator("button.fk-follow"))
+        await Assertions.Expect(orders.Locator("tbody tr").Nth(1).Locator("td.foreign-key-cell"))
             .ToHaveCountAsync(0);
         browserPage.AssertNoUnexpectedErrors();
     }
@@ -6387,10 +6385,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var panel = ActivePanel(page);
         var rawForeignKey = panel.Locator("tbody td.foreign-key-cell").First;
         await Assertions.Expect(rawForeignKey).ToBeVisibleAsync();
-        Assert.Equal("1", await rawForeignKey.EvaluateAsync<string>(
-            "cell => cell.firstChild?.firstChild?.textContent || ''"));
-        Assert.Equal("relative", await rawForeignKey.Locator(".foreign-key-content").EvaluateAsync<string>(
-            "element => getComputedStyle(element).position"));
+        Assert.Equal("1", (await rawForeignKey.TextContentAsync())?.Trim());
 
         await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
         var foreignKeyRow = panel.Locator("tr").Filter(new() { HasText = "FK_Orders_Pizzas" });
@@ -6416,7 +6411,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .Filter(new() { HasText = "Missing reference" }).First)
             .ToBeVisibleAsync();
 
-        // The small arrow follows the key; the rest of the same cell must still open its editor.
+        // Following the key is a context-menu command, so a plain click still opens the row editor.
         await margherita.ClickAsync(new LocatorClickOptions { Position = new() { X = 4, Y = 4 } });
         await Assertions.Expect(panel.Locator("tr.row-editor")).ToHaveCountAsync(1);
         browserPage.AssertNoUnexpectedErrors();
@@ -7577,6 +7572,11 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         Assert.InRange(filterButtonBounds.X - (sortBounds.X + sortBounds.Width), 0, 8);
         Assert.InRange(Math.Abs((sortBounds.Y + sortBounds.Height / 2)
             - (filterButtonBounds.Y + filterButtonBounds.Height / 2)), 0, 2);
+        await Assertions.Expect(panel.GetByTestId("filter-sql")).ToHaveTextAsync("ORDER BY [Name] ASC");
+        await panel.GetByTestId("object-use-query").ClickAsync();
+        await Assertions.Expect(ActivePanel(page).GetByTestId("sql-editor")).ToHaveValueAsync(
+            "SELECT TOP (100) * FROM [dbo].[Customers]\nORDER BY [Name] ASC;");
+        await page.Locator(".tab").Filter(new() { HasText = "dbo.Customers" }).ClickAsync();
 
         await nameHeader.ClickAsync();
         await Assertions.Expect(menu.GetByTestId("column-filter-sort-ascending")).ToBeCheckedAsync();
@@ -7588,6 +7588,73 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await menu.GetByTestId("column-filter-clear-sort").ClickAsync();
         await clearedRequest;
         await Assertions.Expect(nameHeader.GetByTestId("sort-arrow")).ToHaveCountAsync(0);
+        await Assertions.Expect(panel.GetByTestId("filter-bar")).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Pressing a column's edge changes nothing until the pointer moves, so a click, or the first
+    /// click of a double-click, leaves the columns alone. Dragging resizes only that column without
+    /// opening a filter, the width survives the redraw a sort causes, and double-clicking the edge
+    /// fits the column to its content.
+    /// </summary>
+    [Fact]
+    public async Task Resizes_a_column_by_dragging_or_double_clicking_its_edge()
+    {
+        var (browserPage, panel, _) = await OpenTableAsync(
+            fixture, p => p.GetByTitle("dbo.Customers"), "2 row(s)");
+        await using var _ = browserPage;
+        var page = browserPage.Page;
+        var menu = page.GetByTestId("column-filter-menu");
+        Task<double[]> WidthsAsync() => panel.Locator("table.data-grid").EvaluateAsync<double[]>(
+            "table => [...table.querySelectorAll('thead th')].map((th) => th.getBoundingClientRect().width)");
+        var grip = ColumnHeader(panel, "Name").Locator(".col-grip:not(.col-grip-before)");
+        var box = (await grip.BoundingBoxAsync())!;
+        var x = box.X + box.Width / 2;
+        var y = box.Y + box.Height / 2;
+
+        var before = await WidthsAsync();
+        await page.Mouse.MoveAsync(x, y);
+        await page.Mouse.DownAsync();
+        await page.Mouse.UpAsync();
+        Assert.Equal(before, await WidthsAsync());
+        await Assertions.Expect(menu).ToHaveCountAsync(0);
+
+        await page.Mouse.DownAsync();
+        await page.Mouse.MoveAsync(x + 30, y, new() { Steps = 5 });
+        await page.Mouse.MoveAsync(x + 60, y, new() { Steps = 5 });
+        await page.Mouse.UpAsync();
+        var dragged = await WidthsAsync();
+        Assert.InRange(dragged[2] - before[2], 58, 62);
+        Assert.InRange(Math.Abs(dragged[1] - before[1]), 0, 0.5);
+        await Assertions.Expect(menu).ToHaveCountAsync(0);
+
+        await ColumnHeader(panel, "Id").ClickAsync();
+        await menu.GetByTestId("column-filter-sort-descending").ClickAsync();
+        await Assertions.Expect(ColumnHeader(panel, "Id").GetByTestId("sort-arrow")).ToBeVisibleAsync();
+        Assert.InRange(Math.Abs((await WidthsAsync())[2] - dragged[2]), 0, 0.5);
+
+        await ColumnHeader(panel, "Name").Locator(".col-grip:not(.col-grip-before)").DblClickAsync();
+        await Assertions.Expect(menu).ToHaveCountAsync(0);
+        Assert.True((await WidthsAsync())[2] < dragged[2]);
+        Assert.True(await panel.Locator("table.data-grid").EvaluateAsync<bool>(
+            """
+            table => {
+              const header = table.querySelector('thead th[data-column="Name"]');
+              const style = getComputedStyle(header);
+              const labelFits = header.firstElementChild.getBoundingClientRect().right
+                <= header.getBoundingClientRect().right - parseFloat(style.paddingRight) + 0.5;
+              const range = document.createRange();
+              const cellsFit = [...table.tBodies[0].rows].every((row) => {
+                const cell = row.cells[header.cellIndex];
+                range.selectNodeContents(cell);
+                const cellStyle = getComputedStyle(cell);
+                return range.getBoundingClientRect().width + parseFloat(cellStyle.paddingLeft)
+                  + parseFloat(cellStyle.paddingRight) <= cell.getBoundingClientRect().width + 0.5;
+              });
+              return labelFits && cellsFit;
+            }
+            """));
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -7637,6 +7704,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await cells.Nth(1).ClickAsync();
         var name = panel.GetByLabel("Name", new() { Exact = true });
+        var editorCells = panel.Locator("tr.row-editor td:not(.row-selector)");
+        Assert.Equal("right", await AlignmentAsync(editorCells.Nth(0).Locator("input")));
+        Assert.NotEqual("right", await AlignmentAsync(name));
         await name.FillAsync("Ada Lovelace");
         await name.PressAsync("Control+Enter");
         await Assertions.Expect(page.Locator("#toast-stack").GetByText("Row 1 updated.", new() { Exact = true }))
@@ -7645,6 +7715,45 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         Assert.Equal("right", await AlignmentAsync(cells.Nth(0)));
         Assert.Equal("left", await AlignmentAsync(cells.Nth(1)));
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
+    /// Following a key is a context-menu command, so a key value is laid out like every other value
+    /// of its column: the cell keeps no room for a button, and the values stay in line.
+    /// </summary>
+    [Fact]
+    public async Task A_foreign_key_value_lines_up_with_its_row_and_follows_from_its_menu()
+    {
+        var (browserPage, panel, _) = await OpenTableAsync(
+            fixture, p => p.Locator("[title='dbo.Orders']"), "3 row(s)");
+        await using var _ = browserPage;
+        var page = browserPage.Page;
+
+        var offsets = await panel.Locator("table.data-grid tbody").EvaluateAsync<double[]>(
+            """
+            body => {
+              const cells = [...body.rows[0].cells].filter((cell) => !cell.classList.contains('row-selector'));
+              const key = cells.find((cell) => cell.classList.contains('foreign-key-cell'));
+              const plain = cells.find((cell) => !cell.classList.contains('foreign-key-cell'));
+              const text = (cell) => {
+                const range = document.createRange();
+                range.selectNodeContents(cell);
+                return range.getBoundingClientRect();
+              };
+              const gap = (cell) => cell.getBoundingClientRect().right
+                - parseFloat(getComputedStyle(cell).paddingRight) - text(cell).right;
+              const middle = (cell) => text(cell).top + text(cell).height / 2;
+              return [gap(key) - gap(plain), middle(key) - middle(plain)];
+            }
+            """);
+
+        Assert.All(offsets, offset => Assert.InRange(Math.Abs(offset), 0, 1));
+        await Assertions.Expect(panel.Locator(".fk-follow")).ToHaveCountAsync(0);
+
+        await panel.Locator("tbody td.foreign-key-cell").First.ClickAsync(new LocatorClickOptions { Button = MouseButton.Right });
+        await Assertions.Expect(page.Locator(".context-menu").GetByRole(AriaRole.Menuitem,
+            new() { Name = "Follow PizzaId=1 to dbo.Pizzas", Exact = true })).ToBeVisibleAsync();
         browserPage.AssertNoUnexpectedErrors();
     }
 

@@ -7346,7 +7346,9 @@
     const urls = urlsFor(scope);
     const currentConn = () => connectionFor(scope);
     const currentCapabilities = () => capabilitiesFor(scope);
-    const grid = { sort: null, dir: 'asc', filters: [...(tab.initialFilters || [])] };
+    const grid = {
+      sort: null, dir: 'asc', filters: [...(tab.initialFilters || [])], columnWidths: new Map(),
+    };
     tab.initialFilters = null;
     tab.dataFilters = () => grid.filters.map((filter) => JSON.parse(JSON.stringify(filter)));
     // The conditions the server applies, measured afresh for every request. `except` leaves out one
@@ -7754,39 +7756,22 @@
           return index >= 0 && !foreignKeyFilterReason(pair.column, row?.[index]);
         }));
         if (!followable.length) return cell;
-        const targetText = followable.length === 1
-          ? `${followable[0].referencedSchema}.${followable[0].referencedTable}`
-          : `${followable.length} referenced tables`;
-        const keyText = followable.length === 1
-          ? followable[0].columns.map((pair) => {
-            const index = data.columns.findIndex((candidate) =>
-              candidate.name.toLowerCase() === pair.column.toLowerCase());
-            return `${pair.column}=${dataCompareValueText(row[index])}`;
-          }).join(', ')
-          : `${column.name}=${dataCompareValueText(value)}`;
-        const link = h('button', {
-          type: 'button', class: 'fk-follow',
-          title: `Follow ${keyText} to ${targetText}`,
-          'aria-label': `Follow ${keyText} to ${targetText}`,
-          onclick: (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            if (followable.length === 1) followForeignKey(followable[0], row);
-            else showContextMenu(event, followable.map((foreignKey) => ({
-              label: `${foreignKey.name} → ${foreignKey.referencedSchema}.${foreignKey.referencedTable} (`
-                + foreignKey.columns.map((pair) => {
-                  const index = data.columns.findIndex((candidate) =>
-                    candidate.name.toLowerCase() === pair.column.toLowerCase());
-                  return `${pair.column}=${dataCompareValueText(row[index])}`;
-                }).join(', ') + ')',
-              action: () => followForeignKey(foreignKey, row),
-            })));
-          },
-        }, '↗');
+        const keyText = (foreignKey) => foreignKey.columns.map((pair) => {
+          const index = data.columns.findIndex((candidate) =>
+            candidate.name.toLowerCase() === pair.column.toLowerCase());
+          return `${pair.column}=${dataCompareValueText(row[index])}`;
+        }).join(', ');
         cell.classList.add('foreign-key-cell');
-        const content = h('span', { class: 'foreign-key-content' });
-        content.append(...cell.childNodes, link);
-        cell.append(content);
+        // Following a key is a command about the row rather than part of its value, so it belongs to
+        // the cell's context menu. A button in the cell would take room from every row of the column
+        // and leave the values out of line with the columns beside them.
+        cell.addEventListener('contextmenu', (event) => showContextMenu(event, followable.map((foreignKey) => ({
+          label: followable.length === 1
+            ? `Follow ${keyText(foreignKey)} to ${foreignKey.referencedSchema}.${foreignKey.referencedTable}`
+            : `${foreignKey.name} → ${foreignKey.referencedSchema}.${foreignKey.referencedTable}`
+              + ` (${keyText(foreignKey)})`,
+          action: () => followForeignKey(foreignKey, row),
+        }))));
         return cell;
       };
       const resolveFriendlyValues = async (rows) => {
@@ -8105,16 +8090,24 @@
         },
       };
 
+      // The bar shows the WHERE and ORDER BY clauses of what the grid shows, so a sort alone shows it
+      // too, and Clear all clears both.
       const filterBar = () => {
-        if (!grid.filters.length) return null;
+        if (!grid.filters.length && !grid.sort) return null;
         return h('div', { class: 'filter-bar', 'data-testid': 'filter-bar' },
           h('code', {
-            class: 'filter-sql', text: 'Loading filter SQL…', 'data-testid': 'filter-sql',
+            class: 'filter-sql', text: 'Loading SQL…', 'data-testid': 'filter-sql',
             'aria-live': 'polite',
           }),
           h('button', {
             class: 'ghost', 'data-testid': 'clear-filters',
-            onclick: () => { grid.filters = []; saveSession(); renderData(); },
+            onclick: () => {
+              grid.filters = [];
+              grid.sort = null;
+              grid.dir = 'asc';
+              saveSession();
+              renderData();
+            },
           }, 'Clear all'));
       };
 
@@ -8218,6 +8211,7 @@
         providerName: currentConn().providerName,
         onSelectionChange: showIncomingReferences,
         columnFilter,
+        columnWidths: grid.columnWidths,
         onSort: (column) => {
           if (grid.sort === column) grid.dir = grid.dir === 'asc' ? 'desc' : 'asc';
           else { grid.sort = column; grid.dir = 'asc'; }
@@ -8229,9 +8223,11 @@
       if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
       const appliedFilters = grid.filters.length ? JSON.stringify(serverFilters()) : null;
       if (appliedFilters) params.set('filter', appliedFilters);
-      if (filterBarElement && appliedFilters) {
+      if (filterBarElement) {
         const display = filterBarElement.querySelector('[data-testid="filter-sql"]');
-        const filterParams = new URLSearchParams({ filter: appliedFilters });
+        const filterParams = new URLSearchParams();
+        if (appliedFilters) filterParams.set('filter', appliedFilters);
+        if (grid.sort) { filterParams.set('sort', grid.sort); filterParams.set('dir', grid.dir); }
         filterSqlRequest = api(urls.filterSql(o.schema, o.name, filterParams), { signal: controller.signal })
           .then((result) => result.sql || '');
         filterSqlRequest
@@ -8529,6 +8525,14 @@
         });
         focusableByName.set(c.name.toLowerCase(), input);
       }
+      // Values being edited sit on the same side as the values in the rows around them.
+      dataColumns.forEach((dataColumn, index) => {
+        const header = table.querySelector(`thead th[data-column="${CSS.escape(dataColumn.name)}"]`);
+        const cell = editorRow.cells[index + 1];
+        if (header?.dataset.alignValues === 'right' && !cell?.classList.contains('generated-value')) {
+          cell?.classList.add('cell-align-right');
+        }
+      });
 
       let saving = false;
       const commit = async () => {
@@ -14606,8 +14610,12 @@
     const allRows = options?.allRows || rows;
     const columnKinds = columns.map((column, index) => columnFilterKind(
       column.dataTypeName, options?.providerName, allRows.slice(0, 200).map((row) => row[index])));
-    const headRow = h('tr', {}, columns.map((c) => {
-      const th = h('th', { title: c.dataTypeName },
+    const headRow = h('tr', {}, columns.map((c, index) => {
+      const th = h('th', {
+        title: c.dataTypeName, 'data-column': c.name,
+        // The header stays left; this tells the row editor which side its values sit on.
+        'data-align-values': columnKinds[index] === 'number' || columnKinds[index] === 'date' ? 'right' : null,
+      },
         h('span', { text: c.name }),
         h('span', { class: 'coltype', text: c.dataTypeName }));
       if (options && options.onSort && !options.columnFilter) {
@@ -14617,7 +14625,9 @@
             class: 'sort-arrow', 'data-testid': 'sort-arrow', 'aria-hidden': 'true',
           }, icon(options.dir === 'desc' ? 'sort-descending' : 'sort-ascending')));
         }
-        th.addEventListener('click', () => options.onSort(c.name));
+        th.addEventListener('click', () => {
+          if (!th.closest('table')?.resizeGesture) options.onSort(c.name);
+        });
       }
       if (options?.columnFilter) {
         const filtered = options.columnFilter.isActive(c.name);
@@ -14644,7 +14654,9 @@
           }, icon(options.dir === 'desc' ? 'sort-descending' : 'sort-ascending')));
         }
         th.append(button);
-        th.addEventListener('click', toggle);
+        th.addEventListener('click', () => {
+          if (!th.closest('table')?.resizeGesture) toggle();
+        });
       }
       return th;
     }));
@@ -14722,7 +14734,7 @@
         options.rowActions.onDeleteSelected(chosen);
       }
     });
-    makeResizable(table);
+    makeResizable(table, options?.columnWidths || null);
     return table;
   }
 
@@ -14734,6 +14746,7 @@
     let table = null;
     let scheduled = false;
     const selectionState = { selected: new Set(), anchor: -1 };
+    const columnWidths = options.columnWidths || new Map();
 
     const render = () => {
       if (!columns.length) return;
@@ -14760,6 +14773,7 @@
         providerName: options.providerName,
         onSelectionChange: options.onSelectionChange,
         columnFilter: options.columnFilter,
+        columnWidths,
       });
       if (virtual) {
         const tbody = table.tBodies[0];
@@ -14789,61 +14803,121 @@
     };
   }
 
-  function makeResizable(table) {
-    for (const th of table.querySelectorAll('thead th')) {
-      if (th.classList.contains('row-selector')) continue;
-      const grip = h('span', { class: 'col-grip' });
-      grip.addEventListener('click', (e) => e.stopPropagation());
-      grip.addEventListener('dblclick', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        lockTableLayout(table);
-        const currentWidth = th.offsetWidth;
-        const style = getComputedStyle(th);
-        const label = th.firstElementChild;
-        const labelStyle = getComputedStyle(label);
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        context.font = labelStyle.font;
-        const labelWidth = context.measureText(label.firstChild?.textContent || '').width;
-        const chromeWidth = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight)
-          + parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth);
-        const fittedWidth = Math.max(50, Math.ceil(labelWidth + chromeWidth + 1));
-        const cssWidth = style.boxSizing === 'border-box' ? fittedWidth : fittedWidth - chromeWidth;
-        th.style.width = cssWidth + 'px';
-        table.style.width = table.offsetWidth + fittedWidth - currentWidth + 'px';
-      });
-      grip.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const startX = e.clientX;
-        const startWidth = th.offsetWidth;
-        lockTableLayout(table);
-        const startTableWidth = table.offsetWidth;
-        const onMove = (ev) => {
-          const delta = Math.max(50 - startWidth, ev.clientX - startX);
-          th.style.width = startWidth + delta + 'px';
-          table.style.width = startTableWidth + delta + 'px';
-        };
-        const onUp = () => {
-          document.removeEventListener('mousemove', onMove);
-          document.removeEventListener('mouseup', onUp);
-          document.body.style.cursor = '';
-        };
-        document.body.style.cursor = 'col-resize';
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', onUp);
-      });
-      th.append(grip);
-    }
+  // Once a column is resized the widths are the user's. The table switches to a fixed layout at the
+  // widths it already had, measured to the fraction so nothing shifts or truncates, and the widths
+  // are kept by column name, so the redraw after more rows, a sort or a filter keeps them.
+  function makeResizable(table, columnWidths = null) {
+    table.columnWidths = columnWidths;
+    if (columnWidths?.size) applyColumnWidths(table);
+    const headers = [...table.querySelectorAll('thead th')];
+    headers.forEach((th, index) => {
+      if (th.classList.contains('row-selector')) return;
+      th.append(columnGrip(table, th, 'col-grip'));
+      // A header clips what overflows it, so the next header's left edge resizes this column too.
+      headers[index + 1]?.append(columnGrip(table, th, 'col-grip-before'));
+    });
+  }
+
+  function columnGrip(table, th, className) {
+    const grip = h('span', { class: className, 'aria-hidden': 'true' });
+    // The header's own click opens its filter; a click on an edge belongs to resizing.
+    grip.addEventListener('click', (event) => event.stopPropagation());
+    grip.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      lockTableLayout(table);
+      setColumnWidth(table, th, fittedColumnWidth(table, th));
+    });
+    grip.addEventListener('mousedown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const startX = event.clientX;
+      let startWidth = null;
+      table.resizeGesture = true;
+      const onMove = (moveEvent) => {
+        // Nothing changes until the pointer really moves, so a click, or the first click of a
+        // double-click, leaves every column as it was.
+        if (startWidth === null) {
+          if (Math.abs(moveEvent.clientX - startX) < 3) return;
+          lockTableLayout(table);
+          startWidth = th.getBoundingClientRect().width;
+        }
+        setColumnWidth(table, th, Math.max(50, startWidth + moveEvent.clientX - startX));
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        // The click that follows the release belongs to the resize, even when it lands on a header.
+        setTimeout(() => { table.resizeGesture = false; });
+      };
+      document.body.style.cursor = 'col-resize';
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+    return grip;
   }
 
   function lockTableLayout(table) {
     if (table.style.tableLayout === 'fixed') return;
-    const width = table.offsetWidth;
-    for (const th of table.querySelectorAll('thead th')) th.style.width = th.offsetWidth + 'px';
-    table.style.width = width + 'px';
+    const headers = [...table.querySelectorAll('thead th')];
+    const widths = headers.map((th) => th.getBoundingClientRect().width);
+    headers.forEach((th, index) => { th.style.width = `${widths[index]}px`; });
+    table.style.width = `${widths.reduce((sum, width) => sum + width, 0)}px`;
     table.style.tableLayout = 'fixed';
+    table.classList.add('columns-sized');
+  }
+
+  function setColumnWidth(table, th, width) {
+    const change = width - (parseFloat(th.style.width) || th.getBoundingClientRect().width);
+    th.style.width = `${width}px`;
+    table.style.width = `${(parseFloat(table.style.width) || table.getBoundingClientRect().width) + change}px`;
+    if (!table.columnWidths) return;
+    for (const header of table.querySelectorAll('thead th[data-column]')) {
+      table.columnWidths.set(header.dataset.column, parseFloat(header.style.width));
+    }
+  }
+
+  function applyColumnWidths(table) {
+    let total = 0;
+    for (const th of table.querySelectorAll('thead th')) {
+      const width = th.dataset.column
+        ? table.columnWidths.get(th.dataset.column) ?? 150
+        : parseFloat(table.style.getPropertyValue('--row-selector-width')) || 34;
+      th.style.width = `${width}px`;
+      total += width;
+    }
+    table.style.width = `${total}px`;
+    table.style.tableLayout = 'fixed';
+    table.classList.add('columns-sized');
+  }
+
+  // Double-clicking a column's edge fits the column to its widest content, header included, as a
+  // spreadsheet does. Values are fitted up to the widest a cell grows unresized; the header always
+  // fits.
+  function fittedColumnWidth(table, th) {
+    const chrome = (element) => {
+      const style = getComputedStyle(element);
+      return parseFloat(style.paddingLeft) + parseFloat(style.paddingRight)
+        + parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth);
+    };
+    const context = document.createElement('canvas').getContext('2d');
+    const textWidth = (element) => {
+      if (!element) return 0;
+      context.font = getComputedStyle(element).font;
+      return context.measureText(element.textContent || '').width;
+    };
+    const header = Math.max(textWidth(th.firstElementChild), textWidth(th.querySelector('.coltype'))) + chrome(th);
+    const range = document.createRange();
+    let content = 0;
+    for (const row of table.tBodies[0]?.rows || []) {
+      const cell = row.cells[th.cellIndex];
+      if (!cell || cell.colSpan > 1 || row.classList.contains('row-editor')) continue;
+      range.selectNodeContents(cell);
+      content = Math.max(content, range.getBoundingClientRect().width + chrome(cell));
+    }
+    return Math.ceil(Math.max(50, header, Math.min(content, 420))) + 1;
   }
 
   // Plans are trees of operators with a cost each. The rendering keeps the shape and the numbers

@@ -814,6 +814,17 @@ public class GridletEndpointTests
         Assert.Equal(FilterOperator.In, applied.Operator);
         Assert.Equal(["O'Brien"], applied.Values);
 
+        var sorted = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data/filter-sql"
+            + "?sort=name&dir=desc&filter=" + filter);
+        using var sortedDocument = JsonDocument.Parse(await sorted.Content.ReadAsStringAsync());
+        Assert.Equal(
+            "WHERE [Name] IN (N'O''Brien')\nORDER BY [Name] DESC",
+            sortedDocument.RootElement.GetProperty("sql").GetString());
+        var badSort = await client.GetAsync(
+            "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data/filter-sql?sort=Missing");
+        Assert.Equal(HttpStatusCode.BadRequest, badSort.StatusCode);
+
         var bad = await client.GetAsync(
             "/gridlet/api/connections/Main/databases/FakeDb/objects/dbo/Customers/data/filter-sql?filter="
             + Uri.EscapeDataString("""[{"column":"Missing","operator":"equals","value":"x"}]"""));

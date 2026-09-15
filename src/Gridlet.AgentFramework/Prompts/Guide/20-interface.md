@@ -27,3 +27,6 @@ as dates. Filters run in the database, over every row of the table, not over the
 fetched, and the row count reflects them. Each column holds one filter, the columns combine with
 AND, and each filter's chip above the grid removes it. This is the answer to "find the row where…"
 without leaving the grid for the query editor.
+
+Right-clicking a foreign-key value offers to follow it: the referenced table opens in a tab,
+filtered to the row that key points at.
