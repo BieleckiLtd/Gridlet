@@ -1931,10 +1931,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(comparison.Locator("tbody tr")).ToHaveCountAsync(3);
         await comparison.GetByTestId("data-compare-filter").FillAsync("Ada changed");
         await Assertions.Expect(comparison.Locator("tbody tr")).ToHaveCountAsync(1);
-        await Assertions.Expect(comparison.GetByTestId("export-csv")).ToBeVisibleAsync();
-        await Assertions.Expect(comparison.GetByTestId("export-json")).ToBeVisibleAsync();
-        await Assertions.Expect(comparison.GetByTestId("export-xlsx")).ToBeVisibleAsync();
-        await Assertions.Expect(comparison.GetByTestId("export-parquet")).ToBeVisibleAsync();
+        await comparison.GetByTestId("export-menu").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("export-csv")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("export-json")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("export-xlsx")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("export-parquet")).ToBeVisibleAsync();
+        await page.Keyboard.PressAsync("Escape");
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -4517,7 +4519,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToBeVisibleAsync();
 
         var jsonDownload = await page.RunAndWaitForDownloadAsync(
-            () => panel.GetByTestId("export-json").ClickAsync());
+            () => ExportAsync(panel, "json"));
         Assert.Equal("Customers-Status-profile.json", jsonDownload.SuggestedFilename);
         using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
         Assert.Equal(JsonValueKind.Null, document.RootElement[0].GetProperty("Value").ValueKind);
@@ -4649,17 +4651,23 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var panel = ActivePanel(page);
         await Assertions.Expect(panel.GetByText("1 row(s) - safety cap reached", new() { Exact = true }))
             .ToBeVisibleAsync();
-        await Assertions.Expect(panel.GetByTestId("export-csv")).ToHaveTextAsync("Full CSV");
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }))
+            .ToBeHiddenAsync();
+        await Assertions.Expect(panel.GetByLabel("Row cap")).ToBeVisibleAsync();
+        await panel.GetByTestId("export-menu").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("export-csv")).ToHaveTextAsync("CSV (all filtered rows)");
+        await Assertions.Expect(page.GetByTestId("export-xlsx")).ToHaveTextAsync("Excel (loaded rows)");
+        await page.Keyboard.PressAsync("Escape");
 
         var csvDownload = await page.RunAndWaitForDownloadAsync(
-            () => panel.GetByTestId("export-csv").ClickAsync());
+            () => ExportAsync(panel, "csv"));
         Assert.Equal("Ledger.csv", csvDownload.SuggestedFilename);
         var csv = await ReadDownloadAsync(csvDownload);
         Assert.Equal(5, csv.Split("\r\n", StringSplitOptions.RemoveEmptyEntries).Length);
         Assert.Contains("4,Alan", csv);
 
         var jsonDownload = await page.RunAndWaitForDownloadAsync(
-            () => panel.GetByTestId("export-json").ClickAsync());
+            () => ExportAsync(panel, "json"));
         Assert.Equal("Ledger.json", jsonDownload.SuggestedFilename);
         using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
         Assert.Equal(4, document.RootElement.GetArrayLength());
@@ -4681,16 +4689,16 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
                 await route.ContinueAsync();
             }
         });
-        await panel.GetByTestId("export-csv").ClickAsync();
+        await ExportAsync(panel, "csv");
         await Assertions.Expect(page.Locator("#toast-stack"))
             .ToContainTextAsync("Export failed: The export could not be validated.");
         await page.UnrouteAsync("**/data/export?*");
 
         await page.Locator("[title='dbo.LedgerHeap']").ClickAsync();
         panel = ActivePanel(page);
-        await Assertions.Expect(panel.GetByTestId("export-csv")).ToHaveTextAsync("CSV");
-        await Assertions.Expect(panel.GetByTestId("export-csv"))
-            .ToHaveAttributeAsync("title", "Download as CSV");
+        await panel.GetByTestId("export-menu").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("export-csv")).ToHaveTextAsync("CSV");
+        await page.Keyboard.PressAsync("Escape");
         browserPage.AssertNoUnexpectedErrors("400");
     }
 
@@ -4803,24 +4811,24 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
 
         var csvDownload = await page.RunAndWaitForDownloadAsync(
-            () => page.GetByTestId("export-csv").ClickAsync());
+            () => ExportAsync(page, "csv"));
         Assert.Equal("SQL_1-result1.csv", csvDownload.SuggestedFilename);
         Assert.Equal("Answer\r\n42", await ReadDownloadAsync(csvDownload));
 
         var jsonDownload = await page.RunAndWaitForDownloadAsync(
-            () => page.GetByTestId("export-json").ClickAsync());
+            () => ExportAsync(page, "json"));
         Assert.Equal("SQL_1-result1.json", jsonDownload.SuggestedFilename);
         using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
         Assert.Equal(42, document.RootElement[0].GetProperty("Answer").GetInt32());
 
         var excelDownload = await page.RunAndWaitForDownloadAsync(
-            () => page.GetByTestId("export-xlsx").ClickAsync());
+            () => ExportAsync(page, "xlsx"));
         Assert.Equal("SQL_1-result1.xlsx", excelDownload.SuggestedFilename);
         var excel = await ReadDownloadBytesAsync(excelDownload);
         Assert.Equal("PK", System.Text.Encoding.ASCII.GetString(excel, 0, 2));
 
         var parquetDownload = await page.RunAndWaitForDownloadAsync(
-            () => page.GetByTestId("export-parquet").ClickAsync());
+            () => ExportAsync(page, "parquet"));
         Assert.Equal("SQL_1-result1.parquet", parquetDownload.SuggestedFilename);
         var parquet = await ReadDownloadBytesAsync(parquetDownload);
         Assert.Equal("PAR1", System.Text.Encoding.ASCII.GetString(parquet, 0, 4));
@@ -4832,7 +4840,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             ContentType = "text/plain",
             Body = "",
         }));
-        await page.GetByTestId("export-xlsx").ClickAsync();
+        await ExportAsync(page, "xlsx");
         await Assertions.Expect(page.Locator("#toast-stack")).ToContainTextAsync(
             "This result set is too large for Excel or Parquet export. Lower the row cap and try again.");
         browserPage.AssertNoUnexpectedErrors("413 (Payload Too Large)");
@@ -4848,7 +4856,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
 
         var download = await page.RunAndWaitForDownloadAsync(
-            () => page.GetByTestId("export-csv").ClickAsync());
+            () => ExportAsync(page, "csv"));
 
         Assert.Equal("Text\r\n'\t2+3", await ReadDownloadAsync(download));
         browserPage.AssertNoUnexpectedErrors();
@@ -4882,7 +4890,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(keyboardMenu).ToBeVisibleAsync();
         var copyBounds = await copyButton.BoundingBoxAsync();
         var menuBounds = await keyboardMenu.BoundingBoxAsync();
-        Assert.InRange(Math.Abs(menuBounds!.X - copyBounds!.X), 0, 2);
+        var leftAligned = Math.Abs(menuBounds!.X - copyBounds!.X) <= 2;
+        var rightAligned = Math.Abs(menuBounds.X + menuBounds.Width - (copyBounds.X + copyBounds.Width)) <= 2;
+        Assert.True(leftAligned || rightAligned, "The keyboard-opened menu hangs off one edge of its trigger.");
         await keyboardMenu.GetByRole(AriaRole.Menuitem).Last.PressAsync("Tab");
         await Assertions.Expect(keyboardMenu).ToBeHiddenAsync();
         await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "false");
@@ -7370,6 +7380,15 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
+
+    private static Task ExportAsync(IPage page, string format) => ExportAsync(page.Locator("body"), format);
+
+    // Downloads live in the "Export" menu, which the page appends to the body rather than the panel.
+    private static async Task ExportAsync(ILocator scope, string format)
+    {
+        await scope.GetByTestId("export-menu").ClickAsync();
+        await scope.Page.GetByTestId($"export-{format}").ClickAsync();
+    }
 
     private static async Task ClickQueryActionAsync(ILocator panel, string testId)
     {

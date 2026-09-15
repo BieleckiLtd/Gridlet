@@ -490,6 +490,8 @@
         role: item.checked === undefined ? 'menuitem' : 'menuitemradio',
         'aria-checked': item.checked === undefined ? null : String(!!item.checked),
         text: item.label,
+        title: item.title || null,
+        'data-testid': item.testId || null,
         disabled: item.disabled ? '' : null,
         onclick: () => { dismiss(true); item.action(); },
       })));
@@ -502,7 +504,12 @@
     const bounds = menu.getBoundingClientRect();
     const triggerBounds = trigger?.getBoundingClientRect();
     const keyboardActivation = event.clientX === 0 && event.clientY === 0 && triggerBounds;
-    const requestedX = keyboardActivation ? triggerBounds.left : event.clientX;
+    // A menu opened from the keyboard hangs off its trigger: from the left edge as a rule, or from
+    // the right edge when the trigger sits so close to the window's edge that the menu would not fit.
+    const hangsRight = keyboardActivation && triggerBounds.left + bounds.width > window.innerWidth - 4;
+    const requestedX = keyboardActivation
+      ? (hangsRight ? triggerBounds.right - bounds.width : triggerBounds.left)
+      : event.clientX;
     const requestedY = keyboardActivation ? triggerBounds.bottom : event.clientY;
     menu.style.left = Math.max(4, Math.min(requestedX, window.innerWidth - bounds.width - 4)) + 'px';
     menu.style.top = Math.max(4, Math.min(requestedY, window.innerHeight - bounds.height - 4)) + 'px';
@@ -3112,6 +3119,9 @@
   const useInQueryButton = (o, scope = state, getFilterSql = null) =>
     connectionFor(scope).allowSqlExecution && !['Trigger', 'UserDefinedType'].includes(o.type) ? h('button', {
       'data-testid': 'object-use-query',
+      title: getFilterSql
+        ? 'Open a SQL tab that selects from this object with the current filters'
+        : 'Open a SQL tab that uses this object',
       onclick: async (event) => {
         const button = event.currentTarget;
         button.disabled = true;
@@ -3127,7 +3137,9 @@
     }, 'Use in query') : null;
 
   const dependenciesButton = (o, scope = state) => h('button', {
-    text: 'Dependencies…', 'data-testid': 'object-dependencies', onclick: async () => {
+    text: 'Dependencies…', 'data-testid': 'object-dependencies',
+    title: 'List the objects this one uses and the objects that use it',
+    onclick: async () => {
       try {
         const dependencies = await api(urlsFor(scope).dependencies(o.schema, o.name));
         const group = (direction, title) => {
@@ -7944,15 +7956,19 @@
         }
         incomingPanel.hidden = false;
         if (selectedRows.length !== 1) {
-          incomingPanel.replaceChildren(h('h3', { text: 'Incoming references' }),
-            h('p', { class: 'muted', text: 'Select one row to inspect incoming foreign keys.' }));
+          incomingPanel.replaceChildren(h('div', { class: 'incoming-references-head' },
+            h('h3', { text: 'Incoming references' }),
+            h('span', { class: 'muted', text: 'Select one row to inspect incoming foreign keys.' })));
           return;
         }
         const row = selectedRows[0];
-        const heading = () => h('h3', { text: `Incoming references to ${describeRow(row)}` });
+        const heading = (...actions) => h('div', { class: 'incoming-references-head' },
+          h('h3', { text: `Incoming references to ${describeRow(row)}` }), ...actions);
         const inspect = h('button', {
           type: 'button', text: 'Inspect incoming references',
           'data-testid': 'inspect-incoming-references',
+          title: 'Find the tables whose foreign keys point at this row. '
+            + 'The first inspection loads the structure of every table.',
           onclick: async () => {
             if (current !== incomingRequest) return;
             inspect.disabled = true;
@@ -8032,8 +8048,7 @@
             }
           },
         });
-        incomingPanel.replaceChildren(heading(),
-          h('p', { class: 'muted', text: 'Relationship metadata is loaded only when requested.' }), inspect);
+        incomingPanel.replaceChildren(heading(inspect));
       };
 
       // Filtering happens in SQL, on every row of the object, not on the page already fetched -
@@ -8124,8 +8139,15 @@
         try { localStorage.setItem('gridlet.queryMaxRows', capInput.value); } catch { /* unavailable */ }
         renderData();
       });
-      const status = h('span', { class: 'muted', text: 'Loading…' });
-      const cancel = h('button', { text: 'Cancel', onclick: () => controller.abort() });
+      // The row cap only matters when it bites, so it hides behind the row count until the count
+      // reports a truncated load or the user clicks the count to change it.
+      const capLabel = h('label', { class: 'query-limit-label', hidden: '' }, 'Row cap ', capInput);
+      const status = h('button', {
+        class: 'ghost muted row-count', text: 'Loading…', 'data-testid': 'data-row-count',
+        title: 'Show or hide the row cap',
+        onclick: () => { capLabel.hidden = !capLabel.hidden; if (!capLabel.hidden) capInput.focus(); },
+      });
+      const cancel = h('button', { text: 'Cancel', title: 'Stop loading rows', onclick: () => controller.abort() });
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
       let exportControls;
       let filterSqlRequest = Promise.resolve('');
@@ -8163,7 +8185,22 @@
           }
           : { scope, insertTarget: sqlName(o) },
         identity ? fullExport : null);
+      // Left to right: change the rows, look around the object, then export; the destructive
+      // action sits alone at the far end so it is never a slip away from a neighbour.
       actionBar.replaceChildren(...[
+        structure && currentConn().allowWrites && !o.isInternal
+          ? h('button', {
+            title: 'Add a row',
+            onclick: () => openRowEditor(table, data.columns, structure, friendly, null, null, columnIndex),
+          }, '＋ Row')
+          : null,
+        structure && o.type === 'Table' && currentConn().allowWrites
+          && currentCapabilities().supportsImport && !o.isInternal
+          ? h('button', {
+            'data-testid': 'import-data', title: 'Load rows from a file into this table',
+            onclick: openImportDialog,
+          }, 'Import…')
+          : null,
         o.type === 'Table' && !o.isInternal && !isVirtualObject(o)
           ? h('button', {
             'data-testid': 'data-compare-open',
@@ -8171,30 +8208,22 @@
             onclick: () => openDataCompareTab(scope, o),
           }, 'Compare data…')
           : null,
-        structure && currentConn().allowWrites && !o.isInternal
-          ? h('button', {
-            onclick: () => openRowEditor(table, data.columns, structure, friendly, null, null, columnIndex),
-          }, '＋ Row')
-          : null,
-        structure && o.type === 'Table' && currentConn().allowWrites
-          && currentCapabilities().supportsImport && !o.isInternal
-          ? h('button', { 'data-testid': 'import-data', onclick: openImportDialog }, 'Import…')
-          : null,
-        cancel,
-        useInQueryButton(o, scope, () => filterSqlRequest),
         dependenciesButton(o, scope),
+        useInQueryButton(o, scope, () => filterSqlRequest),
+        cancel,
         h('span', { class: 'spacer' }),
         (exportControls = createExportControls()),
-        h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
+        capLabel,
         status,
         o.type === 'Table' && currentConn().allowWrites && !o.isInternal && canDropObject(o)
           ? h('button', {
             class: 'danger', text: 'Empty table…', 'data-testid': 'empty-table',
+            title: 'Delete every row in this table',
             onclick: () => emptyTable(o, scope, () => renderData()),
           })
           : null,
         o.type === 'View' && currentConn().allowDdl && canDropObject(o) ? h('button', {
-          class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
+          class: 'danger', text: 'Delete view…', title: 'Drop this view', onclick: () => deleteObject(o, scope),
         }) : null,
       ].filter(Boolean));
       const filterBarElement = filterBar();
@@ -8266,7 +8295,10 @@
             resolveFriendlyValues(event.rows);
             status.textContent = `${data.rows.length} row(s) - receiving…`;
           }
-          else if (event.type === 'resultSetCompleted') status.textContent = `${data.rows.length} row(s)` + (event.truncated ? ' - safety cap reached' : '');
+          else if (event.type === 'resultSetCompleted') {
+            status.textContent = `${data.rows.length} row(s)` + (event.truncated ? ' - safety cap reached' : '');
+            if (event.truncated) capLabel.hidden = false;
+          }
           else if (event.type === 'error') throw new Error(event.message);
         });
       } catch (err) {
@@ -8274,7 +8306,7 @@
         if (err.name === 'AbortError') status.textContent = 'Cancelled';
         else { body.append(errorBox(err.message)); status.textContent = 'Failed'; }
       } finally {
-        cancel.disabled = true;
+        cancel.hidden = true;
         if (activeDataLoad === controller) activeDataLoad = null;
       }
     };
@@ -15081,35 +15113,34 @@
         },
       ]),
     }, 'Copy ▾');
-    const richExportButton = (format, label) => {
-      const button = h('button', {
-        class: 'ghost', title: `Download as ${label}`,
-        'data-testid': `export-${format}`,
-        onclick: async () => {
-          button.disabled = true;
-          try { await exportRichData(columns, rows, format, baseName, exportScope); }
-          catch (err) { toast(err.message); }
-          finally { button.disabled = false; }
-        },
-      }, label);
-      return button;
+    // One menu for the downloads. When the server can export, CSV and JSON fetch every filtered
+    // row, while Excel and Parquet only ever hold the rows the browser loaded; the labels say so.
+    const richExport = async (format) => {
+      exportMenu.disabled = true;
+      try { await exportRichData(columns, rows, format, baseName, exportScope); }
+      catch (err) { toast(err.message); }
+      finally { exportMenu.disabled = false; }
     };
+    const label = (name, full) => (serverExport ? `${name} (${full ? 'all filtered rows' : 'loaded rows'})` : name);
+    const exportMenu = h('button', {
+      class: 'ghost', title: 'Download the rows as a file', 'data-testid': 'export-menu',
+      'aria-haspopup': 'menu', 'aria-expanded': 'false',
+      onclick: (event) => showContextMenu(event, [
+        {
+          label: label('CSV', true), testId: 'export-csv',
+          action: () => serverExport ? serverExport('csv') : exportData(columns, rows, 'csv', baseName),
+        },
+        {
+          label: label('JSON', true), testId: 'export-json',
+          action: () => serverExport ? serverExport('json') : exportData(columns, rows, 'json', baseName),
+        },
+        { label: label('Excel', false), testId: 'export-xlsx', action: () => richExport('xlsx') },
+        { label: label('Parquet', false), testId: 'export-parquet', action: () => richExport('parquet') },
+      ]),
+    }, 'Export ▾');
     return h('span', { class: 'export-buttons' },
       copy,
-      h('button', {
-        class: 'ghost',
-        title: serverExport ? 'Download all filtered rows as CSV' : 'Download as CSV',
-        'data-testid': 'export-csv',
-        onclick: () => serverExport ? serverExport('csv') : exportData(columns, rows, 'csv', baseName),
-      }, serverExport ? 'Full CSV' : 'CSV'),
-      h('button', {
-        class: 'ghost',
-        title: serverExport ? 'Download all filtered rows as JSON' : 'Download as JSON',
-        'data-testid': 'export-json',
-        onclick: () => serverExport ? serverExport('json') : exportData(columns, rows, 'json', baseName),
-      }, serverExport ? 'Full JSON' : 'JSON'),
-      richExportButton('xlsx', 'Excel'),
-      richExportButton('parquet', 'Parquet'),
+      exportMenu,
       apiDefinition?.sql ? h('button', {
         class: 'ghost', title: 'Publish as an API endpoint', 'data-testid': 'publish-api',
         onclick: () => openPublishDialog(apiDefinition.sql, apiDefinition.name, apiDefinition.scope),
