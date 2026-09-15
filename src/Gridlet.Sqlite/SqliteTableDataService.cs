@@ -267,13 +267,16 @@ public sealed class SqliteTableDataService : ITableDataService
         string schema,
         string name,
         IReadOnlyList<TableDataFilter>? filters,
+        string? sortColumn,
+        SortDirection sortDirection,
         CancellationToken cancellationToken = default)
     {
         SqliteIdentifier.RequireSelectedSchema(context, schema);
         await using var connection = await SqliteConnectionFactory.OpenAsync(context, cancellationToken);
         var definition = await SqliteSchemaReader.LoadTableDefinitionAsync(
             connection, schema, name, cancellationToken);
-        return SqliteFilterBuilder.BuildFilterDisplaySql(filters, definition.Columns, schema, name);
+        return SqliteFilterBuilder.BuildFilterDisplaySql(
+            filters, definition.Columns, schema, name, sortColumn, sortDirection);
     }
 
     private static void AddFilterParameters(

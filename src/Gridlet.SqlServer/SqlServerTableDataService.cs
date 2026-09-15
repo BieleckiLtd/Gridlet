@@ -399,6 +399,8 @@ public sealed class SqlServerTableDataService : ITableDataService
         string schema,
         string name,
         IReadOnlyList<TableDataFilter>? filters,
+        string? sortColumn,
+        SortDirection sortDirection,
         CancellationToken cancellationToken = default)
     {
         var qualifiedName = SqlServerIdentifier.QuoteQualified(schema, name);
@@ -421,7 +423,8 @@ public sealed class SqlServerTableDataService : ITableDataService
             throw new GridletObjectNotFoundException(qualifiedName);
         }
 
-        return SqlServerSqlBuilder.BuildFilterDisplaySql(filters, columns, schema, name);
+        return SqlServerSqlBuilder.BuildFilterDisplaySql(
+            filters, columns, schema, name, sortColumn, sortDirection);
     }
 
     private static async Task<(SqlTransaction Transaction, bool HasConsistentSnapshot)>

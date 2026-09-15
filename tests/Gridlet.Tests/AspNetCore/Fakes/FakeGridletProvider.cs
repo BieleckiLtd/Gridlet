@@ -559,10 +559,12 @@ public sealed class FakeGridletProvider :
         string schema,
         string name,
         IReadOnlyList<TableDataFilter>? filters,
+        string? sortColumn,
+        SortDirection sortDirection,
         CancellationToken cancellationToken = default)
     {
         LastFilterSqlFilters = filters;
-        if (filters is not { Count: > 0 }) return "";
+        if (filters is not { Count: > 0 } && sortColumn is null) return "";
         var page = await GetPageCore(name, new TableDataRequest(1, 1));
         var columns = page.Columns.ToDictionary(column => column.Name, StringComparer.OrdinalIgnoreCase);
 
@@ -628,7 +630,16 @@ public sealed class FakeGridletProvider :
             };
         }
 
-        return "WHERE " + string.Join(" AND ", filters.Select(Predicate));
+        var where = filters is { Count: > 0 } ? "WHERE " + string.Join(" AND ", filters.Select(Predicate)) : "";
+        if (sortColumn is null) return where;
+        if (!columns.TryGetValue(sortColumn, out var sorted))
+        {
+            throw new GridletValidationException($"Sort column '{sortColumn}' does not exist.");
+        }
+
+        var orderBy = $"ORDER BY [{sorted.Name.Replace("]", "]]", StringComparison.Ordinal)}] "
+            + (sortDirection == SortDirection.Descending ? "DESC" : "ASC");
+        return where.Length == 0 ? orderBy : where + "\n" + orderBy;
     }
 
     /// <summary>

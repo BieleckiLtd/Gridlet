@@ -247,6 +247,22 @@ public sealed class SqlServerColumnFilterTests
             sql);
     }
 
+    [Fact]
+    public void Display_sql_follows_the_filter_with_the_sort_on_its_own_line()
+    {
+        Assert.Equal(
+            "WHERE [Id] > 3\nORDER BY [Name] DESC",
+            SqlServerSqlBuilder.BuildFilterDisplaySql(
+                [new TableDataFilter("Id", FilterOperator.GreaterThan, "3")],
+                Columns, "dbo", "Products", "name", SortDirection.Descending));
+        Assert.Equal(
+            "ORDER BY [Price] ASC",
+            SqlServerSqlBuilder.BuildFilterDisplaySql(
+                null, Columns, "dbo", "Products", "Price", SortDirection.Ascending));
+        Assert.Throws<GridletValidationException>(() => SqlServerSqlBuilder.BuildFilterDisplaySql(
+            null, Columns, "dbo", "Products", "Missing", SortDirection.Ascending));
+    }
+
     /// <summary>
     /// "Use in query" runs the displayed clause, so a date has to be text every SQL Server date type
     /// accepts. datetime rejects more than three fractional digits; only a datetime2 value can have

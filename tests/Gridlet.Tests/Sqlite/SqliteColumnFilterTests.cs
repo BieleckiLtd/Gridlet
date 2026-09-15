@@ -172,6 +172,21 @@ public sealed class SqliteColumnFilterTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_described_sql_follows_the_filter_with_the_sort()
+    {
+        Assert.Equal(
+            "WHERE \"Total\" > 10\nORDER BY \"Customer\" DESC",
+            await data.GetFilterSqlAsync(context, "main", "Orders",
+                [new TableDataFilter("Total", FilterOperator.GreaterThan, "10")],
+                "customer", SortDirection.Descending));
+        Assert.Equal(
+            "ORDER BY \"OrderedAt\" ASC",
+            await data.GetFilterSqlAsync(context, "main", "Orders", null, "OrderedAt", SortDirection.Ascending));
+        await Assert.ThrowsAsync<GridletValidationException>(() => data.GetFilterSqlAsync(
+            context, "main", "Orders", null, "Missing", SortDirection.Ascending));
+    }
+
+    [Fact]
     public async Task The_checklist_rejects_a_column_the_table_does_not_have()
         => await Assert.ThrowsAsync<GridletValidationException>(() => data.GetColumnFilterValuesAsync(
             context, "main", "Orders", new ColumnFilterValuesRequest("Notes; DROP TABLE Orders")));

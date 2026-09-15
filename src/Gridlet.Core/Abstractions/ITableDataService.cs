@@ -32,14 +32,17 @@ public interface ITableDataService
         => throw new GridletValidationException("This provider does not list column filter values.");
 
     /// <summary>
-    /// Returns the provider-specific WHERE clause used for the supplied filters, with its bound
-    /// values rendered as SQL literals for display only.
+    /// Returns the provider-specific WHERE clause for the supplied filters followed by the ORDER BY
+    /// clause for the sort, with bound values rendered as SQL literals. It describes a data read for
+    /// people to see or copy into a query; data reads never run it.
     /// </summary>
     Task<string> GetFilterSqlAsync(
         GridletConnectionContext context,
         string schema,
         string name,
         IReadOnlyList<TableDataFilter>? filters,
+        string? sortColumn,
+        SortDirection sortDirection,
         CancellationToken cancellationToken = default)
         => throw new GridletValidationException("This provider does not describe column filters as SQL.");
 }
