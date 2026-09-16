@@ -1154,12 +1154,23 @@ td.null { color: var(--muted); font-style: italic; }
 .structure td > .mini-btn { margin-left: 6px; }
 .fk-lookup-input { min-width: 180px; }
 td.empty-row { text-align: center; font-family: var(--sans); }
+.data-grid tr.new-row { cursor: pointer; }
+.data-grid tr.new-row td { font-family: var(--sans); }
+.data-grid tr.new-row .row-selector { color: var(--muted); }
+.data-grid tr.new-row:hover td, .data-grid tr.new-row:focus-visible td { background: var(--accent-dim); }
+.data-grid tr.new-row:focus-visible { outline: none; }
 
 .incoming-references {
-  flex: 0 0 auto; max-height: min(32vh, 300px); overflow: auto; margin-top: 10px;
-  padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2);
+  flex: 0 0 auto; max-height: min(32vh, 300px); overflow: auto; margin-top: 8px;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2);
 }
-.incoming-references h3 { margin: 0 0 8px; font-size: 12px; }
+.incoming-references-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-height: 26px;
+}
+.incoming-references-head h3 { flex: 1 1 auto; }
+.incoming-references h3 { margin: 0; font-size: 12px; }
+.incoming-references > * + * { margin-top: 8px; }
+.incoming-references p { margin: 8px 0 0; }
 .incoming-reference-list { display: flex; flex-direction: column; gap: 6px; }
 .incoming-reference {
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
@@ -1175,6 +1186,7 @@ td.empty-row { text-align: center; font-family: var(--sans); }
 
 .pager { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
 .object-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 2px 12px 10px; }
+.object-actions .row-count { padding: 2px 6px; font-size: 12.5px; }
 .page-info { font-size: 12.5px; color: var(--muted); min-width: 90px; text-align: center; }
 .pager label { color: var(--muted); font-size: 12.5px; display: flex; align-items: center; gap: 5px; }
 
