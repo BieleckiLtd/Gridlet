@@ -388,7 +388,33 @@
     ]);
   }
 
-  function showAbout() {
+  // The row cap is one setting for the whole browser: every table view and query result keeps at
+  // most this many rows. It is not a property of any table, so it lives in the Settings tab.
+  const ROW_CAP_KEY = 'gridlet.queryMaxRows';
+  const rowCap = () => {
+    const serverMax = state.meta.maxQueryResultRows;
+    let saved = serverMax;
+    try { saved = Number(localStorage.getItem(ROW_CAP_KEY)) || serverMax; } catch { /* unavailable */ }
+    return Math.min(serverMax, Math.max(1, saved));
+  };
+  const renderSettings = () => {
+    const serverMax = state.meta.maxQueryResultRows;
+    const input = h('input', {
+      class: 'query-row-limit', type: 'number', min: '1', max: String(serverMax),
+      value: String(rowCap()), 'data-testid': 'row-cap-input',
+    });
+    input.addEventListener('change', () => {
+      input.value = String(Math.min(serverMax, Math.max(1, Number(input.value) || serverMax)));
+      try { localStorage.setItem(ROW_CAP_KEY, input.value); } catch { /* unavailable */ }
+    });
+    return h('div', {},
+      h('h2', { text: 'Row cap' }),
+      h('p', { class: 'muted', text: 'The most rows a table view or a query result keeps in this browser. '
+        + `The server allows up to ${serverMax.toLocaleString()}. A load that reaches the cap stops there and says so.` }),
+      h('label', {}, h('span', { text: 'Rows' }), input));
+  };
+
+  function showAbout(initialTab = 'About', onClose = null) {
     const content = h('div', { class: 'about-content' });
     const tabs = [
       {
@@ -439,11 +465,13 @@
             h('li', {}, h('a', { href: 'https://github.com/dotnet/aspnetcore', target: '_blank', rel: 'noopener', text: 'ASP.NET Core and Embedded File Provider ↗' }))),
           h('p', { class: 'muted', text: 'Copyrights remain with their respective owners. Complete licence texts and notices are available from the linked projects.' })),
       },
+      { label: 'Settings', render: renderSettings },
     ];
+    const first = Math.max(0, tabs.findIndex((tab) => tab.label === initialTab));
     const buttons = tabs.map((tab, index) => h('button', {
-      class: 'about-tab' + (index === 0 ? ' active' : ''),
+      class: 'about-tab' + (index === first ? ' active' : ''),
       role: 'tab',
-      'aria-selected': String(index === 0),
+      'aria-selected': String(index === first),
       text: tab.label,
       onclick: () => {
         buttons.forEach((button) => {
@@ -454,10 +482,10 @@
         content.replaceChildren(tab.render());
       },
     }));
-    content.append(tabs[0].render());
+    content.append(tabs[first].render());
     modal('About Gridlet', h('div', { class: 'about-dialog' },
       h('div', { class: 'about-tabs', role: 'tablist', 'aria-label': 'About Gridlet' }, buttons),
-      content), [{ label: 'Close', primary: true, onClick: (close) => close() }]);
+      content), [{ label: 'Close', primary: true, onClick: (close) => close() }], onClose);
   }
 
   function showContextMenu(event, items) {
@@ -2404,7 +2432,7 @@
     $('#object-search-btn').addEventListener('click', () => openObjectSearchTab());
     $('#new-query-btn').addEventListener('click', () => openQueryTab());
     $('#apis-btn').addEventListener('click', () => openApisTab());
-    $('#about-btn').addEventListener('click', showAbout);
+    $('#about-btn').addEventListener('click', () => showAbout());
     $('#search').addEventListener('input', (event) => {
       rememberFilter(event.target.value.trim());
       renderTree();
@@ -7867,10 +7895,14 @@
 
       let table;
       const friendly = { displays, valueKey, renderCell: friendlyCell };
+      // As in a spreadsheet, the grid ends in a blank line that starts a new row; there is no
+      // button for it. Moving down from the last row lands on that line.
+      const canAddRows = Boolean(structure) && currentConn().allowWrites && !o.isInternal;
+      const addRow = () => openRowEditor(table, data.columns, structure, friendly, null, null, columnIndex);
       const editRow = (row, rowElement, selectedColumn, rowIndex) =>
         openRowEditor(
           table, data.columns, structure, friendly, row, rowElement, columnIndex, rowKey, selectedColumn, rowIndex + 1,
-          rowIndex + 1 < data.rows.length
+          rowIndex + 1 < data.rows.length || canAddRows
             ? () => rowElement.nextElementSibling
               ?.querySelector('td:not(.row-selector)')?.click()
             : null);
@@ -8126,26 +8158,13 @@
           }, 'Clear all'));
       };
 
-      const serverMaxRows = state.meta.maxQueryResultRows;
-      let savedMaxRows = serverMaxRows;
-      try { savedMaxRows = Number(localStorage.getItem('gridlet.queryMaxRows')) || serverMaxRows; } catch { /* unavailable */ }
-      const capInput = h('input', {
-        class: 'query-row-limit', type: 'number', min: '1', max: String(serverMaxRows),
-        value: String(Math.min(serverMaxRows, Math.max(1, savedMaxRows))),
-        title: `Rows retained (server maximum ${serverMaxRows.toLocaleString()})`,
-      });
-      capInput.addEventListener('change', () => {
-        capInput.value = String(Math.min(serverMaxRows, Math.max(1, Number(capInput.value) || serverMaxRows)));
-        try { localStorage.setItem('gridlet.queryMaxRows', capInput.value); } catch { /* unavailable */ }
-        renderData();
-      });
-      // The row cap only matters when it bites, so it hides behind the row count until the count
-      // reports a truncated load or the user clicks the count to change it.
-      const capLabel = h('label', { class: 'query-limit-label', hidden: '' }, 'Row cap ', capInput);
       const status = h('button', {
         class: 'ghost muted row-count', text: 'Loading…', 'data-testid': 'data-row-count',
-        title: 'Show or hide the row cap',
-        onclick: () => { capLabel.hidden = !capLabel.hidden; if (!capLabel.hidden) capInput.focus(); },
+        title: `Row cap ${rowCap().toLocaleString()}. Click to change it.`,
+        onclick: () => {
+          const capBefore = rowCap();
+          showAbout('Settings', () => { if (rowCap() !== capBefore) renderData(); });
+        },
       });
       const cancel = h('button', { text: 'Cancel', title: 'Stop loading rows', onclick: () => controller.abort() });
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
@@ -8188,12 +8207,6 @@
       // Left to right: change the rows, look around the object, then export; the destructive
       // action sits alone at the far end so it is never a slip away from a neighbour.
       actionBar.replaceChildren(...[
-        structure && currentConn().allowWrites && !o.isInternal
-          ? h('button', {
-            title: 'Add a row',
-            onclick: () => openRowEditor(table, data.columns, structure, friendly, null, null, columnIndex),
-          }, '＋ Row')
-          : null,
         structure && o.type === 'Table' && currentConn().allowWrites
           && currentCapabilities().supportsImport && !o.isInternal
           ? h('button', {
@@ -8213,18 +8226,7 @@
         cancel,
         h('span', { class: 'spacer' }),
         (exportControls = createExportControls()),
-        capLabel,
         status,
-        o.type === 'Table' && currentConn().allowWrites && !o.isInternal && canDropObject(o)
-          ? h('button', {
-            class: 'danger', text: 'Empty table…', 'data-testid': 'empty-table',
-            title: 'Delete every row in this table',
-            onclick: () => emptyTable(o, scope, () => renderData()),
-          })
-          : null,
-        o.type === 'View' && currentConn().allowDdl && canDropObject(o) ? h('button', {
-          class: 'danger', text: 'Delete view…', title: 'Drop this view', onclick: () => deleteObject(o, scope),
-        }) : null,
       ].filter(Boolean));
       const filterBarElement = filterBar();
       body.replaceChildren(...[filterBarElement, scroll, incomingPanel].filter(Boolean));
@@ -8241,6 +8243,7 @@
         onSelectionChange: showIncomingReferences,
         columnFilter,
         columnWidths: grid.columnWidths,
+        newRow: canAddRows ? { onAdd: addRow } : null,
         onSort: (column) => {
           if (grid.sort === column) grid.dir = grid.dir === 'asc' ? 'desc' : 'asc';
           else { grid.sort = column; grid.dir = 'asc'; }
@@ -8248,7 +8251,7 @@
         },
       });
 
-      const params = new URLSearchParams({ maxRows: capInput.value });
+      const params = new URLSearchParams({ maxRows: String(rowCap()) });
       if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
       const appliedFilters = grid.filters.length ? JSON.stringify(serverFilters()) : null;
       if (appliedFilters) params.set('filter', appliedFilters);
@@ -8297,7 +8300,6 @@
           }
           else if (event.type === 'resultSetCompleted') {
             status.textContent = `${data.rows.length} row(s)` + (event.truncated ? ' - safety cap reached' : '');
-            if (event.truncated) capLabel.hidden = false;
           }
           else if (event.type === 'error') throw new Error(event.message);
         });
@@ -8666,8 +8668,14 @@
         });
       });
 
-      if (isNew) table.tBodies[0].prepend(editorRow);
-      else existingRowElement.replaceWith(editorRow);
+      if (isNew) {
+        const newRowLine = table.querySelector('tr.new-row');
+        if (newRowLine) newRowLine.before(editorRow);
+        else table.tBodies[0].append(editorRow);
+        editorRow.scrollIntoView({ block: 'nearest' });
+      } else {
+        existingRowElement.replaceWith(editorRow);
+      }
       const selectedInput = focusableByName.get(selectedColumn?.toLowerCase()) || fields[0]?.input;
       setTimeout(() => {
         selectedInput?.focus();
@@ -12060,18 +12068,6 @@
       text: 'History', title: 'Queries run on this connection and database from this browser',
       'data-testid': 'query-history',
     });
-    const serverMaxRows = state.meta.maxQueryResultRows;
-    let savedMaxRows = serverMaxRows;
-    try { savedMaxRows = Number(localStorage.getItem('gridlet.queryMaxRows')) || serverMaxRows; } catch { /* unavailable */ }
-    const maxRowsInput = h('input', {
-      class: 'query-row-limit', type: 'number', min: '1', max: String(serverMaxRows),
-      value: String(Math.min(serverMaxRows, Math.max(1, savedMaxRows))),
-      title: `Rows retained per result set (server maximum ${serverMaxRows.toLocaleString()})`,
-    });
-    maxRowsInput.addEventListener('change', () => {
-      maxRowsInput.value = String(Math.min(serverMaxRows, Math.max(1, Number(maxRowsInput.value) || serverMaxRows)));
-      try { localStorage.setItem('gridlet.queryMaxRows', maxRowsInput.value); } catch { /* unavailable */ }
-    });
     const savedSelect = h('select', { class: 'saved-select' });
     const saveButton = h('button', { text: 'Save' });
     const deleteButton = h('button', { text: 'Delete', disabled: '' });
@@ -12468,7 +12464,7 @@
 
       try {
         await streamNdjson(urls.sessionQuery(session.id), {
-          method: 'POST', body: JSON.stringify({ sql, maxRows: Number(maxRowsInput.value) }), signal: controller.signal,
+          method: 'POST', body: JSON.stringify({ sql, maxRows: rowCap() }), signal: controller.signal,
         }, addEvent);
         if (completedSuccessfully && /\b(?:CREATE(?:\s+OR\s+ALTER)?|ALTER|DROP)\s+(?:VIEW|TABLE|PROCEDURE|PROC|FUNCTION|SCHEMA)\b/i.test(sql)) {
           await refreshObjects(scope);
@@ -12603,7 +12599,7 @@
           activeJobId = null;
           tab.jobHistoryRecorded = false;
           const started = await post(urls.queryJobs(), {
-            sql, maxRows: Number(maxRowsInput.value),
+            sql, maxRows: rowCap(),
           });
           jobId = started.id;
           activeJobId = jobId;
@@ -12816,8 +12812,6 @@
         h('span', { class: 'toolbar-divider' }),
         sessionToggle, beginButton, commitButton, rollbackButton, sessionState)
       : null;
-    const limitActions = h('span', { class: 'toolbar-group' },
-      h('label', { class: 'query-limit-label', title: maxRowsInput.title }, 'Row cap ', maxRowsInput));
     const queryToolbar = h('div', { class: 'query-toolbar', 'data-testid': 'query-toolbar' },
         runButton, cancelButton,
         formatActions,
@@ -12826,11 +12820,10 @@
         planActions,
         sessionActions,
         h('span', { class: 'spacer' }),
-        limitActions,
         status);
     setupOverflowToolbar(
       queryToolbar,
-      [historyActions, savedActions, planActions, sessionActions, limitActions].filter(Boolean),
+      [historyActions, savedActions, planActions, sessionActions].filter(Boolean),
       'More query actions');
     renderSession();
     tab.panel = h('div', { class: 'panel query-panel' },
@@ -14747,6 +14740,16 @@
           text: '(no rows)',
         })));
     }
+    if (options?.newRow) {
+      const add = (event) => { event.preventDefault(); options.newRow.onAdd(); };
+      tbody.append(h('tr', {
+        class: 'new-row', 'data-testid': 'new-row', tabindex: '0', title: 'Add a row',
+        onclick: add,
+        onkeydown: (event) => { if (event.key === 'Enter' || event.key === ' ') add(event); },
+      },
+        selectable ? h('td', { class: 'row-selector', text: '+' }) : null,
+        h('td', { class: 'muted new-row-cell', colspan: String(columns.length || 1), text: 'Add a row…' })));
+    }
 
     const table = h('table', { class: 'grid data-grid', tabindex: selectable ? '0' : null }, h('thead', {}, headRow), tbody);
     if (selectable) {
@@ -14806,6 +14809,7 @@
         onSelectionChange: options.onSelectionChange,
         columnFilter: options.columnFilter,
         columnWidths,
+        newRow: options.newRow,
       });
       if (virtual) {
         const tbody = table.tBodies[0];
@@ -14813,7 +14817,10 @@
         const spacer = (height) => h('tr', { class: 'virtual-spacer' },
           h('td', { colspan, style: `height:${height}px` }));
         tbody.prepend(spacer(start * rowHeight));
-        tbody.append(spacer((rows.length - end) * rowHeight));
+        const trailing = spacer((rows.length - end) * rowHeight);
+        const newRowLine = tbody.querySelector('tr.new-row');
+        if (newRowLine) newRowLine.before(trailing);
+        else tbody.append(trailing);
       }
       container.replaceChildren(table);
       options.onRender?.(table);

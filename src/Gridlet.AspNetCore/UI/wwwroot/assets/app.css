@@ -1154,6 +1154,11 @@ td.null { color: var(--muted); font-style: italic; }
 .structure td > .mini-btn { margin-left: 6px; }
 .fk-lookup-input { min-width: 180px; }
 td.empty-row { text-align: center; font-family: var(--sans); }
+.data-grid tr.new-row { cursor: pointer; }
+.data-grid tr.new-row td { font-family: var(--sans); }
+.data-grid tr.new-row .row-selector { color: var(--muted); }
+.data-grid tr.new-row:hover td, .data-grid tr.new-row:focus-visible td { background: var(--accent-dim); }
+.data-grid tr.new-row:focus-visible { outline: none; }
 
 .incoming-references {
   flex: 0 0 auto; max-height: min(32vh, 300px); overflow: auto; margin-top: 8px;

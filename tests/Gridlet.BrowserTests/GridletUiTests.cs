@@ -4653,7 +4653,14 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToBeVisibleAsync();
         await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }))
             .ToBeHiddenAsync();
-        await Assertions.Expect(panel.GetByLabel("Row cap")).ToBeVisibleAsync();
+        await Assertions.Expect(panel.GetByLabel("Row cap")).ToHaveCountAsync(0);
+        await panel.GetByTestId("data-row-count").ClickAsync();
+        var settings = page.GetByRole(AriaRole.Dialog, new() { Name = "About Gridlet" });
+        await Assertions.Expect(settings.GetByRole(AriaRole.Tab, new() { Name = "Settings" }))
+            .ToHaveAttributeAsync("aria-selected", "true");
+        await Assertions.Expect(settings.GetByTestId("row-cap-input")).ToHaveValueAsync("1");
+        await settings.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+        await Assertions.Expect(settings).ToHaveCountAsync(0);
         await panel.GetByTestId("export-menu").ClickAsync();
         await Assertions.Expect(page.GetByTestId("export-csv")).ToHaveTextAsync("CSV (all filtered rows)");
         await Assertions.Expect(page.GetByTestId("export-xlsx")).ToHaveTextAsync("Excel (loaded rows)");
@@ -5951,7 +5958,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTitle("dbo.Customers").ClickAsync();
         var panel = ActivePanel(page);
         await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
-        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Row" }).ClickAsync();
+        await panel.GetByTestId("new-row").ClickAsync();
         var name = panel.GetByLabel("Name", new() { Exact = true });
         await name.FillAsync("Katherine");
         await name.PressAsync("Control+Enter");
@@ -6995,7 +7002,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await page.Locator("[title=\"dbo.Ledger\"]").ClickAsync();
         var panel = ActivePanel(page);
-        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Row", Exact = true }).ClickAsync();
+        await panel.GetByTestId("new-row").ClickAsync();
         var rowEditor = panel.Locator("tr.row-editor");
         await Assertions.Expect(rowEditor.GetByLabel("SysStart", new() { Exact = true })).ToHaveCountAsync(0);
         await Assertions.Expect(rowEditor.GetByLabel("SysEnd", new() { Exact = true })).ToHaveCountAsync(0);
@@ -7073,8 +7080,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(internalObject.Locator(".badge")).ToHaveTextAsync("I");
         await internalObject.ClickAsync();
         panel = ActivePanel(page);
-        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "＋ Row", Exact = true }))
-            .ToHaveCountAsync(0);
+        await Assertions.Expect(panel.GetByTestId("new-row")).ToHaveCountAsync(0);
         await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
         await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "＋ Add column", Exact = true }))
             .ToHaveCountAsync(0);
@@ -7473,7 +7479,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var panel = ActivePanel(page);
         await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
 
-        await panel.GetByTestId("empty-table").ClickAsync();
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "Empty table…" })).ToHaveCountAsync(0);
+        await page.GetByTitle("dbo.Customers").ClickAsync(new() { Button = MouseButton.Right });
+        await page.Locator(".context-menu button").Filter(new() { HasText = "Empty table…" }).ClickAsync();
         var emptyDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Empty table" });
         await Assertions.Expect(emptyDialog).ToContainTextAsync("cannot be undone");
         await emptyDialog.GetByRole(AriaRole.Button, new() { Name = "Delete all rows", Exact = true }).ClickAsync();
@@ -7666,6 +7674,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
               const range = document.createRange();
               const cellsFit = [...table.tBodies[0].rows].every((row) => {
                 const cell = row.cells[header.cellIndex];
+                if (!cell || cell.colSpan > 1) return true;
                 range.selectNodeContents(cell);
                 const cellStyle = getComputedStyle(cell);
                 return range.getBoundingClientRect().width + parseFloat(cellStyle.paddingLeft)
