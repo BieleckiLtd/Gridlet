@@ -6356,7 +6356,13 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(orders.GetByText("3 row(s)", new() { Exact = true })).ToBeVisibleAsync();
         await orders.Locator("tbody tr").First.Locator("td:not(.row-selector)").Last.ClickAsync();
         await Assertions.Expect(orders.Locator("tr.row-editor")).ToHaveCountAsync(1);
-        await page.GetByTitle("Reload objects").ClickAsync();
+        // A reload that arrives while a row is being edited leaves the editor alone. The click is
+        // dispatched rather than pressed: a real press moves focus to the button, and leaving the
+        // editor saves and closes it before the reload is under way.
+        await page.RunAndWaitForResponseAsync(
+            () => page.GetByTitle("Reload objects").DispatchEventAsync("click"),
+            response => response.Url.EndsWith("/databases/FakeDb/objects", StringComparison.Ordinal));
+        await page.WaitForTimeoutAsync(100);
         await Assertions.Expect(orders.Locator("tr.row-editor")).ToHaveCountAsync(1);
         browserPage.AssertNoUnexpectedErrors();
     }
