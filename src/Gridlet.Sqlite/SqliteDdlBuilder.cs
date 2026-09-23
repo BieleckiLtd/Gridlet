@@ -211,7 +211,8 @@ public static partial class SqliteDdlBuilder
         return $"{name}FOREIGN KEY ({local}) REFERENCES " +
                $"{SqliteIdentifier.Quote(foreignKey.ReferencedTable)} ({referenced}) " +
                $"ON DELETE {NormalizeReferentialAction(foreignKey.OnDelete)} " +
-               $"ON UPDATE {NormalizeReferentialAction(foreignKey.OnUpdate)}";
+               $"ON UPDATE {NormalizeReferentialAction(foreignKey.OnUpdate)}" +
+               (foreignKey.IsDeferred ? " DEFERRABLE INITIALLY DEFERRED" : "");
     }
 
     private static string BuildCheckConstraintDefinition(CheckConstraintDesign check)

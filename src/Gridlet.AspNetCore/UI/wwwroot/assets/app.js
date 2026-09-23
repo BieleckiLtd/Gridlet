@@ -5590,6 +5590,8 @@
         `${String(pair.column).toLowerCase()}:${String(pair.referencedColumn).toLowerCase()}`).join(','),
       migrationReferentialAction(foreignKey.onDelete, targetScope),
       migrationReferentialAction(foreignKey.onUpdate, targetScope),
+      // Only SQLite defers a key, so a deferred source key matches an immediate one anywhere else.
+      migrationIsSqlite(targetScope) && Boolean(foreignKey.isDeferred),
     ].join('|');
   };
 
@@ -5684,7 +5686,8 @@
           ? `CONSTRAINT ${migrationQuote(foreignKey.name, targetScope)} ` : '';
         body.push(`  ${name}FOREIGN KEY (${sourceColumns}) REFERENCES ${referenced} (${targetColumns}) `
           + `ON DELETE ${migrationReferentialAction(foreignKey.onDelete, targetScope)} `
-          + `ON UPDATE ${migrationReferentialAction(foreignKey.onUpdate, targetScope)}`);
+          + `ON UPDATE ${migrationReferentialAction(foreignKey.onUpdate, targetScope)}`
+          + (foreignKey.isDeferred ? ' DEFERRABLE INITIALLY DEFERRED' : ''));
       }
     }
     if (temporal?.periodStartColumn && temporal.periodEndColumn) {
@@ -5751,7 +5754,11 @@
     // another schema. The clause is left off, and the target names the constraint itself.
     const constraint = foreignKey.name && !foreignKey.isNameSynthesized
       ? `ADD CONSTRAINT ${migrationQuote(foreignKey.name, targetScope)} ` : 'ADD ';
-    return `ALTER TABLE ${migrationName(object, sourceScope, targetScope)} ${constraint}`
+    // The target has no deferred keys, so a key the source checks at commit is checked per statement.
+    const deferredNote = foreignKey.isDeferred
+      ? `-- REVIEW: ${foreignKey.name} is deferred in the source; this target checks it after each statement.
+` : '';
+    return `${deferredNote}ALTER TABLE ${migrationName(object, sourceScope, targetScope)} ${constraint}`
       + `FOREIGN KEY (${sourceColumns}) `
       + `REFERENCES ${referenced} (${targetColumns}) ON DELETE ${onDelete} ON UPDATE ${onUpdate};`;
   }
@@ -9421,7 +9428,8 @@
                 display ? h('button', {
                   class: 'mini-btn', title: 'Show raw key', onclick: () => disableDisplay(fk),
                 }, '×') : null),
-              h('td', { class: 'mono muted', text: `${fk.onDelete.replaceAll('_', ' ')} / ${fk.onUpdate.replaceAll('_', ' ')}` }),
+              h('td', { class: 'mono muted', text: `${fk.onDelete.replaceAll('_', ' ')} / ${fk.onUpdate.replaceAll('_', ' ')}`
+                + (fk.isDeferred ? ' · deferred' : '') }),
               h('td', { class: 'cell-actions' }, canDesign ? h('button', {
                 class: 'mini-btn', title: 'Drop foreign key', onclick: () => confirmModal(
                   'Drop foreign key', fk.isNameSynthesized

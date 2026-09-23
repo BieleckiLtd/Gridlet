@@ -98,6 +98,11 @@ public sealed record ConstraintReference(string? Name = null, int? Ordinal = nul
 /// <c>CONSTRAINT</c> clause for it, so replaying a table does not name what the author left
 /// unnamed. See <see cref="Gridlet.Models.ForeignKeyInfo.IsNameSynthesized"/>.
 /// </param>
+/// <param name="IsDeferred">
+/// True to check the key at commit rather than after each statement. SQLite writes it as
+/// <c>DEFERRABLE INITIALLY DEFERRED</c>; SQL Server has no deferred foreign keys and refuses it.
+/// See <see cref="Gridlet.Models.ForeignKeyInfo.IsDeferred"/>.
+/// </param>
 // The compatibility constructor below leaves the serializer with two candidates, so the shape a
 // request body binds to is named explicitly.
 [method: System.Text.Json.Serialization.JsonConstructor]
@@ -108,7 +113,8 @@ public sealed record ForeignKeyDesign(
     IReadOnlyList<ForeignKeyColumnPair> Columns,
     string OnDelete = "NO ACTION",
     string OnUpdate = "NO ACTION",
-    bool IsNameSynthesized = false)
+    bool IsNameSynthesized = false,
+    bool IsDeferred = false)
 {
     /// <summary>Creates the previous six-field shape without relying on optional-parameter ABI.</summary>
     public ForeignKeyDesign(

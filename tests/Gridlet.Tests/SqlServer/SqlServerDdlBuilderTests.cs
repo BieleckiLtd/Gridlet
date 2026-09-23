@@ -158,6 +158,14 @@ public class SqlServerDdlBuilderTests
     }
 
     [Fact]
+    public void Refuses_a_deferred_foreign_key()
+    {
+        Assert.Throws<GridletValidationException>(() => SqlServerDdlBuilder.BuildAddForeignKey("sales", "Orders",
+            new ForeignKeyDesign("FK_Orders_Customers", "crm", "Customers",
+                [new("CustomerId", "Id")], IsDeferred: true)));
+    }
+
+    [Fact]
     public void Builds_check_and_unique_constraint_operations()
     {
         Assert.Equal(

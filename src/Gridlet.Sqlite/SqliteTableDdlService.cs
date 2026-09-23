@@ -552,7 +552,7 @@ public sealed class SqliteTableDdlService : ITableDdlService
     {
         var table = definition.Object.Name;
         var schema = definition.Object.Schema;
-        await EnsureTableCanBeRebuiltAsync(connection, schema, table, cancellationToken);
+        await EnsureTableCanBeRebuiltAsync(connection, definition, cancellationToken);
         var tempTable = $"__gridlet_{table}_{Guid.NewGuid():N}";
         var keyName = primaryKeyName ?? definition.Indexes.FirstOrDefault(i => i.IsPrimaryKey)?.Name;
         // The rebuilt table has to be the same kind of table: dropping WITHOUT ROWID or STRICT would
@@ -685,10 +685,11 @@ public sealed class SqliteTableDdlService : ITableDdlService
 
     private static async Task EnsureTableCanBeRebuiltAsync(
         SqliteConnection connection,
-        string schema,
-        string table,
+        TableDefinition definition,
         CancellationToken cancellationToken)
     {
+        var schema = definition.Object.Schema;
+        var table = definition.Object.Name;
         string tableType;
         await using (var classification = connection.CreateCommand())
         {
@@ -721,10 +722,21 @@ public sealed class SqliteTableDdlService : ITableDdlService
         var unsupported = new List<string>();
         if (SqliteSqlInspection.ContainsKeywordSequence(source, "ON", "CONFLICT")) unsupported.Add("ON CONFLICT policies");
 
+        // A deferred key is written back only when the definition knows which key it is. When the
+        // declarations could not be matched to the pragma, or a spelling was not recognised, the
+        // rebuild would write the key back as immediate and change when it is checked.
+        var parsedForeignKeys = SqliteCreateSqlParser.ParseTable(source).ForeignKeys;
+        var declaredDeferred = parsedForeignKeys.Count(key => key.IsDeferred);
+        if (declaredDeferred != definition.ForeignKeys.Count(key => key.IsDeferred) ||
+            declaredDeferred != SqliteSqlInspection.CountDeferredClauses(source))
+        {
+            unsupported.Add("deferred foreign keys Gridlet could not match to their declaration");
+        }
+
         // SQLite accepts CONSTRAINT "" and CONSTRAINT "   ". Gridlet cannot write an empty
         // identifier back, so a rebuild would quietly leave the key unnamed. Refusing says what
         // happened instead of changing the schema without telling anyone.
-        if (SqliteCreateSqlParser.ParseTable(source).ForeignKeys
+        if (parsedForeignKeys
             .Any(key => key.Name is not null && string.IsNullOrWhiteSpace(key.Name)))
         {
             unsupported.Add("blank foreign-key constraint names");
@@ -927,7 +939,8 @@ public sealed class SqliteTableDdlService : ITableDdlService
             fk.Columns,
             fk.OnDelete.Replace('_', ' '),
             fk.OnUpdate.Replace('_', ' '),
-            fk.IsNameSynthesized)).ToArray();
+            fk.IsNameSynthesized,
+            fk.IsDeferred)).ToArray();
 
     private static CheckConstraintDesign[] ToCheckDesigns(
         TableDefinition definition,

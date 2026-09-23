@@ -18,13 +18,15 @@ internal static class SqliteCreateSqlParser
 
     /// <summary>
     /// One foreign key as it was written, in declaration order. Only the parts needed to match the
-    /// declaration against a <c>pragma_foreign_key_list</c> row are kept; the pragma is the
-    /// authority on everything else.
+    /// declaration against a <c>pragma_foreign_key_list</c> row are kept, plus what the pragma does
+    /// not report: the name and whether the key is deferred. The pragma is the authority on
+    /// everything else.
     /// </summary>
     internal sealed record ParsedForeignKey(
         string? Name,
         IReadOnlyList<string> Columns,
-        string ReferencedTable);
+        string ReferencedTable,
+        bool IsDeferred = false);
 
     internal sealed record ParsedIndex(
         IReadOnlyList<IndexKeyInfo> Keys,
@@ -185,7 +187,8 @@ internal static class SqliteCreateSqlParser
             var keyColumns = body is null ? null : ParseColumnNames(body);
             if (keyColumns is not null && referenced is not null)
             {
-                foreignKeys.Add(new ParsedForeignKey(tableConstraintName, keyColumns, referenced));
+                foreignKeys.Add(new ParsedForeignKey(tableConstraintName, keyColumns, referenced,
+                    IsInitiallyDeferred(tokens, position + 2)));
             }
             return;
         }
@@ -231,7 +234,8 @@ internal static class SqliteCreateSqlParser
                 var referenced = FindReferencedTable(tokens, i);
                 if (referenced is not null)
                 {
-                    foreignKeys.Add(new ParsedForeignKey(pendingConstraintName, [columnName], referenced));
+                    foreignKeys.Add(new ParsedForeignKey(pendingConstraintName, [columnName], referenced,
+                        IsInitiallyDeferred(tokens, i + 1)));
                 }
                 pendingConstraintName = null;
             }
@@ -278,6 +282,46 @@ internal static class SqliteCreateSqlParser
     /// </summary>
     private static bool IsIdentifierToken(Token token)
         => token.Kind is TokenKind.Word or TokenKind.Identifier or TokenKind.String;
+
+    // Words that start the next column constraint, which is where a foreign-key clause ends.
+    private static readonly HashSet<string> ColumnConstraintStarts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CONSTRAINT", "PRIMARY", "NULL", "UNIQUE", "CHECK", "DEFAULT", "COLLATE", "REFERENCES",
+        "GENERATED", "AS",
+    };
+
+    /// <summary>
+    /// True when the foreign-key clause starting at <paramref name="start"/> is
+    /// <c>DEFERRABLE INITIALLY DEFERRED</c>. That is the only spelling SQLite defers: plain
+    /// <c>DEFERRABLE</c>, <c>INITIALLY IMMEDIATE</c> and <c>NOT DEFERRABLE ...</c> are all checked
+    /// after each statement, the same as leaving the clause out.
+    /// </summary>
+    private static bool IsInitiallyDeferred(List<Token> tokens, int start)
+    {
+        // A column-level key starts after its REFERENCES and a table-level one before it, so the
+        // first REFERENCES met may still be this key's own. A second one is another key.
+        var seenReferences = start > 0 && IsWord(tokens[start - 1], "REFERENCES");
+        for (var i = Math.Max(start, 0); i < tokens.Count; i++)
+        {
+            var token = tokens[i];
+            if (token.Depth != 0) continue;
+            if (IsWord(token, "REFERENCES") && !seenReferences)
+            {
+                seenReferences = true;
+                continue;
+            }
+            // SET NULL and SET DEFAULT are referential actions inside this clause, not a new constraint.
+            var isAction = i > 0 && IsWord(tokens[i - 1], "SET");
+            if (!isAction && token.Kind == TokenKind.Word && ColumnConstraintStarts.Contains(token.Text)) return false;
+            if (!IsWord(token, "DEFERRABLE")) continue;
+            if (i > 0 && IsWord(tokens[i - 1], "NOT")) return false;
+            return i + 2 < tokens.Count
+                && IsWord(tokens[i + 1], "INITIALLY")
+                && IsWord(tokens[i + 2], "DEFERRED");
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Returns the table named by the first top-level REFERENCES at or after <paramref name="start"/>.
