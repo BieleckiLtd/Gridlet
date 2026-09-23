@@ -1501,6 +1501,39 @@
     return input.type === 'checkbox' ? input.checked : input.value;
   }
 
+  // The words an author gave an action in place of Gridlet's own, one per phase of the write. An
+  // attribute left out, or left empty, keeps the default, so a form says "Added." until somebody
+  // decides it should say something else.
+  const ACTION_MESSAGE_PHASES = ['pending', 'done', 'failed'];
+  function actionMessages(declaration) {
+    const messages = {};
+    for (const phase of ACTION_MESSAGE_PHASES) {
+      const text = declaration.getAttribute(`${phase}-text`)?.trim();
+      if (text) messages[phase] = text;
+    }
+    return messages;
+  }
+
+  function actionMessage(operation, action, phase) {
+    const fallback = { pending: 'Working…', done: 'Done.', failed: 'Could not do that.' }[phase];
+    return action?.messages?.[phase] || ACTIONS[operation]?.[phase] || fallback;
+  }
+
+  // A write reports itself to the author before the status line says anything. Module handlers are
+  // passed the message the line is about to show and may answer with the one to show instead; an
+  // empty answer clears the line. An expression handler on the root is run for its effect, as every
+  // other handler is: it is passed nothing, so each phase of a write is its own event.
+  function announceWrite(type, detail) {
+    for (const handler of componentHandlers.get(type) || []) {
+      try {
+        const answer = handler(detail, api);
+        if (typeof answer === 'string') detail.message = answer;
+      } catch (exception) { report(exception); }
+    }
+    runHandlers(root, type);
+    return detail.message;
+  }
+
   function actionDeclarations() {
     const declarations = new Map();
     for (const declaration of root.querySelectorAll(':scope > gridlet-action')) {
@@ -1522,6 +1555,7 @@
         route: normalizePublishedRoute(href),
         method: method.toUpperCase(),
         parameters,
+        messages: actionMessages(declaration),
       });
     }
     return declarations;
@@ -1598,7 +1632,7 @@
     return body;
   }
 
-  function actionStatusElement(operation) {
+  function actionStatusElement() {
     let status = root.querySelector(':scope > .gridlet-action-status');
     if (!status) {
       status = document.createElement('p');
@@ -1607,10 +1641,13 @@
       status.setAttribute('aria-live', 'polite');
       root.append(status);
     }
-    status.hidden = false;
-    status.className = 'gridlet-action-status pending';
-    status.textContent = ACTIONS[operation]?.pending || 'Working…';
     return status;
+  }
+
+  function showActionStatus(status, state, message) {
+    status.className = `gridlet-action-status ${state}`;
+    status.textContent = message;
+    status.hidden = message === '';
   }
 
   async function runAction(operation, declarations) {
@@ -1619,7 +1656,9 @@
     const action = declarations.get(actionName);
     pendingActions.add(actionName);
     setActionPending(actionName, true);
-    const status = actionStatusElement(actionName);
+    const status = actionStatusElement();
+    showActionStatus(status, 'pending', announceWrite('writing',
+      { action: actionName, message: actionMessage(actionName, action, 'pending') }));
     try {
       const target = publishedActionUrl(actionName, action);
       const endpoint = await publishedActionEndpoint(actionName, action);
@@ -1635,11 +1674,12 @@
       if (!response.ok || (result && typeof result === 'object' && Object.hasOwn(result, 'error'))) {
         throw new Error(result?.error || `The published endpoint returned ${response.status}.`);
       }
-      status.className = 'gridlet-action-status success';
-      status.textContent = ACTIONS[actionName]?.done || 'Done.';
+      showActionStatus(status, 'success', announceWrite('written',
+        { action: actionName, message: actionMessage(actionName, action, 'done'), result }));
     } catch (exception) {
-      status.className = 'gridlet-action-status error';
-      status.textContent = `${ACTIONS[actionName]?.failed || 'Could not do that.'} ${actionFailureReason(exception)}`;
+      const reason = actionFailureReason(exception);
+      showActionStatus(status, 'error', announceWrite('writefailed',
+        { action: actionName, message: `${actionMessage(actionName, action, 'failed')} ${reason}`, reason }));
     } finally {
       pendingActions.delete(actionName);
       setActionPending(actionName, false);

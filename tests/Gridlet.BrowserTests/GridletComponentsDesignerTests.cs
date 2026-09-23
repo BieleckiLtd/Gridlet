@@ -2187,6 +2187,140 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task A_form_uses_the_words_its_author_gave_each_action()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var addRoute = $"form-words-add-{suffix}";
+        var updateRoute = $"form-words-update-{suffix}";
+        await PublishEndpointAsync(page, "Words add", "POST", addRoute, "WORDS");
+        await PublishEndpointAsync(page, "Words update", "PUT", updateRoute, "stream-boom");
+        var html = $"""
+            <div data-gridlet="2" data-name="Worded form" data-layout="free" style="width: 360px; height: 100px;">
+              <gridlet-action name="add" method="POST" href="{addRoute}" done-text="Order placed."></gridlet-action>
+              <gridlet-action name="update" method="PUT" href="{updateRoute}" failed-text="We could not change your order."></gridlet-action>
+              <button type="button" data-name="order" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">Order</button>
+              <button type="button" data-name="change" data-action="update" style="left: 150px; top: 16px; width: 120px; height: 30px;">Change</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Worded form", html);
+        await page.GotoAsync($"/gridlet/components/{id}");
+
+        var status = page.Locator(".gridlet-action-status");
+        await page.Locator("[data-name='order']").ClickAsync();
+        await Assertions.Expect(status).ToHaveTextAsync("Order placed.");
+
+        // The author's words replace Gridlet's, and the reason still follows them.
+        await page.Locator("[data-name='change']").ClickAsync();
+        await Assertions.Expect(status).ToContainTextAsync("We could not change your order. Mid-stream kaboom");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task A_form_reports_each_phase_of_a_write_to_its_module_and_handlers()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+
+        var suffix = Guid.NewGuid().ToString("n");
+        var addRoute = $"form-events-add-{suffix}";
+        var updateRoute = $"form-events-update-{suffix}";
+        var moduleName = $"form-events-{suffix}.js";
+        await PublishEndpointAsync(page, "Events add", "POST", addRoute, "EVENTS");
+        await PublishEndpointAsync(page, "Events update", "PUT", updateRoute, "stream-boom");
+        await WriteModuleAsync(page, moduleName, """
+            export default class WriteEvents {
+              constructor(component) { this.component = component; }
+              connected() {
+                const log = (text) => { this.component.field('log').value += text; };
+                this.component.on('writing', (write) => { log(`writing:${write.action}:${write.message};`); });
+                this.component.on('written', (write) => `Thanks, ${write.action} went through.`);
+                this.component.on('writefailed', (write) => { log(`failed:${write.reason}`); return ''; });
+              }
+              markWritten() { this.component.field('marker').value = 'handler ran'; }
+            }
+            """);
+        var html = $"""
+            <div data-gridlet="2" data-name="Write events" data-layout="free" data-on-written="=markWritten()" style="width: 520px; height: 140px;">
+              <gridlet-code src="{moduleName}"></gridlet-code>
+              <gridlet-action name="add" method="POST" href="{addRoute}"></gridlet-action>
+              <gridlet-action name="update" method="PUT" href="{updateRoute}"></gridlet-action>
+              <input data-name="log" value="" style="left: 16px; top: 52px; width: 480px; height: 30px;">
+              <input data-name="marker" value="" style="left: 16px; top: 88px; width: 220px; height: 30px;">
+              <button type="button" data-name="send" data-action="add" style="left: 16px; top: 16px; width: 120px; height: 30px;">Send</button>
+              <button type="button" data-name="change" data-action="update" style="left: 150px; top: 16px; width: 120px; height: 30px;">Change</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Write events", html);
+        await page.GotoAsync($"/gridlet/components/{id}");
+
+        var status = page.Locator(".gridlet-action-status");
+        await page.Locator("[data-name='send']").ClickAsync();
+        // A module's answer is what the status line shows, and the root's expression handler runs.
+        await Assertions.Expect(status).ToHaveTextAsync("Thanks, add went through.");
+        await Assertions.Expect(page.Locator("[data-name='marker']")).ToHaveValueAsync("handler ran");
+        await Assertions.Expect(page.Locator("[data-name='log']")).ToHaveValueAsync("writing:add:Adding…;");
+
+        // An empty answer clears the line, and the failure's reason reaches the module on its own.
+        await page.Locator("[data-name='change']").ClickAsync();
+        await Assertions.Expect(page.Locator("[data-name='log']")).ToHaveValueAsync(
+            new System.Text.RegularExpressions.Regex("writing:update:Saving…;failed:Mid-stream kaboom"));
+        await Assertions.Expect(status).ToBeHiddenAsync();
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
+    public async Task Designer_keeps_an_actions_own_words_and_shows_them_in_preview()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        var route = $"form-words-designer-{Guid.NewGuid():n}";
+        await PublishEndpointAsync(page, "Designer words add", "POST", route, "DESIGNER WORDS");
+        var html = $"""
+            <div data-gridlet="2" data-name="Designer words" data-layout="free" style="width: 420px; height: 100px;">
+              <gridlet-action name="add" method="POST" href="{route}"></gridlet-action>
+              <button type="button" data-name="send" data-action="add" style="left: 16px; top: 16px; width: 100px; height: 30px;">Send</button>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Designer words", html);
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        await page.Locator("button.tree-item[title^='Designer words -']").ClickAsync();
+        var done = page.GetByTestId("component-action-add-message-done");
+        await Assertions.Expect(done).ToBeVisibleAsync();
+        // Gridlet's own words are what an empty box keeps, so they are shown as its placeholder.
+        await Assertions.Expect(done).ToHaveAttributeAsync("placeholder", "Added.");
+        await done.FillAsync("Order placed.");
+        await page.GetByTestId("component-save").ClickAsync();
+
+        await page.GetByTestId("component-view-preview").ClickAsync();
+        await page.Locator("[data-name='send']").ClickAsync();
+        await Assertions.Expect(page.Locator(".gfd-action-status")).ToHaveTextAsync("Order placed.");
+
+        var saved = await page.APIRequest.GetAsync($"/gridlet/api/components/{id}");
+        Assert.True(saved.Ok, $"Reading the saved component failed: {saved.Status}");
+        var storedHtml = (await saved.JsonAsync())!.Value.GetProperty("html").GetString()!;
+        Assert.Contains("done-text=\"Order placed.\"", storedHtml, StringComparison.Ordinal);
+        Assert.DoesNotContain("pending-text", storedHtml, StringComparison.Ordinal);
+
+        await page.Locator(".tab.active .tab-close").ClickAsync();
+        await page.Locator("button.tree-item[title^='Designer words -']").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("component-action-add-message-done")).ToHaveValueAsync("Order placed.");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Designer_round_trips_action_endpoint_mappings_and_button_binding()
     {
         await using var browserPage = await fixture.NewPageAsync();

@@ -1649,6 +1649,11 @@ export default class ${CLASS_NAME(name)} {
     ['load', 'On load', 'Once the component is running and its rows have arrived'],
     ['row', 'On row', 'Whenever the row on screen changes'],
     ['resize', 'On resize', 'Whenever the component changes size'],
+    // An action's write, in the order it happens. A module handler for one of these may answer
+    // with the words the status line shows instead; see announceWrite.
+    ['writing', 'On writing', 'When an action starts sending a record'],
+    ['written', 'On written', 'When an action has sent a record and the server accepted it'],
+    ['writefailed', 'On write failed', 'When an action could not send a record, or the server refused it'],
   ];
 
   const TEXT = (key, label, after) => ({ key, label, kind: 'text', after });
@@ -7219,6 +7224,36 @@ ${colourGeneration}`;
       return [map, literal, h('label', { class: 'gfd-action-null' }, nullValue, 'null')];
     }
 
+    // What the status line says for each phase of this action's write. A box left empty keeps
+    // Gridlet's words, which it shows as its placeholder, so what the form will say is always on
+    // screen. A failure still has its reason added after whichever words are chosen.
+    const ACTION_MESSAGE_LABELS = [
+      ['pending', 'Sending', 'Shown while the record is being sent'],
+      ['done', 'Accepted', 'Shown once the server has accepted the record'],
+      ['failed', 'Refused', 'Shown when the record could not be sent, followed by the reason'],
+    ];
+    function actionMessageEditors(operation, action, definition) {
+      const editors = [heading(`${definition.label} messages`)];
+      for (const [phase, label, hint] of ACTION_MESSAGE_LABELS) {
+        const input = h('input', {
+          type: 'text',
+          class: 'gfd-action-message',
+          placeholder: ACTION_WORDING[operation]?.[phase] || '',
+          'data-testid': `component-action-${operation}-message-${phase}`,
+          oninput: (event) => {
+            action.messages ??= {};
+            const text = event.target.value.trim();
+            if (text) action.messages[phase] = event.target.value;
+            else delete action.messages[phase];
+            markDirty(`action:${operation}:message:${phase}`);
+          },
+        });
+        input.value = action.messages?.[phase] ?? '';
+        editors.push(row(model.doc, null, label, () => input, { hint }));
+      }
+      return editors;
+    }
+
     function actionEditors() {
       const editors = [heading('Actions',
         'Each action is an explicitly selected published endpoint. Parameters must be mapped to a '
@@ -7236,8 +7271,10 @@ ${colourGeneration}`;
             const endpoint = endpoints.find((candidate) => samePublishedRoute(candidate.route, event.target.value)
               && String(candidate.method).toUpperCase() === selected?.dataset.method) || null;
             model.doc.actions ??= {};
+            // The words are the author's, not the endpoint's, so choosing another endpoint keeps them.
+            const messages = model.doc.actions[operation]?.messages || {};
             model.doc.actions[operation] = endpoint
-              ? { route: endpoint.route, method: String(endpoint.method).toUpperCase(), parameters: Object.create(null) }
+              ? { route: endpoint.route, method: String(endpoint.method).toUpperCase(), parameters: Object.create(null), messages }
               : null;
             if (!endpoint) {
               walk(model.doc.controls, (control) => {
@@ -7268,6 +7305,7 @@ ${colourGeneration}`;
         editors.push(row(model.doc, null, definition.label, () => select,
           { hint: `${definition.label} uses ${definition.methods.join(' or ')} only` }));
         if (!chosen) continue;
+        editors.push(...actionMessageEditors(operation, action, definition));
         const parameters = chosen.parameters || [];
         if (!parameters.length) {
           editors.push(note(`${definition.label} has no parameters.`));
@@ -8971,6 +9009,34 @@ ${colourGeneration}`;
       renderProperties();
     }
 
+    // An action's write reported to the author, the way the runtime does it: module handlers see
+    // the message the status line is about to show and may answer with another, and an empty
+    // answer clears the line. The expression handler runs for its effect only, in Preview.
+    function announceWrite(type, detail) {
+      for (const handler of behaviour.handlers.get(type) || []) {
+        try {
+          const answer = handler(detail, componentApi);
+          if (typeof answer === 'string') detail.message = answer;
+        } catch (err) {
+          recordBehaviourError('behaviour', err);
+        }
+      }
+      if (model.mode === 'preview') runHandler(model.doc, type);
+      return detail.message;
+    }
+
+    function showActionStatus(state, message) {
+      actionStatus.dataset.state = state;
+      actionStatus.className = `gfd-action-status ${state}`;
+      actionStatus.textContent = message;
+      actionStatus.hidden = message === '';
+    }
+
+    function actionMessage(operation, action, phase) {
+      const fallback = { pending: 'Working…', done: 'Done.', failed: 'Could not do that.' }[phase];
+      return String(action?.messages?.[phase] ?? '').trim() || ACTION_WORDING[operation]?.[phase] || fallback;
+    }
+
     function emitComponentEvent(type, detail) {
       for (const handler of behaviour.handlers.get(type) || []) {
         try {
@@ -9067,10 +9133,8 @@ ${colourGeneration}`;
       const wasDisabled = button.disabled;
       model.pendingActions.add(actionName);
       button.disabled = true;
-      actionStatus.hidden = false;
-      actionStatus.dataset.state = 'pending';
-      actionStatus.className = 'gfd-action-status pending';
-      actionStatus.textContent = ACTION_WORDING[actionName]?.pending || 'Working…';
+      showActionStatus('pending', announceWrite('writing',
+        { action: actionName, message: actionMessage(actionName, action, 'pending') }));
       if (!actionStatus.isConnected) canvas.append(actionStatus);
       try {
         const target = actionUrl(actionName, action);
@@ -9086,13 +9150,12 @@ ${colourGeneration}`;
         if (!response.ok || (result && typeof result === 'object' && Object.hasOwn(result, 'error'))) {
           throw new Error(result?.error || `The published endpoint returned ${response.status}.`);
         }
-        actionStatus.className = 'gfd-action-status success';
-        actionStatus.dataset.state = 'success';
-        actionStatus.textContent = ACTION_WORDING[actionName]?.done || 'Done.';
+        showActionStatus('success', announceWrite('written',
+          { action: actionName, message: actionMessage(actionName, action, 'done'), result }));
       } catch (err) {
-        actionStatus.className = 'gfd-action-status error';
-        actionStatus.dataset.state = 'error';
-        actionStatus.textContent = `${ACTION_WORDING[actionName]?.failed || 'Could not do that.'} ${actionFailureReason(err)}`;
+        const reason = actionFailureReason(err);
+        showActionStatus('error', announceWrite('writefailed',
+          { action: actionName, message: `${actionMessage(actionName, action, 'failed')} ${reason}`, reason }));
       } finally {
         model.pendingActions.delete(actionName);
         if (button.isConnected) button.disabled = wasDisabled;

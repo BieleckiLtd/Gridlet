@@ -143,6 +143,9 @@
   const PUBLISHED_SEGMENT = /^[A-Za-z0-9._-]+$/;
   const PARAMETER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
   const ACTION_NAMES = new Set(['add', 'update', 'delete']);
+  // The phases of a write an author can give their own words to, each kept as `<phase>-text` on
+  // the action's declaration.
+  const ACTION_MESSAGE_PHASES = ['pending', 'done', 'failed'];
 
   function normalizeActionIdentifier(value) {
     const operation = String(value ?? '').trim().toLowerCase();
@@ -291,6 +294,12 @@
       declaration.setAttribute('name', operation);
       declaration.setAttribute('method', action.method);
       declaration.setAttribute('href', normalizePublishedRoute(action.route));
+      // What the status line says in place of Gridlet's own words. Only a phase the author gave
+      // words to is written, so a document that never changed them reads exactly as before.
+      for (const phase of ACTION_MESSAGE_PHASES) {
+        const text = String(action.messages?.[phase] ?? '').trim();
+        if (text) declaration.setAttribute(`${phase}-text`, text);
+      }
       for (const [name, mapping] of Object.entries(action.parameters || {})) {
         if (!mapping || typeof mapping !== 'object') continue;
         const parameter = document.createElement('param');
@@ -586,10 +595,16 @@
         }
         parameters[parsed.name] = parsed.mapping;
       }
+      const messages = {};
+      for (const phase of ACTION_MESSAGE_PHASES) {
+        const text = declaration.getAttribute(`${phase}-text`)?.trim();
+        if (text) messages[phase] = text;
+      }
       doc.actions[operation] = {
         route: normalizePublishedRoute(href),
         method: method.toUpperCase(),
         parameters,
+        messages,
       };
     }
 
