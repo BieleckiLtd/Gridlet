@@ -618,6 +618,9 @@
   cursor: help;
 }
 
+/* An (i) with a manual behind it is pressed rather than hovered. */
+.gfd-hint.opens { cursor: pointer; }
+
 .gfd-hint:hover,
 .gfd-hint:focus-visible { opacity: 1; color: var(--accent); }
 
