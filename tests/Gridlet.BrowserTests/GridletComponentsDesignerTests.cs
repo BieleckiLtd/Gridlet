@@ -6190,6 +6190,50 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
     }
 
     /// <summary>
+    /// The (i) on the Properties heading opens a manual rather than a tooltip. Its format examples are
+    /// worked out with the component's regional settings, and the input mask codes are shown only for
+    /// a control that has an input mask.
+    /// </summary>
+    [Fact]
+    public async Task Opens_the_properties_manual_with_examples_in_the_component_locale()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = await OpenComponentAsync(browserPage, "Properties manual component",
+        [
+            Control("textbox1", "textbox", x: 24, y: 10),
+            Control("button1", "button", props: new { text = "Save" }, x: 24, y: 60, w: 120, h: 24),
+        ], regional: new { locale = "de-DE" });
+
+        await Box(page, "textbox1").ClickAsync();
+        var tip = page.GetByTestId("hint-properties");
+        Assert.Contains("Click to open", await tip.GetAttributeAsync("title"));
+        await tip.ClickAsync();
+
+        var manual = page.GetByTestId("properties-manual");
+        await Assertions.Expect(manual).ToBeVisibleAsync();
+        await Assertions.Expect(manual).ToContainTextAsync("regional settings (de-DE)");
+        await Assertions.Expect(manual.Locator(".gfd-help-row",
+            new LocatorLocatorOptions { HasTextString = "#,##0.00\" kg\"" })).ToContainTextAsync("1.234,57 kg");
+        await Assertions.Expect(manual.Locator(".gfd-help-row",
+            new LocatorLocatorOptions { HasTextString = "dd/mm/yyyy hh:mm" }).First).ToContainTextAsync("31/12/2026 14:30");
+        await Assertions.Expect(manual).ToContainTextAsync("Placeholder");
+        await Assertions.Expect(manual).ToContainTextAsync("Input mask codes");
+
+        // The press opened the manual and nothing else: the text box is still the subject.
+        await page.GetByTestId("dialog").GetByRole(AriaRole.Button, new() { Name = "Close" }).Last.ClickAsync();
+        await Assertions.Expect(manual).ToHaveCountAsync(0);
+        await Assertions.Expect(page.GetByTestId("control-name")).ToHaveValueAsync("textbox1");
+
+        await Box(page, "button1").ClickAsync();
+        await page.GetByTestId("hint-properties").ClickAsync();
+        await Assertions.Expect(manual).ToContainTextAsync("Formatting a date");
+        await Assertions.Expect(manual).Not.ToContainTextAsync("Input mask codes");
+        await Assertions.Expect(manual).Not.ToContainTextAsync("Placeholder");
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    /// <summary>
     /// A handler is a formula run for what it does. It runs when the component runs, and not while
     /// somebody is still drawing the component.
     /// </summary>

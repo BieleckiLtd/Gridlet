@@ -3684,24 +3684,30 @@ export default class ${CLASS_NAME(name)} {
     // being looked for.
     const hintKey = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
-    function hintIcon(text, key) {
+    // `open`, when a section has more to say than a tooltip holds, is what a press on the (i) shows.
+    function hintIcon(text, key, open) {
       const button = h('button', {
         type: 'button',
-        class: 'gfd-hint',
+        class: open ? 'gfd-hint opens' : 'gfd-hint',
         title: text,
         'aria-label': text,
+        'aria-haspopup': open ? 'dialog' : null,
         'data-testid': 'hint-' + key,
       }, svgIcon(ICONS['info-circle'], 'gfd-hint-icon'));
       // Inside a <summary> a press is the section opening or shutting, and the tip must not be a
       // way to do that by accident.
-      button.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); });
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        open?.();
+      });
       return button;
     }
 
     // `text` is the heading; `hint`, when there is one, is what its (i) says.
-    const heading = (text, hint) => h('div', { class: 'gfd-heading' },
+    const heading = (text, hint, open) => h('div', { class: 'gfd-heading' },
       h('span', { class: 'gfd-heading-text', text }),
-      ...(hint ? [hintIcon(hint, hintKey(text))] : []));
+      ...(hint ? [hintIcon(hint, hintKey(text), open)] : []));
 
     const note = (text) => h('p', { class: 'field-note gfd-note', text });
 
@@ -7397,7 +7403,9 @@ ${colourGeneration}`;
         // a heading of its own or it reads as more of them.
         heading('Element'),
         ...identityRows(control, group),
-        ...(editors.length ? [heading('Properties'), ...editors] : []),
+        ...(editors.length ? [heading('Properties',
+          'What these properties do, with examples of formats, time zones and input masks. Click to open.',
+          () => showPropertiesManual(shared.map((property) => property.key))), ...editors] : []),
         ...(group && editors.length < spec.properties.length
           ? [note('Only the properties every selected control has are shown.')]
           : []),
@@ -9988,13 +9996,128 @@ ${colourGeneration}`;
       ];
     }
 
-    function showBindingHelp() {
-      const term = (code, description) => h('div', { class: 'gfd-help-row' },
-        h('code', { text: code }),
-        h('span', { text: description }));
+    // One line of a reference: what is written, and what it does.
+    const helpTerm = (code, description) => h('div', { class: 'gfd-help-row' },
+      h('code', { text: code }),
+      h('span', { text: description }));
 
-      const group = (title, ...rows) => h('div', { class: 'gfd-help-group' },
-        h('h4', { text: title }), ...rows);
+    const helpGroup = (title, ...rows) => h('div', { class: 'gfd-help-group' },
+      h('h4', { text: title }), ...rows);
+
+    // A sentence for each property a control kind offers, by key. A key with no sentence is left out
+    // of the manual rather than described badly.
+    const PROPERTY_HELP = {
+      text: ['Text', 'What the control shows. =data.FirstName shows a column; =text(data.Total, "#,##0.00") shows it with a format.'],
+      placeholder: ['Placeholder', 'Grey text shown while the box is empty.'],
+      multiline: ['Multiline', 'The box holds several lines. Format and Input mask apply only to a box on one line.'],
+      readOnly: ['Read only', 'The value is shown and cannot be changed.'],
+      format: ['Format', 'How the value is shown. While the box is edited it shows the plain value, and what is typed is read back as a date or a number.'],
+      inputMask: ['Input mask', 'What may be typed, place by place.'],
+      options: ['Options', 'The choices, one per line.'],
+      edges: ['First and last', 'Show the buttons that go to the first and the last row.'],
+      position: ['Show position', 'Show where you are, such as 3 of 20, between the buttons.'],
+      columns: ['Columns', 'The columns to show, one per line. Blank shows every column.'],
+      header: ['Show header', 'Show the column names above the rows.'],
+    };
+
+    // What the Properties (i) opens. A tooltip cannot hold a table of format codes, and a format is
+    // learnt from examples, so every example here is worked out when the manual opens, with the
+    // component's own regional settings: what it says a format writes is what the canvas writes.
+    function showPropertiesManual(keys) {
+      const locale = componentLocale();
+      const written = (value, pattern) => {
+        const result = formatValue(value, pattern, locale);
+        return isError(result) ? result.code : String(result);
+      };
+      const examples = (value, patterns) => patterns.map((pattern) => helpTerm(pattern, written(value, pattern)));
+      const each = (value, patterns) => patterns.map((pattern) => written(value, pattern)).join(', ');
+      const note = (text) => h('p', { class: 'field-note', text });
+
+      const described = keys.filter((key) => Object.hasOwn(PROPERTY_HELP, key));
+      const moment = '2026-12-31T14:30:05';
+      const early = '2026-01-05T09:05:03.250';
+      const zoned = '2026-04-11T11:14:18Z';
+      const amount = 1234.567;
+
+      modal('Properties', h('div', { class: 'gfd-help-body', 'data-testid': 'properties-manual' },
+        h('p', {
+          text: 'A property holds a value, or a formula that starts with =. The examples below are '
+            + `worked out now, with this component's regional settings (${locale.tag}).`,
+        }),
+
+        ...(described.length ? [helpGroup('These properties',
+          ...described.map((key) => helpTerm(...PROPERTY_HELP[key])))] : []),
+
+        helpGroup('Formatting a date',
+          note(`Format, or text(value, format) in any formula. ${moment} is written as:`),
+          ...examples(moment, ['dd/mm/yyyy', 'd mmm yyyy', 'dddd, d mmmm yyyy', 'yyyy-mm-dd',
+            'dd/mm/yyyy hh:mm', 'hh:mm:ss', 'h:mm AM/PM', '"Due "d mmm']),
+          note('A named format follows the regional settings:'),
+          ...examples(moment, ['Short Date', 'Medium Date', 'Long Date', 'General Date', 'Short Time',
+            'Medium Time', 'Long Time'])),
+
+        helpGroup('Date codes',
+          note(`Shown for ${early}.`),
+          helpTerm('d dd ddd dddd', `The day: ${each(early, ['d', 'dd', 'ddd', 'dddd'])}`),
+          helpTerm('m mm mmm mmmm', `The month: ${each(early, ['m', 'mm', 'mmm', 'mmmm'])}`),
+          helpTerm('yy yyyy', `The year: ${each(early, ['yy', 'yyyy'])}`),
+          helpTerm('h hh', `The hour: ${each(early, ['h', 'hh'])}. A 24-hour clock, unless the format has AM/PM.`),
+          helpTerm('h:mm mm:ss', 'mm next to an hour or seconds is minutes, not the month. Letter case does not matter.'),
+          helpTerm('s ss', `The seconds: ${each(early, ['s', 'ss'])}`),
+          helpTerm('ss.000', `Parts of a second: ${written(early, 'ss.000')}`),
+          helpTerm('AM/PM a/p', `A 12-hour clock: ${each(early, ['h:mm AM/PM', 'h:mm a/p'])}`),
+          helpTerm('"text" \\x', 'Written as it is.')),
+
+        helpGroup('Formatting a number',
+          note(`${amount} is written as:`),
+          ...examples(amount, ['0', '0.00', '#,##0', '#,##0.00', '#,##0.00" kg"', '0.00E+00',
+            'Standard', 'Fixed']),
+          ...examples(0.256, ['0%', '0.0%']),
+          note('Up to four formats, separated by ;, are for a positive number, a negative number, zero and text:'),
+          ...[-amount, 0].map((value) => helpTerm(`#,##0.00;(#,##0.00);"none"`,
+            `${value} is written as ${written(value, '#,##0.00;(#,##0.00);"none"')}`)),
+          helpTerm('0', 'A digit, shown even when it is 0.'),
+          helpTerm('#', 'A digit, shown only when it is needed.'),
+          helpTerm(', .', 'The thousands separator and the decimal point, written the way the regional settings write them.'),
+          helpTerm('%', 'The number multiplied by 100, with %.')),
+
+        helpGroup('Dates and time zones',
+          helpTerm(zoned,
+            `A value that ends in Z, or in an offset such as +02:00, is a moment in time. It is shown in the viewer's time zone: ${written(zoned, 'dd/mm/yyyy hh:mm:ss')} in this browser.`),
+          helpTerm(zoned.slice(0, -1),
+            `A value with no zone is shown as it is stored: ${written(zoned.slice(0, -1), 'dd/mm/yyyy hh:mm:ss')}.`),
+          helpTerm('=concat(data.CreatedAtUtc, "Z")',
+            'A UTC time stored with no zone, such as a SQL Server datetime2 column: add Z to show it in the viewer\'s time zone. Do not add Z to a value that already has a zone.'),
+          helpTerm('replace(CreatedAtUtc, \'Z\', \'\')',
+            'A value with a zone that you want to show as stored: remove the zone in the query, before the value gets to the component. This is SQLite. In SQL Server, CAST(CreatedAt AS datetime2) removes the offset.'),
+          note('The time zone is the viewer\'s browser time zone. The regional settings change how a date is written, not its time zone.')),
+
+        ...(keys.includes('inputMask') ? [
+          helpGroup('Input mask codes',
+            helpTerm('0 9', 'A digit: required, optional.'),
+            helpTerm('#', 'A digit, a space, + or -: optional.'),
+            helpTerm('L ?', 'A letter: required, optional.'),
+            helpTerm('A a', 'A letter or a digit: required, optional.'),
+            helpTerm('& C', 'Any character: required, optional.'),
+            helpTerm('> <', 'What follows is in upper case, in lower case.'),
+            helpTerm('!', 'Optional places that are left empty go to the front.'),
+            helpTerm('. , : /', 'The decimal, thousands, time and date separators of the regional settings.'),
+            helpTerm('\\x "text"', 'Written as it is.'),
+            helpTerm(';0;_', 'After the first ;, 0 keeps the written characters in the value. After the second ;, the character an empty place shows.'),
+            helpTerm('Password', 'Hide what is typed.')),
+          helpGroup('Input mask examples',
+            helpTerm('00/00/0000', 'A date typed as digits. The / is the date separator of the regional settings.'),
+            helpTerm('00:00', 'A time, hours and minutes.'),
+            helpTerm('(000) 000-0000;0;_', 'A phone number. The brackets, the space and the dash stay in the value.'),
+            helpTerm('>LLL-000', 'Three capital letters, a dash and three digits, such as ABC-123.'),
+            helpTerm('>L<?????????', 'A word of up to ten letters, with a capital first letter.')),
+        ] : [])),
+      [{ label: 'Close', primary: true, onClick: (close) => close() }]);
+    }
+
+    function showBindingHelp() {
+      const term = helpTerm;
+      const group = helpGroup;
 
       modal('Binding a property', h('div', { class: 'gfd-help-body' },
         h('p', { text: 'Every property in this panel can hold an expression instead of a fixed value. Click the ƒ beside it and write one: the property then follows whatever the expression names, live, in Design and in Preview. Click ƒ again to go back to a fixed value - whatever the expression last worked out to is kept, so nothing jumps.' }),
