@@ -391,11 +391,20 @@
   // The row cap is one setting for the whole browser: every table view and query result keeps at
   // most this many rows. It is not a property of any table, so it lives in the Settings tab.
   const ROW_CAP_KEY = 'gridlet.queryMaxRows';
-  const rowCap = () => {
+  // A missing, zero or unreadable value means "as many as the server allows".
+  const clampRowCap = (value) => {
     const serverMax = state.meta.maxQueryResultRows;
-    let saved = serverMax;
-    try { saved = Number(localStorage.getItem(ROW_CAP_KEY)) || serverMax; } catch { /* unavailable */ }
-    return Math.min(serverMax, Math.max(1, saved));
+    return Math.min(serverMax, Math.max(1, Number(value) || serverMax));
+  };
+  const rowCap = () => {
+    let saved = null;
+    try { saved = localStorage.getItem(ROW_CAP_KEY); } catch { /* unavailable */ }
+    return clampRowCap(saved);
+  };
+  // Opens the Settings tab and calls onChange once it closes, if the cap changed meanwhile.
+  const editRowCap = (onChange) => {
+    const capBefore = rowCap();
+    showAbout('Settings', () => { if (rowCap() !== capBefore) onChange(); });
   };
   const renderSettings = () => {
     const serverMax = state.meta.maxQueryResultRows;
@@ -404,8 +413,9 @@
       value: String(rowCap()), 'data-testid': 'row-cap-input',
     });
     input.addEventListener('change', () => {
-      input.value = String(Math.min(serverMax, Math.max(1, Number(input.value) || serverMax)));
+      input.value = String(clampRowCap(input.value));
       try { localStorage.setItem(ROW_CAP_KEY, input.value); } catch { /* unavailable */ }
+      document.dispatchEvent(new CustomEvent('gridlet:row-cap-change'));
     });
     return h('div', {},
       h('h2', { text: 'Row cap' }),
@@ -7899,13 +7909,19 @@
       // button for it. Moving down from the last row lands on that line.
       const canAddRows = Boolean(structure) && currentConn().allowWrites && !o.isInternal;
       const addRow = () => openRowEditor(table, data.columns, structure, friendly, null, null, columnIndex);
+      // The next row is found by its index in the grid as drawn now: the grid may have been redrawn
+      // while the editor was open, and a virtual grid puts a spacer row after its last drawn row.
+      const moveBelow = (rowIndex) => {
+        if (rowIndex + 1 < data.rows.length) {
+          table?.querySelector(`tr[data-row-index="${rowIndex + 1}"] > td:not(.row-selector)`)?.click();
+        } else if (canAddRows) {
+          addRow();
+        }
+      };
       const editRow = (row, rowElement, selectedColumn, rowIndex) =>
         openRowEditor(
           table, data.columns, structure, friendly, row, rowElement, columnIndex, rowKey, selectedColumn, rowIndex + 1,
-          rowIndex + 1 < data.rows.length || canAddRows
-            ? () => rowElement.nextElementSibling
-              ?.querySelector('td:not(.row-selector)')?.click()
-            : null);
+          rowIndex + 1 < data.rows.length || canAddRows ? () => moveBelow(rowIndex) : null);
       const rowActions = structure && identity ? {
         onEdit: editRow,
         onDeleteSelected: (rows) => confirmModal(
@@ -8161,10 +8177,7 @@
       const status = h('button', {
         class: 'ghost muted row-count', text: 'Loading…', 'data-testid': 'data-row-count',
         title: `Row cap ${rowCap().toLocaleString()}. Click to change it.`,
-        onclick: () => {
-          const capBefore = rowCap();
-          showAbout('Settings', () => { if (rowCap() !== capBefore) renderData(); });
-        },
+        onclick: () => editRowCap(renderData),
       });
       const cancel = h('button', { text: 'Cancel', title: 'Stop loading rows', onclick: () => controller.abort() });
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
@@ -8204,8 +8217,8 @@
           }
           : { scope, insertTarget: sqlName(o) },
         identity ? fullExport : null);
-      // Left to right: change the rows, look around the object, then export; the destructive
-      // action sits alone at the far end so it is never a slip away from a neighbour.
+      // Left to right: change the rows, look around the object, then export. Destructive actions
+      // (emptying a table, deleting a view) live in the object's context menu and other views.
       actionBar.replaceChildren(...[
         structure && o.type === 'Table' && currentConn().allowWrites
           && currentCapabilities().supportsImport && !o.isInternal
@@ -12812,6 +12825,19 @@
         h('span', { class: 'toolbar-divider' }),
         sessionToggle, beginButton, commitButton, rollbackButton, sessionState)
       : null;
+    // The cap itself lives in Settings; this button shows it and opens Settings to change it.
+    const rowCapButton = h('button', {
+      class: 'ghost', 'data-testid': 'query-row-cap', title: 'The most rows a result keeps. Click to change it.',
+    });
+    const showRowCap = () => { rowCapButton.textContent = `Row cap ${rowCap().toLocaleString()}`; };
+    showRowCap();
+    rowCapButton.addEventListener('click', () => showAbout('Settings'));
+    const onRowCapChange = () => {
+      if (!state.tabs.includes(tab)) document.removeEventListener('gridlet:row-cap-change', onRowCapChange);
+      else showRowCap();
+    };
+    document.addEventListener('gridlet:row-cap-change', onRowCapChange);
+    const limitActions = h('span', { class: 'toolbar-group' }, rowCapButton);
     const queryToolbar = h('div', { class: 'query-toolbar', 'data-testid': 'query-toolbar' },
         runButton, cancelButton,
         formatActions,
@@ -12820,10 +12846,11 @@
         planActions,
         sessionActions,
         h('span', { class: 'spacer' }),
+        limitActions,
         status);
     setupOverflowToolbar(
       queryToolbar,
-      [historyActions, savedActions, planActions, sessionActions].filter(Boolean),
+      [historyActions, savedActions, planActions, sessionActions, limitActions].filter(Boolean),
       'More query actions');
     renderSession();
     tab.panel = h('div', { class: 'panel query-panel' },
@@ -14691,7 +14718,7 @@
     const selected = selection.selected;
     const rowElements = [];
     const tbody = h('tbody', {}, rows.map((row, rowIndex) => {
-      const tr = h('tr', {}, row.map((value, columnIndex) => {
+      const tr = h('tr', { 'data-row-index': String(rowOffset + rowIndex) }, row.map((value, columnIndex) => {
         const cell = options?.renderCell ? options.renderCell(value, columns[columnIndex], row) : renderCell(value);
         if (columnKinds[columnIndex] === 'number' || columnKinds[columnIndex] === 'date') {
           cell.classList.add('cell-align-right');
@@ -14757,7 +14784,8 @@
       table.style.setProperty('--row-selector-width', selectorWidth + 'px');
     }
     if (selectable) table.addEventListener('keydown', async (event) => {
-      if (event.target.matches('input, textarea, select')) return;
+      // The new-row line takes focus of its own; row shortcuts such as Delete do not apply to it.
+      if (event.target.matches('input, textarea, select, tr.new-row')) return;
       const chosen = [...selected].sort((a, b) => a - b).map((index) => allRows[index]).filter(Boolean);
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && chosen.length) {
         event.preventDefault();
@@ -14783,8 +14811,22 @@
     const selectionState = { selected: new Set(), anchor: -1 };
     const columnWidths = options.columnWidths || new Map();
 
+    // A redraw builds a new table, which would throw away an open row editor and what was typed in
+    // it. While an editor is open the redraw waits, and it runs on the frame after the editor closes.
+    // Waiting a frame lets a click or Tab that closed one editor open the next in the same table
+    // first; the redraw then waits for that editor in turn.
+    let redrawPending = false;
+    const editorOpen = () => Boolean(table?.querySelector('tr.row-editor'));
+    new MutationObserver(() => {
+      if (!redrawPending || editorOpen() || scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => { scheduled = false; render(); });
+    }).observe(container, { childList: true, subtree: true });
+
     const render = () => {
       if (!columns.length) return;
+      if (editorOpen()) { redrawPending = true; return; }
+      redrawPending = false;
       const virtual = rows.length > threshold;
       container.classList.toggle('virtualized', virtual);
       const start = virtual ? Math.max(0, Math.floor(container.scrollTop / rowHeight) - 20) : 0;
