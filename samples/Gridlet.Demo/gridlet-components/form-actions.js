@@ -12,8 +12,6 @@
 
 class FormActions {
   #component;
-  #observer;
-  #lastStatus = '';
 
   constructor(component) {
     this.#component = component;
@@ -38,12 +36,10 @@ class FormActions {
     // A form without these buttons simply has nothing to wire; `field` is safe about that.
     this.#component.field('newButton').on('click', () => this.#clear());
     this.#component.field('refreshButton').on('click', () => { void this.reload(); });
-    this.#watchActions();
-  }
-
-  disconnected() {
-    this.#observer?.disconnect();
-    this.#observer = null;
+    // Each phase of a declared action's write is its own event.
+    this.#component.on('writing', () => this.writeStarted());
+    this.#component.on('written', () => this.writeSucceeded());
+    this.#component.on('writefailed', () => this.writeFailed());
   }
 
   // A write is about to be sent. Anything on screen that describes the last one is now stale.
@@ -67,29 +63,6 @@ class FormActions {
       this.#component.field(name).value = value;
     }
     if (this.firstField) this.#component.field(this.firstField).focus();
-  }
-
-  // The runtime reports every action through one status line, so the class that line carries is
-  // how a form learns that a write started, went through, or did not. The class is compared with
-  // the one seen last, so whatever the form does next cannot look like another change.
-  #watchActions() {
-    const root = this.#component.element;
-    this.#observer = new MutationObserver(() => {
-      const status = root.querySelector(':scope > .gridlet-action-status');
-      const current = status ? status.className : '';
-      if (current === this.#lastStatus) return;
-      this.#lastStatus = current;
-      if (!status) return;
-      if (status.classList.contains('pending')) this.writeStarted();
-      else if (status.classList.contains('success')) this.writeSucceeded();
-      else if (status.classList.contains('error')) this.writeFailed();
-    });
-    this.#observer.observe(root, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['class'],
-    });
   }
 }
 
