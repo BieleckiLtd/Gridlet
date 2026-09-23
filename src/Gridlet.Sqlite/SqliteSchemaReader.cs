@@ -384,7 +384,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
         // not require these names to be unique, so a name is not a reliable way to single out one
         // key; DropConstraintAsync refuses an ambiguous name rather than acting on the wrong
         // constraint.
-        var declaredNames = AlignDeclaredNames(declarations, order, entries);
+        var aligned = AlignDeclarations(declarations, order, entries);
 
         // The label for an unnamed key is Gridlet's own choice, so it is chosen not to collide with
         // a name the table already carries - a declared foreign-key name, or the primary key, which
@@ -394,7 +394,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
         if (primaryKeyName is not null) taken.Add(primaryKeyName);
         for (var position = 0; position < order.Count; position++)
         {
-            if (declaredNames?[position] is { } declared && !string.IsNullOrWhiteSpace(declared))
+            if (aligned?[position].Name is { } declared && !string.IsNullOrWhiteSpace(declared))
             {
                 taken.Add(declared);
             }
@@ -402,7 +402,7 @@ public sealed class SqliteSchemaReader : ISchemaReader
 
         return order.Select((id, position) =>
         {
-            var declaredName = declaredNames?[position];
+            var declaredName = aligned?[position].Name;
             var synthesized = string.IsNullOrWhiteSpace(declaredName);
             var name = declaredName!;
             if (synthesized)
@@ -418,27 +418,29 @@ public sealed class SqliteSchemaReader : ISchemaReader
                 entries[id].Columns,
                 entries[id].OnDelete.Replace(' ', '_'),
                 entries[id].OnUpdate.Replace(' ', '_'),
-                synthesized);
+                synthesized,
+                aligned?[position].IsDeferred ?? false);
         }).ToArray();
     }
 
     /// <summary>
     /// Pairs the foreign keys written in the CREATE statement with the rows
-    /// <c>pragma_foreign_key_list</c> returned, so a declared CONSTRAINT name can be recovered.
+    /// <c>pragma_foreign_key_list</c> returned, so what only the declaration says - its CONSTRAINT
+    /// name and whether it is deferred - can be recovered.
     /// The pragma numbers foreign keys in reverse declaration order, which is why the declarations
     /// are reversed before pairing. The pairing is accepted only when every pair agrees on the
     /// referenced table and the local columns; on any disagreement the result is null and every key
     /// keeps a synthesized name, because naming the wrong constraint is worse than naming none.
     /// </summary>
-    /// <returns>One entry per pragma row, in pragma order, or null when the two do not line up.</returns>
-    private static IReadOnlyList<string?>? AlignDeclaredNames(
+    /// <returns>One declaration per pragma row, in pragma order, or null when the two do not line up.</returns>
+    private static IReadOnlyList<SqliteCreateSqlParser.ParsedForeignKey>? AlignDeclarations(
         IReadOnlyList<SqliteCreateSqlParser.ParsedForeignKey> declarations,
         IReadOnlyList<long> order,
         IReadOnlyDictionary<long, (string Table, string OnDelete, string OnUpdate, List<ForeignKeyColumnPair> Columns)> entries)
     {
         if (declarations.Count != order.Count) return null;
 
-        var names = new string?[order.Count];
+        var aligned = new SqliteCreateSqlParser.ParsedForeignKey[order.Count];
         for (var position = 0; position < order.Count; position++)
         {
             var declaration = declarations[declarations.Count - 1 - position];
@@ -460,10 +462,10 @@ public sealed class SqliteSchemaReader : ISchemaReader
                 }
             }
 
-            names[position] = declaration.Name;
+            aligned[position] = declaration;
         }
 
-        return names;
+        return aligned;
     }
 
     private static string? ExtractGeneratedExpression(string? createSql, string columnName)

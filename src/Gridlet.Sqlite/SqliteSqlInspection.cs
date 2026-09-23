@@ -25,6 +25,29 @@ internal static class SqliteSqlInspection
         return false;
     }
 
+    /// <summary>
+    /// Counts the <c>DEFERRABLE INITIALLY DEFERRED</c> clauses in <paramref name="sql"/>, the only
+    /// spelling SQLite defers. <c>NOT DEFERRABLE INITIALLY DEFERRED</c> is checked immediately and
+    /// is not counted.
+    /// </summary>
+    public static int CountDeferredClauses(string? sql)
+    {
+        var tokens = Tokens(sql).ToList();
+        var count = 0;
+        for (var i = 0; i + 2 < tokens.Count; i++)
+        {
+            if (string.Equals(tokens[i], "DEFERRABLE", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(tokens[i + 1], "INITIALLY", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(tokens[i + 2], "DEFERRED", StringComparison.OrdinalIgnoreCase) &&
+                (i == 0 || !string.Equals(tokens[i - 1], "NOT", StringComparison.OrdinalIgnoreCase)))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
     public static bool HasAutoincrementColumn(string? createSql, string columnName)
     {
         if (string.IsNullOrWhiteSpace(createSql)) return false;

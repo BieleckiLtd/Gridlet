@@ -363,6 +363,11 @@ public sealed record ForeignKeyColumnPair(string Column, string ReferencedColumn
 /// without <c>CONSTRAINT</c> has no name to report. A synthesized name must never be written
 /// back to the database, because that would add a constraint name the author did not choose.
 /// </param>
+/// <param name="IsDeferred">
+/// True when the key is checked at commit rather than after each statement. Only SQLite reports
+/// it, for a key declared <c>DEFERRABLE INITIALLY DEFERRED</c>; every other spelling of the clause
+/// is checked immediately, and SQL Server has no deferred foreign keys.
+/// </param>
 // The compatibility constructor below leaves the serializer with two candidates, so the shape a
 // consumer deserializes into is named explicitly.
 [method: System.Text.Json.Serialization.JsonConstructor]
@@ -373,7 +378,8 @@ public sealed record ForeignKeyInfo(
     IReadOnlyList<ForeignKeyColumnPair> Columns,
     string OnDelete = "NO_ACTION",
     string OnUpdate = "NO_ACTION",
-    bool IsNameSynthesized = false)
+    bool IsNameSynthesized = false,
+    bool IsDeferred = false)
 {
     /// <summary>Creates the previous six-field shape without relying on optional-parameter ABI.</summary>
     public ForeignKeyInfo(

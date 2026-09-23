@@ -506,6 +506,10 @@ public static partial class SqlServerDdlBuilder
         {
             throw new GridletValidationException("A foreign key needs at least one column pair.");
         }
+        if (foreignKey.IsDeferred)
+        {
+            throw new GridletValidationException("SQL Server does not support deferred foreign keys.");
+        }
 
         var local = string.Join(", ", foreignKey.Columns.Select(c => SqlServerIdentifier.Quote(c.Column)));
         var referenced = string.Join(", ", foreignKey.Columns.Select(c => SqlServerIdentifier.Quote(c.ReferencedColumn)));
