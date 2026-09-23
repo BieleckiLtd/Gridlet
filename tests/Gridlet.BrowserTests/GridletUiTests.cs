@@ -1931,10 +1931,12 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(comparison.Locator("tbody tr")).ToHaveCountAsync(3);
         await comparison.GetByTestId("data-compare-filter").FillAsync("Ada changed");
         await Assertions.Expect(comparison.Locator("tbody tr")).ToHaveCountAsync(1);
-        await Assertions.Expect(comparison.GetByTestId("export-csv")).ToBeVisibleAsync();
-        await Assertions.Expect(comparison.GetByTestId("export-json")).ToBeVisibleAsync();
-        await Assertions.Expect(comparison.GetByTestId("export-xlsx")).ToBeVisibleAsync();
-        await Assertions.Expect(comparison.GetByTestId("export-parquet")).ToBeVisibleAsync();
+        await comparison.GetByTestId("export-menu").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("export-csv")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("export-json")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("export-xlsx")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("export-parquet")).ToBeVisibleAsync();
+        await page.Keyboard.PressAsync("Escape");
         browserPage.AssertNoUnexpectedErrors();
     }
 
@@ -4517,7 +4519,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             .ToBeVisibleAsync();
 
         var jsonDownload = await page.RunAndWaitForDownloadAsync(
-            () => panel.GetByTestId("export-json").ClickAsync());
+            () => ExportAsync(panel, "json"));
         Assert.Equal("Customers-Status-profile.json", jsonDownload.SuggestedFilename);
         using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
         Assert.Equal(JsonValueKind.Null, document.RootElement[0].GetProperty("Value").ValueKind);
@@ -4649,17 +4651,34 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var panel = ActivePanel(page);
         await Assertions.Expect(panel.GetByText("1 row(s) - safety cap reached", new() { Exact = true }))
             .ToBeVisibleAsync();
-        await Assertions.Expect(panel.GetByTestId("export-csv")).ToHaveTextAsync("Full CSV");
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }))
+            .ToBeHiddenAsync();
+        await Assertions.Expect(panel.GetByLabel("Row cap")).ToHaveCountAsync(0);
+        await panel.GetByTestId("data-row-count").ClickAsync();
+        var settings = page.GetByRole(AriaRole.Dialog, new() { Name = "About Gridlet" });
+        await Assertions.Expect(settings.GetByRole(AriaRole.Tab, new() { Name = "Settings" }))
+            .ToHaveAttributeAsync("aria-selected", "true");
+        await Assertions.Expect(settings.GetByTestId("row-cap-input")).ToHaveValueAsync("1");
+        await settings.GetByTestId("row-cap-input").FillAsync("2");
+        await settings.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+        await Assertions.Expect(settings).ToHaveCountAsync(0);
+        // Closing Settings after a change reloads the grid under the new cap.
+        await Assertions.Expect(panel.GetByText("2 row(s) - safety cap reached", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await panel.GetByTestId("export-menu").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("export-csv")).ToHaveTextAsync("CSV (all filtered rows)");
+        await Assertions.Expect(page.GetByTestId("export-xlsx")).ToHaveTextAsync("Excel (loaded rows)");
+        await page.Keyboard.PressAsync("Escape");
 
         var csvDownload = await page.RunAndWaitForDownloadAsync(
-            () => panel.GetByTestId("export-csv").ClickAsync());
+            () => ExportAsync(panel, "csv"));
         Assert.Equal("Ledger.csv", csvDownload.SuggestedFilename);
         var csv = await ReadDownloadAsync(csvDownload);
         Assert.Equal(5, csv.Split("\r\n", StringSplitOptions.RemoveEmptyEntries).Length);
         Assert.Contains("4,Alan", csv);
 
         var jsonDownload = await page.RunAndWaitForDownloadAsync(
-            () => panel.GetByTestId("export-json").ClickAsync());
+            () => ExportAsync(panel, "json"));
         Assert.Equal("Ledger.json", jsonDownload.SuggestedFilename);
         using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
         Assert.Equal(4, document.RootElement.GetArrayLength());
@@ -4681,16 +4700,25 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
                 await route.ContinueAsync();
             }
         });
-        await panel.GetByTestId("export-csv").ClickAsync();
+        await ExportAsync(panel, "csv");
         await Assertions.Expect(page.Locator("#toast-stack"))
             .ToContainTextAsync("Export failed: The export could not be validated.");
         await page.UnrouteAsync("**/data/export?*");
 
         await page.Locator("[title='dbo.LedgerHeap']").ClickAsync();
         panel = ActivePanel(page);
-        await Assertions.Expect(panel.GetByTestId("export-csv")).ToHaveTextAsync("CSV");
-        await Assertions.Expect(panel.GetByTestId("export-csv"))
-            .ToHaveAttributeAsync("title", "Download as CSV");
+        await panel.GetByTestId("export-menu").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("export-csv")).ToHaveTextAsync("CSV");
+        await page.Keyboard.PressAsync("Escape");
+
+        // The query tab shows the same cap and offers the way to change it.
+        await page.Locator("#new-query-btn").ClickAsync();
+        var queryRowCap = ActivePanel(page).GetByTestId("query-row-cap");
+        await Assertions.Expect(queryRowCap).ToHaveTextAsync("Row cap 2");
+        await queryRowCap.ClickAsync();
+        await settings.GetByTestId("row-cap-input").FillAsync("3");
+        await settings.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+        await Assertions.Expect(queryRowCap).ToHaveTextAsync("Row cap 3");
         browserPage.AssertNoUnexpectedErrors("400");
     }
 
@@ -4803,24 +4831,24 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
 
         var csvDownload = await page.RunAndWaitForDownloadAsync(
-            () => page.GetByTestId("export-csv").ClickAsync());
+            () => ExportAsync(page, "csv"));
         Assert.Equal("SQL_1-result1.csv", csvDownload.SuggestedFilename);
         Assert.Equal("Answer\r\n42", await ReadDownloadAsync(csvDownload));
 
         var jsonDownload = await page.RunAndWaitForDownloadAsync(
-            () => page.GetByTestId("export-json").ClickAsync());
+            () => ExportAsync(page, "json"));
         Assert.Equal("SQL_1-result1.json", jsonDownload.SuggestedFilename);
         using var document = JsonDocument.Parse(await ReadDownloadAsync(jsonDownload));
         Assert.Equal(42, document.RootElement[0].GetProperty("Answer").GetInt32());
 
         var excelDownload = await page.RunAndWaitForDownloadAsync(
-            () => page.GetByTestId("export-xlsx").ClickAsync());
+            () => ExportAsync(page, "xlsx"));
         Assert.Equal("SQL_1-result1.xlsx", excelDownload.SuggestedFilename);
         var excel = await ReadDownloadBytesAsync(excelDownload);
         Assert.Equal("PK", System.Text.Encoding.ASCII.GetString(excel, 0, 2));
 
         var parquetDownload = await page.RunAndWaitForDownloadAsync(
-            () => page.GetByTestId("export-parquet").ClickAsync());
+            () => ExportAsync(page, "parquet"));
         Assert.Equal("SQL_1-result1.parquet", parquetDownload.SuggestedFilename);
         var parquet = await ReadDownloadBytesAsync(parquetDownload);
         Assert.Equal("PAR1", System.Text.Encoding.ASCII.GetString(parquet, 0, 4));
@@ -4832,7 +4860,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
             ContentType = "text/plain",
             Body = "",
         }));
-        await page.GetByTestId("export-xlsx").ClickAsync();
+        await ExportAsync(page, "xlsx");
         await Assertions.Expect(page.Locator("#toast-stack")).ToContainTextAsync(
             "This result set is too large for Excel or Parquet export. Lower the row cap and try again.");
         browserPage.AssertNoUnexpectedErrors("413 (Payload Too Large)");
@@ -4848,7 +4876,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(page.GetByTestId("query-status")).ToHaveTextAsync("1 ms");
 
         var download = await page.RunAndWaitForDownloadAsync(
-            () => page.GetByTestId("export-csv").ClickAsync());
+            () => ExportAsync(page, "csv"));
 
         Assert.Equal("Text\r\n'\t2+3", await ReadDownloadAsync(download));
         browserPage.AssertNoUnexpectedErrors();
@@ -4882,7 +4910,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(keyboardMenu).ToBeVisibleAsync();
         var copyBounds = await copyButton.BoundingBoxAsync();
         var menuBounds = await keyboardMenu.BoundingBoxAsync();
-        Assert.InRange(Math.Abs(menuBounds!.X - copyBounds!.X), 0, 2);
+        var leftAligned = Math.Abs(menuBounds!.X - copyBounds!.X) <= 2;
+        var rightAligned = Math.Abs(menuBounds.X + menuBounds.Width - (copyBounds.X + copyBounds.Width)) <= 2;
+        Assert.True(leftAligned || rightAligned, "The keyboard-opened menu hangs off one edge of its trigger.");
         await keyboardMenu.GetByRole(AriaRole.Menuitem).Last.PressAsync("Tab");
         await Assertions.Expect(keyboardMenu).ToBeHiddenAsync();
         await Assertions.Expect(copyButton).ToHaveAttributeAsync("aria-expanded", "false");
@@ -5925,6 +5955,97 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
     }
 
     [Fact]
+    public async Task Keeps_the_row_editor_in_a_virtual_grid_and_moves_from_the_last_row_to_a_new_row()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        var ids = Enumerable.Range(1, 1500).ToArray();
+        var stream = string.Join('\n',
+            JsonSerializer.Serialize(new
+            {
+                type = "resultSet", resultSetIndex = 0,
+                columns = new[]
+                {
+                    new { name = "Id", dataType = "int" },
+                    new { name = "Name", dataType = "nvarchar" },
+                    new { name = "Status", dataType = "int" },
+                },
+                rowIdentity = new { kind = "primaryKey", columns = new[] { "Id" }, source = "PK_Customers" },
+            }),
+            JsonSerializer.Serialize(new
+            {
+                type = "rows", resultSetIndex = 0,
+                rows = ids.Select(id => new object[] { id, $"Customer {id}", 1 }),
+                rowKeys = ids.Select(id => new[] { id }),
+            }),
+            JsonSerializer.Serialize(new { type = "resultSetCompleted", resultSetIndex = 0, truncated = false }),
+            JsonSerializer.Serialize(new { type = "completed", recordsAffected = 1500 }));
+        await page.RouteAsync("**/connections/Main/databases/FakeDb/objects/dbo/Customers/data/stream?*", route =>
+            route.FulfillAsync(new RouteFulfillOptions
+            {
+                Status = 200, ContentType = "application/x-ndjson", Body = stream,
+            }));
+        await page.GotoAsync("/gridlet/");
+
+        await page.GetByTitle("dbo.Customers").ClickAsync();
+        var panel = ActivePanel(page);
+        await Assertions.Expect(panel.GetByText("1500 row(s)", new() { Exact = true })).ToBeVisibleAsync();
+        var scroll = panel.Locator(".data-grid-scroll");
+        await Assertions.Expect(scroll).ToHaveClassAsync(new Regex("virtualized"));
+        await scroll.EvaluateAsync("element => { element.scrollTop = element.scrollHeight; }");
+        var newRow = panel.GetByTestId("new-row");
+        await Assertions.Expect(newRow).ToBeInViewportAsync();
+
+        // The editor makes the grid taller and scrolls it; the redraw that scroll asks for must
+        // wait for the editor rather than throw it away.
+        await newRow.ClickAsync();
+        var editor = panel.Locator("tr.row-editor");
+        await Assertions.Expect(editor.Locator(".row-selector")).ToHaveTextAsync("+");
+        var name = editor.GetByLabel("Name", new() { Exact = true });
+        await name.FillAsync("Katherine");
+        await scroll.EvaluateAsync("element => { element.scrollTop -= 200; }");
+        await page.WaitForTimeoutAsync(100);
+        await Assertions.Expect(editor).ToHaveCountAsync(1);
+        await Assertions.Expect(name).ToHaveValueAsync("Katherine");
+        await name.PressAsync("Escape");
+        await Assertions.Expect(editor).ToHaveCountAsync(0);
+
+        // With a redraw pending, a click on another row closes the open editor and opens that row.
+        await scroll.EvaluateAsync("element => { element.scrollTop = element.scrollHeight; }");
+        await panel.Locator("tr[data-row-index='1489'] td:not(.row-selector)").Nth(1).ClickAsync();
+        await Assertions.Expect(editor.Locator(".row-selector")).ToHaveTextAsync("1490");
+        await scroll.EvaluateAsync("element => { element.scrollTop -= 50; }");
+        await page.WaitForTimeoutAsync(100);
+        await panel.Locator("tr[data-row-index='1494'] td:not(.row-selector)").Nth(1).ClickAsync();
+        await Assertions.Expect(editor.Locator(".row-selector")).ToHaveTextAsync("1495");
+        await editor.GetByLabel("Name", new() { Exact = true }).PressAsync("Escape");
+        await Assertions.Expect(editor).ToHaveCountAsync(0);
+
+        // Tab from the last field of the last row saves it and opens the new-row editor, although a
+        // virtual grid draws a spacer row after its last drawn row.
+        await scroll.EvaluateAsync("element => { element.scrollTop = element.scrollHeight; }");
+        var lastRow = panel.Locator("tr[data-row-index='1499']");
+        await lastRow.Locator("td:not(.row-selector)").Nth(1).ClickAsync();
+        await Assertions.Expect(editor.Locator(".row-selector")).ToHaveTextAsync("1500");
+        var status = editor.GetByLabel("Status", new() { Exact = true });
+        await status.FillAsync("2");
+        await status.PressAsync("Tab");
+        await Assertions.Expect(page.Locator("#toast-stack").GetByText("Row 1500 updated.", new() { Exact = true }))
+            .ToBeVisibleAsync();
+        await Assertions.Expect(editor.Locator(".row-selector")).ToHaveTextAsync("+");
+        await editor.GetByLabel("Name", new() { Exact = true }).PressAsync("Escape");
+        await Assertions.Expect(editor).ToHaveCountAsync(0);
+
+        // Delete on the new-row line does not delete the selected rows.
+        await lastRow.Locator(".row-selector").ClickAsync();
+        await newRow.FocusAsync();
+        await page.Keyboard.PressAsync("Delete");
+        await page.WaitForTimeoutAsync(100);
+        await Assertions.Expect(page.GetByRole(AriaRole.Dialog)).ToHaveCountAsync(0);
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
+    [Fact]
     public async Task Sends_table_designer_and_row_editor_changes_to_the_provider()
     {
         await using var browserPage = await fixture.NewPageAsync();
@@ -5941,7 +6062,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await page.GetByTitle("dbo.Customers").ClickAsync();
         var panel = ActivePanel(page);
         await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
-        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Row" }).ClickAsync();
+        await panel.GetByTestId("new-row").ClickAsync();
         var name = panel.GetByLabel("Name", new() { Exact = true });
         await name.FillAsync("Katherine");
         await name.PressAsync("Control+Enter");
@@ -6985,7 +7106,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
         await page.Locator("[title=\"dbo.Ledger\"]").ClickAsync();
         var panel = ActivePanel(page);
-        await panel.GetByRole(AriaRole.Button, new() { Name = "＋ Row", Exact = true }).ClickAsync();
+        await panel.GetByTestId("new-row").ClickAsync();
         var rowEditor = panel.Locator("tr.row-editor");
         await Assertions.Expect(rowEditor.GetByLabel("SysStart", new() { Exact = true })).ToHaveCountAsync(0);
         await Assertions.Expect(rowEditor.GetByLabel("SysEnd", new() { Exact = true })).ToHaveCountAsync(0);
@@ -7063,8 +7184,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         await Assertions.Expect(internalObject.Locator(".badge")).ToHaveTextAsync("I");
         await internalObject.ClickAsync();
         panel = ActivePanel(page);
-        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "＋ Row", Exact = true }))
-            .ToHaveCountAsync(0);
+        await Assertions.Expect(panel.GetByTestId("new-row")).ToHaveCountAsync(0);
         await panel.GetByRole(AriaRole.Button, new() { Name = "Structure", Exact = true }).ClickAsync();
         await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "＋ Add column", Exact = true }))
             .ToHaveCountAsync(0);
@@ -7371,6 +7491,15 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
 
     private static ILocator ActivePanel(IPage page) => page.Locator("#panels .panel:not([hidden])");
 
+    private static Task ExportAsync(IPage page, string format) => ExportAsync(page.Locator("body"), format);
+
+    // Downloads live in the "Export" menu, which the page appends to the body rather than the panel.
+    private static async Task ExportAsync(ILocator scope, string format)
+    {
+        await scope.GetByTestId("export-menu").ClickAsync();
+        await scope.Page.GetByTestId($"export-{format}").ClickAsync();
+    }
+
     private static async Task ClickQueryActionAsync(ILocator panel, string testId)
     {
         var control = panel.GetByTestId(testId);
@@ -7454,7 +7583,9 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
         var panel = ActivePanel(page);
         await Assertions.Expect(panel.GetByText("2 row(s)", new() { Exact = true })).ToBeVisibleAsync();
 
-        await panel.GetByTestId("empty-table").ClickAsync();
+        await Assertions.Expect(panel.GetByRole(AriaRole.Button, new() { Name = "Empty table…" })).ToHaveCountAsync(0);
+        await page.GetByTitle("dbo.Customers").ClickAsync(new() { Button = MouseButton.Right });
+        await page.Locator(".context-menu button").Filter(new() { HasText = "Empty table…" }).ClickAsync();
         var emptyDialog = page.GetByRole(AriaRole.Dialog, new() { Name = "Empty table" });
         await Assertions.Expect(emptyDialog).ToContainTextAsync("cannot be undone");
         await emptyDialog.GetByRole(AriaRole.Button, new() { Name = "Delete all rows", Exact = true }).ClickAsync();
@@ -7647,6 +7778,7 @@ public sealed class GridletUiTests(BrowserAppFixture fixture)
               const range = document.createRange();
               const cellsFit = [...table.tBodies[0].rows].every((row) => {
                 const cell = row.cells[header.cellIndex];
+                if (!cell || cell.colSpan > 1) return true;
                 range.selectNodeContents(cell);
                 const cellStyle = getComputedStyle(cell);
                 return range.getBoundingClientRect().width + parseFloat(cellStyle.paddingLeft)

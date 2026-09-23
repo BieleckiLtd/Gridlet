@@ -388,7 +388,43 @@
     ]);
   }
 
-  function showAbout() {
+  // The row cap is one setting for the whole browser: every table view and query result keeps at
+  // most this many rows. It is not a property of any table, so it lives in the Settings tab.
+  const ROW_CAP_KEY = 'gridlet.queryMaxRows';
+  // A missing, zero or unreadable value means "as many as the server allows".
+  const clampRowCap = (value) => {
+    const serverMax = state.meta.maxQueryResultRows;
+    return Math.min(serverMax, Math.max(1, Number(value) || serverMax));
+  };
+  const rowCap = () => {
+    let saved = null;
+    try { saved = localStorage.getItem(ROW_CAP_KEY); } catch { /* unavailable */ }
+    return clampRowCap(saved);
+  };
+  // Opens the Settings tab and calls onChange once it closes, if the cap changed meanwhile.
+  const editRowCap = (onChange) => {
+    const capBefore = rowCap();
+    showAbout('Settings', () => { if (rowCap() !== capBefore) onChange(); });
+  };
+  const renderSettings = () => {
+    const serverMax = state.meta.maxQueryResultRows;
+    const input = h('input', {
+      class: 'query-row-limit', type: 'number', min: '1', max: String(serverMax),
+      value: String(rowCap()), 'data-testid': 'row-cap-input',
+    });
+    input.addEventListener('change', () => {
+      input.value = String(clampRowCap(input.value));
+      try { localStorage.setItem(ROW_CAP_KEY, input.value); } catch { /* unavailable */ }
+      document.dispatchEvent(new CustomEvent('gridlet:row-cap-change'));
+    });
+    return h('div', {},
+      h('h2', { text: 'Row cap' }),
+      h('p', { class: 'muted', text: 'The most rows a table view or a query result keeps in this browser. '
+        + `The server allows up to ${serverMax.toLocaleString()}. A load that reaches the cap stops there and says so.` }),
+      h('label', {}, h('span', { text: 'Rows' }), input));
+  };
+
+  function showAbout(initialTab = 'About', onClose = null) {
     const content = h('div', { class: 'about-content' });
     const tabs = [
       {
@@ -439,11 +475,13 @@
             h('li', {}, h('a', { href: 'https://github.com/dotnet/aspnetcore', target: '_blank', rel: 'noopener', text: 'ASP.NET Core and Embedded File Provider ↗' }))),
           h('p', { class: 'muted', text: 'Copyrights remain with their respective owners. Complete licence texts and notices are available from the linked projects.' })),
       },
+      { label: 'Settings', render: renderSettings },
     ];
+    const first = Math.max(0, tabs.findIndex((tab) => tab.label === initialTab));
     const buttons = tabs.map((tab, index) => h('button', {
-      class: 'about-tab' + (index === 0 ? ' active' : ''),
+      class: 'about-tab' + (index === first ? ' active' : ''),
       role: 'tab',
-      'aria-selected': String(index === 0),
+      'aria-selected': String(index === first),
       text: tab.label,
       onclick: () => {
         buttons.forEach((button) => {
@@ -454,10 +492,10 @@
         content.replaceChildren(tab.render());
       },
     }));
-    content.append(tabs[0].render());
+    content.append(tabs[first].render());
     modal('About Gridlet', h('div', { class: 'about-dialog' },
       h('div', { class: 'about-tabs', role: 'tablist', 'aria-label': 'About Gridlet' }, buttons),
-      content), [{ label: 'Close', primary: true, onClick: (close) => close() }]);
+      content), [{ label: 'Close', primary: true, onClick: (close) => close() }], onClose);
   }
 
   function showContextMenu(event, items) {
@@ -490,6 +528,8 @@
         role: item.checked === undefined ? 'menuitem' : 'menuitemradio',
         'aria-checked': item.checked === undefined ? null : String(!!item.checked),
         text: item.label,
+        title: item.title || null,
+        'data-testid': item.testId || null,
         disabled: item.disabled ? '' : null,
         onclick: () => { dismiss(true); item.action(); },
       })));
@@ -502,7 +542,12 @@
     const bounds = menu.getBoundingClientRect();
     const triggerBounds = trigger?.getBoundingClientRect();
     const keyboardActivation = event.clientX === 0 && event.clientY === 0 && triggerBounds;
-    const requestedX = keyboardActivation ? triggerBounds.left : event.clientX;
+    // A menu opened from the keyboard hangs off its trigger: from the left edge as a rule, or from
+    // the right edge when the trigger sits so close to the window's edge that the menu would not fit.
+    const hangsRight = keyboardActivation && triggerBounds.left + bounds.width > window.innerWidth - 4;
+    const requestedX = keyboardActivation
+      ? (hangsRight ? triggerBounds.right - bounds.width : triggerBounds.left)
+      : event.clientX;
     const requestedY = keyboardActivation ? triggerBounds.bottom : event.clientY;
     menu.style.left = Math.max(4, Math.min(requestedX, window.innerWidth - bounds.width - 4)) + 'px';
     menu.style.top = Math.max(4, Math.min(requestedY, window.innerHeight - bounds.height - 4)) + 'px';
@@ -2397,7 +2442,7 @@
     $('#object-search-btn').addEventListener('click', () => openObjectSearchTab());
     $('#new-query-btn').addEventListener('click', () => openQueryTab());
     $('#apis-btn').addEventListener('click', () => openApisTab());
-    $('#about-btn').addEventListener('click', showAbout);
+    $('#about-btn').addEventListener('click', () => showAbout());
     $('#search').addEventListener('input', (event) => {
       rememberFilter(event.target.value.trim());
       renderTree();
@@ -3112,6 +3157,9 @@
   const useInQueryButton = (o, scope = state, getFilterSql = null) =>
     connectionFor(scope).allowSqlExecution && !['Trigger', 'UserDefinedType'].includes(o.type) ? h('button', {
       'data-testid': 'object-use-query',
+      title: getFilterSql
+        ? 'Open a SQL tab that selects from this object with the current filters'
+        : 'Open a SQL tab that uses this object',
       onclick: async (event) => {
         const button = event.currentTarget;
         button.disabled = true;
@@ -3127,7 +3175,9 @@
     }, 'Use in query') : null;
 
   const dependenciesButton = (o, scope = state) => h('button', {
-    text: 'Dependencies…', 'data-testid': 'object-dependencies', onclick: async () => {
+    text: 'Dependencies…', 'data-testid': 'object-dependencies',
+    title: 'List the objects this one uses and the objects that use it',
+    onclick: async () => {
       try {
         const dependencies = await api(urlsFor(scope).dependencies(o.schema, o.name));
         const group = (direction, title) => {
@@ -7855,13 +7905,23 @@
 
       let table;
       const friendly = { displays, valueKey, renderCell: friendlyCell };
+      // As in a spreadsheet, the grid ends in a blank line that starts a new row; there is no
+      // button for it. Moving down from the last row lands on that line.
+      const canAddRows = Boolean(structure) && currentConn().allowWrites && !o.isInternal;
+      const addRow = () => openRowEditor(table, data.columns, structure, friendly, null, null, columnIndex);
+      // The next row is found by its index in the grid as drawn now: the grid may have been redrawn
+      // while the editor was open, and a virtual grid puts a spacer row after its last drawn row.
+      const moveBelow = (rowIndex) => {
+        if (rowIndex + 1 < data.rows.length) {
+          table?.querySelector(`tr[data-row-index="${rowIndex + 1}"] > td:not(.row-selector)`)?.click();
+        } else if (canAddRows) {
+          addRow();
+        }
+      };
       const editRow = (row, rowElement, selectedColumn, rowIndex) =>
         openRowEditor(
           table, data.columns, structure, friendly, row, rowElement, columnIndex, rowKey, selectedColumn, rowIndex + 1,
-          rowIndex + 1 < data.rows.length
-            ? () => rowElement.nextElementSibling
-              ?.querySelector('td:not(.row-selector)')?.click()
-            : null);
+          rowIndex + 1 < data.rows.length || canAddRows ? () => moveBelow(rowIndex) : null);
       const rowActions = structure && identity ? {
         onEdit: editRow,
         onDeleteSelected: (rows) => confirmModal(
@@ -7944,15 +8004,19 @@
         }
         incomingPanel.hidden = false;
         if (selectedRows.length !== 1) {
-          incomingPanel.replaceChildren(h('h3', { text: 'Incoming references' }),
-            h('p', { class: 'muted', text: 'Select one row to inspect incoming foreign keys.' }));
+          incomingPanel.replaceChildren(h('div', { class: 'incoming-references-head' },
+            h('h3', { text: 'Incoming references' }),
+            h('span', { class: 'muted', text: 'Select one row to inspect incoming foreign keys.' })));
           return;
         }
         const row = selectedRows[0];
-        const heading = () => h('h3', { text: `Incoming references to ${describeRow(row)}` });
+        const heading = (...actions) => h('div', { class: 'incoming-references-head' },
+          h('h3', { text: `Incoming references to ${describeRow(row)}` }), ...actions);
         const inspect = h('button', {
           type: 'button', text: 'Inspect incoming references',
           'data-testid': 'inspect-incoming-references',
+          title: 'Find the tables whose foreign keys point at this row. '
+            + 'The first inspection loads the structure of every table.',
           onclick: async () => {
             if (current !== incomingRequest) return;
             inspect.disabled = true;
@@ -8032,8 +8096,7 @@
             }
           },
         });
-        incomingPanel.replaceChildren(heading(),
-          h('p', { class: 'muted', text: 'Relationship metadata is loaded only when requested.' }), inspect);
+        incomingPanel.replaceChildren(heading(inspect));
       };
 
       // Filtering happens in SQL, on every row of the object, not on the page already fetched -
@@ -8111,21 +8174,12 @@
           }, 'Clear all'));
       };
 
-      const serverMaxRows = state.meta.maxQueryResultRows;
-      let savedMaxRows = serverMaxRows;
-      try { savedMaxRows = Number(localStorage.getItem('gridlet.queryMaxRows')) || serverMaxRows; } catch { /* unavailable */ }
-      const capInput = h('input', {
-        class: 'query-row-limit', type: 'number', min: '1', max: String(serverMaxRows),
-        value: String(Math.min(serverMaxRows, Math.max(1, savedMaxRows))),
-        title: `Rows retained (server maximum ${serverMaxRows.toLocaleString()})`,
+      const status = h('button', {
+        class: 'ghost muted row-count', text: 'Loading…', 'data-testid': 'data-row-count',
+        title: `Row cap ${rowCap().toLocaleString()}. Click to change it.`,
+        onclick: () => editRowCap(renderData),
       });
-      capInput.addEventListener('change', () => {
-        capInput.value = String(Math.min(serverMaxRows, Math.max(1, Number(capInput.value) || serverMaxRows)));
-        try { localStorage.setItem('gridlet.queryMaxRows', capInput.value); } catch { /* unavailable */ }
-        renderData();
-      });
-      const status = h('span', { class: 'muted', text: 'Loading…' });
-      const cancel = h('button', { text: 'Cancel', onclick: () => controller.abort() });
+      const cancel = h('button', { text: 'Cancel', title: 'Stop loading rows', onclick: () => controller.abort() });
       const scroll = h('div', { class: 'grid-scroll data-grid-scroll' });
       let exportControls;
       let filterSqlRequest = Promise.resolve('');
@@ -8163,7 +8217,16 @@
           }
           : { scope, insertTarget: sqlName(o) },
         identity ? fullExport : null);
+      // Left to right: change the rows, look around the object, then export. Destructive actions
+      // (emptying a table, deleting a view) live in the object's context menu and other views.
       actionBar.replaceChildren(...[
+        structure && o.type === 'Table' && currentConn().allowWrites
+          && currentCapabilities().supportsImport && !o.isInternal
+          ? h('button', {
+            'data-testid': 'import-data', title: 'Load rows from a file into this table',
+            onclick: openImportDialog,
+          }, 'Import…')
+          : null,
         o.type === 'Table' && !o.isInternal && !isVirtualObject(o)
           ? h('button', {
             'data-testid': 'data-compare-open',
@@ -8171,31 +8234,12 @@
             onclick: () => openDataCompareTab(scope, o),
           }, 'Compare data…')
           : null,
-        structure && currentConn().allowWrites && !o.isInternal
-          ? h('button', {
-            onclick: () => openRowEditor(table, data.columns, structure, friendly, null, null, columnIndex),
-          }, '＋ Row')
-          : null,
-        structure && o.type === 'Table' && currentConn().allowWrites
-          && currentCapabilities().supportsImport && !o.isInternal
-          ? h('button', { 'data-testid': 'import-data', onclick: openImportDialog }, 'Import…')
-          : null,
-        cancel,
-        useInQueryButton(o, scope, () => filterSqlRequest),
         dependenciesButton(o, scope),
+        useInQueryButton(o, scope, () => filterSqlRequest),
+        cancel,
         h('span', { class: 'spacer' }),
         (exportControls = createExportControls()),
-        h('label', { class: 'query-limit-label' }, 'Row cap ', capInput),
         status,
-        o.type === 'Table' && currentConn().allowWrites && !o.isInternal && canDropObject(o)
-          ? h('button', {
-            class: 'danger', text: 'Empty table…', 'data-testid': 'empty-table',
-            onclick: () => emptyTable(o, scope, () => renderData()),
-          })
-          : null,
-        o.type === 'View' && currentConn().allowDdl && canDropObject(o) ? h('button', {
-          class: 'danger', text: 'Delete view…', onclick: () => deleteObject(o, scope),
-        }) : null,
       ].filter(Boolean));
       const filterBarElement = filterBar();
       body.replaceChildren(...[filterBarElement, scroll, incomingPanel].filter(Boolean));
@@ -8212,6 +8256,7 @@
         onSelectionChange: showIncomingReferences,
         columnFilter,
         columnWidths: grid.columnWidths,
+        newRow: canAddRows ? { onAdd: addRow } : null,
         onSort: (column) => {
           if (grid.sort === column) grid.dir = grid.dir === 'asc' ? 'desc' : 'asc';
           else { grid.sort = column; grid.dir = 'asc'; }
@@ -8219,7 +8264,7 @@
         },
       });
 
-      const params = new URLSearchParams({ maxRows: capInput.value });
+      const params = new URLSearchParams({ maxRows: String(rowCap()) });
       if (grid.sort) { params.set('sort', grid.sort); params.set('dir', grid.dir); }
       const appliedFilters = grid.filters.length ? JSON.stringify(serverFilters()) : null;
       if (appliedFilters) params.set('filter', appliedFilters);
@@ -8266,7 +8311,9 @@
             resolveFriendlyValues(event.rows);
             status.textContent = `${data.rows.length} row(s) - receiving…`;
           }
-          else if (event.type === 'resultSetCompleted') status.textContent = `${data.rows.length} row(s)` + (event.truncated ? ' - safety cap reached' : '');
+          else if (event.type === 'resultSetCompleted') {
+            status.textContent = `${data.rows.length} row(s)` + (event.truncated ? ' - safety cap reached' : '');
+          }
           else if (event.type === 'error') throw new Error(event.message);
         });
       } catch (err) {
@@ -8274,7 +8321,7 @@
         if (err.name === 'AbortError') status.textContent = 'Cancelled';
         else { body.append(errorBox(err.message)); status.textContent = 'Failed'; }
       } finally {
-        cancel.disabled = true;
+        cancel.hidden = true;
         if (activeDataLoad === controller) activeDataLoad = null;
       }
     };
@@ -8634,8 +8681,14 @@
         });
       });
 
-      if (isNew) table.tBodies[0].prepend(editorRow);
-      else existingRowElement.replaceWith(editorRow);
+      if (isNew) {
+        const newRowLine = table.querySelector('tr.new-row');
+        if (newRowLine) newRowLine.before(editorRow);
+        else table.tBodies[0].append(editorRow);
+        editorRow.scrollIntoView({ block: 'nearest' });
+      } else {
+        existingRowElement.replaceWith(editorRow);
+      }
       const selectedInput = focusableByName.get(selectedColumn?.toLowerCase()) || fields[0]?.input;
       setTimeout(() => {
         selectedInput?.focus();
@@ -12028,18 +12081,6 @@
       text: 'History', title: 'Queries run on this connection and database from this browser',
       'data-testid': 'query-history',
     });
-    const serverMaxRows = state.meta.maxQueryResultRows;
-    let savedMaxRows = serverMaxRows;
-    try { savedMaxRows = Number(localStorage.getItem('gridlet.queryMaxRows')) || serverMaxRows; } catch { /* unavailable */ }
-    const maxRowsInput = h('input', {
-      class: 'query-row-limit', type: 'number', min: '1', max: String(serverMaxRows),
-      value: String(Math.min(serverMaxRows, Math.max(1, savedMaxRows))),
-      title: `Rows retained per result set (server maximum ${serverMaxRows.toLocaleString()})`,
-    });
-    maxRowsInput.addEventListener('change', () => {
-      maxRowsInput.value = String(Math.min(serverMaxRows, Math.max(1, Number(maxRowsInput.value) || serverMaxRows)));
-      try { localStorage.setItem('gridlet.queryMaxRows', maxRowsInput.value); } catch { /* unavailable */ }
-    });
     const savedSelect = h('select', { class: 'saved-select' });
     const saveButton = h('button', { text: 'Save' });
     const deleteButton = h('button', { text: 'Delete', disabled: '' });
@@ -12436,7 +12477,7 @@
 
       try {
         await streamNdjson(urls.sessionQuery(session.id), {
-          method: 'POST', body: JSON.stringify({ sql, maxRows: Number(maxRowsInput.value) }), signal: controller.signal,
+          method: 'POST', body: JSON.stringify({ sql, maxRows: rowCap() }), signal: controller.signal,
         }, addEvent);
         if (completedSuccessfully && /\b(?:CREATE(?:\s+OR\s+ALTER)?|ALTER|DROP)\s+(?:VIEW|TABLE|PROCEDURE|PROC|FUNCTION|SCHEMA)\b/i.test(sql)) {
           await refreshObjects(scope);
@@ -12571,7 +12612,7 @@
           activeJobId = null;
           tab.jobHistoryRecorded = false;
           const started = await post(urls.queryJobs(), {
-            sql, maxRows: Number(maxRowsInput.value),
+            sql, maxRows: rowCap(),
           });
           jobId = started.id;
           activeJobId = jobId;
@@ -12784,8 +12825,19 @@
         h('span', { class: 'toolbar-divider' }),
         sessionToggle, beginButton, commitButton, rollbackButton, sessionState)
       : null;
-    const limitActions = h('span', { class: 'toolbar-group' },
-      h('label', { class: 'query-limit-label', title: maxRowsInput.title }, 'Row cap ', maxRowsInput));
+    // The cap itself lives in Settings; this button shows it and opens Settings to change it.
+    const rowCapButton = h('button', {
+      class: 'ghost', 'data-testid': 'query-row-cap', title: 'The most rows a result keeps. Click to change it.',
+    });
+    const showRowCap = () => { rowCapButton.textContent = `Row cap ${rowCap().toLocaleString()}`; };
+    showRowCap();
+    rowCapButton.addEventListener('click', () => showAbout('Settings'));
+    const onRowCapChange = () => {
+      if (!state.tabs.includes(tab)) document.removeEventListener('gridlet:row-cap-change', onRowCapChange);
+      else showRowCap();
+    };
+    document.addEventListener('gridlet:row-cap-change', onRowCapChange);
+    const limitActions = h('span', { class: 'toolbar-group' }, rowCapButton);
     const queryToolbar = h('div', { class: 'query-toolbar', 'data-testid': 'query-toolbar' },
         runButton, cancelButton,
         formatActions,
@@ -14666,7 +14718,7 @@
     const selected = selection.selected;
     const rowElements = [];
     const tbody = h('tbody', {}, rows.map((row, rowIndex) => {
-      const tr = h('tr', {}, row.map((value, columnIndex) => {
+      const tr = h('tr', { 'data-row-index': String(rowOffset + rowIndex) }, row.map((value, columnIndex) => {
         const cell = options?.renderCell ? options.renderCell(value, columns[columnIndex], row) : renderCell(value);
         if (columnKinds[columnIndex] === 'number' || columnKinds[columnIndex] === 'date') {
           cell.classList.add('cell-align-right');
@@ -14715,6 +14767,16 @@
           text: '(no rows)',
         })));
     }
+    if (options?.newRow) {
+      const add = (event) => { event.preventDefault(); options.newRow.onAdd(); };
+      tbody.append(h('tr', {
+        class: 'new-row', 'data-testid': 'new-row', tabindex: '0', title: 'Add a row',
+        onclick: add,
+        onkeydown: (event) => { if (event.key === 'Enter' || event.key === ' ') add(event); },
+      },
+        selectable ? h('td', { class: 'row-selector', text: '+' }) : null,
+        h('td', { class: 'muted new-row-cell', colspan: String(columns.length || 1), text: 'Add a row…' })));
+    }
 
     const table = h('table', { class: 'grid data-grid', tabindex: selectable ? '0' : null }, h('thead', {}, headRow), tbody);
     if (selectable) {
@@ -14722,7 +14784,8 @@
       table.style.setProperty('--row-selector-width', selectorWidth + 'px');
     }
     if (selectable) table.addEventListener('keydown', async (event) => {
-      if (event.target.matches('input, textarea, select')) return;
+      // The new-row line takes focus of its own; row shortcuts such as Delete do not apply to it.
+      if (event.target.matches('input, textarea, select, tr.new-row')) return;
       const chosen = [...selected].sort((a, b) => a - b).map((index) => allRows[index]).filter(Boolean);
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && chosen.length) {
         event.preventDefault();
@@ -14748,8 +14811,22 @@
     const selectionState = { selected: new Set(), anchor: -1 };
     const columnWidths = options.columnWidths || new Map();
 
+    // A redraw builds a new table, which would throw away an open row editor and what was typed in
+    // it. While an editor is open the redraw waits, and it runs on the frame after the editor closes.
+    // Waiting a frame lets a click or Tab that closed one editor open the next in the same table
+    // first; the redraw then waits for that editor in turn.
+    let redrawPending = false;
+    const editorOpen = () => Boolean(table?.querySelector('tr.row-editor'));
+    new MutationObserver(() => {
+      if (!redrawPending || editorOpen() || scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => { scheduled = false; render(); });
+    }).observe(container, { childList: true, subtree: true });
+
     const render = () => {
       if (!columns.length) return;
+      if (editorOpen()) { redrawPending = true; return; }
+      redrawPending = false;
       const virtual = rows.length > threshold;
       container.classList.toggle('virtualized', virtual);
       const start = virtual ? Math.max(0, Math.floor(container.scrollTop / rowHeight) - 20) : 0;
@@ -14774,6 +14851,7 @@
         onSelectionChange: options.onSelectionChange,
         columnFilter: options.columnFilter,
         columnWidths,
+        newRow: options.newRow,
       });
       if (virtual) {
         const tbody = table.tBodies[0];
@@ -14781,7 +14859,10 @@
         const spacer = (height) => h('tr', { class: 'virtual-spacer' },
           h('td', { colspan, style: `height:${height}px` }));
         tbody.prepend(spacer(start * rowHeight));
-        tbody.append(spacer((rows.length - end) * rowHeight));
+        const trailing = spacer((rows.length - end) * rowHeight);
+        const newRowLine = tbody.querySelector('tr.new-row');
+        if (newRowLine) newRowLine.before(trailing);
+        else tbody.append(trailing);
       }
       container.replaceChildren(table);
       options.onRender?.(table);
@@ -15081,35 +15162,34 @@
         },
       ]),
     }, 'Copy ▾');
-    const richExportButton = (format, label) => {
-      const button = h('button', {
-        class: 'ghost', title: `Download as ${label}`,
-        'data-testid': `export-${format}`,
-        onclick: async () => {
-          button.disabled = true;
-          try { await exportRichData(columns, rows, format, baseName, exportScope); }
-          catch (err) { toast(err.message); }
-          finally { button.disabled = false; }
-        },
-      }, label);
-      return button;
+    // One menu for the downloads. When the server can export, CSV and JSON fetch every filtered
+    // row, while Excel and Parquet only ever hold the rows the browser loaded; the labels say so.
+    const richExport = async (format) => {
+      exportMenu.disabled = true;
+      try { await exportRichData(columns, rows, format, baseName, exportScope); }
+      catch (err) { toast(err.message); }
+      finally { exportMenu.disabled = false; }
     };
+    const label = (name, full) => (serverExport ? `${name} (${full ? 'all filtered rows' : 'loaded rows'})` : name);
+    const exportMenu = h('button', {
+      class: 'ghost', title: 'Download the rows as a file', 'data-testid': 'export-menu',
+      'aria-haspopup': 'menu', 'aria-expanded': 'false',
+      onclick: (event) => showContextMenu(event, [
+        {
+          label: label('CSV', true), testId: 'export-csv',
+          action: () => serverExport ? serverExport('csv') : exportData(columns, rows, 'csv', baseName),
+        },
+        {
+          label: label('JSON', true), testId: 'export-json',
+          action: () => serverExport ? serverExport('json') : exportData(columns, rows, 'json', baseName),
+        },
+        { label: label('Excel', false), testId: 'export-xlsx', action: () => richExport('xlsx') },
+        { label: label('Parquet', false), testId: 'export-parquet', action: () => richExport('parquet') },
+      ]),
+    }, 'Export ▾');
     return h('span', { class: 'export-buttons' },
       copy,
-      h('button', {
-        class: 'ghost',
-        title: serverExport ? 'Download all filtered rows as CSV' : 'Download as CSV',
-        'data-testid': 'export-csv',
-        onclick: () => serverExport ? serverExport('csv') : exportData(columns, rows, 'csv', baseName),
-      }, serverExport ? 'Full CSV' : 'CSV'),
-      h('button', {
-        class: 'ghost',
-        title: serverExport ? 'Download all filtered rows as JSON' : 'Download as JSON',
-        'data-testid': 'export-json',
-        onclick: () => serverExport ? serverExport('json') : exportData(columns, rows, 'json', baseName),
-      }, serverExport ? 'Full JSON' : 'JSON'),
-      richExportButton('xlsx', 'Excel'),
-      richExportButton('parquet', 'Parquet'),
+      exportMenu,
       apiDefinition?.sql ? h('button', {
         class: 'ghost', title: 'Publish as an API endpoint', 'data-testid': 'publish-api',
         onclick: () => openPublishDialog(apiDefinition.sql, apiDefinition.name, apiDefinition.scope),
