@@ -1872,6 +1872,8 @@
       }
       emit('load', rows);
       runHandlers(root, 'load');
+      // Set on the page's host, not on the component, once the buttons and handlers are live.
+      host.dataset.ready = '';
       if (typeof ResizeObserver !== 'undefined') {
         let width = 0;
         let height = 0;

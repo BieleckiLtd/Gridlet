@@ -1098,7 +1098,8 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         await item.ClickAsync();
         var editor = page.GetByTestId("component-code-editor");
         await Assertions.Expect(editor).ToBeVisibleAsync();
-        Assert.True(await editor.EvaluateAsync<bool>("element => element.readOnly"));
+        // The source is read after the editor opens, and the editor turns read only once it has it.
+        await Assertions.Expect(editor).Not.ToBeEditableAsync();
 
         var source = await editor.InputValueAsync();
         Assert.Contains("@layer gridlet-reset, gridlet-chrome, gridlet;", source, StringComparison.Ordinal);
@@ -3244,6 +3245,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             """;
         var caseId = await SaveComponentAsync(page, "Parameter case form", caseHtml);
         await page.GotoAsync($"/gridlet/components/{caseId}");
+        await Assertions.Expect(page.Locator("#gridlet-component-host[data-ready]")).ToHaveCountAsync(1);
         await page.Locator("[data-name='name']").FillAsync("edited");
         var caseRequestTask = page.WaitForRequestAsync(request =>
             request.Method == "POST" && request.Url.EndsWith('/' + route, StringComparison.Ordinal));
@@ -3267,6 +3269,7 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
             """;
         var unknownId = await SaveComponentAsync(page, "Unknown mapping form", unknownHtml);
         await page.GotoAsync($"/gridlet/components/{unknownId}");
+        await Assertions.Expect(page.Locator("#gridlet-component-host[data-ready]")).ToHaveCountAsync(1);
         await page.Locator("[data-name='send']").ClickAsync();
         await Assertions.Expect(page.Locator(".gridlet-action-status"))
             .ToContainTextAsync("Could not add. Add action maps unknown parameter 'Unknown'.");
