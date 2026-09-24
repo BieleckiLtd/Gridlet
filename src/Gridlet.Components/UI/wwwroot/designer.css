@@ -1067,8 +1067,7 @@
 
   /* A drop-down carries an arrow beside its text, so at the same height as a text box it has less
      room for the same 13px line and the platform's own rendering clips it. Three pixels is what the
-     line needs at the smallest height a control is drawn at, and it is outside the base-select
-     block below because the platform's rendering is exactly where it matters. */
+     line needs at the smallest height a control is drawn at. */
   :where(.gfd-canvas) select { padding-block: 3px; }
 
   :where(.gfd-canvas) input::placeholder,
@@ -1088,59 +1087,13 @@
 
   :where(.gfd-canvas) button:disabled { opacity: 0.4; cursor: default; }
 
-  /* A drop-down's list, where the browser will hand it over. `appearance: base-select` opts the
-     native control out of the platform's own popup and into one that is part of the page, so the
-     list can be painted in the component's colours instead of the operating system's. Nothing here
-     replaces the `<select>`: it is still a real one, with its own keyboard, its own screen-reader
-     behaviour and the platform's picker on a phone. A browser that does not support this keeps its
-     native list, which is why every rule below is additive and none of them is relied on. */
-  @supports (appearance: base-select) {
-    :where(.gfd-canvas) select,
-    :where(.gfd-canvas) select::picker(select) { appearance: base-select; }
-
-    :where(.gfd-canvas) select {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      text-align: start;
-    }
-
-    :where(.gfd-canvas) select::picker-icon {
-      margin-inline-start: auto;
-      color: var(--text);
-      opacity: 0.6;
-    }
-
-    :where(.gfd-canvas) select::picker(select) {
-      border: 1px solid var(--border);
-      border-radius: 7px;
-      background: var(--panel);
-      box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
-      padding: 3px;
-      margin-block-start: 2px;
-    }
-
-    :where(.gfd-canvas) option {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 3px 5px;
-      border-radius: 4px;
-      color: var(--text);
-      font-family: inherit;
-      font-size: 13px;
-    }
-
-    :where(.gfd-canvas) option:hover { background: var(--accent-dim); }
-    :where(.gfd-canvas) option:checked { font-weight: 600; }
-    /* The tick keeps a column of its own on every row, checked or not, so choosing a different
-       option does not shift the labels sideways. */
-    :where(.gfd-canvas) option::checkmark {
-      color: var(--accent);
-      flex: 0 0 12px;
-      width: 12px;
-    }
-  }
+  /* A drop-down's list is the platform's own, as it is on a published page. The designer used to
+     opt its drop-downs into `appearance: base-select` to paint the list in the component's colours,
+     but the reset's `all: revert` on the same element sends Chrome 152 into a style loop that never
+     returns, freezing the page as soon as a component with a drop-down is drawn. The browser
+     derives some of a select's defaults, `overflow` among them, from its appearance, and a revert
+     that asks for those defaults while a later layer changes the appearance is what loops. Keeping the
+     native list also keeps Preview drawing the drop-down the published runtime draws. */
 
   :where(.gfd-canvas) select:focus,
   :where(.gfd-canvas) input:focus,

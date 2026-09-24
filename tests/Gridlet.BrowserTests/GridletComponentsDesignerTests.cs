@@ -2157,6 +2157,46 @@ public sealed class GridletComponentsDesignerTests(BrowserAppFixture fixture)
         browserPage.AssertNoUnexpectedErrors();
     }
 
+    /// <summary>
+    /// A drop-down opted into <c>appearance: base-select</c> under the reset's <c>all: revert</c>
+    /// sends Chrome 152 into a style loop that freezes the page. The Chromium these tests run does
+    /// not loop, so what is checked is that neither surface opts in.
+    /// </summary>
+    [Fact]
+    public async Task A_drop_down_uses_the_platforms_own_list_on_both_surfaces()
+    {
+        await using var browserPage = await fixture.NewPageAsync();
+        var page = browserPage.Page;
+        await page.GotoAsync("/gridlet/");
+        var html = """
+            <div data-gridlet="2" data-name="Native drop-down" data-layout="free" style="width: 360px; height: 100px;">
+              <select data-name="size" style="left: 16px; top: 16px; width: 160px; height: 24px;">
+                <option>Personal</option>
+                <option>Medium</option>
+              </select>
+            </div>
+            """;
+        var id = await SaveComponentAsync(page, "Native drop-down", html);
+
+        await page.GotoAsync($"/gridlet/components/{id}");
+        var published = page.Locator("select[data-name='size']");
+        await Assertions.Expect(published).ToBeVisibleAsync();
+        Assert.NotEqual("base-select", await published.EvaluateAsync<string>("select => getComputedStyle(select).appearance"));
+
+        await page.GotoAsync("/gridlet/");
+        var section = page.Locator("details").Filter(
+            new LocatorFilterOptions { Has = page.Locator("summary", new PageLocatorOptions { HasTextString = "Components" }) });
+        await section.Locator("summary").First.ClickAsync();
+        await page.Locator("button.tree-item[title^='Native drop-down -']").ClickAsync();
+        var canvas = page.Locator(".gfd-canvas select[data-name='size']");
+        await Assertions.Expect(canvas).ToBeVisibleAsync();
+        Assert.NotEqual("base-select", await canvas.EvaluateAsync<string>("select => getComputedStyle(select).appearance"));
+        // Preview and the published page draw the same box around the native list.
+        Assert.Equal("3px", await canvas.EvaluateAsync<string>("select => getComputedStyle(select).paddingTop"));
+
+        browserPage.AssertNoUnexpectedErrors();
+    }
+
     [Fact]
     public async Task A_form_error_reenables_the_button_without_reporting_success()
     {
