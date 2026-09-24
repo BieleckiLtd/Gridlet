@@ -79,68 +79,18 @@
     }
     /* A drop-down carries an arrow beside its text, so at the same height as a text box it has
        less room for the same 13px line and the platform's own rendering clips it. Three pixels is
-       what the line needs at the smallest height a control is drawn at, and it sits outside the
-       base-select block below because the platform's rendering is exactly where it matters. */
+       what the line needs at the smallest height a control is drawn at. */
     .gridlet-component-runtime select { padding-block: 3px; }
 
-    /* A drop-down's list, where the browser will hand it over. Setting appearance to base-select
-       opts the native control out of the platform's own popup and into one that is part of the
-       page, so the list can be painted in the component's colours instead of the operating
-       system's. Nothing here replaces the select: it is still a real one, with its own keyboard,
-       its own screen-reader behaviour and the platform's picker on a phone. A browser that does not
-       support this keeps its native list, which is why every rule below is additive and none of
-       them is relied on. The designer's canvas carries the same rules, so Preview and a published
-       page show the same list.
+    /* A drop-down's list is the platform's own. Opting a select into appearance base-select, to
+       paint the list in the component's colours, freezes Chrome 152 for good: the reset reverts every
+       property on the same element, the browser derives some of a select's defaults, overflow among
+       them, from its appearance, and a revert asking for those defaults while this layer changes the
+       appearance is a style loop that never returns. The designer's canvas draws the native list
+       too, so Preview and a published page still show the same one.
 
        No backticks in this comment: the whole stylesheet is a template literal, and one would end
        it. */
-    @supports (appearance: base-select) {
-      .gridlet-component-runtime select,
-      .gridlet-component-runtime select::picker(select) { appearance: base-select; }
-
-      .gridlet-component-runtime select {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        text-align: start;
-      }
-
-      .gridlet-component-runtime select::picker-icon {
-        margin-inline-start: auto;
-        color: var(--gridlet-text);
-        opacity: 0.6;
-      }
-
-      .gridlet-component-runtime select::picker(select) {
-        border: 1px solid var(--gridlet-border);
-        border-radius: 7px;
-        background: var(--gridlet-panel);
-        box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
-        padding: 3px;
-        margin-block-start: 2px;
-      }
-
-      .gridlet-component-runtime option {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 3px 5px;
-        border-radius: 4px;
-        color: var(--gridlet-text);
-        font-family: inherit;
-        font-size: 13px;
-      }
-
-      .gridlet-component-runtime option:hover { background: var(--gridlet-accent-dim); }
-      .gridlet-component-runtime option:checked { font-weight: 600; }
-      /* The tick keeps a column of its own on every row, checked or not, so choosing a different
-         option does not shift the labels sideways. */
-      .gridlet-component-runtime option::checkmark {
-        color: var(--gridlet-accent);
-        flex: 0 0 12px;
-        width: 12px;
-      }
-    }
     .gridlet-component-runtime button { cursor: pointer; padding-inline: 12px; }
     .gridlet-component-runtime button:disabled { opacity: 0.4; cursor: default; }
     /* A field is sized by the component, not dragged by the reader. The designer's field defaults

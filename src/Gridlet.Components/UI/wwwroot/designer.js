@@ -1771,7 +1771,9 @@ export default class ${CLASS_NAME(name)} {
       icon: '⌄',
       bindable: true,
       defaults: { w: 200, h: 30, props: { options: 'First\nSecond' } },
-      style: { ...FIELD_STYLE },
+      // Three pixels above and below, as the runtime draws it: the arrow beside the text leaves the
+      // platform's own drop-down less room for a 13px line than a text box at the same height.
+      style: { ...FIELD_STYLE, padding: '3px 8px' },
       properties: [LINES('options', 'Options (one per line)')],
       render: (c) => h('select', { class: 'gfd-input', tabindex: '-1' },
         String(c.props.options ?? '').split('\n').filter(Boolean)
